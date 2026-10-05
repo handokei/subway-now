@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SeoulArrivalClient, parseRecptnDt, parseTerminusStationName } from '../seoul';
 import { matchLine } from '../lineAlias';
-import { estimateArrivalFromPosition, type BoardingLockMeta } from '../scheduled';
+import { estimateArrivalFromPosition } from '../scheduled';
+import type { BoardingLockMeta } from '../types';
 
 function makeResponse(body: unknown, ok = true, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -237,7 +238,7 @@ describe('SeoulArrivalClient', () => {
   // #2868 — stations.json 역명이 Seoul API 정식 질의명과 다른 35역. URL 생성 직전 map 적용.
   describe('fetchArrivals station name mapping (#2868)', () => {
     it('평명이 정식인 역 — 괄호 제거된 Seoul 질의명으로 URL 생성', async () => {
-      const fetchImpl = vi.fn(async () => makeResponse({ realtimeArrivalList: [] }));
+      const fetchImpl = vi.fn(async (_url: string) => makeResponse({ realtimeArrivalList: [] }));
       const client = new SeoulArrivalClient({
         apiKey: 'KEY',
         host: 'example.com',
@@ -245,13 +246,13 @@ describe('SeoulArrivalClient', () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
       });
       await client.fetchArrivals('왕십리(성동구청)');
-      const url = fetchImpl.mock.calls[0][0] as string;
+      const url = fetchImpl.mock.calls[0][0];
       expect(url).toContain(encodeURIComponent('왕십리'));
       expect(url).not.toContain(encodeURIComponent('왕십리(성동구청)'));
     });
 
     it('괄호명이 정식인 역은 무변경 — 회귀 가드 (군자(능동))', async () => {
-      const fetchImpl = vi.fn(async () => makeResponse({ realtimeArrivalList: [] }));
+      const fetchImpl = vi.fn(async (_url: string) => makeResponse({ realtimeArrivalList: [] }));
       const client = new SeoulArrivalClient({
         apiKey: 'KEY',
         host: 'example.com',
@@ -259,12 +260,12 @@ describe('SeoulArrivalClient', () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
       });
       await client.fetchArrivals('군자(능동)');
-      const url = fetchImpl.mock.calls[0][0] as string;
+      const url = fetchImpl.mock.calls[0][0];
       expect(url).toContain(encodeURIComponent('군자(능동)'));
     });
 
     it('특수 변형 — 자양(뚝섬한강공원) → 뚝섬유원지', async () => {
-      const fetchImpl = vi.fn(async () => makeResponse({ realtimeArrivalList: [] }));
+      const fetchImpl = vi.fn(async (_url: string) => makeResponse({ realtimeArrivalList: [] }));
       const client = new SeoulArrivalClient({
         apiKey: 'KEY',
         host: 'example.com',
@@ -272,7 +273,7 @@ describe('SeoulArrivalClient', () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
       });
       await client.fetchArrivals('자양(뚝섬한강공원)');
-      const url = fetchImpl.mock.calls[0][0] as string;
+      const url = fetchImpl.mock.calls[0][0];
       expect(url).toContain(encodeURIComponent('뚝섬유원지'));
     });
 

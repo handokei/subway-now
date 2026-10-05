@@ -8,6 +8,7 @@
  */
 
 import { canonicalLineName, lineNameBySubwayId } from './lineAlias';
+import { fromSeoulStationName, toSeoulQueryName } from './seoulStationNameMap';
 import {
   parseTrainType,
   parseTrainTypeFromDirectAt,
@@ -215,7 +216,10 @@ export class SeoulArrivalClient {
     }
 
     const fetchImpl = this.options.fetchImpl ?? fetch;
-    const url = `http://${this.options.host}/api/subway/${this.options.apiKey}/json/${SEOUL_ARRIVAL_PATH_SEGMENT}/0/10/${encodeURIComponent(stationName)}`;
+    // #2868 — stations.json 역명이 Seoul API 정식 질의명과 다른 35역. 캐시 키는 호출자가
+    // 쓰는 stations.json 원명을 유지(위 cache.get/set)하고, URL 생성 직전에만 질의명으로 치환.
+    const queryName = toSeoulQueryName(stationName);
+    const url = `http://${this.options.host}/api/subway/${this.options.apiKey}/json/${SEOUL_ARRIVAL_PATH_SEGMENT}/0/10/${encodeURIComponent(queryName)}`;
 
     this.callCount += 1;
     const response = await fetchImpl(url);
@@ -305,7 +309,11 @@ function parsePositionEntry(
   const item = raw as Record<string, unknown>;
   const trainCode = typeof item.trainNo === 'string' ? item.trainNo : '';
   if (!trainCode) return null;
-  const stationName = typeof item.statnNm === 'string' ? item.statnNm : '';
+  const rawStationName = typeof item.statnNm === 'string' ? item.statnNm : '';
+  // #2868 — statnNm에 ①sentinel(…종착/…지선) strip ②Seoul 응답명→stations.json명 역매핑을
+  // 적용한다. 번역은 이 seoul.ts 경계에서만 — 내부 소비자(segmentStations/waypoint 비교)는
+  // stations.json명 일관 사용.
+  const stationName = fromSeoulStationName(stripPositionStationSentinel(rawStationName));
   const updnLine = typeof item.updnLine === 'string' ? item.updnLine : '';
   // #2746 — realtimePosition의 updnLine은 숫자 코드('0'=상행/내선, '1'=하행/외선)다.
   // 그 외 값(누락·구 한글 오염값 등)은 방향을 알 수 없으므로 조용히 false로 떨어뜨리지 않고
@@ -333,6 +341,23 @@ function parsePositionEntry(
     trainType: parseTrainTypeFromDirectAt(item.directAt),
     terminus: statnTnm.length > 0 ? statnTnm : null,
   };
+}
+
+/**
+ * #2868 — `realtimePosition`의 `statnNm`은 종착/지선 진입 열차에 역명 아닌 상태 문자열을
+ * 담는다(10/3 실측: 열차 3174 statnNm='성수종착', R2 캡처 어휘에 '성수지선'도 존재).
+ * 접미 strip으로 역명을 복원 — strip 결과가 빈 문자열이 되는 경우(접미 자체가 전체 문자열)는
+ * 원문을 보존한다.
+ */
+const POSITION_STATION_SENTINEL_SUFFIXES = ['종착', '지선'] as const;
+
+function stripPositionStationSentinel(statnNm: string): string {
+  for (const suffix of POSITION_STATION_SENTINEL_SUFFIXES) {
+    if (statnNm.endsWith(suffix) && statnNm.length > suffix.length) {
+      return statnNm.slice(0, -suffix.length);
+    }
+  }
+  return statnNm;
 }
 
 /** Seoul API는 arvlCd를 number 또는 numeric string으로 반환 — 둘 다 수용. */
