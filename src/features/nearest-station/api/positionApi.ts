@@ -1,6 +1,7 @@
 import { createLogger } from '../../../shared/utils/logger';
 import { parseTrainTypeFromDirectAt } from '../../../shared/constants/trainTypes';
 import { getLineApiName } from '../../../shared/constants/lineApiNames';
+import { fromSeoulStationName } from '../../../shared/constants/seoulStationNameMap';
 import type { LineNumber } from '../../../shared/types/station';
 import type { TrainPosition, LinePositions } from '../../../shared/types/position';
 
@@ -26,6 +27,23 @@ const MAX_RECPTN_DRIFT_SEC = 120;
 const FULL_DATETIME_RE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
 /** "HH:mm:ss" 시각 단독 — lastRecptnDt(날짜)와 합쳐 풀 포맷 구성. */
 const TIME_ONLY_RE = /^\d{2}:\d{2}:\d{2}/;
+
+/**
+ * #2868 — `realtimePosition`의 `statnNm`은 종착/지선 진입 열차에 역명 아닌 상태 문자열을
+ * 담는다(backend parsePositionEntry와 동일 실측 근거: 열차 3174 statnNm='성수종착',
+ * '성수지선'도 R2 캡처 어휘에 존재). 접미 strip으로 역명을 복원 — strip 결과가 빈 문자열이
+ * 되는 경우(접미 자체가 전체 문자열)는 원문을 보존한다.
+ */
+const POSITION_STATION_SENTINEL_SUFFIXES = ['종착', '지선'] as const;
+
+function stripPositionStationSentinel(statnNm: string): string {
+  for (const suffix of POSITION_STATION_SENTINEL_SUFFIXES) {
+    if (statnNm.endsWith(suffix) && statnNm.length > suffix.length) {
+      return statnNm.slice(0, -suffix.length);
+    }
+  }
+  return statnNm;
+}
 
 /**
  * realtimePosition은 lastRecptnDt(날짜)와 recptnDt(시각)를 분리해서 보낼 수 있다.
@@ -102,7 +120,9 @@ export async function fetchTrainPositions(
 
       return {
         statnId: String(item.statnId ?? ''),
-        statnNm: String(item.statnNm ?? ''),
+        // #2868 — ①종착/지선 sentinel strip ②Seoul 응답명→stations.json명 역매핑. 번역은
+        // 이 경계에서만 — pickCandidateTrains/useFusedNearestStation 등 소비자는 무변경.
+        statnNm: fromSeoulStationName(stripPositionStationSentinel(String(item.statnNm ?? ''))),
         trainNo: String(item.trainNo ?? ''),
         trainStatus: Number.isFinite(parsedStatus) ? parsedStatus : -1,
         updnLine: Number.isFinite(parsedUpdn) ? parsedUpdn : -1,

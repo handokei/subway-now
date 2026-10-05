@@ -9,6 +9,7 @@
 import { createLogger } from '../../../shared/utils/logger';
 import { parseTrainType } from '../../../shared/constants/trainTypes';
 import { subwayIdToLine } from '../../../shared/constants/lineApiNames';
+import { toSeoulQueryName } from '../../../shared/constants/seoulStationNameMap';
 import { findLineByStationName } from '../../../shared/utils/stationLookup';
 import { buildScheduleArrival, hasHeadwayData } from '../../alarm/utils/scheduleFallback';
 import type { LineNumber } from '../../../shared/types/station';
@@ -137,7 +138,10 @@ export async function fetchArrivalInfo(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `http://swopenapi.seoul.go.kr/api/subway/${apiKey}/json/realtimeStationArrival/0/${SEOUL_API_FETCH_WINDOW}/${encodeURIComponent(stationName)}`;
+    // #2868 — stations.json 역명이 Seoul API 정식 질의명과 다른 35역. URL 생성 직전에만
+    // 질의명으로 치환(getFallbackArrival 등 나머지 로직은 호출자가 넘긴 원명 그대로 사용).
+    const queryStationName = toSeoulQueryName(stationName);
+    const url = `http://swopenapi.seoul.go.kr/api/subway/${apiKey}/json/realtimeStationArrival/0/${SEOUL_API_FETCH_WINDOW}/${encodeURIComponent(queryStationName)}`;
 
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
