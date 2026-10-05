@@ -77,6 +77,32 @@ describe('resolveTripDirection', () => {
     });
   });
 
+  describe('#2867 — loop direction inversion (실측 52쌍 ground truth, idx 증가=내선=up)', () => {
+    // 10/3 13:24 트립(성수→을지로입구, 외선) + 9/17(#2692) 양방향 실측으로 확정된 ground truth:
+    // 내선 = idx 증가 방향 = 'up'. 외선 = idx 감소 방향 = 'down'.
+    // 기존 closed-loop 분기(firstStepIdx > currIdx ? 'down' : 'up')는 이 둘을 반대로 매핑했다.
+
+    it('성수(2-011, idx10) → 을지로입구(idx1) = down (idx 감소, 외선)', () => {
+      const route = makeDirectRoute(1, '2');
+      expect(resolveTripDirection(route, '을지로입구', '2-011')).toBe('down');
+    });
+
+    it('신당(2-006, idx5) → 을지로입구(idx1) = down (idx 감소, 외선)', () => {
+      const route = makeDirectRoute(1, '2');
+      expect(resolveTripDirection(route, '을지로입구', '2-006')).toBe('down');
+    });
+
+    it('강변(2-014, idx14) → 잠실나루(idx15) = up (idx 증가, 내선)', () => {
+      const route = makeDirectRoute(1, '2');
+      expect(resolveTripDirection(route, '잠실나루', '2-014')).toBe('up');
+    });
+
+    it('7호선(비순환) 용마산 → 건대입구 (id 증가) = down — monotonic 분기 회귀 가드', () => {
+      const route = makeDirectRoute(1, '7');
+      expect(resolveTripDirection(route, '건대입구', '7-015')).toBe('down');
+    });
+  });
+
   describe('#1922 — closed loop (2호선 환상선) direction', () => {
     // 2호선 본선 closed loop은 id 사전순 정렬이 wraparound와 일치하지 않을 수 있으므로
     // shortestLinePathIndices로 짧은 쪽 path를 산출해 방향 결정.
