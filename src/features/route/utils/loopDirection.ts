@@ -28,9 +28,13 @@ const CLOSED_LOOPS = lineTopology.closedLoops as Partial<Record<LineNumber, Clos
 
 /**
  * 순환/하이브리드 노선의 from → to 방향을 추론한다.
- * - 'up'   = id 감소 방향 (순환선의 경우 내선순환 = wrap 짧음)
- * - 'down' = id 증가 방향 (순환선의 경우 외선순환 = forward 짧음)
+ * - 'up'   = id 증가 방향 (순환선의 경우 내선순환 = forward 짧음)
+ * - 'down' = id 감소 방향 (순환선의 경우 외선순환 = wrap 짧음)
  * - null   = 추론 불가 (대상 노선 아님, 동일 역, 지선, 정반대 위치 등)
+ *
+ * #2872 — 2호선(진짜 순환선) 분기의 반환값은 #2867 실측(52쌍 무모순 + 10/3 캡처 궤적) ground truth
+ * 정합: 내선=id 증가='up'. 이전 버전은 이 매핑이 역전돼 parseTrainLineDirection(아래)과
+ * 같은 열차에 반대 방향을 답하는 자기모순이 있었다.
  */
 export function inferLoopDirection(
   line: LineNumber,
@@ -64,7 +68,7 @@ export function inferLoopDirection(
   const backward = n - forward; // wrap 방향 호 길이
 
   if (forward === backward) return null; // 정반대 위치 — ambiguous
-  return forward < backward ? 'down' : 'up';
+  return forward < backward ? 'up' : 'down';
 }
 
 /**
@@ -120,7 +124,8 @@ export function nextLoopAdjacentStationName(
     return main[nextIdx].name;
   }
 
-  const step = direction === 'down' ? 1 : -1;
+  // #2872 — inferLoopDirection의 'up'=id 증가 라벨 스왑과 짝 맞춘 step 재매핑.
+  const step = direction === 'up' ? 1 : -1;
   const nextIdx = (currentIdx + step + n) % n;
   return main[nextIdx].name;
 }
