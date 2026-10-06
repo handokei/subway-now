@@ -224,10 +224,10 @@ describe('useBoardingLockController', () => {
     });
   });
 
-  describe('boardingListArrivals (#2696 — isBoardableCandidate 배선, #1326 구 폴백 제거)', () => {
-    // #2696 이전(#1326) "방향 필터가 비면 양방향 합집합" 폴백은 10/3 성수역 재발의 직접 원인이라
-    // 제거됐다 — 이제 isBoardableCandidate(line/direction/상태/조기종착)를 통과한 해당 방향
-    // bucket만 후보. 아래 테스트는 ARRIVAL_CODE.ARRIVED(1, "탑승 가능")로 boardable fixture를 쓴다.
+  describe('boardingListArrivals (#2886 — isCandidateInBoardingScope 배선, #1326 구 폴백 제거, #2883 상태게이트 제거)', () => {
+    // #2696(이전, #1326 폴백 제거) 이후 #2883이 여기에 isBoardableCandidate(상태 게이트 포함)를
+    // 적용해 arvlCd=99 열차를 전부 배제하는 회귀를 만들었다(#2886) — 이제 isCandidateInBoardingScope
+    // (line/direction/조기종착만, 상태 게이트 없음)를 통과한 해당 방향 bucket만 후보.
     const boardableUp = makeTrain({ trainCode: 'UP-B', arrivalCode: ARRIVAL_CODE.ARRIVED });
     const boardableDown = makeTrain({ trainCode: 'DN-B', arrivalCode: ARRIVAL_CODE.ARRIVED });
 
@@ -289,14 +289,17 @@ describe('useBoardingLockController', () => {
       expect(result.current.boardingListArrivals).toEqual([]);
     });
 
-    it('해당 방향 bucket이 전부 미도착(RUNNING) 상태면 빈 목록 — 과도 필터링보다 안전 우선', () => {
+    // #2886 — 기존(#2696) 기대값은 RUNNING(99, "아직 안 옴")도 배제였다. 상태 게이트는
+    // boardingListArrivals의 용도(전향적 제시)와 맞지 않아 #2886에서 제거됐다 — 이제
+    // 해당 방향 bucket의 RUNNING 열차도 노선/조기종착 조건만 통과하면 노출된다.
+    it('해당 방향 bucket이 미도착(RUNNING) 상태여도 노선/조기종착 통과하면 노출된다 (#2886)', () => {
       mockResolveTripDirection.mockReturnValue('up');
       const notYetArrived = makeTrain({ trainCode: 'NOT-YET', arrivalCode: ARRIVAL_CODE.RUNNING });
       const arrival: StationArrival = { up: [notYetArrived], down: [] };
       const { result } = renderHook(() =>
         useBoardingLockController({ ...defaultInputs, arrival }),
       );
-      expect(result.current.boardingListArrivals).toEqual([]);
+      expect(result.current.boardingListArrivals).toEqual([notYetArrived]);
     });
 
     it('음수 arrivalSeconds(지나간 열차)는 boardable 상태여도 제외', () => {
@@ -307,6 +310,41 @@ describe('useBoardingLockController', () => {
         useBoardingLockController({ ...defaultInputs, arrival }),
       );
       expect(result.current.boardingListArrivals).toEqual([]);
+    });
+
+    it('조기종착(terminusReachesTarget false)은 상태게이트 제거 후에도 여전히 배제 + excludedCount breadcrumb 발생 (#2886 ①②보호 유지)', () => {
+      // 실역명(2호선 성수→건대입구→...→강변)으로 nextTargetStationName을 실제 계산시켜
+      // isCandidateInBoardingScope의 조기종착 배제가 상태게이트 제거 후에도 그대로 동작함을 확인.
+      mockResolveTripDirection.mockReturnValue('down');
+      const stationSeongsu: Station = {
+        id: '2-011',
+        name: '성수',
+        line: '2',
+        lineColor: '#009D3E',
+        lat: 37.544581,
+        lng: 127.055961,
+      };
+      const earlyTerminus = makeTrain({
+        trainCode: 'EARLY',
+        arrivalCode: ARRIVAL_CODE.RUNNING,
+        terminalStation: '성수',
+      });
+      const normal = makeTrain({
+        trainCode: 'NORMAL',
+        arrivalCode: ARRIVAL_CODE.RUNNING,
+        terminalStation: '잠실나루',
+      });
+      const arrival: StationArrival = { up: [], down: [earlyTerminus, normal] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({
+          ...defaultInputs,
+          currentStation: stationSeongsu,
+          destinationId: '2-014',
+          route: makeDirectRoute(3, '2'),
+          arrival,
+        }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([normal]);
     });
 
     it('red — #2886 재구성: 10/7 06:29 용마산(7호선) 4행 — arvlCd=99("N분 후") 2대도 boardingListArrivals에 표시된다', () => {
