@@ -15,6 +15,7 @@ import {
   makeTransferRoute,
 } from '../../../../testUtils/routeFixtures';
 import { PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
+import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 
 jest.mock('expo-haptics', () => ({
   impactAsync: jest.fn().mockResolvedValue(undefined),
@@ -223,106 +224,117 @@ describe('useBoardingLockController', () => {
     });
   });
 
-  describe('boardingListArrivals (#1326)', () => {
-    it('방향 필터 결과가 있으면 directionalArrivals 그대로 — 방향 필터 유지', () => {
+  describe('boardingListArrivals (#2696 — isBoardableCandidate 배선, #1326 구 폴백 제거)', () => {
+    // #2696 이전(#1326) "방향 필터가 비면 양방향 합집합" 폴백은 10/3 성수역 재발의 직접 원인이라
+    // 제거됐다 — 이제 isBoardableCandidate(line/direction/상태/조기종착)를 통과한 해당 방향
+    // bucket만 후보. 아래 테스트는 ARRIVAL_CODE.ARRIVED(1, "탑승 가능")로 boardable fixture를 쓴다.
+    const boardableUp = makeTrain({ trainCode: 'UP-B', arrivalCode: ARRIVAL_CODE.ARRIVED });
+    const boardableDown = makeTrain({ trainCode: 'DN-B', arrivalCode: ARRIVAL_CODE.ARRIVED });
+
+    it('direction 해결 + 상태 boardable이면 그 방향 bucket만 노출', () => {
       mockResolveTripDirection.mockReturnValue('up');
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
-      expect(result.current.boardingListArrivals).toEqual([upTrain]);
+      const arrival: StationArrival = { up: [boardableUp], down: [boardableDown] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([boardableUp]);
     });
 
-    it('방향 필터가 빈 쪽을 고르면 반대 방향으로 폴백 — "선택할 열차 없음" 회귀 차단', () => {
+    it('red — #2696 재발 fixture: 10/3 13:25:37 성수 4행 — 3174(반대방향+조기종착+미도착)는 boardingListArrivals에 없다', () => {
+      // 과거 버그(#1326): direction='up'으로 해석됐지만 그 bucket(up)이 비어 fallback이
+      // 반대 방향 bucket(down, 3174/2176 포함)까지 통째로 merge했다 — 사용자가 3174를 탭해
+      // trip 전체 알림이 죽었다. fix 후에는 그 fallback 자체가 사라져 3174가 노출되지 않는다.
       mockResolveTripDirection.mockReturnValue('up');
-      const onlyDown: StationArrival = { up: [], down: [downTrain] };
+      const t3169 = makeTrain({ trainCode: '3169', line: '2', arrivalCode: ARRIVAL_CODE.RUNNING, arrivalSeconds: 260 });
+      const t3171 = makeTrain({ trainCode: '3171', line: '2', arrivalCode: ARRIVAL_CODE.RUNNING, arrivalSeconds: 470 });
+      const t3174 = makeTrain({
+        trainCode: '3174',
+        line: '2',
+        arrivalCode: ARRIVAL_CODE.RUNNING,
+        arrivalSeconds: 60,
+        terminalStation: '성수',
+      });
+      const t2176 = makeTrain({
+        trainCode: '2176',
+        line: '2',
+        arrivalCode: ARRIVAL_CODE.RUNNING,
+        arrivalSeconds: 240,
+        terminalStation: '성수',
+      });
+      // 과거 버그 재현: 사용자 실제(외선) bucket이 up 쪽인데, API/direction skew로 up이 비고
+      // 전부 down bucket에 담긴 상태 — #1326 폴백이 발동하던 바로 그 조건.
+      const arrival: StationArrival = { up: [], down: [t3169, t3171, t3174, t2176] };
       const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, arrival: onlyDown }),
+        useBoardingLockController({ ...defaultInputs, arrival }),
       );
-      // 엄격 list(Gate 1용)는 그대로 비어있고, UI list만 폴백으로 노출된다.
-      expect(result.current.directionalArrivals).toEqual([]);
-      expect(result.current.boardingListArrivals).toEqual([downTrain]);
+      expect(result.current.boardingListArrivals.some((t) => t.trainCode === '3174')).toBe(false);
+      // #1326 폴백이 사라졌으므로 up이 빈 상태에서는 아예 빈 목록(안전 우선 — 과도 필터링 OK).
+      expect(result.current.boardingListArrivals).toEqual([]);
+    });
+
+    it('direction=null(방향 미해결)이면 후보 없음 — 양방향 병합 금지', () => {
+      mockResolveTripDirection.mockReturnValue(null);
+      const arrival: StationArrival = { up: [boardableUp], down: [boardableDown] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([]);
     });
 
     it('arrival null이면 빈 배열', () => {
+      mockResolveTripDirection.mockReturnValue('up');
       const { result } = renderHook(() =>
         useBoardingLockController({ ...defaultInputs, arrival: null }),
       );
       expect(result.current.boardingListArrivals).toEqual([]);
     });
 
-    it('양방향 모두 비면 빈 목록 — 진짜 도착 없음(empty-state)', () => {
+    it('해당 방향 bucket이 전부 미도착(RUNNING) 상태면 빈 목록 — 과도 필터링보다 안전 우선', () => {
       mockResolveTripDirection.mockReturnValue('up');
-      const empty: StationArrival = { up: [], down: [] };
+      const notYetArrived = makeTrain({ trainCode: 'NOT-YET', arrivalCode: ARRIVAL_CODE.RUNNING });
+      const arrival: StationArrival = { up: [notYetArrived], down: [] };
       const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, arrival: empty }),
+        useBoardingLockController({ ...defaultInputs, arrival }),
       );
       expect(result.current.boardingListArrivals).toEqual([]);
     });
 
-    it('폴백 시에도 음수 arrivalSeconds(지나간 열차)는 제외', () => {
+    it('음수 arrivalSeconds(지나간 열차)는 boardable 상태여도 제외', () => {
       mockResolveTripDirection.mockReturnValue('up');
-      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: -10 });
-      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
-      const onlyDownMixed: StationArrival = { up: [], down: [passed, future] };
+      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: -10, arrivalCode: ARRIVAL_CODE.ARRIVED });
+      const arrival: StationArrival = { up: [passed], down: [] };
       const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, arrival: onlyDownMixed }),
+        useBoardingLockController({ ...defaultInputs, arrival }),
       );
-      expect(result.current.boardingListArrivals).toEqual([future]);
+      expect(result.current.boardingListArrivals).toEqual([]);
     });
   });
 
-  describe('offRouteTrainCodes (#2446)', () => {
-    // 뚝섬→신당 route에서 nextStationLabel이 "한양대"로 route 방향 표시될 때, arrival.up(정방향)
-    // 이 비어 #1326 fallback으로 arrival.down(성수행)이 합쳐진 케이스. 그 반대 방향 열차의
-    // trainCode가 offRouteTrainCodes에 담겨야 BoardingTrainList가 route 라벨을 붙이지 않는다.
-    it('방향 필터가 빈 쪽을 고르면 반대 방향(합쳐진 쪽) trainCode가 offRouteTrainCodes에 담긴다', () => {
+  describe('offRouteTrainCodes (#2696 — #1326 폴백 제거로 항상 빈 집합)', () => {
+    // #2446이 보호하던 "반대 방향 merge된 행에 route 라벨을 붙이지 않는다"는 전제(#1326 폴백)
+    // 자체가 #2696에서 제거됐다 — boardingListArrivals가 반대 방향 열차를 더 이상 포함하지
+    // 않으므로 라벨링 대상이 구조적으로 없다. prop/타입은 하위호환을 위해 유지하되 값은 항상 빈 집합.
+    it('direction 해결 + 정상 bucket이어도 빈 집합', () => {
       mockResolveTripDirection.mockReturnValue('up');
-      const onlyDown: StationArrival = { up: [], down: [downTrain] };
+      const boardableUp = makeTrain({ trainCode: 'UP-B', arrivalCode: ARRIVAL_CODE.ARRIVED });
       const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, arrival: onlyDown }),
+        useBoardingLockController({ ...defaultInputs, arrival: { up: [boardableUp], down: [] } }),
       );
-      expect(result.current.boardingListArrivals).toEqual([downTrain]);
-      expect(result.current.offRouteTrainCodes).toEqual(new Set([downTrain.trainCode]));
-    });
-
-    it('방향 필터 결과가 있으면(merge 미발생) offRouteTrainCodes는 빈 집합', () => {
-      mockResolveTripDirection.mockReturnValue('up');
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
       expect(result.current.offRouteTrainCodes).toEqual(new Set());
     });
 
-    it('direction="down"일 때는 반대(arrival.up) 쪽 trainCode가 담긴다', () => {
-      mockResolveTripDirection.mockReturnValue('down');
-      const onlyUp: StationArrival = { up: [upTrain], down: [] };
-      const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, arrival: onlyUp }),
-      );
-      expect(result.current.boardingListArrivals).toEqual([upTrain]);
-      expect(result.current.offRouteTrainCodes).toEqual(new Set([upTrain.trainCode]));
-    });
-
-    it('direction이 null(방향 미상)이면 "반대"가 정의되지 않아 offRouteTrainCodes는 빈 집합', () => {
+    it('direction=null이어도 빈 집합', () => {
       mockResolveTripDirection.mockReturnValue(null);
       const { result } = renderHook(() => useBoardingLockController(defaultInputs));
-      expect(result.current.boardingListArrivals).toEqual([upTrain, downTrain]);
       expect(result.current.offRouteTrainCodes).toEqual(new Set());
     });
 
-    it('arrival null이면 offRouteTrainCodes는 빈 집합', () => {
+    it('arrival null이어도 빈 집합', () => {
       mockResolveTripDirection.mockReturnValue('up');
       const { result } = renderHook(() =>
         useBoardingLockController({ ...defaultInputs, arrival: null }),
       );
       expect(result.current.offRouteTrainCodes).toEqual(new Set());
-    });
-
-    it('폴백 시 반대 방향에서도 음수 arrivalSeconds(지나간 열차)는 제외', () => {
-      mockResolveTripDirection.mockReturnValue('up');
-      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: -10 });
-      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
-      const onlyDownMixed: StationArrival = { up: [], down: [passed, future] };
-      const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, arrival: onlyDownMixed }),
-      );
-      expect(result.current.offRouteTrainCodes).toEqual(new Set(['FUTURE']));
     });
   });
 

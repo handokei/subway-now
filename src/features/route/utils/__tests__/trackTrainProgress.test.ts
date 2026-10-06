@@ -239,7 +239,9 @@ describe('trackTrainProgress — forward-only guard (#1017)', () => {
     expect(result?.trainNo).toBe('A');
   });
 
-  it('backward sticky candidate is excluded from filtered — fallthrough to GPS', () => {
+  it('#2696 (4번째 picker) red→green — backward sticky candidate가 filtered에서 빠지고 단일 생존 후보가 lock과 불일치하면 null(다른 열차 무채택)', () => {
+    // 과거 버그: forward-only 필터가 STICKY(시청, backward)를 탈락시켜 남은 단일 후보 A(을지로3가)를
+    // lastConfirmedTrainNo와 대조 없이 'single'로 채택했다 — 10/3 한양대 8178 오채택과 동형 결함.
     const result = trackTrainProgress({
       candidates: [
         makeCandidate({ trainNo: 'A', currentStationName: '을지로3가' }),
@@ -249,6 +251,27 @@ describe('trackTrainProgress — forward-only guard (#1017)', () => {
       boardingStationId: stationOf('을지로3가').id,
       lastConfirmedTrainNo: 'STICKY',
       userLocation: NEAR_EULJIRO_3GA,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('#2696 — 단일 생존 후보의 trainNo가 lastConfirmedTrainNo와 일치하면 그대로 single 채택', () => {
+    const result = trackTrainProgress({
+      candidates: [makeCandidate({ trainNo: 'STICKY', currentStationName: '을지로3가' })],
+      segmentStations: SEGMENT_2_3,
+      boardingStationId: stationOf('을지로3가').id,
+      lastConfirmedTrainNo: 'STICKY',
+      userLocation: NEAR_EULJIRO_3GA,
+    });
+    expect(result?.trainNo).toBe('STICKY');
+    expect(result?.confidence).toBe('single');
+  });
+
+  it('#2696 — lastConfirmedTrainNo 미지정(lockless)이면 단일 생존 후보를 기존대로 무조건 single 채택', () => {
+    const result = trackTrainProgress({
+      candidates: [makeCandidate({ trainNo: 'A', currentStationName: '을지로3가' })],
+      segmentStations: SEGMENT_2_3,
+      boardingStationId: stationOf('을지로3가').id,
     });
     expect(result?.trainNo).toBe('A');
     expect(result?.confidence).toBe('single');

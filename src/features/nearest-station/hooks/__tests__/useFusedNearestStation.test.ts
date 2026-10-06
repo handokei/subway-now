@@ -1260,7 +1260,10 @@ describe('useFusedNearestStation', () => {
         jest.setSystemTime(T0 + 3 * 90_000);
         const myeonmok = findStationByNameAndLine('면목', '7')!;
         setupGpsAt(myeonmok);
-        const tOff = train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'OTHER-TRAIN' });
+        // #2696 — updnLine=1(하행)로 lock leg 진행 방향(용마산→건대입구='down')과 일치시켜, 신규
+        // 반대 방향 enumerate 필터(candidateTrains)에 걸리지 않고 기존 의도대로 이 테스트가 검증하려는
+        // "trainCode 불일치 + arc 밖" → #1016 hole(c) 가드(line 1082~1085)까지 도달하게 한다.
+        const tOff = train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'OTHER-TRAIN', updnLine: 1 });
         mockUsePositions.mockReturnValue(positionRet({ line: '7', trains: [tOff] }));
 
         const { result } = renderHook(() =>

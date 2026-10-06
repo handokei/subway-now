@@ -15,7 +15,9 @@ import { useNavigationStore } from '../../route/store/useNavigationStore';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
-import { allowedLinesFromRoute } from '../../../shared/utils/stationRoute';
+import { allowedLinesFromRoute, getNextStationName } from '../../../shared/utils/stationRoute';
+import { isBoardableCandidate, type BoardableCandidateContext } from '../utils/isBoardableCandidate';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { STATIC_SPEED_THRESHOLD_MPS } from '../../nearest-station/utils/movementGate';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
@@ -356,27 +358,70 @@ export function useBoardingLockController({
     return [...arrival.up, ...arrival.down].filter(isReachable);
   }, [arrival, direction]);
 
-  // #1326: BoardingTrainList 전용 — 방향 필터 결과가 비면 빈 목록 대신 양방향 합집합으로 폴백.
-  //
-  // directionalArrivals는 hydrateLockFromCandidate Gate 1(#1014)의 false-positive 방어용이라 방향을
-  // 엄격히 유지해야 한다. 하지만 사용자가 직접 탭하는 BoardingTrainList에서는 resolveTripDirection이
-  // (환승역/환상선/index 기반 한계로) 잘못된 방향을 골라 그 쪽 arrival이 비면 "선택할 열차 없음"이 뜨는
-  // 회귀가 있었다. 도착 열차가 실제로 존재하면 빈 목록을 피하는 게 우선이므로, 방향 필터 결과가 비면
-  // 반대 방향까지 합쳐 노출한다. 양쪽 모두 비면 그대로 빈 목록(진짜 도착 없음 → 컴포넌트 empty-state).
-  const boardingListArrivals = useMemo<ArrivalInfo[]>(() => {
-    if (directionalArrivals.length > 0) return directionalArrivals;
-    if (!arrival) return [];
-    return [...arrival.up, ...arrival.down].filter(isReachable);
-  }, [directionalArrivals, arrival]);
+  // #2696 — 사용자의 다음 목표역(출발역 바로 다음 정거장) 이름. 조기 종착(bstatnNm이 다음 목표역
+  // 전에 종착) 판정에 쓰인다 — `isBoardableCandidate`의 BoardableCandidateContext.nextTargetStationName.
+  // destinationId/route/currentStation 중 하나라도 없으면(free-trip, trip 비활성) null — 판정 skip.
+  const nextTargetStationName = useMemo(() => {
+    if (!currentStation || !destinationId || !route) return null;
+    return getNextStationName(currentStation.id, destinationId, route);
+  }, [currentStation, destinationId, route]);
 
-  // #2446 — boardingListArrivals가 위 fallback으로 합쳐진 경우에만(directionalArrivals가 비어
-  // merge가 실제로 일어난 경우에만) 반대 방향 쪽 trainCode를 표시한다. direction이 null이면
-  // "반대"가 정의되지 않으므로 빈 집합.
-  const offRouteTrainCodes = useMemo<ReadonlySet<string>>(() => {
-    if (directionalArrivals.length > 0 || !arrival || direction === null) return new Set();
-    const oppositeSide = direction === 'up' ? arrival.down : arrival.up;
-    return new Set(oppositeSide.filter(isReachable).map((train) => train.trainCode));
-  }, [directionalArrivals, arrival, direction]);
+  // #2696 (재발 reopen) — BoardingTrainList 직접 탭 경로의 탑승 가능 후보 술어 배선.
+  //
+  // 기존(#1326) "방향 필터가 비면 양방향 합집합으로 폴백"은 10/3 성수역 재발의 직접 원인이다:
+  // direction 해석이 흔들리면(또는 null이면) 반대 방향·조기 종착 열차(3174/2176, 내선+성수종착)가
+  // 그대로 선택 가능한 목록에 섞여 노출됐고, 사용자가 그중 하나를 탭해 trip 전체 알림이 죽었다.
+  //
+  // 이제 `isBoardableCandidate`(shared invariant — #2696 본문)를 그대로 적용한다:
+  //   - direction===null → 후보 없음(양방향 병합 금지, 원 이슈 요구4의 일반화).
+  //   - 방향이 해결되면 그 방향 bucket만 후보 — 반대 방향 bucket은 이제 폴백으로도 섞이지 않는다.
+  //   - bucket 내에서도 상태(arvlCd∈{출발,도착,진입})·조기종착 게이트를 통과해야 후보.
+  // "선택할 열차 없음" 빈 목록이 "반대 방향/조기종착 열차를 보여주는 것"보다 안전하다는 게 이
+  // 재발의 핵심 교훈이다 — 과도한 필터링보다 미검출(empty list)이 안전.
+  const boardingListArrivals = useMemo<ArrivalInfo[]>(() => {
+    if (!arrival || direction === null) return [];
+    const bucket = direction === 'up' ? arrival.up : arrival.down;
+    return bucket
+      .filter(isReachable)
+      .filter((candidate) =>
+        isBoardableCandidate(candidate, {
+          line: candidate.line,
+          direction,
+          nextTargetStationName,
+        }),
+      );
+  }, [arrival, direction, nextTargetStationName]);
+
+  // #2696 — 배제된 후보 수 계측(원 이슈 요구4 승계). boardingListArrivals가 위 술어로 걸러내기
+  // 전/후 개수 차이를 breadcrumb으로 적재 — 과도 필터링(후보 0건 회귀) 감시용.
+  // direction===null이면 bucket 자체를 고를 수 없어 별도 사유로 기록.
+  useEffect(() => {
+    if (!arrival) return;
+    if (direction === null) {
+      addDomainBreadcrumb('boarding', 'boardable_direction_unresolved', {
+        stationName: currentStation?.name ?? null,
+      });
+      return;
+    }
+    const bucket = direction === 'up' ? arrival.up : arrival.down;
+    const reachableCount = bucket.filter(isReachable).length;
+    const excludedCount = reachableCount - boardingListArrivals.length;
+    if (excludedCount > 0) {
+      addDomainBreadcrumb('boarding', 'boardable_candidate_excluded', {
+        excludedCount,
+        totalCount: reachableCount,
+        // direction useMemo가 !currentStation이면 항상 null을 반환하므로, 여기 도달했다는
+        // 것(direction !== null) 자체가 currentStation !== null을 보장한다 — non-null 단언 안전
+        // (usePrevTrainCandidate.ts의 동일 패턴 재사용).
+        stationName: (currentStation as NonNullable<typeof currentStation>).name,
+      });
+    }
+  }, [arrival, direction, boardingListArrivals, currentStation]);
+
+  // #2696 — boardingListArrivals가 더 이상 반대 방향 열차를 합쳐 넣지 않으므로(#1326 폴백 제거)
+  // "off-route 라벨링이 필요한 행"이 구조적으로 없다. 빈 집합 유지 — 타입/prop 하위호환
+  // (BoardingTrainList의 offRouteTrainCodes 소비는 그대로, 값만 항상 빈 집합).
+  const offRouteTrainCodes = useMemo<ReadonlySet<string>>(() => new Set(), []);
 
   const createLockFromTrain = useCallback(
     (train: ArrivalInfo): 'off-route' | void => {

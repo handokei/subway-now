@@ -26,6 +26,10 @@ import type { LineNumber } from '../../../shared/types/station';
  *  - `candidate-arc` (#2728, ADR-039 2단계): boardingLock.trainCode와 일치하는 실측 열차
  *    신호가 GPS 거리 검사 대신 arc(경로) 정합성 검사에서 탈락한 횟수. `candidate-distance`와
  *    분리해 "GPS 거리로 거부됐는지" vs "arc 밖으로 판정됐는지"를 구분 관찰한다.
+ *  - `candidate-opposite-direction` (#2696, 4번째 picker): lock이 추적 중인 line에서
+ *    lock.trainCode와 다른 trainNo이면서 lock leg의 진행 방향(updnLine)과 반대인 후보를
+ *    제외한 횟수. 10/3 한양대 d=1589m 8178(반대 방향) 오채택 evidence — pickCandidateTrains가
+ *    enumerate 단계에서 direction을 몰라 통과시킨 후보를 여기서 한 번 더 차단한다.
  *
  * 다섯 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
  * 신호로 진단 시점에 비교 관찰이 유효. DebugModal에서 reason 키별 분포 표시.
@@ -37,7 +41,8 @@ export type CandidateRejectReason =
   | 'candidate-line'
   | 'candidate-env'
   | 'gps-stale'
-  | 'candidate-arc';
+  | 'candidate-arc'
+  | 'candidate-opposite-direction';
 
 export interface CandidateRejectEntry {
   kind: 'candidate-reject';
