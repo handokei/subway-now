@@ -166,6 +166,34 @@ describe('fetchTrainPositions', () => {
     expect(result.trains[0].updnLine).toBe(1);
   });
 
+  // #2868 (device 편측 확장) — Seoul position statnNm은 ①종착/지선 sentinel을 담거나
+  // ②stations.json 괄호 부기명이 아닌 평명/구 역명으로 온다(backend parsePositionEntry와
+  // 동일 실측 근거). positionApi 파싱 경계에서 소비자(pickCandidateTrains nameToIndex 등)
+  // 변경 없이 stationName을 복원한다.
+  describe('statnNm sentinel strip + 역매핑 (#2868)', () => {
+    it('종착/지선 sentinel strip', async () => {
+      mockApi([
+        { statnId: '1', statnNm: '성수종착', trainNo: 'T1', trainSttus: 1, updnLine: 0 },
+        { statnId: '2', statnNm: '성수지선', trainNo: 'T2', trainSttus: 1, updnLine: 0 },
+      ]);
+      const result = await fetchTrainPositions('2');
+      expect(result.trains[0].statnNm).toBe('성수');
+      expect(result.trains[1].statnNm).toBe('성수');
+    });
+
+    it('Seoul 응답 평명 → stations.json 괄호명 역매핑', async () => {
+      mockApi([{ statnId: '1', statnNm: '왕십리', trainNo: 'T1', trainSttus: 1, updnLine: 0 }]);
+      const result = await fetchTrainPositions('2');
+      expect(result.trains[0].statnNm).toBe('왕십리(성동구청)');
+    });
+
+    it('괄호명이 정식인 역(군자(능동))은 무변경 — 회귀 가드', async () => {
+      mockApi([{ statnId: '1', statnNm: '군자(능동)', trainNo: 'T1', trainSttus: 1, updnLine: 0 }]);
+      const result = await fetchTrainPositions('7');
+      expect(result.trains[0].statnNm).toBe('군자(능동)');
+    });
+  });
+
   it('statnId / statnNm / trainNo 누락 시 빈 문자열로 fallback', async () => {
     mockApi([{ trainSttus: 1, updnLine: 0 }]);
     const result = await fetchTrainPositions('2');

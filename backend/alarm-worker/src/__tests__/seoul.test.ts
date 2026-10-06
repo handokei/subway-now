@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SeoulArrivalClient, parseRecptnDt, parseTerminusStationName } from '../seoul';
 import { matchLine } from '../lineAlias';
+import { estimateArrivalFromPosition } from '../scheduled';
+import type { BoardingLockMeta } from '../types';
 
 function makeResponse(body: unknown, ok = true, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -230,6 +232,62 @@ describe('SeoulArrivalClient', () => {
       expect(parseTerminusStationName('알수없음')).toBeNull();
       expect(parseTerminusStationName('행')).toBeNull();
       expect(parseTerminusStationName('방면')).toBeNull();
+    });
+  });
+
+  // #2868 — stations.json 역명이 Seoul API 정식 질의명과 다른 35역. URL 생성 직전 map 적용.
+  describe('fetchArrivals station name mapping (#2868)', () => {
+    it('평명이 정식인 역 — 괄호 제거된 Seoul 질의명으로 URL 생성', async () => {
+      const fetchImpl = vi.fn(async (_url: string) => makeResponse({ realtimeArrivalList: [] }));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('왕십리(성동구청)');
+      const url = fetchImpl.mock.calls[0][0];
+      expect(url).toContain(encodeURIComponent('왕십리'));
+      expect(url).not.toContain(encodeURIComponent('왕십리(성동구청)'));
+    });
+
+    it('괄호명이 정식인 역은 무변경 — 회귀 가드 (군자(능동))', async () => {
+      const fetchImpl = vi.fn(async (_url: string) => makeResponse({ realtimeArrivalList: [] }));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('군자(능동)');
+      const url = fetchImpl.mock.calls[0][0];
+      expect(url).toContain(encodeURIComponent('군자(능동)'));
+    });
+
+    it('특수 변형 — 자양(뚝섬한강공원) → 뚝섬유원지', async () => {
+      const fetchImpl = vi.fn(async (_url: string) => makeResponse({ realtimeArrivalList: [] }));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('자양(뚝섬한강공원)');
+      const url = fetchImpl.mock.calls[0][0];
+      expect(url).toContain(encodeURIComponent('뚝섬유원지'));
+    });
+
+    it('캐시 키는 호출자가 쓴 원명(stations.json명) 유지 — 중복 호출 dedup 보존', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({ realtimeArrivalList: [] }));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchArrivals('왕십리(성동구청)');
+      await client.fetchArrivals('왕십리(성동구청)');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -527,6 +585,59 @@ describe('SeoulArrivalClient', () => {
       expect(positions).toHaveLength(0);
       expect(client.stats.positionUnknownDirectionCount).toBe(1);
     });
+
+    // #2868 — 종착/지선 진입 열차는 statnNm에 상태 문자열이 들어온다(10/3 실측: 열차 3174
+    // statnNm='성수종착', 캡처 어휘에 '성수지선'도 존재). sentinel strip 후 역명 복원.
+    it('#2868 — statnNm 종착/지선 sentinel strip', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimePositionList: [
+            makePositionItem({ trainNo: '3174', statnNm: '성수종착' }),
+            makePositionItem({ trainNo: '3175', statnNm: '성수지선' }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('2');
+      expect(positions[0].stationName).toBe('성수');
+      expect(positions[1].stationName).toBe('성수');
+    });
+
+    // #2868 — Seoul position statnNm은 Seoul 질의명(괄호 제거)으로 온다. stations.json명으로
+    // 역매핑해야 segmentStations.indexOf 비교가 맞는다(estimateArrivalFromPosition 소비).
+    it('#2868 — statnNm Seoul 응답명 → stations.json명 역매핑', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [makePositionItem({ trainNo: '7246', statnNm: '왕십리' })] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('2');
+      expect(positions[0].stationName).toBe('왕십리(성동구청)');
+    });
+
+    // 회귀 가드: 괄호명이 정식인 역은 position 경로에서도 무변경.
+    it('#2868 — 괄호명이 정식인 역(군자(능동))은 position stationName 무변경', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [makePositionItem({ trainNo: '7246', statnNm: '군자(능동)' })] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions[0].stationName).toBe('군자(능동)');
+    });
   });
 
   it('tracks call count', async () => {
@@ -612,5 +723,48 @@ describe('SeoulArrivalClient', () => {
       expect(callCount).toBe(1);
       expect(client.stats.httpErrorCount).toBe(1);
     });
+  });
+});
+
+// #2868 — 10/3 13:30:47 실측 재현: target '왕십리(성동구청)'에 position으로 열차@'왕십리'
+// (Seoul 응답명, sttus=1 도착)가 잡혔을 때 fix 전에는 statnNm이 무가공 통과해
+// segmentStations.indexOf('왕십리')가 -1 → arrived 판정 불가. fix 후 역매핑으로 arrived=true.
+describe('#2868 acceptance — 왕십리(성동구청) waypoint positions 경로 재현', () => {
+  const NOW = Date.parse('2026-10-03T13:30:47+09:00');
+  const lock: BoardingLockMeta = {
+    trainCode: '3174',
+    line: '2',
+    subwayId: '1002',
+    selectedDepartureTime: NOW,
+    segmentStations: ['한양대', '왕십리(성동구청)', '신당'],
+    expiresAt: NOW + 60 * 60_000,
+  };
+
+  it('fetchPositions가 역매핑한 stationName을 estimateArrivalFromPosition에 넘기면 arrived=true', async () => {
+    const fetchImpl = vi.fn(async () =>
+      makeResponse({
+        realtimePositionList: [
+          {
+            trainNo: '3174',
+            statnNm: '왕십리',
+            trainSttus: 1,
+            updnLine: '0',
+            recptnDt: '2026-10-03 13:30:47',
+            lastRecptnDt: '20261003',
+          },
+        ],
+      }),
+    );
+    const client = new SeoulArrivalClient({
+      apiKey: 'KEY',
+      host: 'example.com',
+      now: () => NOW,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const positions = await client.fetchPositions('2');
+    const train = positions.find((p) => p.trainCode === '3174');
+    expect(train).toBeDefined();
+    const estimate = estimateArrivalFromPosition(train!, '왕십리(성동구청)', lock, NOW);
+    expect(estimate.arrived).toBe(true);
   });
 });
