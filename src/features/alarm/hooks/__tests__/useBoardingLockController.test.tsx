@@ -308,6 +308,36 @@ describe('useBoardingLockController', () => {
       );
       expect(result.current.boardingListArrivals).toEqual([]);
     });
+
+    it('red — #2886 재구성: 10/7 06:29 용마산(7호선) 4행 — arvlCd=99("N분 후") 2대도 boardingListArrivals에 표시된다', () => {
+      // #2883이 boardingListArrivals에 isBoardableCandidate(상태게이트: 출발/도착/진입만)를 적용해
+      // arvlCd=99("아직 안 옴") 열차를 전부 배제 — 리스트의 존재 이유(곧 올 열차를 미리 탭)가
+      // 무력화됐다. fix 후에는 isCandidateInBoardingScope(상태게이트 없음)로 교체되어 두 대가 노출된다.
+      mockResolveTripDirection.mockReturnValue('down');
+      const t1 = makeTrain({
+        trainCode: '7101',
+        line: '7',
+        arrivalCode: ARRIVAL_CODE.RUNNING,
+        arrivalSeconds: 300,
+        terminalStation: '부평구청',
+      });
+      const t2 = makeTrain({
+        trainCode: '7103',
+        line: '7',
+        arrivalCode: ARRIVAL_CODE.RUNNING,
+        arrivalSeconds: 520,
+        terminalStation: '부평구청',
+      });
+      const arrival: StationArrival = { up: [], down: [t1, t2] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({
+          ...defaultInputs,
+          route: makeDirectRoute(4, '7'),
+          arrival,
+        }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([t1, t2]);
+    });
   });
 
   describe('offRouteTrainCodes (#2696 — #1326 폴백 제거로 항상 빈 집합)', () => {
