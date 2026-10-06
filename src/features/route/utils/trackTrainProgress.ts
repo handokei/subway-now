@@ -104,7 +104,17 @@ export function trackTrainProgress(
   /* istanbul ignore next — graceful fallback(forward.length>0 ? forward : resolved)가
    * resolved 비공(非空)인 경우 filtered 공(空)을 만들지 않으므로 실제로는 도달 불능 */
   if (filtered.length === 0) return null;
-  if (filtered.length === 1) return toResult(filtered[0], 'single');
+  if (filtered.length === 1) {
+    const only = filtered[0];
+    // #2696 (4번째 picker) — lock 활성(lastConfirmedTrainNo 지정) 시, 단일 생존 후보라는
+    // 이유만으로 무검증 채택하면 반대 방향 등 다른 열차를 "내 열차"로 오인한다(10/3 한양대
+    // d=1589m 8178 오채택 evidence). lock의 실 trainNo가 피드에서 사라져 forward-only 필터
+    // 결과가 다른(불일치) 단일 후보로 수렴한 경우 — "불일치 다른 열차 채택"이 아니라
+    // "후보 없음"이 정답이다(소실 시 보수적 null, 전면 차단은 아님 — lastConfirmedTrainNo가
+    // 없는 lockless 경로는 영향받지 않는다).
+    if (lastConfirmedTrainNo && only.candidate.trainNo !== lastConfirmedTrainNo) return null;
+    return toResult(only, 'single');
+  }
 
   // sticky 판정은 forward-only 필터 통과 후보(filtered)에서만 수행.
   // lastConfirmedTrainNo가 station 해석 실패 또는 forward 필터 탈락으로 filtered에서

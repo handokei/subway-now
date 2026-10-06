@@ -47,6 +47,7 @@ import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStre
 import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
+import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
 import {
   logFusionPickerTier,
@@ -808,6 +809,24 @@ export function useFusedNearestStation(
     return arc?.stations ?? [];
   }, [routeContext]);
 
+  // #2696 (4번째 picker) — pickCandidateTrains에 lock leg의 진행 방향을 전달하기 위한 산출.
+  // boardingLock.boardingStationId를 anchor로 resolveTripDirection을 호출해 'up'(상행/내선)|
+  // 'down'(하행/외선)을 얻고, realtimePosition API의 numeric updnLine 인코딩(실측 52쌍 확정:
+  // '0'=상행·내선=up, '1'=하행·외선=down — `memory/reference_seoul_updnline_format_differs.md`)
+  // 으로 변환한다. lock 없음/route 없음/방향 미해결(순환선 양끝점 등) 시 undefined — pickCandidateTrains가
+  // direction 미전달과 동일하게 다뤄 기존 동작(필터 미적용) 그대로 유지한다.
+  const lockedTrainUpdnLine = useMemo<0 | 1 | undefined>(() => {
+    if (!boardingLock || !routeContext?.route || !routeContext.destination) return undefined;
+    const direction = resolveTripDirection(
+      routeContext.route,
+      routeContext.destination.name,
+      boardingLock.boardingStationId,
+    );
+    if (direction === 'up') return 0;
+    if (direction === 'down') return 1;
+    return undefined;
+  }, [boardingLock, routeContext]);
+
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
     const out: CandidateTrain[] = [];
@@ -892,7 +911,33 @@ export function useFusedNearestStation(
       if (picked.length > 0) {
         consecutiveRejectByLineRef.current.delete(lp.line);
       }
-      out.push(...picked);
+      // #2696 (4번째 picker) — lock이 추적 중인 line에서, lock.trainCode와 다른 trainNo인데
+      // 방향(updnLine)이 lock leg의 진행 방향과 다른 candidate(반대 방향 열차)를 제외한다.
+      // lock.trainCode와 일치하는 candidate는 절대 제외하지 않는다 — pickCandidateTrains의
+      // arc bypass(line 165-169)와 동일 정신: 실측 열차 신호(trainCode 일치)는 신뢰하고,
+      // "방향 불일치"로 오거부되지 않게 한다(fixture/API 순간 noise로 자기 자신의 updnLine이
+      // 흔들려도 트래킹이 끊기지 않아야 함). 다른 line/lock 없음/방향 미해결(lockedTrainUpdnLine
+      // undefined)이면 필터 미적용(기존 동작 그대로, 과차단 회귀 가드).
+      const filteredPicked =
+        boardingLock && lp.line === boardingLock.boardingLine && lockedTrainUpdnLine !== undefined
+          ? picked.filter((c) => {
+              const keep = c.trainNo === boardingLock.trainCode || c.direction === lockedTrainUpdnLine;
+              if (!keep) {
+                // #2696 — DebugModal/candidateRejectBuffer로 가시화(V/X). 기존 candidate-line/
+                // candidate-distance와 같은 buffer 재사용 — 신규 인프라 없이 관찰 가능.
+                pushCandidateRejectEntry({
+                  kind: 'candidate-reject',
+                  ts: Date.now(),
+                  reason: 'candidate-opposite-direction',
+                  trainNo: c.trainNo,
+                  stationName: c.currentStationName,
+                  line: c.line,
+                });
+              }
+              return keep;
+            })
+          : picked;
+      out.push(...filteredPicked);
     }
     // #2594 (P5 리뷰 fix) — memo 본문에서는 ref에만 저장, record는 아래 effect가 수행.
     // lps가 전부 null이거나 candidateDistanceGate 미적용(userLocation/stationCoordinates
@@ -900,7 +945,7 @@ export function useFusedNearestStation(
     // 포함돼야 avgRejectPerFire가 왜곡되지 않는다.
     candidateDistanceRejectCountRef.current = candidateDistanceRejectCount;
     return out;
-  }, [candidates, p0.positions, p1.positions, p2.positions, decisionUserLocation, allowedLines, boardingLock, arcStations]);
+  }, [candidates, p0.positions, p1.positions, p2.positions, decisionUserLocation, allowedLines, boardingLock, arcStations, lockedTrainUpdnLine]);
 
   // #2594 (P5 리뷰 fix) — record 호출을 memo 본문에서 이 effect로 이전. useEffect는 실제로
   // 커밋된 렌더에서, deps([candidateTrains]) 참조가 실제로 바뀔 때만 실행되므로 React가 memo를
