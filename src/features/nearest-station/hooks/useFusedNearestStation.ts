@@ -1265,6 +1265,39 @@ export function useFusedNearestStation(
   );
   const detectionVerdict = useFusedStationDetection(detectionInput);
 
+  // #2876 — gpsTopCandidate(GPS 최근접 후보, candidates[0])를 detectionVerdictAccepts보다
+  // 앞으로 승격. 기존에는 L1546 부근(gpsDerivedFastPath 직전)에서만 선언돼 있었다 — 아래
+  // goodGpsOverridesTier8 가드가 같은 값을 더 일찍 참조해야 해 선언 위치만 이동(값/의미 불변).
+  const gpsTopCandidate = candidates[0] ?? null;
+
+  // #2876 — lockless + 좋은 GPS fix 존재 + fused 후보가 노선·거리 모두 어긋나면 tier8 보류.
+  //
+  // 10/3 실측(13:42:24~13:43:00, 트립 종료 직후): GPS가 을지로입구(2호선) d=17~26m(accuracy
+  // 27~33m, 신선)인데 cascade가 `detection-fused` 종각(1호선) d=472m / 시청(1호선) d=450m로
+  // 전환. 원인 — 아래 detectionVerdictAccepts의 line 가드(④)가 boardingLock 활성 시에만
+  // 적용되어 lockless(트립 종료 직후 등)에서는 500m 이내 cross-line 후보가 신선한 좋은 GPS
+  // fix를 이겨버린다.
+  //
+  // 가드 (lock 유무와 무관, false positive 방어):
+  //   1. GPS 신선 — accuracy ≤ GPS_DERIVED_ACCURACY_MAX_M(50m) AND fix age ≤ 30s.
+  //      좋은 fix가 없으면(지하 등) 가드 비활성 — tier8의 지하 본래 역할(#1513 어린이대공원
+  //      evidence) 보존.
+  //   2. gpsTopCandidate 존재 + fused와 노선 불일치 — 같은 역(환승역 양노선 포함)이면 물리적으로
+  //      동일 위치이므로 차단하지 않는다.
+  //   3. gpsTopCandidate가 fused보다 GPS 좌표에 더 가까움(distanceKm 비교) — "거리도 어긋남"
+  //      조건. 두 조건(노선+거리) 모두 어긋나야만 보류 — 둘 중 하나만 어긋나면(#1513 정상
+  //      보강 케이스 등) 기존 동작 유지.
+  const goodGpsOverridesTier8 =
+    gps.accuracyMeters !== null &&
+    gps.accuracyMeters <= GPS_DERIVED_ACCURACY_MAX_M &&
+    gps.lastFixAtMs !== null &&
+    Date.now() - gps.lastFixAtMs <= GPS_DERIVED_FIX_MAX_AGE_MS &&
+    gpsTopCandidate !== null &&
+    fused != null &&
+    gpsTopCandidate.station.name !== fused.result.station.name &&
+    gpsTopCandidate.station.line !== fused.result.station.line &&
+    gpsTopCandidate.distanceKm < fused.result.distanceKm;
+
   // #1513 — verdict가 fused candidate를 채택할 수 있는 cascade slot 가드.
   //
   // 게이트 (false positive 방어 — ADR-010 두 실패 모드 동급):
@@ -1276,6 +1309,7 @@ export function useFusedNearestStation(
   //      지하 GPS drop 환경(accuracy 1~2km+)은 좌표 자체는 보고되지만 fusedPasses=false로 거부되는
   //      케이스가 evidence (2026-06-19 어린이대공원). 본 게이트는 0.5km 근접만 통과시켜
   //      false positive(먼 역의 정차 신호 오매칭)를 차단한다.
+  //   4. #2876 — 좋은 GPS fix가 fused 후보와 노선·거리 모두 어긋나면 채택 보류(goodGpsOverridesTier8).
   //
   // 노선 가드: lock 활성 시 fused.result.station.line이 lock.boardingLine과 일치해야 채택 (cross-line
   // false positive 차단, ADR-015 §9 정신).
@@ -1283,7 +1317,8 @@ export function useFusedNearestStation(
     fused != null &&
     detectionVerdict.detected &&
     fused.result.distanceKm <= DETECTION_FUSED_MAX_DISTANCE_KM &&
-    (!boardingLock || fused.result.station.line === boardingLock.boardingLine);
+    (!boardingLock || fused.result.station.line === boardingLock.boardingLine) &&
+    !goodGpsOverridesTier8;
 
   // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror cascade 채택 자격.
   //
@@ -1550,7 +1585,7 @@ export function useFusedNearestStation(
   //   - GPS drift false advance → accuracy 50m + boardingLine 정합 100m 이중 gate.
   //   - 지상↔지하 환경 전환 race → cascadeEnvironment 'unknown' 시 진입 X (자연 fallback).
   //   - 사용자 하차 후 lock 잔존 → useMisBoardingDetector 90s absent 가드 (별도 seam).
-  const gpsTopCandidate = candidates[0] ?? null;
+  // gpsTopCandidate 선언은 #2876 — detectionVerdictAccepts(goodGpsOverridesTier8) 앞으로 이동.
   const gpsDerivedFastPath =
     boardingLock != null &&
     cascadeEnvironment === 'surface' &&
