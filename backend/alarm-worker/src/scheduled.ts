@@ -32,6 +32,7 @@ import type { ArchFlagValue } from './archFlag';
 import { CRON_INTERVAL_MS } from './cronConstants';
 import {
   type BoardingFireDecision,
+  boardingPromptDedupKey,
   decideBoardingPromptFire,
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
@@ -7156,7 +7157,15 @@ async function fireBoardingPromptForAnchor(inputs: {
    * gateDecision만으로 셀 수 있어야 한다(Wire §2 목적 완결).
    */
   onFireOnceSuppressed: (decision: BoardingFireDecision['decision']) => void;
-  shouldProceedToSend?: (pool: readonly ArrivalEntry[]) => boolean;
+  /**
+   * #2880 — decision(phase)을 함께 전달해 caller가 `selectedTrainCode=null`일 때도
+   * `boardingPromptDedupKey`로 fallback dedup을 수행할 수 있게 한다(trainCode 특정 실패
+   * 중에도 fail-open하지 않음).
+   */
+  shouldProceedToSend?: (
+    pool: readonly ArrivalEntry[],
+    decision: BoardingFireDecision['decision'],
+  ) => boolean;
   /**
    * #2801 (3차 reopen) — `decideBoardingPromptFire`가 반환한 fire 사유('imminent'/
    * 'approaching'/'fallback-unobservable')를 caller가 D1 meta(`gateDecision`)로 기록할 수
@@ -7230,7 +7239,7 @@ async function fireBoardingPromptForAnchor(inputs: {
     return;
   }
 
-  if (shouldProceedToSend && !shouldProceedToSend(pool)) {
+  if (shouldProceedToSend && !shouldProceedToSend(pool, gate.decision)) {
     return;
   }
 
@@ -7582,17 +7591,17 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       gateDecision = decision;
     },
     // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
-    // 재발사하지 않는다.
-    shouldProceedToSend: (pool) => {
+    // 재발사하지 않는다. #2880 — selectedTrainCode=null(후보 특정 실패)일 때도
+    // `boardingPromptDedupKey`의 phase fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
+    shouldProceedToSend: (pool, decision) => {
       const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
-      if (
-        selectedTrainCode !== null &&
-        trip.boardingPromptState?.firedTrainCodes?.includes(selectedTrainCode)
-      ) {
+      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
+      if (trip.boardingPromptState?.firedTrainCodes?.includes(dedupKey)) {
         stats.originGpsFreeBoardingPromptBlocked += 1;
         log('origin-boarding-prompt-gps-free: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
+          dedupKey,
           firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
         });
         return false;
@@ -7602,7 +7611,11 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     onFired: (pool, decision) => {
       const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
       stats.originGpsFreeBoardingPromptFired += 1;
-      trip.boardingPromptState = markPromptFired(now, trip.boardingPromptState, selectedTrainCode);
+      trip.boardingPromptState = markPromptFired(
+        now,
+        trip.boardingPromptState,
+        boardingPromptDedupKey(selectedTrainCode, decision),
+      );
       trip.lastAutoPromptedAt = now;
       // #2844 — 은퇴한 GPS 9단 경로(`evaluateAndMaybeFireBoardingPrompt`)가 유일하게 담당하던
       // load-bearing 부수효과. sync-promotion corroboration 게이트(`isPromotionCorroborated`,
@@ -7848,17 +7861,18 @@ export async function maybeFireLegBoardingPrompt(
     // #2801 — origin GPS-free 경로(#2531 A4 ledger)와 동일 trainCode dedup. 같은 열차가 이미
     // 발사된 candidateTrains로 재발사(무한 스팸)되는 것만 막는다 — candidateTrains가 바뀌면
     // (예: 사용자 실열차가 새로 후보에 들어옴) selectedTrainCode가 달라져 정상 통과한다.
-    shouldProceedToSend: (pool) => {
+    // #2880 — selectedTrainCode=null(후보 특정 실패)일 때도 `boardingPromptDedupKey`의 phase
+    // fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
+    shouldProceedToSend: (pool, decision) => {
       const selectedTrainCode =
         pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
-      if (
-        selectedTrainCode !== null &&
-        trip.legBoardingPromptState?.firedTrainCodes?.includes(selectedTrainCode)
-      ) {
+      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
+      if (trip.legBoardingPromptState?.firedTrainCodes?.includes(dedupKey)) {
         stats.legBoardingPromptBlocked += 1;
         log('leg-boarding-prompt: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
+          dedupKey,
           firedTrainCodes: trip.legBoardingPromptState?.firedTrainCodes,
         });
         return false;
@@ -7869,7 +7883,11 @@ export async function maybeFireLegBoardingPrompt(
       const selectedTrainCode =
         pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
       stats.legBoardingPromptFired += 1;
-      trip.legBoardingPromptState = markPromptFired(now, trip.legBoardingPromptState, selectedTrainCode);
+      trip.legBoardingPromptState = markPromptFired(
+        now,
+        trip.legBoardingPromptState,
+        boardingPromptDedupKey(selectedTrainCode, decision),
+      );
       promptOutcome = 'fired';
       candidateArvlCds = pool.map((entry) => entry.arvlCd);
       candidateEtaSeconds = pool.map((entry) => entry.arrivalSeconds);
