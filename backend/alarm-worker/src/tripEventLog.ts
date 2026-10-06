@@ -210,7 +210,10 @@ export type LegBoardingPromptOutcome =
   | 'no-candidates'
   | 'silenced'
   | 'fired'
-  /** #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2) 0건 → 조기 발사 억제. */
+  /**
+   * #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2)/approaching(3/5, 3차
+   * reopen) 모두 0건 → 조기 발사 억제.
+   */
   | 'suppressed-not-imminent';
 
 /**
@@ -232,7 +235,8 @@ export type HopEndPromptOutcome = 'silenced' | 'fired';
  * - `silenced` = `evaluateBoardingPromptRepeatGate` dedup 또는 `onFireOnceSuppressed`(#2838,
  *   leg-2와 동일하게 두 사유를 단일 값으로 합산).
  * - `no-candidates` = Seoul API 열차 후보 0건.
- * - `suppressed-not-imminent` = #2801, 후보는 있으나 전부 관측됐고 임박 0건.
+ * - `suppressed-not-imminent` = #2801, 후보는 있으나 전부 관측됐고 임박(0/1/2)/approaching(3/5,
+ *   3차 reopen) 모두 0건.
  * - `fired` = 실제 발사 성공.
  */
 export type OriginBoardingPromptOutcome =

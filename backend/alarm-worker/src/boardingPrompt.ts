@@ -135,6 +135,14 @@ export const IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
  *
  * 4(전역진입, ≈2~3분 전)는 **의도적으로 제외** — 9/30 조기 발사 불만(4분 전 발사) 창에
  * 근접하고 10/2 실측에도 미관측. 필요 시 측정 후 별도 이슈로 확장.
+ *
+ * code-review(medium, #2801) — taxonomy drift 주의: 이 레포에는 {4,5} 집합을 쓰는 곳이 이미
+ * 둘 더 있다 — `alarm.ts`의 `EARLY_CODES={PREV_ENTERING,PREV_ARRIVED}`(표시 phase='early' 판정)
+ * 와 `scheduled.ts`의 `pickBestArrivalSignal`의 2순위 tier(위치/ETA 추정 신호). 둘 다 "4/5=이르지만
+ * 유효한 신호"라는 같은 철학이라 {4,5}를 쓴다. 이 상수는 **발사 게이트**라는 다른 성격이고
+ * {3,5}라는 다른 집합을 쓴다 — 4를 포함하면 위에서 설명한 9/30 조기 발사 리스크에 다시 노출되기
+ * 때문이다. 세 taxonomy를 같은 집합으로 통일하려 하지 말 것(의미가 다르다) — 수정 시 이 상수와
+ * 저 둘을 혼동하지 않도록 반드시 교차 확인한다.
  */
 export const APPROACHING_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
   ARRIVAL_CODE.PREV_DEPARTED, // 3
