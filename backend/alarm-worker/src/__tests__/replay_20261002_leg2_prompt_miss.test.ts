@@ -21,6 +21,20 @@
  * `replay_20260930_leg2_prompt.test.ts` L21~24). 나머지(시각 순서, candidateArvlCds 값, 전부
  * suppressed-not-imminent)는 D1 실측.
  *
+ * #2879 (판정 교정, 메인 세션 코멘트 "판정 교정" 2026-10-06) — U1/U2의 `isUp` 재구성값을
+ * `true`→`false`로 교정한다(재구성 라벨 교정 — D1 실측 조정 아님, isUp 자체가 D1 미로깅
+ * 재구성 필드임은 위 문단에서 이미 고지). 근거:
+ *   ① 이 leg(건대입구→뚝섬, 2호선)의 물리 진행방향은 `inferLegDirection`의 pure-loop arc
+ *      비교(건대입구 mainIdRange idx11 → 뚝섬 idx9, idx 감소=backward arc)로 **외선(down)**이다
+ *      — 실측 52쌍(#2692) + 10/3 13:24 캡처(#2867)로 확정된 ground truth와 정합.
+ *   ② 본 파일의 `isUp`은 D1에 로깅되지 않는 재구성 필드임을 위 문단이 이미 고지한다 — "실측
+ *      조정 금지" 제약은 D1에서 그대로 가져온 필드(시각/candidateArvlCds/suppressed 라벨)에만
+ *      적용되고, 재구성 필드의 라벨 오류 교정에는 적용되지 않는다.
+ *   ③ `isUp:true`는 작성 시점(#2867/#2871 이전, 2호선 방향이 반대로 반환되던 구 코드)에
+ *      `pickAutoTrainCode`의 방향 필터를 통과시키려고 작성자가 고른 값이다 — 방향 역전이
+ *      수정된 지금은 외선 방향이 `isUp:false`이므로, 같은 "방향 필터를 통과하는 사용자
+ *      열차"라는 재구성 의도를 유지하려면 `false`로 교정해야 한다.
+ *
  * 스코프: leg-1 매역 발사는 다른 함수(`maybeFireStationEvents` 계열)가 담당 — 이 replay는
  * leg-2 boarding-prompt 게이트(`decideBoardingPromptFire`) 단일 관심사로 제한한다
  * (`replay_20260930_leg2_prompt.test.ts`와 동일 스코프 결정).
@@ -148,7 +162,8 @@ describe('#2801 (3차 reopen) replay — 10/2 leg-2 boarding-prompt approaching 
 
     let pushId = 0;
     for (const [index, cycle] of CYCLES.entries()) {
-      pool = [arrival('U1', true, cycle.u1ArvlCd), arrival('U2', true, 99)];
+      // #2879 — isUp:false로 교정(건대입구→뚝섬 leg는 외선/down, 위 헤더 주석 근거 ①~③).
+      pool = [arrival('U1', false, cycle.u1ArvlCd), arrival('U2', false, 99)];
       simNow = offsetFromBase(cycle.offsetSec);
       // eslint-disable-next-line no-await-in-loop -- replay는 cron cycle 순서 재현이 핵심이라 순차 await 필수.
       await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, log, () => `p-${pushId++}`);
