@@ -56,19 +56,20 @@ jest.mock('../../../../shared/utils/stationRoute', () => ({
 describe('inferLoopDirection — 순환선 (2호선)', () => {
   // 케이스: [설명, line, from, to, 기대값]
   // - CLOSED_LOOPS 미포함 노선 / 동일 역 / 정반대 위치 / 지선 매칭 실패 → null
-  // - id 증가 방향이 짧으면 'down' (외선순환), wrap 방향이 짧으면 'up' (내선순환)
+  // - id 증가 방향이 짧으면 'up' (내선순환), wrap(id 감소) 방향이 짧으면 'down' (외선순환) (#2872,
+  //   #2867 ground truth: 내선=id 증가='up'. 이전 'down'↔'up' 역전이 root였다.)
   // - normalize는 정확 매칭 다음 fallback
   const cases: Array<[string, '2' | '3', string, string, 'up' | 'down' | null]> = [
     ['CLOSED_LOOPS 외(monotonic) 노선은 null', '3', '대화', '주엽', null],
     ['CLOSED_LOOPS 미포함 노선은 동일 역도 null', '3', '대화', '대화', null],
-    ['시청(0) → 을지로4가(3): forward=3, backward=5 → down', '2', '시청', '을지로4가', 'down'],
-    ['시청(0) → 왕십리(7): forward=7, backward=1 → up', '2', '시청', '왕십리', 'up'],
+    ['시청(0) → 을지로4가(3): forward=3, backward=5 → up', '2', '시청', '을지로4가', 'up'],
+    ['시청(0) → 왕십리(7): forward=7, backward=1 → down', '2', '시청', '왕십리', 'down'],
     ['시청(0) ↔ 동대문역사문화공원(4): 정반대 → null', '2', '시청', '동대문역사문화공원', null],
     ['동일 역이면 null', '2', '시청', '시청', null],
     ['from이 지선(까치산) → null', '2', '까치산', '시청', null],
     ['to가 지선(까치산) → null', '2', '시청', '까치산', null],
-    ['시청(0) → 을지로3가(별칭)(2): normalize 매칭 → down', '2', '시청', '을지로3가(별칭)', 'down'],
-    ['시청(0) → 을지로입구(1): 정확 매칭 우선 → down', '2', '시청', '을지로입구', 'down'],
+    ['시청(0) → 을지로3가(별칭)(2): normalize 매칭 → up', '2', '시청', '을지로3가(별칭)', 'up'],
+    ['시청(0) → 을지로입구(1): 정확 매칭 우선 → up', '2', '시청', '을지로입구', 'up'],
   ];
 
   it.each(cases)('%s', (_desc, line, from, to, expected) => {
@@ -105,10 +106,13 @@ describe('nextLoopAdjacentStationName (#2446)', () => {
   // #649/#807 nextStationLabel의 loop fallback — resolveNextAdjacentStationName이 비단조
   // 노선에서 inferLoopDirection으로 산출한 방향을 받아 실제 1-hop 인접역 이름을 계산한다.
   describe('진짜 순환선(2호선) — modulo wrap', () => {
+    // #2872 — inferLoopDirection 라벨 스왑과 짝 맞춰 step도 플립(up=id+1, down=id-1 wrap).
+    // 합성 함수(resolveNextAdjacentStationName)의 최종 인접역 출력은 라벨 재정의 전후로 불변 —
+    // 이 테스트는 nextLoopAdjacentStationName 단독 입출력(명시 direction 인자)의 새 계약을 고정한다.
     const cases: Array<[string, string, 'up' | 'down', string | null]> = [
-      ['시청 → down(외선) → 을지로입구(다음 idx)', '시청', 'down', '을지로입구'],
-      ['시청 → up(내선) → 왕십리(wrap, idx -1 → 마지막)', '시청', 'up', '왕십리'],
-      ['왕십리 → down(외선) → 시청(wrap, 마지막 idx → 0)', '왕십리', 'down', '시청'],
+      ['시청 → up(내선) → 을지로입구(다음 idx)', '시청', 'up', '을지로입구'],
+      ['시청 → down(외선) → 왕십리(wrap, idx -1 → 마지막)', '시청', 'down', '왕십리'],
+      ['왕십리 → down(외선) → 상왕십리(idx -1)', '왕십리', 'down', '상왕십리'],
       ['까치산(지선)은 main range 밖 — currentIdx 미발견 → null', '까치산', 'down', null],
       ['존재하지 않는 역명 → null', '없는역', 'down', null],
     ];
@@ -183,6 +187,14 @@ describe('inferLoopDirection — empty/small loop guards', () => {
     stationRoute.getStationsOnLine = (line: string) =>
       line === '6' ? [{ id: '6-001', name: '응암', line: '6' }] : [];
     expect(inferLoopDirection('6', '응암', '공덕')).toBeNull();
+  });
+});
+
+describe('inferLoopDirection — 자기정합 (#2872)', () => {
+  // 내선 호(id 증가)에 대한 inferLoopDirection 출력은 parseTrainLineDirection('내선순환')과
+  // 같아야 한다 — 같은 파일 내 두 헬퍼가 같은 열차에 반대 방향을 답하던 자기모순이 root였다.
+  it('내선 호(시청 → 을지로4가, id 증가 짧음) === parseTrainLineDirection(내선순환)', () => {
+    expect(inferLoopDirection('2', '시청', '을지로4가')).toBe(parseTrainLineDirection('내선순환'));
   });
 });
 

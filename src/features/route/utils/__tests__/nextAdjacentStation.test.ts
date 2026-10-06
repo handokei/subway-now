@@ -36,6 +36,12 @@ describe('resolveNextAdjacentStationName', () => {
       expect(resolveNextAdjacentStationName('2', '신촌', '시청')).toBe('이대');
     });
 
+    it('성수 → 을지로입구 방향(외선) → 뚝섬(1-hop) — #2872 inferLoopDirection 라벨 fix 후에도 보존', () => {
+      // inferLoopDirection L67 라벨만 고치고 nextLoopAdjacentStationName의 step 매핑을 짝 맞춰
+      // 플립하지 않으면 반대편 이웃역(건대입구)이 나온다 — #2872 PR 본문 "보상 이중 역전" 경고 케이스.
+      expect(resolveNextAdjacentStationName('2', '성수', '을지로입구')).toBe('뚝섬');
+    });
+
     it('지선(까치산)은 main range 밖 — resolveTravelDirection도 loop fallback도 null', () => {
       expect(resolveNextAdjacentStationName('2', '까치산', '시청')).toBeNull();
     });
