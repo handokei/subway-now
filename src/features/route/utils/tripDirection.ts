@@ -139,15 +139,17 @@ export function resolveTripDirection(
   if (currIdx < 0 || nextIdx < 0 || currIdx === nextIdx) return null;
 
   // #1922 — closed loop 본선 양 끝점: wraparound 짧은 쪽 path의 첫 step 방향으로 결정.
-  // 2호선 강변 → 잠실나루 같은 short forward path는 path[1] > currIdx → 'down'(외선 외향).
-  // 신촌 → 시청 같은 wraparound는 path[1] < currIdx → 'up'(내선 외향).
+  // #2867 — 10/3 13:24 트립 + 9/17(#2692) 양방향 실측 52쌍으로 확정된 ground truth:
+  // idx 증가 = 내선 = 'up', idx 감소 = 외선 = 'down'(기존 역전 수정).
+  // 2호선 강변 → 잠실나루 같은 short forward path는 path[1] > currIdx → 'up'(내선).
+  // 신촌 → 시청 같은 wraparound는 path[1] < currIdx → 'down'(외선).
   const currId = lineStations[currIdx].id;
   const nextId = lineStations[nextIdx].id;
   if (isClosedLoopMainStation(line, currId) && isClosedLoopMainStation(line, nextId)) {
     const path = shortestLinePathIndices(lineStations, currIdx, nextIdx, line);
     // shortestLinePathIndices invariant: currIdx !== nextIdx → path.length >= 2
     const firstStepIdx = path[1];
-    return firstStepIdx > currIdx ? 'down' : 'up';
+    return firstStepIdx > currIdx ? 'up' : 'down';
   }
 
   return nextIdx > currIdx ? 'down' : 'up';

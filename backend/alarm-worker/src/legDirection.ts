@@ -20,7 +20,7 @@
  *    있으면 단방향 꼬리라 wrap 무의미 — 단순 id 비교만으로 frontend `inferLoopDirection` 의
  *    hybrid 분기와 정렬.
  *  - **closedLoop pure 노선** (2호선): mainIdRange 안 stations 의 forward/backward arc 길이
- *    비교. 짧은 호 채택 (forward < backward → down).
+ *    비교. 짧은 호 채택 (forward < backward → up — #2867, idx 증가 arc = 내선 = up).
  *  - **그 외** (1/5/gyeongui 등 비단조/지선): null 반환. caller 는 기존 direction=null 동작
  *    유지 (현재 회귀 봉쇄 효과 0, 기존 implicit segmentStations 필터에 의존).
  *
@@ -86,6 +86,8 @@ export function inferLegDirection(
   }
 
   // Pure closedLoop(2호선) — mainIdRange 안 forward/backward arc 길이 비교.
+  // #2867 — 10/3 13:24 트립 + 9/17(#2692) 양방향 실측 52쌍으로 확정된 ground truth:
+  // forward(idx 증가 arc) = 내선 = 'up', backward(idx 감소 arc) = 외선 = 'down'(기존 역전 수정).
   if (hybrid && !hybrid.loopTailRange) {
     const { firstId, lastId } = hybrid.mainIdRange;
     const main = stations.filter(
@@ -99,7 +101,7 @@ export function inferLegDirection(
     const forward = (toIdx - fromIdx + n) % n;
     const backward = n - forward;
     if (forward === backward) return null; // 정반대 위치 — ambiguous
-    return forward < backward ? 'down' : 'up';
+    return forward < backward ? 'up' : 'down';
   }
 
   // 비단조 + closedLoop 등록 X (1/5/gyeongui) — 추론 불가.

@@ -523,8 +523,9 @@ describe('attachTrainCodeForLeg #1719 wrong-direction 차단', () => {
     expect(lock).toBeNull();
   });
 
-  it('2호선 양방향(외선/내선) wrong-direction 차단 — 합정 → 신촌 (DOWN)', async () => {
-    // 2호선 합정 → 신촌 leg 는 외선순환(down). 내선순환(up) train 차단.
+  it('2호선 양방향(외선/내선) wrong-direction 차단 — 합정 → 신촌 (UP)', async () => {
+    // #2867 — 2호선 합정 → 신촌 leg 는 id 증가 = 내선순환(up). 외선순환(down) train 차단
+    // (10/3·9/17 양방향 실측 52쌍 ground truth로 기존 역전 기대값 교정).
     const trip: Trip = {
       token: 'tok',
       route: { type: 'direct', line: '2', stops: 2 },
@@ -566,9 +567,9 @@ describe('attachTrainCodeForLeg #1719 wrong-direction 차단', () => {
       seoul,
       now: NOW,
     });
-    // 합정(2-038) → 신촌(2-040) → id 증가 = 외선순환(down). 외선 train 만 통과.
+    // 합정(2-038) → 신촌(2-040) → id 증가 = 내선순환(up, #2867). 내선 train 만 통과.
     // direction=null 이었으면 양방향 priority 1 ambiguity 로 null 이었을 케이스를 차단.
-    expect(lock?.trainCode).toBe('2_OUTER');
+    expect(lock?.trainCode).toBe('2_INNER');
   });
 
   it('추론 불가 노선(5호선 분기) → direction=null fallback, 기존 동작 유지', async () => {

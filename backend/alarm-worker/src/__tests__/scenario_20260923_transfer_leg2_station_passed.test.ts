@@ -186,6 +186,12 @@ describe('#2799 — 환승 leg-2 매역 발사 시나리오 (굳은 alarmAtEpoch
 
     // Seoul: anchor(건대입구)에 line-2 TB2 1대 — cycle1 ARRIVED(1) → cycle2 DEPARTED(2, #2754 확증).
     // 승격 후 성수 도착(arvlCd 1)은 fetchArrivals로 상시 노출.
+    // #2867 — 이 leg는 건대입구(2-012)→성수(2-011)→뚝섬(2-010) 방향(idx 감소 = 외선/down,
+    // 10/3·9/17 양방향 실측 52쌍 ground truth). TB2는 trainCode='TB2'/destination:'' 같은
+    // placeholder로 테스트 작성자가 직접 구성한 합성 fixture(실측 Seoul 캡처 아님)라 isUp 라벨은
+    // "id 감소=내선"이라는 역전된 믿음으로 true가 골라져 있었다 — 물리적으로 맞는 외선(false)으로
+    // 교정한다. `freshCandidatesAtAnchor`(boardingAnchorResolver.ts)는 단일 후보여도 direction
+    // 불일치면 배제하므로, isUp:true로 두면 fix 이후 direction='down'과 어긋나 후보가 사라진다.
     let sttus = 1;
     const seoul = {
       stats: { callCount: 0, cacheSize: 0, httpErrorCount: 0 },
@@ -196,7 +202,7 @@ describe('#2799 — 환승 leg-2 매역 발사 시나리오 (굳은 alarmAtEpoch
             destination: '',
             arrivalSeconds: 0,
             trainCode: 'TB2',
-            isUp: true,
+            isUp: false,
             subwayNm: '',
             subwayId: '1002',
             arvlCd: 1,
@@ -206,7 +212,7 @@ describe('#2799 — 환승 leg-2 매역 발사 시나리오 (굳은 alarmAtEpoch
       async fetchPositions(line: string): Promise<PositionEntry[]> {
         if (line !== '2') return [];
         return [
-          { trainCode: 'TB2', stationName: '건대입구', trainSttus: sttus, isUp: true, recptnMs: NOW } as unknown as PositionEntry,
+          { trainCode: 'TB2', stationName: '건대입구', trainSttus: sttus, isUp: false, recptnMs: NOW } as unknown as PositionEntry,
         ];
       },
     } as unknown as SeoulArrivalClient;

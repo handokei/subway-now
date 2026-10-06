@@ -1,10 +1,13 @@
 import type { LineNumber } from '../../../shared/types/station';
 import { getStationsOnLine } from '../../../shared/utils/stationRoute';
-import { shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
+import { isClosedLoopMainStation, shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 
 /**
- * 노선 위 진행 방향. 'up' = 내선/id 감소 방향, 'down' = 외선/id 증가 방향 —
- * `resolveTripDirection`(tripDirection.ts)/`alarmDirection.ts`가 이미 쓰는 관례와 동일.
+ * 노선 위 진행 방향.
+ * - 단조 노선: 'down' = id 증가 방향, 'up' = id 감소 방향.
+ * - 2호선 순환선 본선: 'up' = 내선(id 증가 방향), 'down' = 외선(id 감소 방향) — #2867,
+ *   10/3·9/17 양방향 실측 52쌍으로 확정된 ground truth. `resolveTripDirection`(tripDirection.ts)와
+ *   동일한 관례.
  */
 export type LineDirection = 'up' | 'down';
 
@@ -37,5 +40,13 @@ export function directionOnLine(
   const path = shortestLinePathIndices(stations, fromIdx, toIdx, line);
   // shortestLinePathIndices invariant: fromIdx !== toIdx → path.length >= 2
   const firstStepIdx = path[1];
+
+  // #2867 — 2호선 순환선 본선(양 끝 모두 closed loop main station)은 idx 증가 = 내선 = 'up'.
+  // 그 외(단조 노선, 지선)는 기존 관례(id 증가 = 'down') 유지 — resolveTripDirection과 동일 분기.
+  const fromId = stations[fromIdx].id;
+  const toId = stations[toIdx].id;
+  if (isClosedLoopMainStation(line, fromId) && isClosedLoopMainStation(line, toId)) {
+    return firstStepIdx > fromIdx ? 'up' : 'down';
+  }
   return firstStepIdx > fromIdx ? 'down' : 'up';
 }

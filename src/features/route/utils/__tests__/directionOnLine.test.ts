@@ -15,16 +15,16 @@ describe('directionOnLine (#2455)', () => {
     expect(directionOnLine('3', madu.id, daehwa.id)).toBe('up');
   });
 
-  it('2호선 순환선 비-seam 구간 — 뚝섬→성수(짧은 forward) → down', () => {
+  it('2호선 순환선 비-seam 구간 — 뚝섬→성수(짧은 forward, idx 증가) → up (내선, #2867)', () => {
     const ddukseom = findStationByNameAndLine(canonicalStationName('뚝섬', '2'), '2')!;
     const seongsu = findStationByNameAndLine(canonicalStationName('성수', '2'), '2')!;
-    expect(directionOnLine('2', ddukseom.id, seongsu.id)).toBe('down');
+    expect(directionOnLine('2', ddukseom.id, seongsu.id)).toBe('up');
   });
 
-  it('2호선 순환선 비-seam 구간 — 성수→뚝섬(짧은 backward) → up', () => {
+  it('2호선 순환선 비-seam 구간 — 성수→뚝섬(짧은 backward, idx 감소) → down (외선, #2867)', () => {
     const ddukseom = findStationByNameAndLine(canonicalStationName('뚝섬', '2'), '2')!;
     const seongsu = findStationByNameAndLine(canonicalStationName('성수', '2'), '2')!;
-    expect(directionOnLine('2', seongsu.id, ddukseom.id)).toBe('up');
+    expect(directionOnLine('2', seongsu.id, ddukseom.id)).toBe('down');
   });
 
   it('같은 station이면 null', () => {
@@ -45,9 +45,10 @@ describe('directionOnLine (#2455)', () => {
   // 2호선 순환선 seam(시청↔충정로) — resolveTripDirection이 내부적으로 쓰는 것과 동일한
   // shortestLinePathIndices 알고리즘이므로, resolveTripDirection(route, '시청', 충정로.id)와
   // 정확히 같은 값을 내야 한다(#2455 설계 노트에서 검증한 값 그대로 고정).
+  // #2867 — idx 증가(wrap 포함) = 내선 = 'up' ground truth로 'down'으로 교정.
   it('2호선 seam(충정로→시청, wrap) — resolveTripDirection과 동일한 값으로 고정', () => {
     const chungjeongno = findStationByNameAndLine(canonicalStationName('충정로', '2'), '2')!;
     const sicheong = findStationByNameAndLine(canonicalStationName('시청', '2'), '2')!;
-    expect(directionOnLine('2', chungjeongno.id, sicheong.id)).toBe('up');
+    expect(directionOnLine('2', chungjeongno.id, sicheong.id)).toBe('down');
   });
 });

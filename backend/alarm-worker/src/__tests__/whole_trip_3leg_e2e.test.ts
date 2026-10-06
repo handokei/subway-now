@@ -184,9 +184,13 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
     );
 
     // Seoul positions: 건대입구(anchor)에 line-2 열차 TB2 정확히 1대(unambiguous) — cycle 1
-    // ARRIVED, cycle 2 DEPARTED(탑승 후 즉시 출발, #2754 확증 신호). 양방향 모두 제공해도
-    // resolveTrainCodeFromPositions는 direction 필터 후 1대면 resolved — 여기선 direction 무관하게
-    // 1대만 두어 확실히 resolved.
+    // ARRIVED, cycle 2 DEPARTED(탑승 후 즉시 출발, #2754 확증 신호).
+    // #2867 — `freshCandidatesAtAnchor`(boardingAnchorResolver.ts)는 단일 후보여도 direction
+    // 불일치면 배제한다(원 주석 "direction 무관하게 1대만 두면 확실히 resolved"는 실제 구현과
+    // 달랐다 — 종전엔 역전된 direction(id 감소=내선, 구 버그)과 isUp:true가 우연히 일치해
+    // 통과했을 뿐). 이 leg는 건대입구(2-012)→성수(2-011) 방향(idx 감소 = 외선/down, 10/3·9/17
+    // 양방향 실측 52쌍 ground truth) — TB2는 trainCode/stationName 모두 테스트 작성자가 직접
+    // 구성한 합성 fixture(실측 Seoul 캡처 아님)라 물리적으로 맞는 외선(isUp:false)으로 교정한다.
     let cycleTrainSttus = 1; // ARRIVED
     const posClient = {
       stats: { callCount: 0, cacheSize: 0, httpErrorCount: 0 },
@@ -196,7 +200,7 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
       async fetchPositions(line: string): Promise<PositionEntry[]> {
         if (line !== '2') return [];
         return [
-          { trainCode: 'TB2', stationName: '건대입구', trainSttus: cycleTrainSttus, isUp: true, recptnMs: NOW },
+          { trainCode: 'TB2', stationName: '건대입구', trainSttus: cycleTrainSttus, isUp: false, recptnMs: NOW },
         ];
       },
     } as unknown as SeoulArrivalClient;

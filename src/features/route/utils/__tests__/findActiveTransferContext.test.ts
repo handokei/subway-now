@@ -176,10 +176,11 @@ describe('findActiveTransferContext', () => {
 
   it('2호선 순환선 wraparound seam을 넘는 pair — directionOnLine이 naive index 비교와 다른(정확한) 방향 산출 (#2609)', () => {
     // RCA 재현: 을지로3가(2호선 idx2) → 이대(2호선 idx40)는 forward(정방향) 38 stop, backward(wrap)
-    // 5 stop — 실제로 훨씬 짧은 backward wrap이 정답('up')인데, 구 naive 비교
+    // 5 stop — 실제로 훨씬 짧은 backward wrap(idx 감소, 외선)이 정답인데, 구 naive 비교
     // (`nextIdx > currIdx ? 'down' : 'up'`)는 wraparound을 고려하지 않아 'down'을 반환했다
     // (RED 확인, PR 본문 evidence 참조). directionOnLine(#2455)은 `shortestLinePathIndices` 기반
     // 단일 알고리즘이라 이 seam을 정확히 처리한다.
+    // #2867 — idx 감소(backward wrap) = 외선 = 'down'(10/3·9/17 실측 52쌍 ground truth로 교정).
     const route = makeTransferRoute({
       transferName: '을지로3가',
       fromLine: '3',
@@ -191,7 +192,7 @@ describe('findActiveTransferContext', () => {
     const ctx = findActiveTransferContext(lock, route, '이대', euljiro3gaOn3);
     expect(ctx).not.toBeNull();
     expect(ctx!.nextLine).toBe('2');
-    expect(ctx!.direction).toBe('up');
+    expect(ctx!.direction).toBe('down');
   });
 
   it('nextWaypoint의 toLine station을 못 찾으면 direction=null (context 자체는 유지)', () => {

@@ -60,18 +60,33 @@ describe('inferLegDirection — closedLoop hybrid (6호선 응암 루프)', () =
 });
 
 describe('inferLegDirection — closedLoop pure (2호선 순환선)', () => {
-  it('홍대입구 → 신촌 (인접, id 단조 증가) → down', () => {
-    // forward arc < backward arc → down.
-    expect(inferLegDirection('2', '홍대입구', '신촌')).toBe('down');
+  it('홍대입구 → 신촌 (인접, id 단조 증가) → up', () => {
+    // #2867 — forward arc(idx 증가) < backward arc → 'up'(내선). 기존 'down' 기대값은
+    // 역전된 믿음이었다(10/3·9/17 실측 52쌍으로 확정).
+    expect(inferLegDirection('2', '홍대입구', '신촌')).toBe('up');
   });
 
-  it('신촌 → 홍대입구 (인접, id 단조 감소) → up', () => {
-    expect(inferLegDirection('2', '신촌', '홍대입구')).toBe('up');
+  it('신촌 → 홍대입구 (인접, id 단조 감소) → down', () => {
+    expect(inferLegDirection('2', '신촌', '홍대입구')).toBe('down');
   });
 
   it('지선 역(2-105+ 등 mainIdRange 밖) → null', () => {
     // 2호선 지선 (성수지선, 신정지선) 은 mainIdRange 밖 — null.
     expect(inferLegDirection('2', '용답', '신답')).toBeNull();
+  });
+});
+
+describe('#2867 — loop direction inversion (실측 52쌍 ground truth, idx 증가=내선=up)', () => {
+  it('신당 → 을지로입구 (idx 감소) → down', () => {
+    expect(inferLegDirection('2', '신당', '을지로입구')).toBe('down');
+  });
+
+  it('성수 → 뚝섬 (idx 감소) → down', () => {
+    expect(inferLegDirection('2', '성수', '뚝섬')).toBe('down');
+  });
+
+  it('강변 → 잠실나루 (idx 증가) → up', () => {
+    expect(inferLegDirection('2', '강변', '잠실나루')).toBe('up');
   });
 });
 
