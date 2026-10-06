@@ -195,6 +195,37 @@ describe('resolveTripDirection', () => {
     });
   });
 
+  describe('#2877 — 신분당·수인분당 정렬 극성 반대 (2026-10-06 라이브 프로브 136 이동 실측)', () => {
+    // stations.json 정렬이 신분당/수인분당 두 노선에서 idx 0 = 하행 종점(나머지 1~9호선은
+    // idx 0 = 상행 종점)이라, 전역 가정("idx 증가=하행")을 그대로 쓰면 이 두 노선만 방향이
+    // 뒤집힌다. 두 노선은 "idx 증가=상행"이다(나머지 monotonic 노선은 반대).
+
+    it('신분당선 강남(idx12) → 광교(idx0, idx 감소) = down (하행, 실제 광교 방향)', () => {
+      const route = makeDirectRoute(1, 'sinbundang');
+      expect(resolveTripDirection(route, '광교(경기대)', 'sinbundang-013')).toBe('down');
+    });
+
+    it('신분당선 광교(idx0) → 강남(idx12, idx 증가) = up (상행, 실제 신사 방향)', () => {
+      const route = makeDirectRoute(1, 'sinbundang');
+      expect(resolveTripDirection(route, '강남', 'sinbundang-001')).toBe('up');
+    });
+
+    it('수인분당선 수서(idx42) → 왕십리(idx53, idx 증가) = up (상행)', () => {
+      const route = makeDirectRoute(1, 'bundang');
+      expect(resolveTripDirection(route, '왕십리', 'bundang-042')).toBe('up');
+    });
+
+    it('수인분당선 왕십리(idx53) → 수서(idx42, idx 감소) = down (하행)', () => {
+      const route = makeDirectRoute(1, 'bundang');
+      expect(resolveTripDirection(route, '수서', 'bundang-053')).toBe('down');
+    });
+
+    it('7호선(비순환, 비반전 노선) 용마산 → 건대입구 (id 증가) = down — 회귀 가드 무변경', () => {
+      const route = makeDirectRoute(1, '7');
+      expect(resolveTripDirection(route, '건대입구', '7-015')).toBe('down');
+    });
+  });
+
   describe('#1965 — multi-transfer line 재사용 시 첫 매칭 leg false positive 차단', () => {
     // 2호선 → 4호선 → 2호선(재사용) → 7호선 multi-transfer route.
     // transfers[0].fromLine === transfers[2].fromLine === '2' (line 재사용).

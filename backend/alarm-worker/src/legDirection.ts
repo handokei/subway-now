@@ -48,6 +48,9 @@ interface ClosedLoopMeta {
 
 const MONOTONIC_LINES: ReadonlySet<string> = new Set(lineTopology.monotonicLines);
 const CLOSED_LOOPS = lineTopology.closedLoops as Partial<Record<string, ClosedLoopMeta>>;
+// #2877 — 신분당·수인분당은 stations.json 정렬 극성이 반대(id 증가=상행). 실측 근거는
+// lineTopology.json의 `_reversedOrientationLines_comment` 참고.
+const REVERSED_ORIENTATION_LINES: ReadonlySet<string> = new Set(lineTopology.reversedOrientationLines);
 
 /**
  * leg 의 진행 방향 추론. 추론 불가 시 null.
@@ -82,7 +85,10 @@ export function inferLegDirection(
   // Hybrid 는 단방향 꼬리라 wrap 의미 X — frontend `inferLoopDirection` hybrid 분기와 정합.
   const hybrid = CLOSED_LOOPS[line];
   if (MONOTONIC_LINES.has(line) || (hybrid && hybrid.loopTailRange)) {
-    return fromStation.id > toStation.id ? 'up' : 'down';
+    // #2877 — 신분당·수인분당은 id 증가=상행(나머지 monotonic/hybrid 노선은 id 감소=상행).
+    return REVERSED_ORIENTATION_LINES.has(line)
+      ? fromStation.id < toStation.id ? 'up' : 'down'
+      : fromStation.id > toStation.id ? 'up' : 'down';
   }
 
   // Pure closedLoop(2호선) — mainIdRange 안 forward/backward arc 길이 비교.
