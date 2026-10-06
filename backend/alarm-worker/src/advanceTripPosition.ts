@@ -368,7 +368,19 @@ export async function advanceTripPosition(
   token: string,
   candidateStationId: string,
   evidence: AdvanceEvidence,
-  options: { gatePassed: boolean; lockAttachable: boolean; archFlag?: ArchFlagValue },
+  options: {
+    gatePassed: boolean;
+    lockAttachable: boolean;
+    archFlag?: ArchFlagValue;
+    /**
+     * #2869 (D) — caller가 같은 tick 내 in-memory로 갱신한 lock(예: vanish-swap 직후)을
+     * 전달한다. 전달되면 아래 KV 재독 `pickActiveLock(trip, evidence.ts)` fallback을 생략하고
+     * 이 값(만료 여부만 재검증)을 게이트 #2~#4에 사용한다 — swap이 같은 tick의 fire/advance
+     * 평가보다 KV에 먼저 반영되길 기다리는 race(write-then-read KV colo 캐시, #864 실패 모드)를
+     * 구조적으로 제거한다. 미전달(legacy caller) 시 기존 KV 재독 동작 100% 유지.
+     */
+    lock?: BoardingLockMeta;
+  },
 ): Promise<AdvanceOutcome> {
   const ssot = await readSsot(kv, token);
 
@@ -383,7 +395,14 @@ export async function advanceTripPosition(
   if (trip === null) {
     return { result: 'blocked', blockReason: 'no-trip', ssot };
   }
-  const lock = pickActiveLock(trip, evidence.ts);
+  // #2869 (D) — options.lock이 전달되면 KV 재독 trip.boardingLock 대신 이 값을 사용(단, 만료
+  // 여부는 동일 기준으로 재검증 — pickActiveLock과 같은 `expiresAt <= ts` 조건).
+  const lock =
+    options.lock !== undefined
+      ? options.lock.expiresAt > evidence.ts
+        ? options.lock
+        : undefined
+      : pickActiveLock(trip, evidence.ts);
 
   // #2763 (2026-09-20 코드리뷰 CONFIRMED) — arvlCd/realtimePosition 열차 진행 확증 evidence는
   // 게이트 #2 평가 "전"에 SSoT.motionEvidence로 stamp한다. advance 성공 후(mutation 단계)에만

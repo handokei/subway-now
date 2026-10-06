@@ -133,6 +133,14 @@ import { captureXEvent } from './sentry';
  * (TTL 15분)에도 `trip.legResolveStreak.trainCode`에도 없어 lock 승격을 거부한 시점에 1건
  * append한다. `meta`에 `{ trainCode, line }`을 싣는다. 두 신호가 모두 부재(한 번도 stamp된 적
  * 없음)면 이 kind는 append되지 않고 기존대로 승격한다(backward-safe).
+ *
+ * `vanish-swap` (#2869, 진단 계측 전용) — 10/3 신당 고착 RCA의 "지상 attempt 0행" 블라인드
+ * (RCA 하루 지연, R2 수동 소급 필요) 재발 방지. `meta.phase`로 두 전이를 구분한다:
+ *   - `'estimate-null'`: `runTrainCodeTracking`의 `estimateBoardingLockArrival`이 null로 끝난
+ *     상태(trainCode 피드 소실)의 전이. `meta.isNull`.
+ *   - `'swap-attempt'`: `attemptVanishSwap`이 threshold 도달로 실제 시도된 tick의 결과(후보
+ *     없음/ambiguity로 실패=true, 성공=false) 전이. `meta.failed`.
+ * 둘 다 전이 시에만(#2073 quota 보호) append — 발사/advance/lock 판정에는 관여하지 않는다.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -156,7 +164,8 @@ export type TripEventKind =
   | 'boarding-prompt-leg-mismatch'
   | 'route-signature-mismatch'
   | 'leg-resolve-attempt'
-  | 'promotion-rejected-uncorroborated';
+  | 'promotion-rejected-uncorroborated'
+  | 'vanish-swap';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

@@ -3289,6 +3289,74 @@ async function recordLeg2EstimateTransition(
 }
 
 /**
+ * #2869 (E, 진단 계측 only) — `runTrainCodeTracking`의 `estimate===null` 상태를 SSoT 마커
+ * (`vanishEstimateNullState`)와 비교해 다를 때만 D1 `trip_events`(kind='vanish-swap',
+ * meta.phase='estimate-null')로 append한다(#2073 quota 보호). 10/3 신당 고착 RCA의 "지상
+ * attempt 0행" 블라인드(하루 지연, R2 수동 소급 필요) 재발 방지. 발사/advance 판정에는
+ * 관여하지 않는다.
+ *
+ * 같은 tick에서 `recordVanishSwapAttemptTransition`이 뒤이어 호출될 수 있어(둘 다 estimate===null
+ * 분기 안) write된 최신 ssot를 반환한다 — caller가 이 반환값을 다음 record* 호출에 전달해야
+ * 두 번째 write가 stale ssot 스냅샷으로 첫 번째 write를 덮어쓰지 않는다.
+ */
+async function recordVanishEstimateTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT | null,
+  isNull: boolean,
+  now: number,
+): Promise<TripPositionSSoT | null> {
+  if (ssot === null || ssot.vanishEstimateNullState === isNull) return ssot;
+  const next: TripPositionSSoT = { ...ssot, vanishEstimateNullState: isNull };
+  await writeSsot(env.TRIPS, next, { expiresAt: trip.expiresAt });
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'vanish-swap',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: { phase: 'estimate-null', isNull },
+    },
+    now,
+  );
+  return next;
+}
+
+/**
+ * #2869 (E, 진단 계측 only) — `attemptVanishSwap`이 실제로 시도된(threshold 도달) tick의 결과
+ * (실패=true/성공=false)를 SSoT 마커(`vanishSwapFailState`)와 비교해 다를 때만 D1
+ * `trip_events`(kind='vanish-swap', meta.phase='swap-attempt')로 append한다(#2073 quota 보호).
+ * threshold 미도달로 애초에 시도하지 않은 tick은 caller가 호출하지 않는다(실패와 구분).
+ * 발사/advance/lock 판정에는 관여하지 않는다.
+ */
+async function recordVanishSwapAttemptTransition(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  ssot: TripPositionSSoT | null,
+  failed: boolean,
+  now: number,
+): Promise<TripPositionSSoT | null> {
+  if (ssot === null || ssot.vanishSwapFailState === failed) return ssot;
+  const next: TripPositionSSoT = { ...ssot, vanishSwapFailState: failed };
+  await writeSsot(env.TRIPS, next, { expiresAt: trip.expiresAt });
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'vanish-swap',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: { phase: 'swap-attempt', failed },
+    },
+    now,
+  );
+  return next;
+}
+
+/**
  * ADR-037 D2c (#2537, 진단 계측 only) — `maybeFireLegBoardingPrompt`의 fire/skip 사유
  * (`LegBoardingPromptOutcome`)를 SSoT 마커(`legBoardingPromptOutcome`)와 비교해 다를 때만 D1
  * `trip_events`(kind='leg-boarding-prompt')로 append한다(#2073 quota 보호). SSoT 부재(lazy-seed
@@ -4330,6 +4398,9 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       lockAttachable: true,
       // #2023 (ADR-022) — archFlag='on' 시 arc 게이트 활성. 미wire caller는 dormant.
       archFlag: deps.archFlag,
+      // #2869 (D) — 호출자의 in-memory lock(같은 tick 내 vanish-swap 반영 가능)을 전달해
+      // advanceTripPosition의 KV 재독 lock(stale 가능, #864 실패 모드)보다 우선시킨다.
+      lock,
     },
   );
   if (outcome.result !== 'advanced') {
@@ -5088,10 +5159,27 @@ export async function runTrainCodeTracking(
 ): Promise<void> {
   let activeLock = lock;
   let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
+  // #2869 (E) — estimate===null 상태 전이 계측(전이 시에만, #2073 quota 보호). swap 시도/성공
+  // 여부와 무관하게 "이번 tick 진입 시점" 값을 기록한다. 반환된(가능하면 갱신된) ssot를
+  // 이어서 사용 — 바로 아래 recordVanishSwapAttemptTransition이 같은 tick에서 stale 스냅샷으로
+  // 이 write를 덮어쓰지 않게 한다.
+  ssot = await recordVanishEstimateTransition(env, trip, waypoint, ssot, estimate === null, now);
   if (estimate === null) {
+    // #2869 (E) — attemptVanishSwap이 실제로 시도되는지(threshold 도달) 여부를 호출 전에 미리
+    // 계산한다 — "시도 안 함"과 "시도했으나 실패"를 D1에서 구분하기 위해 필요(threshold
+    // 미도달이면 swap-attempt 전이를 기록하지 않는다).
+    const vanishSwapAttempted =
+      (trip.consecutiveEtaMissing ?? 0) + 1 >= VANISH_RE_ATTACH_THRESHOLD;
     const swappedLock = await attemptVanishSwap(trip, waypoint, activeLock, env, deps, now, log);
+    if (vanishSwapAttempted) {
+      ssot = await recordVanishSwapAttemptTransition(env, trip, waypoint, ssot, swappedLock === null, now);
+    }
     if (swappedLock) {
       activeLock = swappedLock;
+      // #2869 (C) — 10/3 신당 고착 RCA: swap이 in-memory에만 반영되고 이번 tick의 fire/advance
+      // 평가가 blocked로 끝나면(stale 경로 1곳만 putTrip을 거침) swap 자체가 매 tick 소실됐다.
+      // fire/advance 평가 전에 즉시 KV 반영 — blocked로 끝나도 swap은 살아남는다.
+      await putTrip(env.TRIPS, trip);
       estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
     }
   }
@@ -5452,6 +5540,10 @@ export async function advanceBoardingLockWaypoint(
         lockAttachable: trip.boardingLock !== undefined,
         // #2023 (ADR-022) — archFlag='on' 시 arc overshoot 게이트 활성. off/미제공 dormant.
         archFlag: deps.archFlag,
+        // #2869 (D) — caller(runTrainCodeTracking)가 같은 tick 내 vanish-swap으로 갱신한
+        // trip.boardingLock(in-memory)을 전달해 advanceTripPosition의 KV 재독 lock(stale 가능,
+        // #864 실패 모드)보다 우선시킨다.
+        lock: trip.boardingLock,
       },
     );
     if (outcome.result !== 'advanced') {
