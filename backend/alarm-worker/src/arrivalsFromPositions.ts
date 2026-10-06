@@ -49,6 +49,17 @@ import type { ArrivalEntry, PositionEntry } from './seoul';
  */
 const HOP_SEC = 90;
 
+/**
+ * #2875 — vanish swap 후보 매칭이 "threshold 터지는 순간, 정확히 target 역 이하(아직 안 온
+ * 또는 막 도착)에 있는 열차"만 인정하던 창을 target 을 **이미 지난** 열차 쪽으로도 확장하는
+ * 허용 hop 수. 2-miss threshold(`VANISH_RE_ATTACH_THRESHOLD`)가 쌓이는 동안 올바른 방향의
+ * 실 열차가 이미 target 을 통과해 영원히 후보 pool 밖에 남는 회귀(10/3 whole-trip 재생 실증,
+ * 뚝섬 영구 고착)를 막는다. 값은 한 leg 안에서 현실적으로 발생 가능한 소실 지속 구간(수 분,
+ * 수 정거장)을 보수적으로 덮는 정도로 — segmentStations 전체 길이보다 작게 둬 아예 무관한
+ * 먼 열차까지 끌어오지 않는다. 산개 방지를 위해 상수는 이 한 곳에만 정의한다.
+ */
+const PASSED_CANDIDATE_MAX_HOPS = 8;
+
 export interface SynthesizeArrivalsInputs {
   /** `selfPollPositions` 또는 `seoul.fetchPositions(line)` 결과 — line 의 모든 trains. */
   positions: readonly PositionEntry[];
@@ -83,6 +94,13 @@ export function synthesizeArrivalsFromPositions(
   if (!subwayNm) return [];
 
   const synthesized: ArrivalEntry[] = [];
+  // #2875 — target 을 이미 지난(진행방향 전방) train 후보. 여러 대면 가장 가까운(hop 수 최소)
+  // 1대만 인정 — 동률(같은 hop 수)이면 ambiguous 로 간주해 전부 제외한다(`pickAutoTrainCode`의
+  // 기존 ambiguity-null 정책과 정합, #2875 이슈 본문 "동률/복수 후보 ambiguity" 명시 요구).
+  let nearestPassed: PositionEntry | null = null;
+  let nearestPassedHops = Number.POSITIVE_INFINITY;
+  let nearestPassedTie = false;
+
   for (const train of positions) {
     // direction 필터.
     if (direction !== null) {
@@ -92,8 +110,25 @@ export function synthesizeArrivalsFromPositions(
     // segmentStations 위치 검증.
     const currentIdx = segmentStations.indexOf(train.stationName);
     if (currentIdx < 0) continue;
-    // 이미 target 을 지난 train 은 제외.
-    if (currentIdx > targetIdx) continue;
+
+    if (currentIdx > targetIdx) {
+      // target 을 이미 지난 train — PASSED_CANDIDATE_MAX_HOPS 창 밖은 여전히 제외(너무 먼
+      // 과거 열차까지 끌어오지 않음). 창 안이면 "가장 가까운 1대" 후보로 추적만 해두고, 바로
+      // synthesize 하지 않는다 — 루프 종료 후 유일하게 가장 가까운 경우에만 추가한다.
+      const passedHops = currentIdx - targetIdx;
+      if (passedHops > PASSED_CANDIDATE_MAX_HOPS) continue;
+      if (passedHops < nearestPassedHops) {
+        nearestPassed = train;
+        nearestPassedHops = passedHops;
+        nearestPassedTie = false;
+      } else if (passedHops === nearestPassedHops) {
+        // 동일 최소 거리 후보가 2대 이상 — ambiguous. 어느 쪽도 채택하지 않는다.
+        nearestPassedTie = true;
+      }
+      continue;
+    }
+
+    // 이하 기존 동작 — target 에 아직 도착 전(또는 정확히 target)인 train.
     // ETA 합성 — currentIdx === targetIdx 인 경우 (이미 target 역에 있음) arrivalSeconds=0.
     const hops = targetIdx - currentIdx;
     const arrivalSeconds = hops * HOP_SEC;
@@ -111,6 +146,20 @@ export function synthesizeArrivalsFromPositions(
       synthesized: true,
     });
   }
+
+  if (nearestPassed !== null && !nearestPassedTie) {
+    synthesized.push({
+      destination: '',
+      // 이미 target 을 지났으므로 ETA=0 — 가장 보수적인 "지금 여기" 값.
+      arrivalSeconds: 0,
+      trainCode: nearestPassed.trainCode,
+      isUp: nearestPassed.isUp,
+      subwayNm,
+      arvlCd: 0,
+      synthesized: true,
+    });
+  }
+
   return synthesized;
 }
 

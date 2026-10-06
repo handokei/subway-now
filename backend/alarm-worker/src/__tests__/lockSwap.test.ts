@@ -367,8 +367,10 @@ describe('attachTrainCodeForLeg #1702 positions fallback', () => {
     expect(lock?.trainCode).toBe('REAL');
   });
 
-  it('positions train 이미 target 지남 → 합성 제외 → null', async () => {
-    // target=중곡(idx=0), train@군자(idx=1) — currentIdx>targetIdx → 제외.
+  it('#2875 positions train 이미 target 지남(window 안) → 가장 가까운 1대를 후보로 인정', async () => {
+    // target=중곡(idx=0), train@군자(idx=1) — currentIdx>targetIdx 지만 PASSED_CANDIDATE_MAX_HOPS
+    // 창 안(1hop) — vanish swap이 이미 target을 지난 올바른 방향 열차로도 성공해야 한다
+    // (10/3 "뚝섬 영구 고착" 실증 — whole-trip replay `replay_20261003_seongsu_euljiro.test.ts`).
     const seoul = makeSeoul([]);
     const lock = await attachTrainCodeForLeg({
       trip: makeTrip(swapWaypoints),
@@ -376,6 +378,60 @@ describe('attachTrainCodeForLeg #1702 positions fallback', () => {
       seoul,
       now: NOW,
       selfPollPositions: [position({ trainCode: 'PASSED', stationName: '군자' })],
+    });
+    expect(lock?.trainCode).toBe('PASSED');
+  });
+
+  it('#2875 positions train 역방향으로 target 지남 → 방향 필터로 여전히 제외 → null', async () => {
+    // #2875 금지 항목 — "역방향 후보 허용 절대 불가"의 회귀 가드. isUp=true(내선, 역방향)인
+    // train은 target을 지났더라도 direction 필터에서 먼저 걸러진다.
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [position({ trainCode: 'WRONG-DIR', stationName: '군자', isUp: true })],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('#2875 positions train 이미 target 지남, 창 밖(PASSED_CANDIDATE_MAX_HOPS 초과) → 여전히 제외 → null', async () => {
+    // target=중곡(idx=0)부터 창(8hop) 밖인 10번째 역까지 intermediate로 늘린 leg.
+    const farTarget: Waypoint = { stationName: '중곡', line: '7', kind: 'intermediate' };
+    const farWaypoints: Waypoint[] = [
+      farTarget,
+      ...Array.from({ length: 9 }, (_, i) => ({
+        stationName: `S${i}`,
+        line: '7',
+        kind: 'intermediate' as const,
+      })),
+      { stationName: '어린이대공원', line: '7', kind: 'destination' as const },
+    ];
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(farWaypoints),
+      targetWaypoint: farTarget,
+      seoul,
+      now: NOW,
+      // S8은 target 기준 9hop 지남 — PASSED_CANDIDATE_MAX_HOPS(8) 초과.
+      selfPollPositions: [position({ trainCode: 'TOO-FAR', stationName: 'S8' })],
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('#2875 target을 지난 열차가 2대 동률(같은 hop) → ambiguous → null', async () => {
+    // target=중곡(idx=0), 두 train 모두 군자(idx=1)에 위치 — 동일 거리 ambiguity.
+    const seoul = makeSeoul([]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip(swapWaypoints),
+      targetWaypoint: swapTarget,
+      seoul,
+      now: NOW,
+      selfPollPositions: [
+        position({ trainCode: 'P1', stationName: '군자' }),
+        position({ trainCode: 'P2', stationName: '군자' }),
+      ],
     });
     expect(lock).toBeNull();
   });

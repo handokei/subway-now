@@ -134,13 +134,51 @@ describe('synthesizeArrivalsFromPositions', () => {
     expect(result).toEqual([]);
   });
 
-  it('이미 target 지난 train (currentIdx > targetIdx) 제외', () => {
-    // target=광흥창(idx=1), train@대흥(idx=2) — 이미 target 지나감 → 제외.
+  it('#2875 이미 target 지난 train (currentIdx > targetIdx, window 안) → 가장 가까운 1대 합성', () => {
+    // target=광흥창(idx=1), train@대흥(idx=2) — 1hop 지남, 창(8hop) 안 → arrivalSeconds=0으로
+    // 합성(10/3 "뚝섬 영구 고착" 실증 — target 지난 올바른 방향 열차를 영구 배제하던 회귀 fix).
     const result = synthesizeArrivalsFromPositions({
       positions: [position({ trainCode: '6187', stationName: '대흥', isUp: false })],
       line: '6',
       direction: 'down',
       segmentStations,
+      targetStation,
+    });
+    expect(result).toEqual([
+      {
+        destination: '',
+        arrivalSeconds: 0,
+        trainCode: '6187',
+        isUp: false,
+        subwayNm: '6호선',
+        arvlCd: 0,
+        synthesized: true,
+      },
+    ]);
+  });
+
+  it('#2875 target 지난 train 2대 동률(같은 hop) → ambiguous → 둘 다 제외', () => {
+    const result = synthesizeArrivalsFromPositions({
+      positions: [
+        position({ trainCode: 'P1', stationName: '대흥', isUp: false }),
+        position({ trainCode: 'P2', stationName: '대흥', isUp: false }),
+      ],
+      line: '6',
+      direction: 'down',
+      segmentStations,
+      targetStation,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('#2875 target 지난 train, PASSED_CANDIDATE_MAX_HOPS 창 밖 → 여전히 제외', () => {
+    // target=광흥창(idx=1)부터 9hop 떨어진 역까지 segment를 늘려 창(8hop) 초과를 구성.
+    const longSegment = ['합정', '광흥창', ...Array.from({ length: 9 }, (_, i) => `S${i}`)];
+    const result = synthesizeArrivalsFromPositions({
+      positions: [position({ trainCode: 'TOO-FAR', stationName: 'S8', isUp: false })],
+      line: '6',
+      direction: 'down',
+      segmentStations: longSegment,
       targetStation,
     });
     expect(result).toEqual([]);
