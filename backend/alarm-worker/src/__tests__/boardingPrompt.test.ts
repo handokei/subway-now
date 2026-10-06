@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ARRIVAL_CODE } from '../alarm';
 import {
+  boardingPromptDedupKey,
   decideBoardingPromptFire,
   DISMISS_SILENCE_MS,
   evaluateBoardingPromptRepeatGate,
@@ -97,6 +98,29 @@ describe('markPromptFired / markPromptSilenced', () => {
     const r = markPromptSilenced({ fired: true, lastFiredAt: 500 }, 1000);
     expect(r.fired).toBe(true);
     expect(r.lastFiredAt).toBe(500);
+  });
+});
+
+// #2880 — selectedTrainCode=null dedup fail-open fix. firedTrainCodes dedup이 trainCode를
+// 특정할 수 없을 때도(null) 작동하도록 phase 기반 fallback 키를 반환한다.
+describe('boardingPromptDedupKey (#2880)', () => {
+  it('selectedTrainCode가 non-null이면 그 값 그대로 반환(기존 동작 무변경)', () => {
+    expect(boardingPromptDedupKey('U1', 'approaching')).toBe('U1');
+    expect(boardingPromptDedupKey('U1', 'imminent')).toBe('U1');
+  });
+
+  it('selectedTrainCode=null이면 phase(decision)를 포함한 fallback 키 반환', () => {
+    expect(boardingPromptDedupKey(null, 'approaching')).toBe('null-trainCode:approaching');
+    expect(boardingPromptDedupKey(null, 'imminent')).toBe('null-trainCode:imminent');
+    expect(boardingPromptDedupKey(null, 'fallback-unobservable')).toBe(
+      'null-trainCode:fallback-unobservable',
+    );
+  });
+
+  it('null이어도 phase가 다르면 다른 키 — 과차단 방지(phase 전환은 재발사 허용)', () => {
+    expect(boardingPromptDedupKey(null, 'approaching')).not.toBe(
+      boardingPromptDedupKey(null, 'imminent'),
+    );
   });
 });
 

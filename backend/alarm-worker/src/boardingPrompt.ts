@@ -263,6 +263,32 @@ export function evaluateBoardingPromptRepeatGate(
 }
 
 /**
+ * #2880 — `selectedTrainCode=null`(후보 전원 방향 필터 탈락 / lock 열차 피드 소실 /
+ * ambiguity로 `pickAutoTrainCode`가 null을 반환하는 모든 경로) 동안 `firedTrainCodes`
+ * trainCode dedup(#2130 A4)이 `selectedTrainCode !== null` 전제라 전혀 작동하지 않아
+ * fail-open되는 문제의 fallback 키.
+ *
+ * trainCode를 특정할 수 없을 때는 "같은 상황"을 `decideBoardingPromptFire`의 phase
+ * 라벨(`decision`)로 근사한다 — leg/station은 이미 `firedTrainCodes`가 속한
+ * `BoardingPromptState` 객체 자체가 leg/station 단위로 스코프돼 있으므로(leg 전환 시
+ * `legBoardingPromptState`가 매번 새로 초기화됨) 추가 키가 불필요하다. 반환값은 실제
+ * trainCode와 절대 충돌하지 않는 접두사(`'null-trainCode:'`, Seoul API trainCode는 항상
+ * 숫자 문자열)를 쓴다 — `firedTrainCodes` 배열에 실제 trainCode와 이 fallback 키가
+ * 섞여도 안전하게 구분된다.
+ *
+ * 동작: phase가 바뀌면(예: approaching → imminent) 새 fallback 키가 추가돼 재발사를
+ * 허용한다 — "trainCode 불명이지만 상황이 달라졌다"를 그대로 인정(과차단 방지). phase가
+ * 그대로면 같은 키가 이미 있어 차단(5분 repeat gate가 지나도 동일 phase 반복 재발사를
+ * 막는 이 이슈의 본래 목적).
+ */
+export function boardingPromptDedupKey(
+  selectedTrainCode: string | null,
+  decision: BoardingFireDecision['decision'],
+): string {
+  return selectedTrainCode ?? `null-trainCode:${decision}`;
+}
+
+/**
  * trip의 boarding-prompt state를 발사 시점 또는 dismiss 시점에 갱신해 반환.
  * caller는 결과를 trip에 set 후 KV 저장.
  *
