@@ -69,11 +69,11 @@ const jonggak = findStationByNameAndLine('종각', '1')!;
 // 동일노선(1호선) 근거리 비교용 — 종각과 같은 1호선, GPS top candidate로 사용.
 const sichung1 = findStationByNameAndLine('시청', '1')!;
 
-function arrivedAt(line: string) {
+function arrivedAt(station: typeof jonggak) {
   return makeArrivalInfo({
     destination: '',
     arrivalSeconds: 0,
-    line,
+    line: station.line,
     arrivalCode: 1,
     trainCode: 'T-2876',
     receivedAtMs: T0, // bestPriorityForArrival이 receivedAtMs<=0을 stale로 skip하므로 신선값 필수.
@@ -127,7 +127,7 @@ function setup({
 
   mockArrival.mockImplementation((stationName: string | null, line: string | null) => {
     if (stationName === fusedStation.name && line === fusedStation.line) {
-      return arrivalRet({ up: [arrivedAt(fusedStation.line)], down: [], isMock: false });
+      return arrivalRet({ up: [arrivedAt(fusedStation)], down: [], isMock: false });
     }
     return arrivalRet(null);
   });
