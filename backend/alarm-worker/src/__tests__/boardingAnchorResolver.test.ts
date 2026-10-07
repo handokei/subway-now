@@ -458,6 +458,69 @@ describe('attemptBoardingAnchorResolution', () => {
       expect(transition?.status).toBe('confirmed');
     });
   });
+
+  // #2893 — outcome:'none'이 3개 독립 원인(후보0 / subwayId 매핑 실패 / legSegment 산출 실패)을
+  // 한 값으로 뭉개 PR #2890 재현 시 수작업 코드 추적이 필요했다. onOutcome 콜백의 2번째(선택)
+  // 인자로 noneReason을 통지한다 — 기존 호출자(1번째 인자만 받음)는 완전 무영향.
+  describe('onOutcome noneReason (#2893 — outcome:none 세부 사유)', () => {
+    it('후보 0개(none) → noneReason: position-resolve-none', async () => {
+      const seoul = makeSeoulWithPositions([]);
+      const trip = makeTrip();
+      let outcome: string | undefined;
+      let noneReason: string | undefined;
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW, undefined, (o, detail) => {
+        outcome = o;
+        noneReason = detail?.noneReason;
+      });
+      expect(result).toBeNull();
+      expect(outcome).toBe('none');
+      expect(noneReason).toBe('position-resolve-none');
+    });
+
+    it('line 매핑 실패(subwayId 없음) → noneReason: subwayid-mapping-failed', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
+      const trip = makeTrip({ promptDisplay: { originStation: '중곡', line: 'not-a-line' } });
+      let outcome: string | undefined;
+      let noneReason: string | undefined;
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW, undefined, (o, detail) => {
+        outcome = o;
+        noneReason = detail?.noneReason;
+      });
+      expect(result).toBeNull();
+      expect(outcome).toBe('none');
+      expect(noneReason).toBe('subwayid-mapping-failed');
+    });
+
+    it('legSegment 산출 실패(direction=null fallback → 빈 배열) → noneReason: leg-segment-empty', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
+      const trip = makeTrip({
+        waypoints: [{ stationName: '어린이대공원', line: '다른선', kind: 'destination' }],
+      });
+      let outcome: string | undefined;
+      let noneReason: string | undefined;
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW, undefined, (o, detail) => {
+        outcome = o;
+        noneReason = detail?.noneReason;
+      });
+      expect(result).toBeNull();
+      expect(outcome).toBe('none');
+      expect(noneReason).toBe('leg-segment-empty');
+    });
+
+    it('resolved 성공 시 noneReason은 통지되지 않는다(2번째 인자 undefined)', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
+      const trip = makeTrip();
+      let outcome: string | undefined;
+      let detailArg: { noneReason?: string } | undefined;
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW, undefined, (o, detail) => {
+        outcome = o;
+        detailArg = detail;
+      });
+      expect(result).not.toBeNull();
+      expect(outcome).toBe('resolved');
+      expect(detailArg?.noneReason).toBeUndefined();
+    });
+  });
 });
 
 describe('resolveActiveLegOrigin (#2515, #2511 supersede)', () => {

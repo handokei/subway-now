@@ -8030,7 +8030,33 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
       waypointKind: 'station-passed',
       phase: 'imminent',
       outcome: 'sent',
+      // #2893 — device 수신 push(apns-id/payload pushId)와 D1 cron-fire-attempt 행을 사후
+      // 1:1 대조하기 위한 식별자. 10/7 "정체불명 push 2건"이 이 필드 부재로 영구 판정 불가였다.
+      pushId: 'p-fire-log-sent',
     });
+  });
+
+  // #2893 — 발사 실패도 pushId가 이미 생성된 뒤(push 시도 자체는 일어남)의 결과라 pushId를
+  // 함께 기록해야 device 쪽 실패 로그와 대조 가능하다.
+  it('발사 실패(push 400)에도 pushId가 기록된다', async () => {
+    const { db, inserts } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadFoo' }), { status: 400 }),
+    );
+    await runScheduled(makeEnv(kv, undefined, db), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-fire-log-failed-pid',
+    });
+    const fireLogInserts = inserts.filter((args) => args[2] === 'cron-fire-attempt');
+    expect(fireLogInserts).toHaveLength(1);
+    const meta = JSON.parse(fireLogInserts[0][5] as string) as { pushId?: string };
+    expect(meta.pushId).toBe('p-fire-log-failed-pid');
   });
 
   it('발사 실패(push 400) → outcome=failed + reason 기록', async () => {
@@ -8100,6 +8126,9 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
     };
     expect(meta.outcome).toBe('skipped-reason');
     expect(meta.reason).toBe('no-trip');
+    // #2893 — push 자체가 시도되지 않은 gate-skip 경로는 pushId가 없는 것이 의미상 정확하다
+    // (대조할 push 자체가 없었음).
+    expect((meta as { pushId?: string }).pushId).toBeUndefined();
   });
 
   // ADR-037 D2c (#2542) — 발사 게이트 blockReason 전부(#2343 no-trip 한정 해제) D1 관측 대상
