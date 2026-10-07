@@ -27,11 +27,31 @@
  * 실제 `seoul.ts:parsePositionEntry` 그대로) `attemptBoardingAnchorResolution`에 흘려보낸다 —
  * "이 시각에 가장 가까이 있던 실측 스냅샷을 backend가 봤다면"을 두 방향(직전/직후)에서 각각
  * 질문한다.
+ *
+ * ## 결론 교정 (2026-10-07, 코디네이터 지적 반영)
+ * 최초 버전은 "DEPARTED(2)를 후보로 인정했다면 뚝섬의 유일 후보(trainNo 8425)가 resolved됐을
+ * 것"이라고 결론 냈으나, **8425는 `updnLine='1'`(외선/하행)로 사용자 진행 방향(뚝섬→성수→
+ * 건대입구 = 내선/상행)과 반대 열차다.** 프로덕션은 anchor 매칭에 direction을 null로 두지
+ * 않는다 — `boardingAnchorResolver.ts:534-538`이 `inferLegDirection(anchor.line,
+ * anchor.originStation, nextWaypoint.stationName)`로 매 호출마다 방향을 계산해 후보를 거른다.
+ * 이 trip은 `inferLegDirection('2','뚝섬','성수') === 'up'`이므로, 방향 필터를 production과
+ * 동일하게 적용하면 8425는 애초에 후보 풀에도 들어오지 못한다 — **DEPARTED를 받아들이는 것만
+ * 으로는 해결되지 않는다.**
+ *
+ * 진짜 root는 "DEPARTED 배제"가 아니라 **"확인 시점에 사용자 열차가 이미 앵커 역(뚝섬)을 떠나
+ * 있다"**는 것이다. 같은 캡처(19:24:30)에서 사용자가 실제로 타고 있었을 열차는 `trainNo 6408`
+ * (`updnLine='0'`=내선=방향 일치, `statnNm='성수'`=뚝섬 기준 진행방향 1-hop 전방, `trainSttus=2`
+ * =DEPARTED)다 — 앵커 역 "정위치" 매칭이 아니라 **앵커 기준 진행방향 ±N hop 창 + 방향 일치**로
+ * 후보를 잡아야 유일하게 잡힌다. 이 패턴은 이미 `arrivalsFromPositions.ts:52-61`(#2875, vanish
+ * swap 후보창 확장)가 쓰고 있는 것과 동일하다 — 해법 방향은 **그 패턴을 confirm anchor 경로에도
+ * 적용**하는 것이고, 방향 필터는 반드시 유지해야 한다(없애면 반대 방향 열차를 lock하는 새
+ * 회귀가 생긴다).
  */
 import { describe, expect, it } from 'vitest';
 import { attemptBoardingAnchorResolution, resolveTrainCodeFromPositions } from '../boardingAnchorResolver';
 import { SeoulArrivalClient, type PositionEntry } from '../seoul';
 import { TRAIN_STATUS } from '../alarm';
+import { inferLegDirection } from '../legDirection';
 import type { Trip, Waypoint } from '../types';
 import capBefore from './fixtures/replay_20261007_evening_boarding_confirm/caps/1791368549325.json';
 import capAfter from './fixtures/replay_20261007_evening_boarding_confirm/caps/1791368670627.json';
@@ -118,16 +138,24 @@ describe('#2888 재생 — 10/7 저녁 id155 탑승확인 실패 (뚝섬/2호선
     expect(lock).toBeNull();
   });
 
-  it('[재현O, 원인 분기 특정] confirm 53초 후(19:24:30) 캡처 — 유일 후보가 DEPARTED라 게이트에 배제됨', async () => {
+  it('[재현O, 원인 분기 정정] confirm 53초 후(19:24:30) 캡처 — 뚝섬 유일 후보는 반대 방향(DEPARTED 수용해도 후보 0), 사용자 열차는 앵커 1-hop 전방(성수)에 있다', async () => {
     const entry = findPositionEntry(capAfter, '2호선');
     const body = JSON.parse(entry.body) as {
-      realtimePositionList: Array<{ statnNm: string; trainSttus: string; recptnDt: string; trainNo: string }>;
+      realtimePositionList: Array<{
+        statnNm: string;
+        trainSttus: string;
+        recptnDt: string;
+        trainNo: string;
+        updnLine: string;
+      }>;
     };
     const dukseomEntries = body.realtimePositionList.filter((e) => e.statnNm === '뚝섬');
-    // 전제 확인(가설 분기 2): 이 캡처엔 뚝섬 항목이 정확히 1개 있고, trainSttus='2'(DEPARTED).
+    // 전제 확인(가설 분기 2): 이 캡처엔 뚝섬 항목이 정확히 1개 있고, trainSttus='2'(DEPARTED),
+    // updnLine='1'(외선/하행) — 사용자 진행 방향(뚝섬→성수→건대입구 = 내선/상행)과 반대다.
     expect(dukseomEntries).toHaveLength(1);
     expect(dukseomEntries[0].trainSttus).toBe('2');
     expect(dukseomEntries[0].trainNo).toBe('8425');
+    expect(dukseomEntries[0].updnLine).toBe('1');
 
     const seoul = new SeoulArrivalClient({
       apiKey: 'KEY',
@@ -154,35 +182,47 @@ describe('#2888 재생 — 10/7 저녁 id155 탑승확인 실패 (뚝섬/2호선
     expect(outcome).toBe('none');
     expect(lock).toBeNull();
 
-    // ---- 양방향 assert: DEPARTED를 후보로 인정했다면? (프로덕션 코드는 건드리지 않는다) ----
-    // resolveTrainCodeFromPositions와 동일한 신선도/방향/역명 필터를 이 테스트 안에서만
-    // 재현해 DEPARTED 포함 시 결과를 확인한다 — "고칠 여지가 실재하는가"의 증거.
-    const positions = await seoul.fetchPositions('2');
-    const atDukseomFresh = positions.filter(
-      (p: PositionEntry) => p.stationName === '뚝섬' && p.recptnMs > 0 && entry.tMs - p.recptnMs <= 120_000,
-    );
-    expect(atDukseomFresh).toHaveLength(1);
-    expect(atDukseomFresh[0].trainSttus).toBe(TRAIN_STATUS.DEPARTED);
-    // DEPARTED 포함 시 — 현재 resolveTrainCodeFromPositions가 쓰는 ARRIVED/APPROACHING만의
-    // priority list에 DEPARTED(2)를 추가했다고 가정하면 유일 후보(ambiguity 없음)가 나온다.
-    const includingDeparted: readonly number[] = [
-      TRAIN_STATUS.ARRIVED,
-      TRAIN_STATUS.APPROACHING,
-      TRAIN_STATUS.DEPARTED,
-    ];
-    const tier = atDukseomFresh.filter(
-      (p: PositionEntry) => p.trainSttus !== null && includingDeparted.includes(p.trainSttus),
-    );
-    expect(tier).toHaveLength(1);
-    expect(tier[0].trainCode).toBe('8425');
+    // ---- 교정된 양방향 assert: production과 동일한 direction으로 재확인 ----
+    // production이 실제로 쓰는 값(`boardingAnchorResolver.ts:534-538`)과 동일하게 계산한다 —
+    // null로 느슨하게 두지 않는다.
+    const direction = inferLegDirection('2', '뚝섬', '성수');
+    expect(direction).toBe('up');
 
-    // 대조: 실제 resolveTrainCodeFromPositions(변경 없음)는 여전히 'none' — 위 가정은 테스트
-    // 로컬 재현일 뿐 프로덕션 분기가 바뀐 게 아님을 재확인.
-    const stillNone = resolveTrainCodeFromPositions(
-      { line: '2', boardingStation: '뚝섬', direction: null },
+    const positions = await seoul.fetchPositions('2');
+    const atDukseomFreshRightDirection = positions.filter(
+      (p: PositionEntry) =>
+        p.stationName === '뚝섬' &&
+        p.isUp === (direction === 'up') &&
+        p.recptnMs > 0 &&
+        entry.tMs - p.recptnMs <= 120_000,
+    );
+    // 8425는 isUp=false(외선) — 방향 필터를 production과 동일하게 적용하면 애초에 후보 풀에도
+    // 들어오지 못한다. DEPARTED(2)를 priority list에 추가해도(가정) 방향이 틀리면 여전히
+    // 후보 0 — "DEPARTED 수용만으로는 해결되지 않는다"의 직접 증거.
+    expect(atDukseomFreshRightDirection).toHaveLength(0);
+    const stillNoneWithCorrectDirection = resolveTrainCodeFromPositions(
+      { line: '2', boardingStation: '뚝섬', direction },
       positions,
       entry.tMs,
     );
-    expect(stillNone.status).toBe('none');
+    expect(stillNoneWithCorrectDirection.status).toBe('none');
+
+    // ---- 진짜 해법 방향 증명: #2875 패턴(`arrivalsFromPositions.ts:52-61`, vanish swap 후보창
+    // 확장)을 confirm anchor 경로에 동일하게 적용하면? ----
+    // "앵커 역 정위치" 매칭 대신 "앵커 기준 진행방향 ±1 hop 창 + 방향 일치"로 후보를 잡는다
+    // (프로덕션 코드는 수정하지 않는다 — 이 필터는 테스트 로컬 동치 로직).
+    const ANCHOR_SEGMENT = ['뚝섬', '성수', '건대입구']; // 진행방향 순서(뚝섬→성수→건대입구)
+    const anchorIdx = ANCHOR_SEGMENT.indexOf('뚝섬');
+    const HOP_WINDOW = 1;
+    const withinHopWindowAndDirection = positions.filter((p: PositionEntry) => {
+      if (p.isUp !== (direction === 'up')) return false;
+      const idx = ANCHOR_SEGMENT.indexOf(p.stationName);
+      if (idx < 0 || Math.abs(idx - anchorIdx) > HOP_WINDOW) return false;
+      return p.recptnMs > 0 && entry.tMs - p.recptnMs <= 120_000;
+    });
+    expect(withinHopWindowAndDirection).toHaveLength(1);
+    expect(withinHopWindowAndDirection[0].trainCode).toBe('6408');
+    expect(withinHopWindowAndDirection[0].stationName).toBe('성수');
+    expect(withinHopWindowAndDirection[0].trainSttus).toBe(TRAIN_STATUS.DEPARTED);
   });
 });
