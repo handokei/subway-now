@@ -220,14 +220,64 @@ function freshCandidatesAtAnchor(
 }
 
 /**
+ * #2892 — "앵커 정위치" 후보가 0건일 때만 평가하는 확장 창(hop 수). 10/7 저녁 실측(뚝섬/2호선)
+ * 으로 확정: 탑승 확인(탭) 시점엔 사용자 열차가 이미 앵커 역을 떠나 진행 방향 다음 역에 있을
+ * 수 있다 — `freshCandidatesAtAnchor`(정위치만 인정)는 이 경우 구조적으로 후보 0을 낸다.
+ * `arrivalsFromPositions.ts:52-61`(#2875, vanish swap 후보창 확장)와 동일 패턴이지만 본 모듈은
+ * "탑승 확정"(lock 승격)이 목적이라 더 보수적인 값(1 hop)만 허용한다 — #2875의
+ * PASSED_CANDIDATE_MAX_HOPS(8)는 재사용하지 않는다(의도적 비-중복, 목적이 다름). 상수는 이
+ * 한 곳에만 정의한다.
+ */
+const CONFIRM_PASSED_ANCHOR_MAX_HOPS = 1;
+
+/**
+ * 앵커 역을 진행 방향으로 막 통과한 열차(최대 `CONFIRM_PASSED_ANCHOR_MAX_HOPS` hop) 후보
+ * (#2892). `freshCandidatesAtAnchor`가 0건일 때만 호출된다(caller 책임).
+ *
+ * 거부 규칙(이슈 #2892 명시):
+ *   ⓐ `anchor.direction===null`이면 확장하지 않는다(빈 배열) — 방향을 특정할 수 없는 노선에서
+ *      반대 방향 열차를 끌어오는 위험을 감수하지 않는다(기존 보수적 동작 유지).
+ *   ⓑ 방향 필터(`isUp`)를 그대로 적용 — 반대 방향 열차는 forwardSegment 매칭 여부와 무관하게
+ *      절대 후보에 들지 않는다.
+ *   ⓒ `forwardSegment`에서 앵커보다 **뒤**(진행 방향)에 있고 hop 차가 1 이하인 역만 인정 —
+ *      2 hop 이상 떨어진 열차는 제외.
+ * 통과 열차의 상태는 DEPARTED(2)/ARRIVED(1) 모두 허용한다 — 그 역을 떠났거나 다음 역에 이미
+ * 도착했다는 사실 자체가 "방금 탑승해 이동 중"이라는 증거다. APPROACHING(0)은 아직 그 역에
+ * 도달하지 않았으므로(앵커를 "통과"한 것이 아니므로) 포함하지 않는다.
+ */
+function passedAnchorCandidates(
+  anchor: BoardingAnchor,
+  positions: readonly PositionEntry[],
+  now: number,
+  forwardSegment: readonly string[] | undefined,
+): PositionEntry[] {
+  if (anchor.direction === null || !forwardSegment) return [];
+  const anchorIdx = forwardSegment.indexOf(anchor.boardingStation);
+  if (anchorIdx < 0) return [];
+  const directional = positions.filter((p) => p.isUp === (anchor.direction === 'up'));
+  return directional.filter((p) => {
+    const idx = forwardSegment.indexOf(p.stationName);
+    if (idx <= anchorIdx || idx - anchorIdx > CONFIRM_PASSED_ANCHOR_MAX_HOPS) return false;
+    if (!(p.recptnMs > 0 && now - p.recptnMs <= POSITION_FRESHNESS_MS)) return false;
+    return p.trainSttus === TRAIN_STATUS.DEPARTED || p.trainSttus === TRAIN_STATUS.ARRIVED;
+  });
+}
+
+/**
  * realtimePosition snapshot에서 anchor 조건에 맞는 정확히 1개의 trainCode를 찾는다. Pure —
  * KV/네트워크 의존 없음. caller(`attemptBoardingAnchorResolution`)가 `seoul.fetchPositions`
  * 결과를 전달한다.
+ *
+ * `forwardSegment`(optional, #2892) — anchor.boardingStation부터 진행 방향 순서로 정렬된
+ * 역명 배열(`attemptBoardingAnchorResolution`의 segmentStations와 동일 구성). 앵커 "정위치"
+ * 매칭이 0건일 때만 `passedAnchorCandidates`로 확장 평가한다 — 기존 "앵커 정위치 ARRIVED/
+ * APPROACHING" 매칭 결과(1개 또는 2개+)는 이 매개변수와 무관하게 100% 무변경이다.
  */
 export function resolveTrainCodeFromPositions(
   anchor: BoardingAnchor,
   positions: readonly PositionEntry[],
   now: number,
+  forwardSegment?: readonly string[],
 ): BoardingResolution {
   const fresh = freshCandidatesAtAnchor(anchor, positions, now);
 
@@ -239,6 +289,11 @@ export function resolveTrainCodeFromPositions(
     if (tier.length === 1) return { status: 'resolved', trainCode: tier[0].trainCode };
     if (tier.length > 1) return { status: 'ambiguous' };
   }
+
+  // #2892 — 앵커 "정위치" 후보가 0건일 때만, 진행 방향으로 막 통과한 열차(1 hop)까지 확장.
+  const passed = passedAnchorCandidates(anchor, positions, now, forwardSegment);
+  if (passed.length === 1) return { status: 'resolved', trainCode: passed[0].trainCode };
+  if (passed.length > 1) return { status: 'ambiguous' };
   return { status: 'none' };
 }
 
@@ -296,6 +351,7 @@ export function evaluateLegBoardingTransition(
   positions: readonly PositionEntry[],
   now: number,
   pending: LegPendingCandidate | undefined,
+  forwardSegment?: readonly string[],
 ): LegBoardingConfirmation {
   const fresh = freshCandidatesAtAnchor(anchor, positions, now);
   const candidates: LegResolveCandidate[] = fresh.map((p) => ({
@@ -310,7 +366,7 @@ export function evaluateLegBoardingTransition(
     if (departed) return { status: 'confirmed', trainCode: pending.trainCode, candidates };
   }
 
-  const resolution = resolveTrainCodeFromPositions(anchor, positions, now);
+  const resolution = resolveTrainCodeFromPositions(anchor, positions, now, forwardSegment);
   if (resolution.status === 'resolved') {
     return {
       status: 'pending',
@@ -561,6 +617,19 @@ export async function attemptBoardingAnchorResolution(
       ? inferLegDirection(anchor.line, anchor.originStation, nextWaypoint.stationName)
       : null;
 
+  // segmentStations — 탑승역(anchor.originStation) + 현재 leg의 나머지 정차역(환승/도착까지 포함).
+  // `buildLegSegmentStations`는 legWaypoints[0]부터 수집하므로 origin이 빠져 있다 — prepend.
+  // #2892 — resolution 호출보다 먼저 계산해 `forwardSegment`(진행 방향 순서 역명 배열)로
+  // `resolveTrainCodeFromPositions`/`evaluateLegBoardingTransition`에 전달한다(앵커를 막 통과한
+  // 열차 후보창 확장용).
+  const legSegment = buildLegSegmentStations(legWaypoints, anchor.line);
+  if (legSegment.length === 0) {
+    onOutcome?.('none', { noneReason: 'leg-segment-empty' });
+    return null;
+  }
+  const segmentStations =
+    legSegment[0] === anchor.originStation ? legSegment : [anchor.originStation, ...legSegment];
+
   const positions = await seoul.fetchPositions(anchor.line);
   const resolutionAnchor = { line: anchor.line, boardingStation: anchor.originStation, direction };
 
@@ -571,6 +640,7 @@ export async function attemptBoardingAnchorResolution(
       positions,
       now,
       options.legTransition.pending,
+      segmentStations,
     );
     onLegTransition?.(confirmation);
     if (confirmation.status !== 'confirmed') {
@@ -579,7 +649,7 @@ export async function attemptBoardingAnchorResolution(
     }
     resolvedTrainCode = confirmation.trainCode;
   } else {
-    const resolution = resolveTrainCodeFromPositions(resolutionAnchor, positions, now);
+    const resolution = resolveTrainCodeFromPositions(resolutionAnchor, positions, now, segmentStations);
     if (resolution.status !== 'resolved') {
       onOutcome?.(
         resolution.status,
@@ -589,16 +659,6 @@ export async function attemptBoardingAnchorResolution(
     }
     resolvedTrainCode = resolution.trainCode;
   }
-
-  // segmentStations — 탑승역(anchor.originStation) + 현재 leg의 나머지 정차역(환승/도착까지 포함).
-  // `buildLegSegmentStations`는 legWaypoints[0]부터 수집하므로 origin이 빠져 있다 — prepend.
-  const legSegment = buildLegSegmentStations(legWaypoints, anchor.line);
-  if (legSegment.length === 0) {
-    onOutcome?.('none', { noneReason: 'leg-segment-empty' });
-    return null;
-  }
-  const segmentStations =
-    legSegment[0] === anchor.originStation ? legSegment : [anchor.originStation, ...legSegment];
 
   onOutcome?.('resolved');
   return {

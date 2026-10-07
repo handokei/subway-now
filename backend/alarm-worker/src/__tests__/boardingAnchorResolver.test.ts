@@ -148,6 +148,131 @@ describe('resolveTrainCodeFromPositions', () => {
 });
 
 /**
+ * #2892 — 탑승 확인(탭) 시점엔 사용자 열차가 이미 앵커 역을 떠나 있을 수 있다(10/7 저녁 실측,
+ * 뚝섬/2호선). `freshCandidatesAtAnchor`(앵커 "정위치"만 인정)가 0건일 때만, 앵커를 진행
+ * 방향으로 막 통과한 열차(최대 1 hop)까지 후보창을 확장한다 — `arrivalsFromPositions.ts:52-61`
+ * (#2875)와 동일 패턴. 방향 필터는 그대로 유지(반대 방향 열차 영구 배제).
+ */
+describe('resolveTrainCodeFromPositions — #2892 앵커 통과 열차 후보창 확장', () => {
+  // ANCHOR = { line: '7', boardingStation: '중곡', direction: 'down' }. forwardSegment은
+  // 진행 방향(down) 순서로 중곡부터 나열 — 중곡(0) → 군자(1, 1-hop) → 어린이대공원(2, 2-hop).
+  const FORWARD_SEGMENT = ['중곡', '군자', '어린이대공원'];
+
+  it('앵커 정위치 0건 + 1-hop 전방 DEPARTED(방향 일치) → resolved', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [position({ trainCode: '7777', stationName: '군자', trainSttus: 2 })],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'resolved', trainCode: '7777' });
+  });
+
+  it('앵커 정위치 0건 + 1-hop 전방 ARRIVED(방향 일치) → resolved', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [position({ trainCode: '7777', stationName: '군자', trainSttus: 1 })],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'resolved', trainCode: '7777' });
+  });
+
+  it('ⓐ anchor.direction=null이면 1-hop 전방 후보가 있어도 확장하지 않는다 — none', () => {
+    const nullDirAnchor: BoardingAnchor = { ...ANCHOR, direction: null };
+    const result = resolveTrainCodeFromPositions(
+      nullDirAnchor,
+      [position({ trainCode: '7777', stationName: '군자', trainSttus: 2 })],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'none' });
+  });
+
+  it('ⓑ 1-hop 전방이지만 반대 방향(isUp 불일치)인 열차는 절대 선택되지 않는다 — none', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [position({ trainCode: '8425', stationName: '군자', trainSttus: 2, isUp: true })],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'none' });
+  });
+
+  it('ⓒ 2-hop 이상 떨어진 열차는 배제된다 — none', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [position({ trainCode: '7777', stationName: '어린이대공원', trainSttus: 2 })],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'none' });
+  });
+
+  it('ⓓ 1-hop 전방에 복수 후보(방향 일치) → ambiguous', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [
+        position({ trainCode: '7777', stationName: '군자', trainSttus: 2 }),
+        position({ trainCode: '7779', stationName: '군자', trainSttus: 1 }),
+      ],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'ambiguous' });
+  });
+
+  it('forwardSegment 미전달(기존 호출자 호환) → 앵커 정위치 0건이면 확장 없이 none', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [position({ trainCode: '7777', stationName: '군자', trainSttus: 2 })],
+      NOW,
+    );
+    expect(result).toEqual({ status: 'none' });
+  });
+
+  it('회귀 가드: 앵커 정위치에 유효 후보(ARRIVED)가 있으면 forwardSegment가 있어도 정위치 결과가 그대로 채택된다', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [
+        position({ trainCode: '7246' }), // 정위치, ARRIVED
+        position({ trainCode: '7777', stationName: '군자', trainSttus: 2 }), // 1-hop 전방
+      ],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'resolved', trainCode: '7246' });
+  });
+
+  it('APPROACHING(0)으로 1-hop 전방에 있는 열차는 "통과"로 간주하지 않아 후보에서 제외된다 — none', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [position({ trainCode: '7777', stationName: '군자', trainSttus: 0 })],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'none' });
+  });
+
+  it('신선도 임계 초과(stale)인 1-hop 전방 후보는 제외된다 — none', () => {
+    const result = resolveTrainCodeFromPositions(
+      ANCHOR,
+      [
+        position({
+          trainCode: '7777',
+          stationName: '군자',
+          trainSttus: 2,
+          recptnMs: NOW - POSITION_FRESHNESS_MS - 1,
+        }),
+      ],
+      NOW,
+      FORWARD_SEGMENT,
+    );
+    expect(result).toEqual({ status: 'none' });
+  });
+});
+
+/**
  * #2754 red② — leg-2 cron 연속확증 재설계. "사용자가 탄 열차는 타자마자 출발하므로 ARRIVED를
  * 2 cycle 연속 유지할 수 없다"는 실측 제약(9/18 실캡처, 이슈 본문)에 따라, 구 설계(같은
  * trainCode가 2 cycle 연속 ARRIVED/APPROACHING)를 ARRIVED/APPROACHING → DEPARTED **전이**

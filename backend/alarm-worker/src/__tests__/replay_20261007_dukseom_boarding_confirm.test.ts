@@ -177,10 +177,12 @@ describe('#2888 재생 — 10/7 저녁 id155 탑승확인 실패 (뚝섬/2호선
       },
     );
 
-    // 현재 코드: DEPARTED(2)는 resolveTrainCodeFromPositions의 priority list 밖이라 제외되고,
-    // ARRIVED/APPROACHING tier 둘 다 0개로 떨어져 'none'이 된다.
-    expect(outcome).toBe('none');
-    expect(lock).toBeNull();
+    // #2892 fix 후: 앵커("뚝섬") 정위치 후보는 여전히 0개(ARRIVED/APPROACHING tier 둘 다 0)지만,
+    // 앵커를 진행 방향으로 막 통과한 1-hop 전방(성수) 후보창 확장으로 trainNo 6408이 유일하게
+    // 잡혀 resolved된다. 아래 양방향 assert가 그 증거(8425는 여전히 배제, 2 hop+는 배제)를
+    // 이어서 확인한다.
+    expect(outcome).toBe('resolved');
+    expect(lock?.trainCode).toBe('6408');
 
     // ---- 교정된 양방향 assert: production과 동일한 direction으로 재확인 ----
     // production이 실제로 쓰는 값(`boardingAnchorResolver.ts:534-538`)과 동일하게 계산한다 —
