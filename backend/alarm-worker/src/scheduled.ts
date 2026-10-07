@@ -5874,7 +5874,10 @@ async function maybeStampLegAnchorFromObservation(
   }
 }
 
-async function completeWaypointAdvance(
+// #2920 — export 사유: `/trips/:token/boarding-confirm`(index.ts)의 `disembarked` 응답이
+// destinationConfirmPendingSince 유예 중인 trip에 한해 이 함수를 직접 호출해 A2e(cron
+// 타임아웃)와 동일한 종료 경로로 즉시 완결한다. 새 종료 로직 신설 없음 — 호출자만 추가.
+export async function completeWaypointAdvance(
   trip: Trip,
   waypoint: Waypoint,
   env: Env,
@@ -6524,6 +6527,92 @@ function hasBoardingEvidence(trip: Trip, now: number): boolean {
   );
 }
 
+/**
+ * #2920 (#2900 옵션 C의 "질문" 단계) — 증거 없는 목적지 도착으로 종료 유예가 시작되는
+ * 시점에 "하차 확인" 프롬프트를 1회 발사한다.
+ *
+ * **새 알림 채널·새 문구 신설 금지** — 기존 hop-end(환승역 "하차했나요?") push 채널
+ * (`DISEMBARK_PROMPT_CATEGORY`, `hopEndKind: 'disembark'`, `maybeFireHopEndPrompt`가 쓰는 바로
+ * 그 `sendBoardingPromptPush` + `buildHopEndPromptMessage`)을 목적지 역으로 재사용한다. 앞선
+ * 시도가 `fireTrainReconfirmPush`("탑승 열차를 찾을 수 없어요")를 재사용했다가 도착 확인과
+ * 의미가 다른 문구 불일치로 되돌린 전례가 있어(#2900 PR 재설계 사유) 반드시 하차 확인 의미의
+ * 채널만 재사용한다.
+ *
+ * `nextLine`/`nextStation`을 전달하지 않는다(목적지라 다음 leg가 없음) — i18n
+ * `hopEndPromptBody`가 `!nextLine` 분기로 "{line}호선 {역}에서 내려주세요." 단일 문장으로
+ * 자연 축약되고(신규 문구 아님, 기존 분기 재사용), title은 이슈 본문이 명시한 그대로
+ * "{역}에서 하차하셨나요?"(`hopEndPromptTitle`).
+ *
+ * dedup(거부 케이스 ⓑ): 이 함수는 caller(`runLocklessDestination`)가 `destinationConfirmPendingSince`를
+ * 이번 cycle에 최초로 stamp할 때만(=1회) 호출된다 — 그 가드 자체가 "트립당 1회"를 보장하므로
+ * 환승 hop-end처럼 별도의 `hopEndPromptState`/dedup 채널을 두지 않는다(거부 케이스 ⓔ — 환승
+ * hop-end state/게이트를 전혀 건드리지 않아 그 경로는 무변경).
+ */
+async function fireDestinationDisembarkPrompt(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const { title, body } = buildHopEndPromptMessage(
+    waypoint.stationName,
+    waypoint.line,
+    null,
+    null,
+    trip.locale,
+  );
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
+        deviceToken: resolveTripDeviceToken(trip),
+        pushId,
+        title,
+        body,
+        originStation: waypoint.stationName,
+        line: waypoint.line,
+        tripToken: trip.token,
+        sentAt: now,
+        triggerKind: 'cron',
+        hopEndKind: 'disembark',
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+  if (heal.result.ok) {
+    // 기존 hop-end 발사와 동일한 집계 채널(DebugModal/wrangler tail) 재사용 — 신규 stats 필드
+    // 없이도 "boardingPrompt 분류 push가 1건 더 나갔다"가 대시보드에 반영된다.
+    stats.silentPushFiredByKind.boardingPrompt += 1;
+    log('destination-disembark-prompt: fired (#2920, hop-end 채널 재사용)', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      line: waypoint.line,
+    });
+  } else {
+    log('destination-disembark-prompt: push failed', {
+      token: trip.token.slice(0, 8),
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+  }
+}
+
 async function runLocklessDestination(
   trip: Trip,
   waypoint: Waypoint,
@@ -6587,6 +6676,11 @@ async function runLocklessDestination(
     // 함수를 export해 가져왔다(`liveActivity.ts`). 실제 trip 삭제/D1/LA dismissal은 아직
     // 수행하지 않는다 — 그건 위 pending 분기가 타임아웃 후에 처리한다.
     await fireTripEndedAlertPush(trip, 'destination-arrived', env, deps, now, log);
+    // #2920 — 같은 시점에 "하차 확인" 프롬프트를 기존 hop-end(환승역 "하차했나요?") 채널로
+    // 재사용해 1회 발사한다(새 채널/문구 신설 금지). 이 if 블록 자체가 pending 최초 1회에만
+    // 진입하므로(이 함수 상단의 `destinationConfirmPendingSince !== undefined` 가드가 재진입을
+    // 막음) 별도 dedup 없이 "트립당 1회"가 보장된다(거부 케이스 ⓑ).
+    await fireDestinationDisembarkPrompt(trip, waypoint, env, deps, stats, now, log, generatePushId);
     return false;
   }
 

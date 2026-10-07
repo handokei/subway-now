@@ -7691,7 +7691,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(stats.destinationConfirmFired).toBe(1);
     // #2900 거부 케이스 ⓕ — 도착 알림(trip-ended, reason=destination-arrived) push 1회,
     // 증거 유무와 무관하게 발사.
-    expect(apnsFetch).toHaveBeenCalledTimes(1);
+    // #2920 — 같은 시점에 하차 확인 프롬프트(hop-end 채널 재사용)도 1회 추가 발사되므로
+    // 총 호출 수는 2회로 늘어난다(아래 두 push 각각 존재 확인으로 분해).
+    expect(apnsFetch).toHaveBeenCalledTimes(2);
     const tripEndedCall = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).find((call) => {
       try {
         const body = JSON.parse(call[1].body as string);
@@ -7701,6 +7703,16 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
       }
     });
     expect(tripEndedCall, 'S11 거부 케이스 ⓕ 위반 — 증거 없다고 도착 알림이 발사되지 않음').toBeDefined();
+    // #2920 — 하차 확인 프롬프트(hop-end 채널 재사용)도 함께 발사됐는지 확인.
+    const disembarkCall = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).find((call) => {
+      try {
+        const body = JSON.parse(call[1].body as string);
+        return body?.body?.kind === 'boarding-prompt' && body?.body?.hopEndKind === 'disembark';
+      } catch {
+        return false;
+      }
+    });
+    expect(disembarkCall, '#2920 위반 — 하차 확인 프롬프트가 발사되지 않음').toBeDefined();
   });
 
   it('waypoint advance는 매역 push 발사 후에도 정상 수행 (push와 progress는 독립)', async () => {

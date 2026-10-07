@@ -86,6 +86,7 @@ import { SeoulArrivalClient } from './seoul';
 import { isTransferOrDestination } from './transferDestinationGate';
 import {
   advanceBoardingLockWaypoint,
+  completeWaypointAdvance,
   createEmptyScheduledStats,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
@@ -2165,6 +2166,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // "무엇을 근거로 시도했는지"를 남긴다(invalid-route 거부도 anchorSource:'tap'으로 남는다).
   let anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined;
   let working: Trip = existing;
+  // #2920 — destinationConfirmPendingSince 유예 trip의 즉시 종료 분기(아래 'disembarked')가
+  // completeWaypointAdvance로 trip을 이미 KV에서 삭제했을 때 true. 공통 경로의 putTrip이
+  // 삭제된 trip을 재생성하지 않도록 가드한다.
+  let tripFinalized = false;
 
   if (payload.action === 'boarded') {
     if (working.infoModeEnabled !== true) {
@@ -2246,11 +2251,36 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
     }
   } else if (payload.action === 'disembarked') {
-    if (existing.boardingLock !== undefined) {
-      working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
-      await deleteProgress(c.env.TRIPS, token);
+    // #2920 — destinationConfirmPendingSince(#2900 증거 없는 목적지 유예) 중인 trip의 [하차함]
+    // 응답은 "탑승 증거 없이 시작된 유예"의 사용자 확인 자체가 ground truth다. 남은
+    // DESTINATION_CONFIRM_TIMEOUT_MS(7분)을 기다리지 않고 A2e(cron 타임아웃)와 동일한 종료
+    // 경로(`completeWaypointAdvance`)로 즉시 완결한다 — 새 종료 경로 신설 없음, 호출 시점만
+    // 앞당긴다. 이 trip은 lock이 없으므로(그래서 유예 분기를 탔다) 아래 일반 lock 해제
+    // 분기와는 상호 배타.
+    if (existing.destinationConfirmPendingSince !== undefined) {
+      const destinationWaypoint = existing.waypoints[0];
+      if (destinationWaypoint) {
+        const archFlag = await getArchFlag(c.env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
+        await completeWaypointAdvance(
+          existing,
+          destinationWaypoint,
+          c.env,
+          buildSyncScheduledDeps(c.env, archFlag),
+          createEmptyScheduledStats(now),
+          now,
+          createJsonLogger(),
+          () => crypto.randomUUID(),
+        );
+      }
+      tripFinalized = true;
+      lockState = 'released';
+    } else {
+      if (existing.boardingLock !== undefined) {
+        working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
+        await deleteProgress(c.env.TRIPS, token);
+      }
+      lockState = 'released';
     }
-    lockState = 'released';
   } else {
     // 'not-boarded' — POST /boarding-prompt/dismiss와 동일 의미(재현).
     working = {
@@ -2265,7 +2295,12 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // 버전은 stamp가 분기별 putTrip 안에 있어 disembarked인데 existing.boardingLock===undefined인
   // 케이스(lock이 이미 해제/만료된 상태에서 응답)가 putTrip 자체를 타지 않아 responded=0으로
   // 남았다(이 PR이 수리하려던 하드코딩 0 갭이 그 분기에서 재발) — 공통 경로로 올려 근본 차단.
-  await putTrip(c.env.TRIPS, markBoardingPromptResponded(working));
+  // #2920 — tripFinalized(위 destinationConfirmPendingSince 즉시종료 분기)가 true면
+  // completeWaypointAdvance가 이미 trip을 KV에서 삭제했다. 여기서 putTrip을 또 호출하면
+  // 삭제된 trip을 그대로 재생성하는 회귀가 되므로 이 경로에서만 stamp write를 skip한다.
+  if (!tripFinalized) {
+    await putTrip(c.env.TRIPS, markBoardingPromptResponded(working));
+  }
 
   // SonarCloud S5145 — token(URL param)/station/line/action은 전부 요청에서 유래한
   // user-controlled 값이라 신규코드 게이트에서 taint로 잡힌다(tokenPrefix로 마스킹해도

@@ -365,7 +365,13 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       forbiddenStations: ['어린이대공원(세종대)', '군자(능동)', '중곡', '용마산', '사가정', '면목'],
       // 건대입구 환승 waypoint는 `locklessTransferAdvanced`(motion 게이트 미적용, 별도 경로)로
       // cycle 1에 즉시 advance — hop-end-prompt("하차했나요?") 채널로만 발사된다.
-      hopEndPromptStations: ['건대입구'],
+      //
+      // #2920 — 이 trip은 lock이 생애 전체에 한 번도 없어(위 #2900 설명과 동일 trip) 목적지
+      // (용마산) 도착도 증거 없는 종료 유예 분기를 탄다. 그 유예 최초 stamp 시점에 "하차
+      // 확인" 프롬프트가 같은 hop-end 채널(DISEMBARK_PROMPT_CATEGORY, hopEndKind='disembark')
+      // 재사용으로 추가 발사되므로 용마산도 이 목록에 들어간다 — 새 채널이 아니라 기존
+      // 집계(firedHopEndPromptStations)가 그대로 잡아낸 것.
+      hopEndPromptStations: ['건대입구', '용마산'],
       // ADR-039 조건 1 재판정(3차, motion 주입 후) — 경유역 3개는 정상 통과 알림이 뜬다
       // (silent push, device가 로컬 알림 구성). **RED는 여기 없음** — 2차 결론(0건) 철회.
       //
