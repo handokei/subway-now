@@ -25,6 +25,13 @@
  * 어떤 이유로든 종료됐으면, **payload가 완전히 유효해도(waypoints 비지 않음)** 재등록이
  * 400으로 거부된다. 10/7 트립은 06:48:31 destination-arrived로 종료됐고, 재시도는
  * +1:42/+1:58/+2:30/+3:32 뒤 — 전부 1시간 retention 안이다.
+
+ *
+ * #2912 (후속 fix) — 위 메커니즘 판정을 근거로, destination 종료 + 재등록 payload에 남은
+ * waypoints가 있을 때만 쿨다운을 우회하는 좁은 예외가 `index.ts`(cooldownBypass.ts 쿼터
+ * 포함)에 추가됐다. 아래 "10/7 아침 재구성" describe의 기대 status는 그 변경을 반영해
+ * 400→200으로 갱신했다(fixture의 시각 간격/payload shape 자체는 변경 없음) — 각 테스트
+ * 케이스 바로 위 주석에 #2912 참조를 남겼다.
  */
 import { describe, expect, it } from 'vitest';
 import { app, validateTrip } from '../index';
@@ -132,8 +139,16 @@ describe('S12 (#2907) — 10/7 아침 재구성: 실제 거부 메커니즘은 v
   // 유효함"이라는 전제가 동시에 성립한다.
   const retryOffsetsMs = [102_000, 118_000, 150_000, 212_000];
 
+  // #2912 — 본 PR(#2911)이 "현재 메커니즘은 #1425 쿨다운"이라고 판정했던 바로 그 지점이
+  // #2912의 fix 대상이다. destination 종료 + 남은 waypoints 존재(= 이 payload가 구조적으로
+  // 항상 만족하는 조건, 위 fullyValidInFlightPayload 참고)는 #2912의 좁은 예외 조건과
+  // 정확히 일치하므로 이제 200으로 성공한다(쿨다운 자체는 제거되지 않음 — eta-missing 등
+  // 다른 사유는 index.test.ts의 "#2912 — destination cooldown narrow bypass exception"
+  // describe에서 여전히 400으로 차단됨을 별도로 확인). fixture(시각 간격/payload shape)는
+  // 변경하지 않았다 — 이 describe의 "현재 거부 메커니즘" 판정 결과(기대 status)만 #2912
+  // 구현에 맞춰 갱신한다.
   it.each(retryOffsetsMs)(
-    '+%dms 재시도 — waypoints가 가득 찬 완전히 유효한 payload도 destination-arrived 쿨다운(1h) 안이면 400으로 거부된다',
+    '+%dms 재시도 — waypoints가 가득 찬 완전히 유효한 payload는 destination 쿨다운(1h) 안이어도 #2912 좁은 예외로 200 성공한다 (수정 전엔 400)',
     async (offsetMs) => {
       const env = makeKvEnv();
       // backend는 destination-arrived를 외부 contract 'destination'으로 저장한다 (tripStatus.ts:toTripStatusEndReason).
@@ -141,15 +156,14 @@ describe('S12 (#2907) — 10/7 아침 재구성: 실제 거부 메커니즘은 v
 
       const res = await post('/trips', fullyValidInFlightPayload('s12'), env);
 
-      expect(res.status).toBe(400);
-      // #1425 경로는 validateTrip과 달리 reason을 응답 body에 실제로 노출한다 — invalid_trip과
-      // 대비되는 지점 (스펙 2 부분 충족, 아래 describe에서 invalid_trip과 직접 대조).
+      expect(res.status).toBe(200);
       expect(await res.json()).toEqual({
-        error: 'trip-recently-ended',
-        reason: 'destination',
+        ok: true,
+        token: 'tok-s12',
+        confirmedEnv: 'sandbox',
       });
-      // 거부된 재시도는 트립을 되살리지 않는다 — auto-revive 차단 확인 (기존 index.test.ts와 동일 불변식).
-      expect(await env.TRIPS.get('trip:tok-s12')).toBeNull();
+      // #2912 우회 성공 — 재등록이 실제로 trip을 되살린다 (10/7 사고에서 복구가 필요했던 지점).
+      expect(await env.TRIPS.get('trip:tok-s12')).not.toBeNull();
     },
   );
 
@@ -210,11 +224,14 @@ describe('S12 (#2907) — 거부 사유 전달 범위: #1425 쿨다운은 reason
 
   it('반면 #1425 쿨다운 거부는 reason(endReason)을 포함한다 — 단, device가 이 reason으로 무엇을 해야 하는지(재시도 금지/새 trip 생성)는 어디에도 명시돼 있지 않다 (관측 갭)', async () => {
     const env = makeKvEnv();
-    seedTripEnded(env, 'tok-cooldown', Date.now() - 5_000, 'destination');
+    // #2912 — endReason='destination'은 이제(이 payload처럼 waypoints가 남아있으면) 좁은 예외로
+    // 우회되므로, 이 테스트의 목적(cooldown reject가 reason을 노출한다는 사실 자체를 확인)과
+    // 무관해진다. 'eta-missing'(#2912 범위 밖, 계속 차단)으로 바꿔 reason 노출 동작만 격리 검증한다.
+    seedTripEnded(env, 'tok-cooldown', Date.now() - 5_000, 'eta-missing');
     const res = await post('/trips', { ...fullyValidInFlightPayload('cooldown'), token: 'tok-cooldown' }, env);
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe('trip-recently-ended');
-    expect(body.reason).toBe('destination');
+    expect(body.reason).toBe('eta-missing');
   });
 });

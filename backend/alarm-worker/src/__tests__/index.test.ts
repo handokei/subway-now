@@ -6227,6 +6227,99 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
       expect(await env.TRIPS.get('tripStatus:tok')).not.toBeNull();
     });
   });
+
+  // #2912 (TDD red-first) — 10/7 아침 사고(S12, PR #2911)의 진짜 원인: 직전 종료가
+  // destination(오판 가능)이고 incoming payload의 waypoints가 남아있는데도(= 사용자가 아직
+  // 목적지에 도달하지 않았다는 device 측 주장) 쿨다운이 무조건 거부해 복구가 불가능했다.
+  // 좁은 예외(①endReason===destination ②남은 waypoints 존재 ③쿼터 미소진)에서만 우회한다.
+  describe('#2912 — destination cooldown narrow bypass exception (복구 가능 재등록)', () => {
+    it('유효 payload + 남은 waypoints 있는데 destination 쿨다운 안이면 200으로 성공한다 (수정 전: 400 trip-recently-ended)', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'tok', Date.now() - 102_000, 'destination');
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, token: 'tok', confirmedEnv: 'sandbox' });
+      expect(await env.TRIPS.get('trip:tok')).not.toBeNull();
+    });
+
+    it('우회 성공 후 tripStatus 종료 마커는 #2144 cleanup으로 삭제된다', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'tok', Date.now() - 5_000, 'destination');
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(200);
+      expect(await env.TRIPS.get('tripStatus:tok')).toBeNull();
+    });
+
+    it('거부 케이스 ⓒ — 목적지 도달이 실제로 맞는 경우(waypoints:[])는 validateTrip이 구조적으로 먼저 거부하므로 이 우회 분기에 도달하지 않는다 (회귀 아님)', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'tok', Date.now() - 5_000, 'destination');
+
+      const res = await post('/trips', { ...base(), waypoints: [] }, env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_trip' });
+    });
+
+    it('거부 케이스 — endReason이 destination이 아니면(예: eta-missing) 남은 waypoints가 있어도 계속 차단된다 (좁은 예외, 일괄 완화 아님)', async () => {
+      const env = makeKvEnv();
+      seedTripEnded(env, 'tok', Date.now() - 5_000, 'eta-missing');
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'trip-recently-ended', reason: 'eta-missing' });
+    });
+
+    it('거부 케이스 ⓑ — user-delete(HTTP DELETE)로 끝난 trip은 tripStatus 마커 자체가 기록되지 않아(writeTripEndedStatus 미호출) 이 우회 분기 대상이 아니다 — DELETE 후 재등록은 정상 200', async () => {
+      const env = makeKvEnv();
+      await post('/trips', base(), env);
+      await del('/trips/tok', env);
+      // DELETE 경로는 reason 미지정 → tripStatus:tok 마커가 쓰이지 않는다.
+      expect(await env.TRIPS.get('tripStatus:tok')).toBeNull();
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(200);
+    });
+
+    it('거부 케이스 ⓐ/ⓓ — 동일 payload가 짧은 시간에 쿼터 상한(3회)을 넘겨 반복되면(진짜 race/오작동) 그 이후는 다시 쿨다운으로 차단된다', async () => {
+      const env = makeKvEnv();
+      // 매 시도마다 destination 종료 마커를 다시 심어 "backend가 계속 destination으로 끝내고
+      // device가 계속 같은 payload로 재시도"하는 반복 패턴을 재현한다.
+      for (let i = 0; i < 3; i += 1) {
+        seedTripEnded(env, 'tok', Date.now() - 5_000, 'destination');
+        const res = await post('/trips', base(), env);
+        expect(res.status).toBe(200);
+      }
+      // 4번째 반복 — 쿼터(DESTINATION_COOLDOWN_BYPASS_MAX=3) 소진 → 기존 쿨다운 거부로 복귀.
+      seedTripEnded(env, 'tok', Date.now() - 5_000, 'destination');
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'trip-recently-ended', reason: 'destination' });
+    });
+
+    it('관측 — 우회가 발생하면 D1 trip_events에 사유가 기록된다 (meta.endReason/waypointsRemaining/bypassCount)', async () => {
+      const recordSpy: Array<Record<string, unknown>> = [];
+      const fakeDb = {
+        prepare: () => ({
+          bind: (...args: unknown[]) => {
+            recordSpy.push({ args });
+            return { run: async () => undefined };
+          },
+        }),
+      } as unknown as Env['DB'];
+      const env = makeKvEnv();
+      env.DB = fakeDb;
+      seedTripEnded(env, 'tok', Date.now() - 5_000, 'destination');
+
+      const res = await post('/trips', base(), env);
+      expect(res.status).toBe(200);
+      expect(recordSpy.length).toBeGreaterThan(0);
+      const metaArg = recordSpy[0].args as unknown[];
+      const meta = JSON.parse(metaArg[5] as string) as Record<string, unknown>;
+      expect(meta).toMatchObject({ endReason: 'destination', bypassCount: 1 });
+      expect(typeof meta.waypointsRemaining).toBe('number');
+    });
+  });
 });
 
 // #1897 (RC-5) — POST /trips 응답 confirmedEnv echo.
