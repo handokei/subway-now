@@ -191,7 +191,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -7668,9 +7668,13 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     // lock 없는 trip + arrivals에 임의 trainCode arvlCd=1 → 외부에서 보면 "매역 신호"지만
     // lock-active 경로(`fireArvlCdStationPush`/`arvlCdFireSuccess`)는 여전히 차단돼야 한다.
     // #2720 — makeTrip() 기본 waypoint는 kind:'destination' 단일 waypoint라, lock 부재
-    // trip이라도 이 신호는 이제 lockless destination ground-truth 경로
-    // (`runLocklessDestination`)로 advance된다 — lockMissing으로 떨어지지 않는다(#640 게이트가
+    // trip이라도 이 신호는 lockless destination ground-truth 판정
+    // (`runLocklessDestination`)을 통과한다 — lockMissing으로 떨어지지 않는다(#640 게이트가
     // 막는 대상은 lock-active 경로뿐, lockless destination advance는 별개 경로).
+    //
+    // #2900 (옵션 C) — 이 trip은 lock이 생애 전체에 한 번도 없었던(lockEverAttached 미설정)
+    // 순수 lockless trip이라 "탑승 증거 없음"에 해당 — 즉시 완결 대신 확인 질문으로 전환된다
+    // (완결 자체는 A2e류 타임아웃 테스트가 별도로 검증).
     const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('강남', 0, 1),
       trip: makeTrip(), // boardingLock undefined
@@ -7679,8 +7683,12 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(stats.arvlCdFireSuccess).toBe(0);
     // mismatch도 0 — lock-active fire 경로 진입 자체가 없음.
     expect(stats.arvlCdFireMismatch).toBe(0);
-    expect(stats.lockMissing).toBe(0);
-    expect(stats.locklessDestinationAdvanced).toBe(1);
+    // #2900 — 질문 전환(advance 미완료) 분기는 caller에 false를 반환해 기존 lockMissing
+    // fallthrough를 그대로 탄다(이 cycle도 "lock이 실제로 없다"는 사실 자체는 변하지 않음).
+    expect(stats.lockMissing).toBe(1);
+    expect(stats.locklessDestinationAdvanced).toBe(0);
+    expect(stats.destinationConfirmFired).toBe(1);
+    // 확인 질문(train-reconfirm 채널 재사용) push 1회.
     expect(apnsFetch).toHaveBeenCalledTimes(1);
   });
 
@@ -13518,13 +13526,20 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
   });
 
   // #2720 — A2가 남긴 `[{용마산, destination}]` 단일 waypoint에서 lockless leg가 영원히
-  // 정지하던 결함(이 describe 헤더의 break #1과 동일 클래스, destination 버전)의 회귀 가드.
+  // 정지하던 결함(이 describe 헤더의 break #1과 동일 클래스, destination 버전)의 회귀 가드였다.
   // infoModeEnabled를 명시하지 않아(요구사항 3) C 토글 무관 동작을 확인한다.
+  //
+  // #2900 (옵션 C) 업데이트 — 이 trip은 lock이 생애 전체에 한 번도 부착된 적 없는(lockEverAttached
+  // 미설정) 순수 lockless leg-2다. 10/7 아침 사고와 정확히 같은 모양(탑승 증거 없이 다른 열차
+  // 신호로 목적지 확정)이라 "즉시 완결"이 아니라 "종료 대신 질문" 분기를 타야 한다 — 이 테스트가
+  // 바로 이슈 본문이 명시한 "기존 테스트 A2d가 증거 없는 목적지 확정을 green으로 고정하고
+  // 있다"는 그 테스트다. 결정 이후 기대값을 질문 전환으로 갱신한다(아래 A2e가 타임아웃 후
+  // 종료까지 이어지는 짝 테스트).
   it.each([
     ['infoModeEnabled 미설정(false 취급)', undefined] as const,
     ['infoModeEnabled=true(C 토글 ON)', true] as const,
   ])(
-    'A2d (#2720) — 용마산 도착 신호(arvlCd=1) → lockless destination advance + destination-arrived 완결 (%s)',
+    'A2d (#2720→#2900) — 탑승 증거 없는 용마산 도착 신호(arvlCd=1) → 즉시 완결 대신 확인 질문 전환 (%s)',
     async (_label, infoModeEnabled) => {
       const kv = new InMemoryKV();
       await putTrip(
@@ -13545,8 +13560,10 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
         now: () => NOW,
         generatePushId: () => 'p-2323-a2d',
       });
-      expect(stats.locklessDestinationAdvanced).toBe(1);
-      // lock-active 매역 fire 경로는 여전히 미진입 — 중복 종료 불가(요구사항 4).
+      // #2900 — 증거 없이 즉시 완결되지 않는다(과거 기대값 역전). 질문 전환 카운터만 증가.
+      expect(stats.locklessDestinationAdvanced).toBe(0);
+      expect(stats.destinationConfirmFired).toBe(1);
+      // lock-active 매역 fire 경로는 여전히 미진입.
       expect(stats.arvlCdFireSuccess).toBe(0);
       const tripEndedCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
         (call) => {
@@ -13558,10 +13575,52 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
           }
         },
       );
-      expect(tripEndedCall).toBeDefined();
-      expect(await kv.get(`trip:${TOKEN_A2}`)).toBeNull();
+      // #2900 — trip-ended push는 아직 나가지 않는다. trip은 KV에 생존(영구 잔존은 아님 — A2e가
+      // 타임아웃 후 종료를 검증).
+      expect(tripEndedCall).toBeUndefined();
+      expect(await kv.get(`trip:${TOKEN_A2}`)).not.toBeNull();
     },
   );
+
+  // #2900 — A2d의 짝 테스트: 질문 전환 후 타임아웃이 경과하면(사용자 응답 유무와 무관) 거부
+  // 케이스 ⓒ대로 반드시 종료한다 — "영구 잔존"은 B안의 실패 모드라 금지된다.
+  it('A2e (#2900) — 확인 질문 타임아웃 경과 시 응답 없이도 종료한다(영구 잔존 금지, 거부케이스 ⓒ)', async () => {
+    const kv = new InMemoryKV();
+    const firstSeenAt = NOW;
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTransferTrip(TOKEN_A2, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: NOW,
+        destinationConfirmPendingSince: firstSeenAt,
+      }),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const afterTimeout = firstSeenAt + 7 * 60 * 1000;
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulFull({ 용마산: [arrivalOnLine('7', '용마산', 0, 1, '7256')] }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => afterTimeout,
+      generatePushId: () => 'p-2900-a2e',
+    });
+    expect(stats.destinationConfirmTimedOut).toBe(1);
+    expect(stats.locklessDestinationAdvanced).toBe(1);
+    const tripEndedCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        try {
+          const body = JSON.parse(call[1].body as string);
+          return body?.data?.kind === 'trip-ended' && body?.data?.reason === 'destination-arrived';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(tripEndedCall).toBeDefined();
+    expect(await kv.get(`trip:${TOKEN_A2}`)).toBeNull();
+  });
 
   // #2801 — 도보시간 게이트가 leg-2 "탑승하셨나요?" 프롬프트를 늦춰(9/18 실캡처, 사용자 실열차
   // 7256이 그 창 안에서 역을 떠남) 사용자 실열차를 후보에서 배제하던 회귀를 walk-gate 제거로

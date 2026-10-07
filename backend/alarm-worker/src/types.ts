@@ -178,6 +178,24 @@ export interface Trip {
    */
   etaMissingDemotedAt?: number;
   /**
+   * #2900 (옵션 C) — lockless destination waypoint에서 arvlCd 도착 신호(ENTERING/ARRIVED)가
+   * 왔지만 탑승 증거(lock 활성 / lockEverAttached / boardingCommitted / legResolveStreak)가
+   * 전혀 없을 때, 트립을
+   * 즉시 종료하는 대신 "도착 확인" 질문으로 전환한 시점(epoch ms). 부재 = 아직 그런 신호를
+   * 관측한 적 없음(기본 상태) 또는 증거가 있어 이 분기 자체를 타지 않음.
+   *
+   * 이 값이 서는 순간 기존 train-reconfirm alert 채널(`fireTrainReconfirmPush`, #2157)을
+   * 재사용해 1회만 발사한다(새 push 채널 신설 금지, #2889 채널 경계 준수) — 그 함수 자체의
+   * KV dedup(`trainReconfirmAlertDedupKey`, trip.createdAt 기준)이 중복 발사를 추가로 막는다.
+   * 이후 cron cycle마다: (1) 증거가 생기면(예: 사용자가 알림을 보고 재확인 응답 →
+   * `/trips/:token/boarding-confirm`으로 lock 형성) 다음 tick의 `hasBoardingEvidence` 검사가
+   * true가 되어 **기존 즉시종료 경로**로 수렴(신규 종료 로직 없음, 지연 0 — 거부 케이스 ⓐ와
+   * 동일 코드). (2) `DESTINATION_CONFIRM_TIMEOUT_MS` 경과 전까지는 응답("아직")과 무관하게
+   * 이 값을 갱신하지 않음(연장 없음, 거부 케이스 ⓓ). (3) 타임아웃 경과 시 응답 유무와 무관하게
+   * 종료(영구 잔존 금지, 거부 케이스 ⓒ — B안의 실패 모드 방지).
+   */
+  destinationConfirmPendingSince?: number;
+  /**
    * #816 C — 사용자 opt-in lockless station-passed (UI: "전체역 보기").
    * BoardingLock 없는 trip에서도 station-passed(intermediate) 알림을 발사할지 여부.
    *
