@@ -1473,10 +1473,36 @@ describe('stationNotification', () => {
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith(expectedId);
     });
 
-    it('device token 미보유 시(등록 전) 스킵 — 알림 발사/stamp 모두 안 함', async () => {
-      await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남', '1');
+    it('device token 미보유 시(등록 전) 스킵 — 알림 발사/stamp 모두 안 함, return false', async () => {
+      const fired = await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남', '1');
       expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
       expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      expect(fired).toBe(false);
+    });
+
+    // #2927 (ADR-040 2단계) — 유예 타이머의 만료 콜백이 "실제로 발사했는지"를 구분해 로그 사유
+    // (device-proxy-fired)를 정확히 기록하려면 boolean 반환이 필요하다. 정상 발사(device token
+    // 보유 + hasRecentLocalStationFire=false) → true.
+    it('#2927 — 정상 발사 시 true를 반환한다', async () => {
+      await AsyncStorage.setItem(APNS_TOKEN_KEY, 'a'.repeat(64));
+
+      const fired = await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남', '7');
+
+      expect(fired).toBe(true);
+    });
+
+    // #2927 — backend push가 먼저 표시됐다면(#2902 양방향 가드, hasRecentLocalStationFire=true)
+    // 발사하지 않고 false를 반환한다 — 유예 타이머 만료 콜백이 이 값으로 "스킵됨"을 구분해
+    // device-proxy-fired를 오기록하지 않는다(ⓑ 과발사 0 + 측정 정확도).
+    it('#2927 — hasRecentLocalStationFire=true(backend 선표시)면 발사 skip + false를 반환한다', async () => {
+      await AsyncStorage.setItem(APNS_TOKEN_KEY, 'a'.repeat(64));
+      mockHasRecentLocalStationFire.mockResolvedValueOnce(true);
+
+      const fired = await fireFgAuxStationPassedNotification('중곡', 1, 'destination', '강남', '7');
+
+      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      expect(fired).toBe(false);
     });
   });
 
