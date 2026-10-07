@@ -14477,6 +14477,150 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
   });
 });
 
+// S11 (#2893) — 사용자 탑승 증거 없이 목적지 도착을 확정하면 안 된다.
+//
+// 배경: 10/7 아침 트립(id154) 06:48:28 `leg-resolve-attempt`가 pending(=탑승 미확정, trainCode
+// 2015) 상태였는데 3.3초 뒤 06:48:31 `trip-end reason=destination-arrived`. 사용자는 환승 열차에
+// 막 타던 중이었고 목적지까지 2정거장 남아 있었다. 그 트립 자체의 종료 경로는 캡처 공백으로
+// 재현 불가(PR #2890 Task 2) — 본 describe는 그 트립의 replay가 아니라, "탑승 증거 없는 목적지
+// 확정이 가능한 경로가 코드에 존재하는가"를 합성 입력으로 묻는 스펙 검증이다.
+//
+// 스펙:
+//   1. 탑승 증거(lock 부착 / confirm resolved / leg-resolve confirmed) 없는 leg-2 trip은, 같은
+//      노선의 "다른 열차"가 목적지에 도착해도 destination-arrived로 종료되면 안 된다.
+//   2. 탑승 증거가 있는 상태에서 열차가 목적지에 도착하면 정상 종료한다(과차단 금지 — 거부 케이스).
+//   3. 종료 시 D1 trip_events(kind='trip-end')에 종료 사유가 남는다.
+describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구한다', () => {
+  function makeS11FireLogDb(): { db: D1Database; inserts: unknown[][] } {
+    const inserts: unknown[][] = [];
+    const db = {
+      prepare: () => ({
+        bind: (...args: unknown[]) => {
+          inserts.push(args);
+          return {
+            run: async () => ({ success: true }),
+            first: async () => null,
+          };
+        },
+      }),
+    } as unknown as D1Database;
+    return { db, inserts };
+  }
+
+  function findTripEndInsert(inserts: unknown[][]): unknown[] | undefined {
+    // bind 인자 순서: [tokenHash, ts, kind, station, line, meta]
+    return inserts.find((args) => args[2] === 'trip-end');
+  }
+
+  // 환승 후 lock 해제된 leg-2 — 성수에서 환승해 다음 역(destination) 뚝섬으로 향하는 구간.
+  // 성수는 이미 통과(waypoints에서 shift됨)해 남은 waypoint는 뚝섬(destination) 1개 — #2720
+  // A2d와 동일한 "destination이 유일한 남은 waypoint" shape.
+  function makeLeg2NoEvidenceTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 's11-no-evidence',
+      route: { type: 'transfer', fromLine: '2', toLine: '2', transferName: '성수', stopsToTransfer: 0, stopsFromTransfer: 1 },
+      destination: '뚝섬',
+      waypoints: [{ stationName: '뚝섬', line: '2', kind: 'destination' }],
+      // leg-2 컨텍스트(환승 후) — 그러나 탑승 증거는 전혀 없음: boardingLock 없음,
+      // legResolveStreak 없음, boardingCommitted 없음.
+      currentLegAnchor: { boardingStation: '성수', line: '2' },
+      legBoardingEligibleAt: NOW,
+      ...overrides,
+    });
+  }
+
+  // ⓐ 현재 동작 — "탑승 증거 없이 목적지 도착 확정"이 가능하다. 10/7 아침 사고(06:48:28
+  // leg-resolve-attempt pending/trainCode 2015 → 3.3초 뒤 06:48:31 trip-end
+  // reason=destination-arrived)와 정확히 같은 모양이다. 이 테스트가 그 트립의 replay는
+  // 아니다(캡처 공백으로 재현 불가, PR #2890 Task 2 확정) — 합성 입력으로 "그 모양의 경로가
+  // 코드에 존재하는가"를 묻는 스펙 검증이다.
+  //
+  // ⓑ 신규 회귀가 아니다 — 기존 테스트 `A2d (#2720)`(이 파일 상단, '#2323 환승 lockless'
+  // describe)가 동일 패턴을 이미 green으로 고정하고 있다. scheduled.ts:6454-6462 주석이
+  // "새 신호·새 게이트 도입 금지"를 명시한다 — `runLocklessDestination`
+  // (scheduled.ts:6471-6500)이 `pickBestArrivalSignal`(scheduled.ts:6916-6948, trainCode
+  // 매칭 없이 line만 필터링)로 ENTERING/ARRIVED를 받으면 lock/legResolveStreak/
+  // boardingCommitted 등 탑승 증거 확인 없이 `completeWaypointAdvance` →
+  // `cleanupTripWithLa('destination-arrived')`로 직행한다(dispatch:
+  // scheduled.ts:1960-1977).
+  //
+  // ⓒ 따라서 이 동작을 바꾸려면 설계 결정이 선행해야 한다(위 "게이트 금지" 지시를 뒤집는
+  // 결정 — 별도 이슈 필요, 이 PR 범위 아님). `it.fails`로 고정해 둔다 — 현재 실패한다는
+  // 사실 자체를 단언해 CI를 green으로 유지하면서, 결정이 내려져 동작이 바뀌는 순간
+  // `it.fails`가 "예상과 달리 통과함"으로 역-실패해 테스트 갱신을 강제한다. 결정 후에는
+  // 이 블록을 일반 `it`으로 승격할 것.
+  it.fails('스펙 1 — 탑승 증거 없는 leg-2 trip은 다른 열차의 목적지 도착으로 종료되면 안 된다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLeg2NoEvidenceTrip());
+    const { db, inserts } = makeS11FireLogDb();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      // '다른 열차'(2099) — 사용자가 어느 열차에도 탑승 확정되지 않은 상태에서 관측된 신호.
+      seoul: makeArvlCdFireSeoul('뚝섬', 0, 1, '2099'),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-s11-no-evidence',
+    });
+    const stored = await kv.get('trip:s11-no-evidence');
+    expect(
+      stored,
+      'S11 스펙 1 위반 — 탑승 증거 없이 trip이 KV에서 삭제됨(= destination-arrived로 종료됨)',
+    ).not.toBeNull();
+    expect(
+      stats.locklessDestinationAdvanced,
+      'S11 스펙 1 위반 — 탑승 증거 없는 trip이 lockless destination advance 경로로 진행됨',
+    ).toBe(0);
+    expect(
+      findTripEndInsert(inserts),
+      'S11 스펙 1 위반 — 탑승 증거 없이 D1 trip_events(kind=trip-end)가 기록됨',
+    ).toBeUndefined();
+  });
+
+  it('스펙 2(거부 케이스, 과차단 금지) — 탑승 증거(lock)가 있으면 목적지 도착 시 정상 종료한다', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 's11-with-lock',
+      route: { type: 'transfer', fromLine: '2', toLine: '2', transferName: '성수', stopsToTransfer: 0, stopsFromTransfer: 1 },
+      destination: '뚝섬',
+      waypoints: [{ stationName: '뚝섬', line: '2', kind: 'destination' }],
+      // 탑승 증거: lock 부착 (사용자가 BoardingTrainList에서 명시 탑승 확정한 상태).
+      boardingLock: makeBoardingLock({
+        trainCode: '2015',
+        line: '2',
+        subwayId: '1002',
+        segmentStations: ['성수', '뚝섬'],
+      }),
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const { db, inserts } = makeS11FireLogDb();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      seoul: makeArvlCdFireSeoul('뚝섬', 0, 1, '2015'),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-s11-with-lock',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    const stored = await kv.get('trip:s11-with-lock');
+    expect(
+      stored,
+      'S11 스펙 2 위반(과차단) — 탑승 증거가 있는데도 목적지 도착 시 trip이 종료되지 않음',
+    ).toBeNull();
+    // 스펙 3 — D1 trip_events(kind='trip-end')에 종료 사유가 남는다.
+    const tripEndRow = findTripEndInsert(inserts);
+    expect(
+      tripEndRow,
+      'S11 스펙 3 위반 — 정상 종료인데도 D1 trip_events(kind=trip-end)가 기록되지 않음',
+    ).toBeDefined();
+    const meta = JSON.parse((tripEndRow as unknown[])[5] as string) as { reason?: string };
+    expect(meta.reason).toBe('destination-arrived');
+  });
+});
+
 // #2861 (T3) — lock-경로 advance(`advanceBoardingLockWaypoint` evidence=undefined, 실제로는
 // `/boarding-lock/sync`가 이 모양으로 호출)가 SSoT.alarmEvents를 stamp하는지 검증.
 //
