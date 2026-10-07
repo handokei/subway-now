@@ -5,36 +5,48 @@
 /**
  * #2889 — 재현 전용(replay) 테스트. 프로덕션 코드는 건드리지 않는다.
  *
- * 실측 근거(2026-10-07 저녁 트립): device는 프롬프트 응답을 4회 기록했으나
- * (19:23:36 boarding / 19:25:16 hop-end / 19:30:31 boarding / 19:37:18 hop-end 추정),
- * backend D1 `boarding-confirm-result`에는 2건(19:23:37 / 19:30:33)만 도달했다 —
- * 모두 "승차(boarding)" 응답과 시각이 일치하고, hop-end(환승역 하차 확인) 응답 2건은
- * 도달한 기록이 없다.
+ * ## 판정 정정 (재현 결과 '결함 아님')
  *
- * 코드 조사 결과: `useBoardingPromptResponder.ts`의
- *   - 승차 분기(`handleResponse`, 약 :283-326)는 tryAutoLock 직후 무조건
- *     `postBoardingConfirm(payload.tripToken, 'boarded', ...)`을 호출한다(#2852, 라인 ~312).
- *   - hop-end 분기(`handleHopEndResponse`, 약 :344-404)는 releaseLock / stampLegAdvance /
- *     dismissBoardingPrompt만 호출하고 `postBoardingConfirm` 호출이 **존재하지 않는다**.
+ * 최초 재현 과제는 "hop-end 응답이 backend에 전달되지 않는다"는 의심이었다. 그러나
+ * `useBoardingPromptResponder.ts`의 hop-end 분기 주석(#2282/#2278/#2287)을 보면 이는
+ * 결함이 아니라 **설계상 두 개의 분리된 확정 채널**이다:
  *
- * 즉 "탑승했다"와 "하차(환승 완료)했다"는 사용자 입장에서 같은 종류의 확정 행동(명시 의향
- * 응답)인데, 전자만 backend에 도달하고 후자는 device 로컬 처리로 끝난다 — 이 파일은 그
- * 비대칭을 같은 파일 안에서 나란히 고정해 보여준다.
+ *   - **탑승(boarding) 확정** 채널 — `postBoardingConfirm(tripToken, 'boarded', ...)`.
+ *     "지금 이 열차에 탔다"를 backend anchor resolver에 알리는 전용 신호(#2852, :312).
+ *   - **하차(hop-end) 확정** 채널 — `releaseLock('user')` + `stampLegAdvance(nextLine)`
+ *     (둘 다 device-local). `handleHopEndResponse`의 주석(:336-338)이 명시하듯, backend는
+ *     hop-end 프롬프트를 **발사(fire)한 시점에 이미** `hopEndPromptState[legKey].fired=true`
+ *     로 stamp를 끝냈다 — 사용자가 [하차함]으로 응답한 시점에 추가로 backend에 알릴 "새
+ *     사실"이 없다(다음 leg 진행은 backend cron이 다음 cycle에 자연 발사). 그래서 이 확정
+ *     경로는 `postBoardingConfirm`은 물론 `dismissBoardingPrompt`도 호출하지 않는다 —
+ *     device-local 반영만으로 충분하다는 것이 설계 의도다.
+ *   - hop-end의 **[아직]("NOT_YET") 응답**만 backend에 추가 POST(`dismissBoardingPrompt`,
+ *     실측에서 200 확인)를 보낸다 — 5분 재발사 억제(`silencedUntil`)가 목적이라 backend에
+ *     "아직 아니다"라는 새 사실을 반드시 전달해야 하기 때문이다(:399-403).
  *
- * 참고: hop-end의 "postBoardingConfirm 미호출"은 기존
- * `useBoardingPromptResponder.test.ts`(describe 'handleResponse — #2034 hop-end', #2852 주석)
- * 에도 이미 개별적으로 固定돼 있다. 이 파일은 #2889 재현 과제 전용으로, 승차/hop-end 두 경로를
- * 한 파일에서 대조하는 것이 목적이며 기존 테스트의 기대값을 변경하지 않는다.
+ * 즉 "탑승 확정"과 "하차 확정"은 같은 모양의 사용자 응답처럼 보이지만 backend 입장에서
+ * 의미가 다르다(전자=새 사실 전달 필요, 후자=이미 아는 사실의 device-local 반영) — 이 파일은
+ * 그 **경계**를 고정한다. hop-end 확정 응답이 `postBoardingConfirm`을 호출하기 **시작**하면
+ * 그것이 오히려 회귀다(설계 의도와 다른 이중 confirm 신호가 backend로 새어나가는 것).
  *
- * #2889에서 hop-end 분기에 `postBoardingConfirm` 배선을 추가하면, 아래 두 번째 테스트
- * ("hop-end 응답 → postBoardingConfirm 미호출")는 **뒤집혀야 한다**(실패하게 된다) —
- * 그 시점에 이 테스트를 "호출됨"으로 갱신해야 wiring이 완성된 것이다.
+ * 실측 근거(2026-10-07 저녁 트립): device 응답 4회(19:23:36/19:25:16/19:30:31/19:37:18),
+ * backend D1 `boarding-confirm-result` 2건(19:23:37/19:30:33, 모두 승차 응답 시각과 일치) —
+ * 이 비대칭은 위 설계 그대로다. hop-end 응답 2건이 `boarding-confirm-result`에 없는 것은
+ * 정상이며, hop-end가 실제로 backend에 반영됐는지는 이 파일의 "[아직]" 테스트가 보여주는
+ * `dismissBoardingPrompt` 채널(확정 응답은 발사-시점 stamp로 이미 충분) 또는 backend
+ * `hopEndPromptState[legKey].fired` 기록으로 확인한다.
+ *
+ * 참고: 동일 경계는 기존 `useBoardingPromptResponder.test.ts`
+ * (describe 'handleResponse — #2034 hop-end', #2852 주석)에도 개별적으로 고정돼 있다. 이
+ * 파일은 탑승/하차 두 채널을 한 파일에서 나란히 대조하는 것이 목적이며, 기존 테스트의
+ * 기대값은 변경하지 않는다.
  */
 import * as Notifications from 'expo-notifications';
 import { handleResponse } from '../useBoardingPromptResponder';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   DISEMBARK_ACTION_DISEMBARKED,
+  DISEMBARK_ACTION_NOT_YET,
 } from '../../utils/notificationCategory';
 import * as positionUpload from '../../../nearest-station/api/positionUpload';
 
@@ -101,11 +113,15 @@ jest.mock('../../../route/store/useNavigationStore', () => ({
     getState: () => ({ startNavigation: jest.fn() }),
   },
 }));
-jest.mock('../../store/useLegAdvanceStore', () => ({
-  useLegAdvanceStore: {
-    getState: () => ({ stampLegAdvance: jest.fn() }),
-  },
-}));
+jest.mock('../../store/useLegAdvanceStore', () => {
+  const mockStampLegAdvance = jest.fn();
+  return {
+    useLegAdvanceStore: {
+      getState: () => ({ stampLegAdvance: mockStampLegAdvance }),
+    },
+    __mockStampLegAdvance: mockStampLegAdvance,
+  };
+});
 jest.mock('../../utils/widgetRefreshContext', () => {
   const actual = jest.requireActual('../../utils/widgetRefreshContext');
   return {
@@ -117,7 +133,10 @@ jest.mock('../../../route/utils/findActiveTransferContext', () => ({
   findLocklessTransferWaypoint: jest.fn(() => null),
 }));
 
-const { __mockCreateLock: createLockMock } = jest.requireMock('../../store/useBoardingLockStore');
+const { __mockCreateLock: createLockMock, __mockReleaseLock: releaseLockMock } = jest.requireMock(
+  '../../store/useBoardingLockStore',
+);
+const { __mockStampLegAdvance: stampLegAdvanceMock } = jest.requireMock('../../store/useLegAdvanceStore');
 
 function makeDeps(overrides: Partial<Parameters<typeof handleResponse>[2]> = {}) {
   return {
@@ -143,17 +162,17 @@ const HOP_END_PAYLOAD = {
   line: '2',
   tripToken: 'tok-hopend',
   hopEndKind: 'disembark' as const,
-  nextLine: 'K',
+  nextLine: '5', // 유효한 LineNumber — stampLegAdvance(nextLine) 호출 경로를 고정하기 위함.
   nextStation: '왕십리',
 };
 
-describe('#2889 재현 — 승차/hop-end 응답의 backend 도달 비대칭', () => {
+describe('#2889 재현 — 탑승 확정 vs 하차(hop-end) 확정 채널 경계', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
   // 대조군(control): 승차 프롬프트 응답 → postBoardingConfirm 호출됨.
-  // 현재 dev에서 정상 동작하는 경로이며, #2889 fix가 이걸 깨서는 안 된다.
+  // 현재 dev에서 정상 동작하는 경로이며, 이 경계가 바뀌어도 이 경로는 무변경이어야 한다.
   it('[대조군] 승차(boarding) 프롬프트 [탑승] 응답 → postBoardingConfirm이 호출된다', async () => {
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, BOARDING_PAYLOAD, makeDeps());
 
@@ -165,12 +184,18 @@ describe('#2889 재현 — 승차/hop-end 응답의 backend 도달 비대칭', (
     );
   });
 
-  // 결함 재현: hop-end(환승역 "하차했나요?") [하차함] 응답 → postBoardingConfirm 미호출.
-  // 이것이 #2889 결함의 재현이다 — 승차와 같은 종류의 명시 의향 확정 응답인데 backend에
-  // 도달하지 않는다. #2889에서 배선을 추가하면 이 assertion은 뒤집혀야 한다(현재 동작 고정).
+  // 설계 경계 고정(boundary pin): hop-end(환승역 "하차했나요?") [하차함] 확정 응답은
+  // postBoardingConfirm을 호출하지 않는다 — 결함이 아니라 설계 의도다(파일 상단 설명 참고,
+  // #2282/#2278/#2287). backend는 이 프롬프트를 발사한 시점에 이미
+  // hopEndPromptState[legKey].fired=true로 stamp를 마쳤으므로, 사용자의 [하차함] 응답은
+  // device-local 반영(releaseLock + stampLegAdvance)만으로 충분하다.
+  //
+  // 이 테스트가 깨지고(= postBoardingConfirm이 호출되기 시작하고) 의도된 변경이 아니라면
+  // 그것이 회귀다 — hop-end 확정과 탑승 확정이 뒤섞여 backend에 이중 confirm 신호가
+  // 새어나가는 것을 의미한다.
   it(
-    '[결함 재현 #2889] hop-end(환승역 하차 확인) [하차함] 응답 → postBoardingConfirm이 ' +
-      '호출되지 않는다 (현재 동작을 고정한 것 — #2889에서 배선 추가 시 이 테스트를 뒤집어야 함)',
+    '[설계 경계 고정] hop-end(환승역 하차 확인) [하차함] 응답 → postBoardingConfirm은 ' +
+      '호출되지 않는다 (결함 아님 — backend는 발사 시점에 이미 fired=true로 stamp 완료)',
     async () => {
       await handleResponse(
         DISEMBARK_ACTION_DISEMBARKED,
@@ -182,16 +207,53 @@ describe('#2889 재현 — 승차/hop-end 응답의 backend 도달 비대칭', (
     },
   );
 
-  // 같은 사용자 행동(확정 응답)인데 갈리는 지점을 한 assertion에 나란히 보이게 — 두 호출
-  // 모두 수행한 뒤 mock.calls 배열 자체를 비교.
-  it('같은 종류의 확정 응답(탑승 vs 하차)인데 backend 도달 여부가 갈린다', async () => {
+  // hop-end [하차함] 확정이 "backend에 전혀 반영되지 않는다"는 오해를 막기 위해, 실제로
+  // 무엇으로 상태가 반영되는지 명시적으로 고정한다 — device-local releaseLock('user') +
+  // stampLegAdvance(nextLine). dismissBoardingPrompt(backend POST)는 이 확정 경로에서는
+  // 호출되지 않는다(= backend에 새로 전달할 사실이 없다는 설계 의도, 위 주석 참고).
+  it(
+    '[설계 경계 고정] hop-end [하차함] 응답 → releaseLock("user") + stampLegAdvance(nextLine)로 ' +
+      'device-local 반영, dismissBoardingPrompt(backend POST)는 호출하지 않는다',
+    async () => {
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        HOP_END_PAYLOAD,
+        makeDeps(),
+      );
+
+      expect(releaseLockMock).toHaveBeenCalledWith('user');
+      expect(stampLegAdvanceMock).toHaveBeenCalledWith('5');
+      expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+    },
+  );
+
+  // hop-end가 backend에 "전혀" 반영 안 되는 게 아니라는 것을 보여주는 대조: [아직]
+  // (NOT_YET) 응답은 5분 재발사 억제를 위해 dismissBoardingPrompt로 backend에 POST된다
+  // (실측에서 200 확인) — 이것이 hop-end의 실제 backend 반영 채널 중 하나다.
+  it(
+    '[대조군] hop-end [아직](NOT_YET) 응답 → dismissBoardingPrompt(backend POST)가 호출된다 ' +
+      '(hop-end가 backend에 반영되는 실제 채널)',
+    async () => {
+      await handleResponse(DISEMBARK_ACTION_NOT_YET, HOP_END_PAYLOAD, makeDeps());
+
+      expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-hopend');
+      expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
+    },
+  );
+
+  // 같은 종류로 보이는 "확정" 응답(탑승 vs 하차)이 backend로 가는 채널이 다르다는 것을
+  // 한 assertion에서 나란히 비교 — 비대칭은 결함이 아니라 두 채널의 의미가 다르기 때문이다.
+  it('탑승 확정과 하차 확정은 backend로 가는 채널이 다르다 (경계 고정, 결함 아님)', async () => {
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, BOARDING_PAYLOAD, makeDeps());
-    const afterBoarding = (positionUpload.postBoardingConfirm as jest.Mock).mock.calls.length;
+    const boardingConfirmAfterBoarding = (positionUpload.postBoardingConfirm as jest.Mock).mock
+      .calls.length;
 
     await handleResponse(DISEMBARK_ACTION_DISEMBARKED, HOP_END_PAYLOAD, makeDeps());
-    const afterHopEnd = (positionUpload.postBoardingConfirm as jest.Mock).mock.calls.length;
+    const boardingConfirmAfterHopEnd = (positionUpload.postBoardingConfirm as jest.Mock).mock
+      .calls.length;
 
-    expect(afterBoarding).toBe(1); // 승차 응답 → backend 도달.
-    expect(afterHopEnd).toBe(1); // hop-end 응답 후에도 호출 횟수 불변 → backend 미도달.
+    expect(boardingConfirmAfterBoarding).toBe(1); // 탑승 확정 → postBoardingConfirm 채널.
+    expect(boardingConfirmAfterHopEnd).toBe(1); // 하차 확정 후에도 불변 → 별도 채널(local) 사용.
+    expect(releaseLockMock).toHaveBeenCalledWith('user'); // 하차 확정의 실제 반영 채널.
   });
 });
