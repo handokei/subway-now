@@ -59,6 +59,13 @@ export interface PickCandidateTrainsInput {
   arcStations?: readonly Station[];
   /** ADR-039 2단계(#2728) — arc 내 탑승역 id. */
   boardingStationId?: string;
+  /**
+   * #2914 (결함 1) — `direction`이 지정됐는데 `updnLine`이 반대라 enumeration 단계에서
+   * 제외된 candidate를 호출자가 측정(candidateRejectBuffer 등)할 때 쓰는 hook. 미전달 시
+   * reject는 silent — 본 helper는 측정 정책에 비의존(onCandidateDistanceReject와 동일 계약).
+   * lockedTrainCode와 일치해 bypass된 candidate는 호출되지 않는다.
+   */
+  onCandidateDirectionReject?: (info: { trainNo: string; line: LineNumber; stationName: string }) => void;
 }
 
 /**
@@ -99,6 +106,8 @@ function buildCandidate(
     currentStationName: train.statnNm,
     trainStatus: train.trainStatus,
     receivedAtMs: train.receivedAtMs,
+    // #2914 — terminalStationName 보존(조기종착 판정은 소비자가 적용).
+    terminalStationName: train.terminalStationName,
   };
 }
 
@@ -115,6 +124,7 @@ export function pickCandidateTrains(input: PickCandidateTrainsInput): CandidateT
     lockedTrainCode,
     arcStations,
     boardingStationId,
+    onCandidateDirectionReject,
   } = input;
 
   const linePositions = positions.find((p) => p.line === line);
@@ -137,7 +147,15 @@ export function pickCandidateTrains(input: PickCandidateTrainsInput): CandidateT
     if (train.receivedAtMs <= 0) continue;
     // positionApi가 파싱 실패 시 updnLine=-1을 sentinel로 내보낸다. 방향 모름은 후보에서 제외.
     if (train.updnLine !== 0 && train.updnLine !== 1) continue;
-    if (direction !== undefined && train.updnLine !== direction) continue;
+    // #2914 — lock.trainCode와 정확히 일치하는 실측 신호는 direction 필터에서도 제외하지
+    // 않는다(거부 케이스 ⓑ) — 거리 가드의 arc bypass(아래 isLockedTrainSignal)와 동일 정신.
+    const isLockedTrainNo = lockedTrainCode != null && train.trainNo === lockedTrainCode;
+    if (direction !== undefined && train.updnLine !== direction) {
+      if (!isLockedTrainNo) {
+        onCandidateDirectionReject?.({ trainNo: train.trainNo, line, stationName: train.statnNm });
+        continue;
+      }
+    }
 
     const stationIdx = nameToIndex.get(train.statnNm);
     if (stationIdx === undefined) continue;

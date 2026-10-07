@@ -3286,6 +3286,34 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         outcome: 'walk-gated',
       });
     });
+
+    // #2893 — outcome:'none'의 3개 독립 원인(후보0/subwayId 매핑 실패/legSegment 산출 실패)을
+    // noneReason으로 분리 — D1만으로 원인 구분 가능하게 한다.
+    it('outcome=none + noneReason 있으면 meta에 포함', () => {
+      expect(
+        buildBoardingConfirmEventMeta('none', 'none', undefined, 'position-resolve-none'),
+      ).toEqual({
+        lockState: 'none',
+        outcome: 'none',
+        noneReason: 'position-resolve-none',
+      });
+    });
+
+    it('noneReason 미지정 시 meta에서 생략(backward compat)', () => {
+      expect(buildBoardingConfirmEventMeta('none', 'none', undefined)).toEqual({
+        lockState: 'none',
+        outcome: 'none',
+      });
+    });
+
+    it('outcome이 none이 아니면 noneReason을 전달해도 meta에 싣지 않는다', () => {
+      expect(
+        buildBoardingConfirmEventMeta('leg1', 'resolved', undefined, 'subwayid-mapping-failed'),
+      ).toEqual({
+        lockState: 'leg1',
+        outcome: 'resolved',
+      });
+    });
   });
 
   // ADR-037 D2b (#2535, 진단 계측 only) — 탭 처리 결과(lockState + resolve outcome)를 D1

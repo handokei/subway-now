@@ -16,7 +16,7 @@ import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { allowedLinesFromRoute, getNextStationName } from '../../../shared/utils/stationRoute';
-import { isBoardableCandidate, type BoardableCandidateContext } from '../utils/isBoardableCandidate';
+import { isCandidateInBoardingScope } from '../utils/isBoardableCandidate';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { STATIC_SPEED_THRESHOLD_MPS } from '../../nearest-station/utils/movementGate';
@@ -366,25 +366,27 @@ export function useBoardingLockController({
     return getNextStationName(currentStation.id, destinationId, route);
   }, [currentStation, destinationId, route]);
 
-  // #2696 (재발 reopen) — BoardingTrainList 직접 탭 경로의 탑승 가능 후보 술어 배선.
+  // #2696 (재발 reopen) — BoardingTrainList 직접 탭 경로의 탑승 범위(scope) 술어 배선.
   //
   // 기존(#1326) "방향 필터가 비면 양방향 합집합으로 폴백"은 10/3 성수역 재발의 직접 원인이다:
   // direction 해석이 흔들리면(또는 null이면) 반대 방향·조기 종착 열차(3174/2176, 내선+성수종착)가
   // 그대로 선택 가능한 목록에 섞여 노출됐고, 사용자가 그중 하나를 탭해 trip 전체 알림이 죽었다.
   //
-  // 이제 `isBoardableCandidate`(shared invariant — #2696 본문)를 그대로 적용한다:
-  //   - direction===null → 후보 없음(양방향 병합 금지, 원 이슈 요구4의 일반화).
-  //   - 방향이 해결되면 그 방향 bucket만 후보 — 반대 방향 bucket은 이제 폴백으로도 섞이지 않는다.
-  //   - bucket 내에서도 상태(arvlCd∈{출발,도착,진입})·조기종착 게이트를 통과해야 후보.
-  // "선택할 열차 없음" 빈 목록이 "반대 방향/조기종착 열차를 보여주는 것"보다 안전하다는 게 이
-  // 재발의 핵심 교훈이다 — 과도한 필터링보다 미검출(empty list)이 안전.
+  // #2883이 여기에 `isBoardableCandidate`(상태 게이트 포함 — 회고적 "이미 탑승한 열차가
+  // 무엇이었나" 판정용)를 적용했는데, 그 상태 게이트(arvlCd∈{출발,도착,진입}만)가 이 리스트의
+  // 존재 이유(아직 오지 않은 열차를 미리 탭)와 충돌해 리스트를 사실상 영구 공란으로 만들었다
+  // (2026-10-07 06:29 용마산 실사용 회귀, #2886). 리스트는 **전향적** 제시 용도이므로 상태
+  // 게이트가 없는 `isCandidateInBoardingScope`(direction/노선일치/조기종착만)를 쓴다:
+  //   - direction===null → 후보 없음(양방향 병합 금지, 원 이슈 요구4의 일반화) — #2696과 동일.
+  //   - 방향이 해결되면 그 방향 bucket만 후보 — 반대 방향 bucket은 폴백으로도 섞이지 않는다.
+  //   - bucket 내에서도 조기종착 게이트는 유지(①②는 #2886이 건드리지 않음) — ③상태 게이트만 제거.
   const boardingListArrivals = useMemo<ArrivalInfo[]>(() => {
     if (!arrival || direction === null) return [];
     const bucket = direction === 'up' ? arrival.up : arrival.down;
     return bucket
       .filter(isReachable)
       .filter((candidate) =>
-        isBoardableCandidate(candidate, {
+        isCandidateInBoardingScope(candidate, {
           line: candidate.line,
           direction,
           nextTargetStationName,

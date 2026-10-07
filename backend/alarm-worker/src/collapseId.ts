@@ -61,8 +61,10 @@ export const STATION_NOTIF_COLLAPSE_ID_PREFIX = 'station-';
 /**
  * #2063 — 매역 알림 apns-collapse-id 빌더.
  *
- * `station` 생략(기존 arvlcd/vanish-fallback 호출부) 시 trip 단위 collapse를 그대로
- * 유지한다 — 그 경로들은 cron tick당 최대 1건만 발사하므로 trip 단위 collapse로 충분하다.
+ * #2909 (ADR-040 0단계) — 모든 호출부가 `station`을 명시해 역 단위로 collapse를 분리한다.
+ * (구) trip 단위 collapse(station 생략)는 cron tick당 1건만 쏘던 arvlcd/vanish-fallback
+ * 경로에서도 같은 trip의 역A 배너가 역B 배너에 덮여 알림센터에서 사라지는 회귀를 낳았다
+ * (10/7 사용자 피드백) — 역 단위로 통일해 역마다 배너가 쌓이도록 바꿨다.
  *
  * #2625 코드리뷰 P1-5 — `fireSyncSkippedStationPasses`는 한 sync 호출에서 여러 station의
  * push를 연속 발사할 수 있다. trip 단위 collapse를 공유하면 APNs가 N건을 배너 1개로
