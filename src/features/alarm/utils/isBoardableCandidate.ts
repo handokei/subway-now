@@ -42,7 +42,16 @@ export interface BoardableCandidateContext {
 }
 
 /**
- * 판정 순서: 방향 미해결 → 즉시 false. 이후 노선 일치 / 상태 게이트 / 조기 종착 배제.
+ * #2886 — "탑승 범위(scope)" 술어. 방향 미해결 / 노선 불일치 / 조기 종착만 배제한다 —
+ * **상태(arvlCd) 게이트는 적용하지 않는다.**
+ *
+ * `isBoardableCandidate`(상태 게이트 포함, 회고적 "이미 탑승한 열차가 무엇이었나" 판정용)와
+ * 용도가 다르다: BoardingTrainList(`boardingListArrivals`)는 "곧 올 열차를 미리 탭"하는
+ * **전향적** 제시 용도라, 아직 역에 도착하지 않은 열차(arvlCd=99 등)도 노출해야 한다 —
+ * 상태 게이트를 적용하면 역에 열차가 물리적으로 들어와 있는 수십 초만 1건 보이고 그 외엔
+ * 0건이 된다(2026-10-07 06:29 용마산 실사용 회귀, #2886).
+ *
+ * 판정 순서: 방향 미해결 → 즉시 false. 이후 노선 일치 / 조기 종착 배제.
  *
  * `train`의 방향 자체는 이 함수가 직접 비교하지 않는다 — ArrivalInfo는 Seoul Open API의
  * up/down bucket으로 이미 분리되어 있고(방향 정보를 필드로 갖지 않음), caller가 그 bucket
@@ -50,13 +59,12 @@ export interface BoardableCandidateContext {
  * null이면 caller가 어느 bucket도 아닌(또는 둘 다 병합한) 애매한 입력을 넘겼다는 뜻이므로
  * 이 함수가 방어적으로 전체 후보를 무효화한다 — 위반②(양방향 병합)의 근본 차단선.
  */
-export function isBoardableCandidate(
+export function isCandidateInBoardingScope(
   train: ArrivalInfo,
   context: BoardableCandidateContext,
 ): boolean {
   if (context.direction === null) return false;
   if (train.line !== context.line) return false;
-  if (!BOARDABLE_ARRIVAL_CODES.has(train.arrivalCode)) return false;
   if (context.nextTargetStationName && train.terminalStation) {
     return terminusReachesTarget(
       context.line,
@@ -66,4 +74,16 @@ export function isBoardableCandidate(
     );
   }
   return true;
+}
+
+/**
+ * #2696 — "탑승 가능 후보"(회고적 선택) 판정. `isCandidateInBoardingScope` 위에 상태 게이트
+ * (출발/도착/진입만)를 합성한다 — 불변식이 두 곳으로 갈라지지 않도록 단일 출처 유지(#2886).
+ */
+export function isBoardableCandidate(
+  train: ArrivalInfo,
+  context: BoardableCandidateContext,
+): boolean {
+  if (!isCandidateInBoardingScope(train, context)) return false;
+  return BOARDABLE_ARRIVAL_CODES.has(train.arrivalCode);
 }

@@ -29,6 +29,13 @@ export interface BoardingPromptArgs {
   nextStation: string | null;
   /** etaIso8601 또는 HH:MM 시각 표기 문자열. 없으면 미표시. */
   etaTimeStr: string | null;
+  /**
+   * #2904 — 발사 시점 선택된 열차(pickAutoTrainCode 결과)의 종착역. 사용자가 "어느 열차를
+   * 묻는지" 식별할 수 있는 1순위 정보(탭 리스트의 "OO행" 표기와 동일 어휘).
+   * null/미상이면 접두사를 생략하고 기존 문구로 fallback(#1740 omit 패턴) — 추측 표기 금지.
+   * optional — 기존 호출부/테스트(필드 생략)와 byte-level 호환.
+   */
+  destinationStation?: string | null;
 }
 
 /**
@@ -103,14 +110,19 @@ interface I18nStrings {
  * boardingPromptBody는 `nextStation`이 있으면 "출발역 [호선] → 다음역 방면 (HH:MM 진입)",
  * 없으면 "${line} · ${originStation}" fallback — 기존 buildBoardingPromptMessage의 한국어 포맷을
  * 4언어로 확장.
+ *
+ * #2904 — `destinationStation`(발사 시점 선택된 열차의 종착역)이 있으면 "종착역행 · " 접두사를
+ * 더해 사용자가 어느 열차를 묻는지 식별 가능하게 한다(예: "성수행 · 뚝섬 [2] → 성수 방면
+ * 06:46 진입"). null/미상이면 접두사를 생략하고 위 fallback과 완전 동일 — 추측 표기 금지.
  */
 const I18N: Record<SupportedLocale, I18nStrings> = {
   ko: {
     boardingPromptTitle: '탑승하셨나요?',
-    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr }) => {
+    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
       const time = etaTimeStr ? ` ${etaTimeStr} 진입` : '';
-      return `${originStation} [${line}] → ${nextStation} 방면${time}`;
+      const destPrefix = destinationStation ? `${destinationStation}행 · ` : '';
+      return `${destPrefix}${originStation} [${line}] → ${nextStation} 방면${time}`;
     },
     hopEndPromptTitle: ({ transferStation }) => `${transferStation}에서 하차하셨나요?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
@@ -144,10 +156,11 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
   },
   en: {
     boardingPromptTitle: 'Are you on board?',
-    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr }) => {
+    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
       const time = etaTimeStr ? ` ${etaTimeStr} arrival` : '';
-      return `${originStation} [${line}] → ${nextStation} bound${time}`;
+      const destPrefix = destinationStation ? `Bound for ${destinationStation} · ` : '';
+      return `${destPrefix}${originStation} [${line}] → ${nextStation} bound${time}`;
     },
     hopEndPromptTitle: ({ transferStation }) => `Getting off at ${transferStation}?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
@@ -182,10 +195,11 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
   },
   ja: {
     boardingPromptTitle: 'ご乗車されましたか?',
-    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr }) => {
+    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
       const time = etaTimeStr ? ` ${etaTimeStr}進入` : '';
-      return `${originStation} [${line}] → ${nextStation}方面${time}`;
+      const destPrefix = destinationStation ? `${destinationStation}行き · ` : '';
+      return `${destPrefix}${originStation} [${line}] → ${nextStation}方面${time}`;
     },
     hopEndPromptTitle: ({ transferStation }) => `${transferStation}で降りますか?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
@@ -218,10 +232,11 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
   },
   zh: {
     boardingPromptTitle: '您已乘车了吗?',
-    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr }) => {
+    boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
       const time = etaTimeStr ? ` ${etaTimeStr}到达` : '';
-      return `${originStation} [${line}] → ${nextStation}方向${time}`;
+      const destPrefix = destinationStation ? `开往${destinationStation} · ` : '';
+      return `${destPrefix}${originStation} [${line}] → ${nextStation}方向${time}`;
     },
     hopEndPromptTitle: ({ transferStation }) => `您在${transferStation}下车了吗?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {

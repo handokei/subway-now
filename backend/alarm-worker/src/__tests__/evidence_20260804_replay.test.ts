@@ -368,7 +368,17 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
 
     const persisted = JSON.parse((await kv.get(`trip:${TOKEN}`))!);
     expect(persisted.boardingPromptState.fireCount).toBe(3);
-    expect(persisted.boardingPromptState.firedTrainCodes).toEqual(['TR-A', 'TR-B', 'TR-C']);
+    // #2898 — `boardingPromptDedupKey`가 non-null trainCode에도 phase(decision)를 포함하도록
+    // 바뀌었다(`${trainCode}:${decision}`, 이전엔 trainCode만). 이 evidence의 fixture 입력값
+    // (NOW/trainCode 문자열/5분 간격/arvlCd=1)은 전혀 건드리지 않았다 — 위 fired/blocked/
+    // reasons 결과(사용자가 관측 가능한 발사 횟수·시점·차단 사유)는 fix 전후 동일하다(판정 ⓐ,
+    // 내부 표현만 변경·회귀 아님). arvlCd=1은 IMMINENT_BOARDING_ARVLCD에 속해 매번
+    // decision='imminent'이므로 세 trainCode 모두 동일 phase suffix를 갖는다.
+    expect(persisted.boardingPromptState.firedTrainCodes).toEqual([
+      'TR-A:imminent',
+      'TR-B:imminent',
+      'TR-C:imminent',
+    ]);
   });
 
   it('같은 trainCode 재관측 → 반복 발사 대상 아님으로 차단', async () => {

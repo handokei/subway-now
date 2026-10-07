@@ -1431,4 +1431,71 @@ describe('cleanupTripWithLa', () => {
       expect(capturedArgs).toContain('user-delete');
     });
   });
+
+  // #2893 — 여러 cleanupTripWithLa 호출처가 같은 reason('destination-arrived' 등)을 공유해
+  // D1 trip_events(kind='trip-end')만으로는 어느 코드 경로가 종료시켰는지 구분 불가했다
+  // (10/7 조기종료 재현 불가, PR #2890). endPath로 호출처를 식별해 trip-end meta에 싣는다.
+  describe('endPath (#2893 — 호출처 식별자, D1 trip-end meta)', () => {
+    it('options.endPath가 trip_events(kind=trip-end) meta.endPath로 적재된다', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            // INSERT INTO trip_events (token_hash, ts, kind, station, line, meta)
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        { reason: 'destination-arrived', endPath: 'lock-active-destination' },
+      );
+      expect(capturedMeta).toBeDefined();
+      expect(capturedMeta?.endPath).toBe('lock-active-destination');
+      // 같은 reason을 공유하는 다른 호출처와 D1에서 구분 가능해졌는지가 이 필드의 전체 목적.
+      expect(capturedMeta?.reason).toBe('destination-arrived');
+    });
+
+    it('endPath 미지정 시(호출자가 안 보내도) meta에 필드 자체가 없다 — backward compat', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+      );
+      expect(capturedMeta).toBeDefined();
+      expect(capturedMeta && 'endPath' in capturedMeta).toBe(false);
+    });
+  });
 });

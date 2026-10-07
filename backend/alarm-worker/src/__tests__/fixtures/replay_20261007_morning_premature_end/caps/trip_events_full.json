@@ -1,0 +1,180 @@
+[
+  {
+    "results": [
+      {
+        "ts": 1791322162582,
+        "kind": "sync-received",
+        "station": "용마산",
+        "m": null
+      },
+      {
+        "ts": 1791322194888,
+        "kind": "sync-received",
+        "station": "사가정",
+        "m": null
+      },
+      {
+        "ts": 1791322208364,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "m": "{\"existingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::용마산|7|intermediate|0/중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "ts": 1791322238697,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "m": "{\"existingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::용마산|7|intermediate|0/중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "ts": 1791322268809,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "m": "{\"existingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::용마산|7|intermediate|0/중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "ts": 1791322520727,
+        "kind": "sync-received",
+        "station": "용마산",
+        "m": null
+      },
+      {
+        "ts": 1791322569429,
+        "kind": "cron-fire-attempt",
+        "station": "중곡",
+        "m": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"sent\",\"midCycle\":true}"
+      },
+      {
+        "ts": 1791322644457,
+        "kind": "vanish-swap",
+        "station": "중곡",
+        "m": "{\"phase\":\"estimate-null\",\"isNull\":false}"
+      },
+      {
+        "ts": 1791322644457,
+        "kind": "cron-fire-attempt",
+        "station": "중곡",
+        "m": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"skipped-reason\",\"reason\":\"station-passed-dedup\"}"
+      },
+      {
+        "ts": 1791322704463,
+        "kind": "cron-fire-attempt",
+        "station": "군자(능동)",
+        "m": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"sent\"}"
+      },
+      {
+        "ts": 1791322863510,
+        "kind": "cron-fire-attempt",
+        "station": "어린이대공원(세종대)",
+        "m": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"sent\"}"
+      },
+      {
+        "ts": 1791322946869,
+        "kind": "transfer-advance",
+        "station": "건대입구",
+        "m": "{\"path\":\"lock-active\",\"outcome\":\"advanced\"}"
+      },
+      {
+        "ts": 1791322946869,
+        "kind": "cron-fire-attempt",
+        "station": "건대입구",
+        "m": "{\"waypointKind\":\"transfer\",\"phase\":\"imminent\",\"outcome\":\"sent\"}"
+      },
+      {
+        "ts": 1791322946869,
+        "kind": "hop-end-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"fired\"}"
+      },
+      {
+        "ts": 1791322960132,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "m": "{\"existingSig\":\"2-010::성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "ts": 1791322974620,
+        "kind": "sync-received",
+        "station": "건대입구",
+        "m": null
+      },
+      {
+        "ts": 1791322980131,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "m": "{\"existingSig\":\"2-010::성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "ts": 1791323004451,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[99,99],\"candidateEtaSeconds\":[238,598],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "ts": 1791323004451,
+        "kind": "intermediate-route",
+        "station": "성수",
+        "m": "{\"branch\":\"lockless\"}"
+      },
+      {
+        "ts": 1791323065161,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[99,99],\"candidateEtaSeconds\":[205,565],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "ts": 1791323193642,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"fired\",\"candidateArvlCds\":[5,99],\"candidateEtaSeconds\":[86,446],\"gateDecision\":\"approaching\"}"
+      },
+      {
+        "ts": 1791323246097,
+        "kind": "leg-resolve-attempt",
+        "station": "건대입구",
+        "m": "{\"elapsedSinceAnchorMs\":21228,\"candidates\":[],\"streakCount\":0,\"outcome\":\"none\"}"
+      },
+      {
+        "ts": 1791323246097,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"silenced\"}"
+      },
+      {
+        "ts": 1791323308566,
+        "kind": "leg-resolve-attempt",
+        "station": "건대입구",
+        "m": "{\"elapsedSinceAnchorMs\":83697,\"candidates\":[{\"trainCode\":\"2015\",\"trainSttus\":1}],\"streakCount\":1,\"outcome\":\"pending\",\"selectedTrainCode\":\"2015\"}"
+      },
+      {
+        "ts": 1791323308566,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"silenced\"}"
+      },
+      {
+        "ts": 1791323311876,
+        "kind": "trip-end",
+        "station": "2-010",
+        "m": "{\"reason\":\"destination-arrived\"}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "ICN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.4212
+      },
+      "duration": 0.4212,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 163840,
+      "rows_read": 26,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
