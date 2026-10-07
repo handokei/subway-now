@@ -14856,6 +14856,52 @@ describe('S-2921 (#2921) — lockless leg 전진 후보 제한', () => {
       'transfer ⓐ 위반 — waypoints가 shift됨(전진함)',
     ).toBe(2);
   });
+
+  // /audit-sides 감사(커밋 078d9e8c, #2921 PR 본문) 판정 — ⓒ(모호 후보 차단)는 "같은
+  // 방향의 복수 trainCode 동시 fire"만 막는다. "같은 방향의 단일(틀린) trainCode fire"는
+  // 막지 못한다. leg가 막 시작된 직후(intermediate/transfer)에는 ⓑ(시간창)를 적용하지
+  // 않기로 했으므로(9/18 실측 재생이 적용 시 과차단을 반증 — 위 `runLocklessTransfer`/
+  // `runLocklessIntermediate` 호출부 주석 참고) 이 틈은 **의도적으로 남긴 잔존 위험**이다.
+  //
+  // CLAUDE.md 불변식 승격 룰(L18, docs/agents/invariants.md) — load-bearing 불변식을 주석
+  // 에만 남기지 않는다. S11(#2893)의 `it.fails` 선례와 동일하게, "이상적 동작(사용자가 타지
+  // 않은 단일 열차로는 intermediate가 통과되면 안 된다)"은 아직 구현되지 않았다는 사실을
+  // 코드에 고정한다 — 이 테스트가 통과(동작이 바뀜)하게 되면 일반 `it`으로 승격해야 한다는
+  // 신호다. 상세: `docs/agents/invariants.md` "scheduled.ts — intermediate/transfer ⓑ 미적용".
+  it.fails(
+    '(알려진 잔존 위험, 미해결) leg 시작 직후 단일 틀린 trainCode의 intermediate 통과를 ⓒ는 막지 못한다',
+    async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        token: 's2921-known-gap',
+        route: { type: 'direct', line: '7', stops: 2 },
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+        infoModeEnabled: true,
+        // leg-1 origin — 용마산(7-015)→중곡(7-016): direction='down'(하행) 추론 가능.
+        originStationName: '용마산',
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        // 올바른 방향(하행)·단일 trainCode('9999', 사용자가 타지 않은 다른 열차) — ⓐ는
+        // 통과시키고(방향 일치) ⓒ도 통과시킨다(후보 1개뿐이라 모호 아님).
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1, '9999', false),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-s2921-known-gap',
+      });
+      // 이상적 동작(미구현) — 사용자가 타지 않은 단일 열차로는 intermediate가 통과되면 안
+      // 된다. 현재는 통과된다(locklessIntermediateFired===1) — 이 assertion은 지금 실패하고,
+      // it.fails가 그 실패 자체를 "예상대로"로 받아들인다.
+      expect(stats.locklessIntermediateFired).toBe(0);
+    },
+  );
 });
 
 // #2861 (T3) — lock-경로 advance(`advanceBoardingLockWaypoint` evidence=undefined, 실제로는
