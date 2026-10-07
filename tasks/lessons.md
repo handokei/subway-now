@@ -72,6 +72,10 @@ locale JSON, alarmLog.ts, useStationAlarm.ts 등 hotspot은 stacked PR worktree 
 "다음 작업 X"라고 말하기 전 `gh issue view` 1번. 메모리 큐는 stale 가능.
 - 출처: `memory/lesson_verify_issue_state.md`
 
+### L12b — sonar-project.properties는 사문서 (2026-10-05 확정)
+이 프로젝트는 SonarCloud **AutoScan**(CI 워크플로 없음)이고, 실효 설정은 **서버측 UI 값뿐** — `api/settings/values?component=handokei_subway-now` 실측: cpd 제외는 `**/*.test.ts, **/__tests__/**, **/*.swift` 3개만. 레포 파일의 backend/** 제외·cpd 목록은 전부 미적용(PR #2870에서 backend 파일이 cross-dup 상대로 잡혀 증명).
+→ Sonar 게이트 조정은 레포 파일 수정이 아니라 **SonarCloud UI(Administration → Analysis Scope)** 에서. 레포 파일에 줄 추가는 효과 0.
+
 ### L12 — SonarCloud 실패 원인 직접 확인
 PR 코멘트 + issues API로 인증 없이 즉시 가능. 추측 금지.
 - 출처: `memory/lesson_sonarcloud_direct_check.md`
@@ -92,6 +96,30 @@ cached OAuth로 즉시 가능. tail은 1-2 cron 사이클로 lockMissing/etaMiss
 app.config.js의 ios.infoPlist 변경 시 expo prebuild 안 돌리면 ios/ 캐시 stale, 실기기 splash 후 크래시. 자동 게이트 못 막음.
 - 출처: `memory/lesson_expo_native_config_drift.md`
 
+### L19 — 검증은 working tree를, 커밋은 index를 본다 — Edit 후 `git add` 누락 (2026-10-08 실사용)
+충돌 해결 중 ①`git add -A`(이 시점 `scheduled.ts`는 **충돌 마커 없이 자동 머지**된 8-arg 버그 상태로 스테이징) → ②`type-check`로 에러 발견 → ③`Edit`으로 수정 → ④**`git add` 없이 `git commit`**. 로컬 `type-check`/vitest 3,803건은 **working tree** 기준이라 green, 커밋·push된 건 **index**의 수정 전 내용. CI(#2919 Backend Validation)만이 `scheduled.ts(6630): TS2554 Expected 9 arguments, but got 8`로 잡았다. 보고는 "전체 통과"였고 **보고와 origin 내용이 달랐다**.
+→ **커밋 전 `git diff --cached`로 "스테이징 내용 == 검증한 내용"을 확인**하고, **push 후 `git show origin/<branch>:<파일>`로 실제 올라간 블롭을 재확인**한다. 특히 **머지 커밋 작성 후에도 `type-check`를 한 번 더** 돌린다 — 머지 커밋이 직전 수정을 조용히 덮을 수 있다(충돌 마커가 없어 `tsc`만이 감지).
+→ 리뷰 측: 에이전트의 "로컬 전체 green" 보고를 **origin 블롭 직접 확인으로 교차검증**한다. 이번에 4개 호출부를 `git show`로 전부 뽑아 9-arg를 확인한 것이 그 절차다.
+- 동류: 필수 파라미터 추가(#2896 `endPath` 9번째 인자)는 **auto-merge가 충돌 없이 통과시키므로 타입 체크만이 게이트** — 같은 PR에서 호출부 전수 grep 의무.
+- **더 나쁜 동류 — `tsc`조차 못 잡는 중복 생성**: #2924 머지에서 git merge 알고리즘이 "#2900 거부 케이스 ⓕ" 분기 **18줄 전체를 문자 그대로 2번 생성**했다(양쪽 브랜치 모두 1회만 가진 블록). 충돌 마커 없음 + **문법적으로 유효하므로 type-check도 통과** → 런타임에 같은 push를 2회 발사하는 종류의 결함. `grep '<<<<<<<'`도 `tsc`도 게이트가 아니다.
+→ **충돌 해결 후 `git diff origin/dev...HEAD`를 사람 눈으로 훑는 것이 유일한 탐지 수단**("내가 의도하지 않은 추가 라인이 있는가"). 블록 중복은 **표식 주석의 고유 문자열을 `grep -c`로 개수 세기**로 1차 탐지한다(예: `grep -c "거부 케이스 ⓕ"` == 1).
+- **`grep -c`도 충분하지 않다 — 두 사본이 다를 수 있다**: 같은 ⓕ 블록이 #2922 머지에서 **세 번째로** 중복됐고, 이번엔 첫 사본이 dev의 순수 버전, **두 번째 사본만 `fireDestinationDisembarkPrompt` 호출을 보유**했다. 개수만 세고 아무 사본이나 지우면 **신규 기능 호출이 조용히 사라진다**. → 중복 발견 시 **각 사본을 diff해서 "어느 쪽에 고유 로직이 있는가"까지 읽고** 고유 로직 보유 사본을 남긴다. 3회 재발 = 이 레포의 대형 단일 파일(`scheduled.ts` 6,900행+)에서 **구조적으로 반복되는 현상**이지 우연이 아니다.
+
+### L18 — 알려진 결함은 `it.fails`로 **공개 green**, 몰래 green 금지 (2026-10-08 결정)
+whole 시나리오가 "결함이지만 설계 결정 전까지 못 고치는 것"을 찾아내면, 그 테스트를 빨간 채 두면 **PR이 영원히 머지 불가 → 시나리오가 CI에 안 들어가 최초 발견자가 계속 사용자**가 된다. 반대로 지우면 회귀 자동 감지를 잃는다.
+→ **`it.fails()`(vitest) / 동등 수단으로 "현재 실패함"을 단언**한다. CI는 green이 되고, 동작이 고쳐지는 순간 `it.fails`가 **역으로 실패**해 갱신을 강제한다.
+**필수 조건 3개(없으면 이건 CI 우회다)**: ①해당 테스트 주석에 **OPEN 이슈 링크**(추적처) ②PR 본문에 "왜 `it.fails`인가 + 어떤 결정이 선행돼야 하는가" 명시 ③`it.fails` 도입/해제는 리뷰에서 명시적으로 다룬다.
+의미 재정의: **green = "결함 0"이 아니라 "등록된 알려진 결함 외에 새 실패 없음"**.
+- 근거: 2026-10-08 S8(ADR-026 매역 폴백 0건, 추적처 #2905)·S11(탑승 증거 없는 목적지 확정, 추적처 #2900)에서 이 선택이 처음 필요해졌고, 보안 점검이 "무단 CI 우회" 가능성을 지적해 사용자 승인 후 정책화.
+
+### L17 — 술어 재사용 시 "용도(시제)"를 분리 검증 (2026-10-07 실사용 회귀)
+#2883이 `isBoardableCandidate`(회고적: "이미 탄 열차가 어느 것인가" — arvlCd 0/1/2만)를 **표시용 탭 리스트**(전향적: "곧 올 열차를 미리 탭")에 그대로 배선 → arvlCd=99 전부 배제 → 리스트 영구 공란. 실사용 트립(10/7 06:29 용마산)에서 사용자가 발견. 단위/타깃 테스트는 전부 green이었고 편측 감사도 통과했다 — 감사 축에 "같은 술어를 쓰는 소비자들의 **시제·용도**가 같은가"가 없었다.
+→ **공유 술어를 새 소비자에 배선할 때, 그 소비자의 시제(회고 vs 전향)와 기대 입력 분포(여기선 arvlCd 분포)를 명시 비교한다.** 리스트/표시 계열 변경은 "정상 상황에서 **비어 있지 않은가**"를 whole 케이스로 assert(공란은 조용한 실패라 어떤 게이트에도 안 걸린다). `/audit-sides` 축에 "용도/시제" 추가.
+
+### L16 — "로그 소급 불가" 단정 전 R2 seoul-capture 확인 의무 (2026-10-03 지적)
+persist=false로 wrangler tail 로그가 없어도 **R2 `seoul-capture/{날짜}/{cycleStartMs}.json`(#2579)에 활성 cron cycle의 Seoul API 원본 응답(arrivals+positions 전체)이 남는다**. 10/3 트립 "지상 attempt 0건 원인 미확정 — 로그 영영 소급 불가"로 보고했다가 사용자 지적 후 R2 캡처 9 cycle로 당일 완전 소급·확정함(3174 종착 소실 + 왕십리(성동구청) arrivals 0행).
+→ **"소급 불가" 선언은 ①덤프 ②D1 ③R2 seoul-capture 3종 전부 확인 후에만.** 접근: `GET /admin/seoul-capture/keys?from=&to=` (Bearer = .env EXPO_PUBLIC_ADMIN_TOKEN) → `wrangler r2 object get subway-now-telemetry/<key> --remote --config wrangler.toml`.
+
 ---
 
 ## 자기 점검 루틴 (세션 시작 시)
@@ -101,3 +129,4 @@ app.config.js의 ios.infoPlist 변경 시 expo prebuild 안 돌리면 ios/ 캐�
 3. BG agent 띄울 때 L5 적용
 4. PR 머지 보고 시 L7 준수
 5. 회귀 / acceptance 정의 시 L3 + L4 자가 점검 통과
+- '라이드/실측 후 결정' 반사 금지 — 결정 근거는 ①코드 포함관계 증명 ②기존 dump/D1 소급 순. 새 데이터 요구는 이 둘 불가 증명 후에만 (2026-09-30 3회째 지적)
