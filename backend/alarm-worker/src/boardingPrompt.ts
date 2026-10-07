@@ -285,7 +285,102 @@ export function boardingPromptDedupKey(
   selectedTrainCode: string | null,
   decision: BoardingFireDecision['decision'],
 ): string {
-  return selectedTrainCode ?? `null-trainCode:${decision}`;
+  return `${selectedTrainCode ?? 'null-trainCode'}:${decision}`;
+}
+
+/**
+ * #2898 배포 경계 하위호환 — `firedTrainCodes`에 이 fix 이전 포맷(":" 없는 bare trainCode,
+ * phase 정보 없음)인 항목이 섞여 있을 수 있다(배포 순간 in-flight였던 trip). 그런 trip이
+ * 이 fix 이후 처음 평가될 때, 새 dedupKey(`${trainCode}:${decision}`)와 구형식 bare 키는
+ * 문자열이 달라 `includes` 정확매치로는 "이미 쐈다"를 못 잡는다 — 구코드가 trainCode만
+ * 보고(phase 무관) 차단했던 것과 달리 새 코드가 그 보호를 놓치면, 똑같은 phase를 다시
+ * 관측했을 때(= 진행 없음, 진짜 중복) 최악의 경우 1회 더 발사할 수 있다.
+ *
+ * 그 위험을 없애기 위해, exact-duplicate 판정은 구형식 항목을 만나면 phase를 모르니
+ * trainCode 일치만으로 보수적으로 "중복"으로 간주한다(과소차단보다 과차단이 안전 — 구코드와
+ * 동일 엄격도). 이 fix 이후 기록되는 항목은 전부 신형식(":" 포함)이라, 정상 배포 완료 후에는
+ * 이 분기가 더 이상 실질적으로 쓰이지 않는다(해당 trip이 만료/삭제되면 자연 소멸하는
+ * 일시적 하위호환 경로).
+ */
+export function isExactDuplicateFire(
+  firedTrainCodes: readonly string[] | undefined,
+  selectedTrainCode: string | null,
+  decision: BoardingFireDecision['decision'],
+): boolean {
+  const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
+  const token = resolveTrainCodeToken(selectedTrainCode);
+  return (firedTrainCodes ?? []).some((key) =>
+    key.includes(':') ? key === dedupKey : key === token,
+  );
+}
+
+/**
+ * #2898 (사용자 2회 지적 — 탑승 전엔 프롬프트가 뜨고 정작 실제 도착 시엔 아무것도 안 옴) — 같은
+ * trainCode에 대해 phase(approaching/imminent 등)를 불문하고 허용하는 최대 발사 횟수.
+ * approaching 1회 + 실제 도착(arrival) 재확인 1회까지만 — 그 열차에 대해 3번째 발사는 하지
+ * 않는다(스펙 ③, 거부 케이스 ⓑ).
+ */
+export const MAX_FIRES_PER_TRAIN_CODE = 2;
+
+/** `boardingPromptDedupKey`가 만든 `${trainCode}:${decision}` 키에서 trainCode 토큰만 추출. */
+function trainCodeTokenOf(dedupKey: string): string {
+  const idx = dedupKey.indexOf(':');
+  return idx === -1 ? dedupKey : dedupKey.slice(0, idx);
+}
+
+/** selectedTrainCode의 dedup 토큰(실 trainCode 또는 'null-trainCode' fallback, #2880과 동일). */
+function resolveTrainCodeToken(selectedTrainCode: string | null): string {
+  return selectedTrainCode ?? 'null-trainCode';
+}
+
+/**
+ * #2898 — `firedTrainCodes`(dedup 키 배열, 각 `${trainCode}:${decision}` 형식)에서 주어진
+ * trainCode가 지금까지 몇 번 발사됐는지(phase 무관) 센다.
+ */
+export function trainCodeFireCount(
+  firedTrainCodes: readonly string[] | undefined,
+  selectedTrainCode: string | null,
+): number {
+  const token = resolveTrainCodeToken(selectedTrainCode);
+  return (firedTrainCodes ?? []).filter((key) => trainCodeTokenOf(key) === token).length;
+}
+
+/** #2898 — 같은 trainCode에 대해 `MAX_FIRES_PER_TRAIN_CODE`(2) 미만이면 발사 가능. */
+export function canFireForTrainCode(
+  firedTrainCodes: readonly string[] | undefined,
+  selectedTrainCode: string | null,
+): boolean {
+  return trainCodeFireCount(firedTrainCodes, selectedTrainCode) < MAX_FIRES_PER_TRAIN_CODE;
+}
+
+/**
+ * #2898 — `evaluateBoardingPromptRepeatGate`의 'fired-too-recently'(5분 간격) 판정은 trainCode를
+ * 모른다(leg/origin당 단일 `lastFiredAt` 타임스탬프). caller는 pool을 아직 모르는 시점에 이
+ * 판정을 먼저 받으므로, 그 블록을 "소프트"로만 다루고 pool에서 실제 선택된 trainCode를 알게 된
+ * 뒤(`shouldProceedToSend` 시점) 이 함수로 최종 판정한다. 다음 두 경우에만 bypass(발사 허용):
+ *
+ *   1. 지금 선택된 trainCode가 **마지막으로 발사된 열차와 같고**, 그 열차의 누적 발사가
+ *      `MAX_FIRES_PER_TRAIN_CODE` 미만이면 → 같은 열차의 재확인(approaching→arrival, 스펙 ①).
+ *   2. 지금 선택된 trainCode가 **마지막으로 발사된 열차와 다르고**, 그 마지막 열차가 이미
+ *      `MAX_FIRES_PER_TRAIN_CODE`에 도달(소진)했으면 → 열차 교체로 새 cycle 시작(스펙 ④).
+ *
+ * 그 외(아직 소진되지 않은 다른 열차)는 여전히 5분 게이트로 차단한다 — 단배차(배차 간격 좁은
+ * 역)에서 서로 다른 열차가 연달아 관측되며 반복 발사되는 것을 막는 기존 취지(#2130 Part B-be-2)
+ * 는 그대로 유지한다(거부 케이스 ⓒ). 5분 게이트 자체를 제거하는 것이 아니라 (trainCode, phase)
+ * 축으로 세분화할 뿐이다.
+ */
+export function canBypassRepeatIntervalForTrainTransition(
+  firedTrainCodes: readonly string[] | undefined,
+  selectedTrainCode: string | null,
+): boolean {
+  const list = firedTrainCodes ?? [];
+  const lastKey = list.at(-1);
+  if (lastKey === undefined) return false;
+  const lastToken = trainCodeTokenOf(lastKey);
+  const currentToken = resolveTrainCodeToken(selectedTrainCode);
+  const lastTokenFireCount = list.filter((key) => trainCodeTokenOf(key) === lastToken).length;
+  if (currentToken === lastToken) return lastTokenFireCount < MAX_FIRES_PER_TRAIN_CODE;
+  return lastTokenFireCount >= MAX_FIRES_PER_TRAIN_CODE;
 }
 
 /**

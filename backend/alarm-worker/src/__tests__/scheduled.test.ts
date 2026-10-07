@@ -12158,10 +12158,19 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     });
   });
 
-  it('GPS 경로가 먼저 발사(boardingPromptState.fired + 최근 lastFiredAt) → 공유 dedup으로 skip (더블발사 0)', async () => {
+  it('GPS 경로가 먼저 발사(boardingPromptState.fired + 최근 lastFiredAt, 같은 trainCode+phase) → 공유 dedup으로 skip (더블발사 0)', async () => {
     const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    // #2898 — firedTrainCodes 키 형식이 `${trainCode}:${decision}`으로 바뀌었다(phase 포함).
+    // 이 테스트의 의도("같은 trainCode의 중복 발사 억제")를 그대로 보존하려면 pool이 결정할
+    // decision('imminent', arvlCd=1)과 동일한 phase로 이미 발사된 상태를 fixture로 재현해야
+    // 한다 — 그래야 same-train bypass(스펙 ①)가 아니라 진짜 중복으로 막힌다.
     const trip = makeTrip({
-      boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000, fireCount: 1, firedTrainCodes: ['7246'] },
+      boardingPromptState: {
+        fired: true,
+        lastFiredAt: NOW - 60_000,
+        fireCount: 1,
+        firedTrainCodes: ['7246:imminent'],
+      },
     });
     const stats = makeStats();
     await maybeFireOriginBoardingPromptGpsFree(
@@ -12173,7 +12182,10 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       () => {},
       () => 'pid-origin',
     );
-    expect(fetchImpl).not.toHaveBeenCalled();
+    // #2898 — 'fired-too-recently' 소프트 블록의 최종 판정은 pool을 fetch해 selectedTrainCode를
+    // 알아야(같은 열차의 정당한 재확인인지 구분) 하므로, 이번엔 (duplicate로) 최종 차단되더라도
+    // Seoul API는 호출된다(기존 "즉시 차단, API 미호출" 동작에서 변경 — 정확도 우선).
+    expect(fetchImpl).toHaveBeenCalled();
     expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
     expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
   });
@@ -12329,13 +12341,15 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     // 이번 cycle 후보로 뽑힌 trainCode가 firedTrainCodes에 이미 있으면 A4 dedup이 별도 차단한다.
     // waypoint.line을 다른 line으로 둬 direction=null(방향 미상)로 만들어 pickAutoTrainCode가
     // 방향 필터로 인해 ambiguous null을 반환하는 경로를 피한다.
+    // #2898 — firedTrainCodes 키 형식이 `${trainCode}:${decision}`으로 바뀌었다 — 이번 cycle이
+    // 뽑을 decision('imminent', arvlCd=1)과 같은 phase로 이미 발사된 상태여야 진짜 중복이다.
     const trip = makeTrip({
       waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }],
       boardingPromptState: {
         fired: true,
         lastFiredAt: NOW - 10 * 60_000,
         fireCount: 1,
-        firedTrainCodes: ['7246'],
+        firedTrainCodes: ['7246:imminent'],
       },
     });
     const stats = makeStats();
@@ -12989,7 +13003,17 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
       // fire-once key를 미리 stamp — 이번 호출이 gate(approaching)를 통과한 뒤 fire-once
       // 이중 방어에서 즉시 억제되도록(위 cycle A/B 패턴을 단일 호출로 단축).
-      await stampBoardingPromptFireOnce(kv as unknown as KVNamespace, trip.token, '용마산', NOW - 60_000);
+      // #2898 — key가 station 단독이 아니라 `${station}:${boardingPromptDedupKey(...)}`로
+      // 세분화됐다. 이 trip은 waypoints[0]('군자', line 7)과 originStation('용마산')으로
+      // inferLegDirection이 역방향(down)을 추론해 pool의 유일 후보(isUp=true)가 방향 필터에서
+      // 탈락 — pickAutoTrainCode가 ambiguity 없이도 방향 불일치로 null을 반환한다(#2880 fallback
+      // 경로). 그래서 dedupKey는 trainCode가 아니라 'null-trainCode:approaching'이다.
+      await stampBoardingPromptFireOnce(
+        kv as unknown as KVNamespace,
+        trip.token,
+        '용마산:null-trainCode:approaching',
+        NOW - 60_000,
+      );
       const { db, inserts } = makeFireLogDb();
       const stats = makeStats();
       await maybeFireOriginBoardingPromptGpsFree(

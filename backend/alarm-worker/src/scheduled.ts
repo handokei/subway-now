@@ -33,10 +33,13 @@ import { CRON_INTERVAL_MS } from './cronConstants';
 import {
   type BoardingFireDecision,
   boardingPromptDedupKey,
+  canBypassRepeatIntervalForTrainTransition,
+  canFireForTrainCode,
   decideBoardingPromptFire,
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
+  isExactDuplicateFire,
   isNearOrigin,
   markPromptFired,
   pickAutoTrainCode,
@@ -7243,18 +7246,30 @@ async function fireBoardingPromptForAnchor(inputs: {
    * #2880 — decision(phase)을 함께 전달해 caller가 `selectedTrainCode=null`일 때도
    * `boardingPromptDedupKey`로 fallback dedup을 수행할 수 있게 한다(trainCode 특정 실패
    * 중에도 fail-open하지 않음).
+   *
+   * #2898 — `selectedTrainCode`를 세 번째 인자로 함께 전달한다. 이 함수가 이미 pool에서
+   * `pickAutoTrainCode`로 선택을 확정해 fire-once key에도 재사용하므로, caller가 같은 pool로
+   * 다시 선택을 재계산(및 재계산 결과가 어긋날 위험)할 필요가 없다 — caller는 이 값으로
+   * repeat-interval soft-block의 same-train bypass(스펙 ①④) 여부만 판정한다.
    */
   shouldProceedToSend?: (
     pool: readonly ArrivalEntry[],
     decision: BoardingFireDecision['decision'],
+    selectedTrainCode: string | null,
   ) => boolean;
   /**
    * #2801 (3차 reopen) — `decideBoardingPromptFire`가 반환한 fire 사유('imminent'/
    * 'approaching'/'fallback-unobservable')를 caller가 D1 meta(`gateDecision`)로 기록할 수
    * 있도록 전달. 조기 불만 재발 시 D1만으로 어느 창(imminent/approaching)이 발사했는지 측정
    * 가능해야 한다(이슈 Wire §2).
+   *
+   * #2898 — `selectedTrainCode`도 함께 전달(위 `shouldProceedToSend`와 동일 이유 — 재계산 제거).
    */
-  onFired: (pool: readonly ArrivalEntry[], decision: BoardingFireDecision['decision']) => void;
+  onFired: (
+    pool: readonly ArrivalEntry[],
+    decision: BoardingFireDecision['decision'],
+    selectedTrainCode: string | null,
+  ) => void;
 }): Promise<void> {
   const {
     trip,
@@ -7321,7 +7336,12 @@ async function fireBoardingPromptForAnchor(inputs: {
     return;
   }
 
-  if (shouldProceedToSend && !shouldProceedToSend(pool, gate.decision)) {
+  // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
+  // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경). #2898 — shouldProceedToSend/
+  // fire-once key/onFired가 모두 이 단일 계산 결과를 공유한다(재계산 드리프트 방지).
+  const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, line, direction) : null;
+
+  if (shouldProceedToSend && !shouldProceedToSend(pool, gate.decision, selectedTrainCode)) {
     return;
   }
 
@@ -7330,7 +7350,14 @@ async function fireBoardingPromptForAnchor(inputs: {
   // 반영되기 전에 다음 cycle이 stale trip을 받으면 repeat gate 자체가 우회된다(9/30 e25e1158
   // 06:42→06:44 실측). trip 객체와 무관한 독립 key로 "최근 5분 내 발사" 여부를 재확인한다 —
   // repeat gate(trip 경유)는 무변경, 이 검사는 이중 방어로 얹는다.
-  if (await isBoardingPromptFireOnceBlocked(env, trip.token, station, now)) {
+  //
+  // #2898 — key를 station 단독이 아니라 `${station}:${trainCode:phase}`로 세분화한다. station
+  // 단독 키는 approaching/arrival처럼 같은 역에서 phase가 다른 재확인(스펙 ①)까지 5분간 묶어
+  // 차단해, boardingPrompt.ts의 same-train bypass(아래 shouldProceedToSend)를 이 독립 방어선이
+  // 다시 전부 막는 재발을 낳는다 — dedup 단위를 상위 게이트와 동일한 (trainCode, phase) 축으로
+  // 정렬한다(세분화만, "최근 5분 내 발사 여부"라는 판정 자체는 무변경).
+  const fireOnceAnchorKey = `${station}:${boardingPromptDedupKey(selectedTrainCode, gate.decision)}`;
+  if (await isBoardingPromptFireOnceBlocked(env, trip.token, fireOnceAnchorKey, now)) {
     log(`${logPrefix}: gate blocked`, {
       token: trip.token.slice(0, 8),
       reason: 'fire-once-key',
@@ -7343,10 +7370,6 @@ async function fireBoardingPromptForAnchor(inputs: {
   }
 
   const { title, body } = buildBoardingPromptMessage(station, line, nextStation, etaSeconds, now, trip.locale);
-
-  // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
-  // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경).
-  const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, line, direction) : null;
 
   const pushId = generatePushId();
   const heal = await sendWithEnvHeal(
@@ -7388,8 +7411,8 @@ async function fireBoardingPromptForAnchor(inputs: {
   if (heal.result.ok) {
     stats.silentPushFiredByKind.boardingPrompt += 1;
     // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota).
-    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, station, now);
-    onFired(pool, gate.decision);
+    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, fireOnceAnchorKey, now);
+    onFired(pool, gate.decision, selectedTrainCode);
     dirty = true;
     log(`${logPrefix}: fired`, {
       token: trip.token.slice(0, 8),
@@ -7591,24 +7614,39 @@ export async function maybeFireOriginBoardingPromptGpsFree(
 
   // #2531 — GPS 경로(`evaluateBoardingPromptGates`)와 동일 dedup 게이트 + 동일 ledger 공유.
   const repeatOutcome = evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now);
+  // #2898 — 'fired-too-recently'(5분 간격)만 소프트 블록으로 다룬다. 이 시점엔 아직 pool을
+  // 몰라(Seoul API 호출 전) 지금 후보가 직전 발사와 같은 열차의 재확인(approaching→arrival,
+  // 스펙 ①)인지 아직 소진되지 않은 다른 열차의 스팸(ⓒ, 차단 유지)인지 구분할 수 없다 — 최종
+  // 판정은 pool/selectedTrainCode를 아는 `shouldProceedToSend`로 미룬다. silenced/
+  // max-fires-reached는 trainCode와 무관한 절대 차단이므로 기존처럼 즉시 return한다.
+  let intervalSoftBlocked = false;
   if (repeatOutcome && !repeatOutcome.pass) {
-    stats.originGpsFreeBoardingPromptBlocked += 1;
     log('origin-boarding-prompt-gps-free: gate blocked', {
       token: trip.token.slice(0, 8),
       reason: repeatOutcome.reason,
       originStation: display.originStation,
       line: display.line,
     });
-    await recordOriginBoardingPromptTransition(
-      env,
-      trip,
-      display.originStation,
-      display.line,
-      ssot,
-      'silenced',
-      now,
-    );
-    return;
+    // #2898 — firedTrainCodes가 비어있으면(이전 발사의 trainCode를 전혀 모름) same-train
+    // bypass 판정 자체가 불가능하다 — pool을 fetch해 봐야 무조건 차단될 것이므로, Seoul API
+    // 호출 없이 기존처럼 즉시 차단한다(불필요한 외부 호출 방지 + 기존 단위 테스트 동작 보존).
+    if (
+      repeatOutcome.reason !== 'fired-too-recently' ||
+      (trip.boardingPromptState?.firedTrainCodes?.length ?? 0) === 0
+    ) {
+      stats.originGpsFreeBoardingPromptBlocked += 1;
+      await recordOriginBoardingPromptTransition(
+        env,
+        trip,
+        display.originStation,
+        display.line,
+        ssot,
+        'silenced',
+        now,
+      );
+      return;
+    }
+    intervalSoftBlocked = true;
   }
 
   const nextWaypoint = trip.waypoints[0];
@@ -7675,23 +7713,49 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
     // 재발사하지 않는다. #2880 — selectedTrainCode=null(후보 특정 실패)일 때도
     // `boardingPromptDedupKey`의 phase fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
-    shouldProceedToSend: (pool, decision) => {
-      const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
-      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
-      if (trip.boardingPromptState?.firedTrainCodes?.includes(dedupKey)) {
+    // #2898 — `isExactDuplicateFire`는 배포 경계에 남아있을 수 있는 구형식(":" 없는 bare
+    // trainCode) `firedTrainCodes` 항목도 안전하게 처리한다(phase 모르면 trainCode만으로
+    // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
+    shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
+      const firedTrainCodes = trip.boardingPromptState?.firedTrainCodes;
+      if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.originGpsFreeBoardingPromptBlocked += 1;
         log('origin-boarding-prompt-gps-free: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
-          dedupKey,
-          firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
+          dedupKey: boardingPromptDedupKey(selectedTrainCode, decision),
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 같은 trainCode는 2회(approaching+arrival)까지만. phase가 달라도 3번째는 차단.
+      if (!canFireForTrainCode(firedTrainCodes, selectedTrainCode)) {
+        stats.originGpsFreeBoardingPromptBlocked += 1;
+        log('origin-boarding-prompt-gps-free: skipped train fire cap', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 위 early 게이트가 'fired-too-recently'로 소프트 블록했던 경우에만 여기서 최종
+      // 판정. 같은 열차의 재확인(소진 전)이거나, 직전 열차가 이미 소진된 뒤의 새 열차면 허용 —
+      // 그 외(소진되지 않은 다른 열차)는 여전히 5분 게이트로 차단(단배차 스팸 방지 유지).
+      if (
+        intervalSoftBlocked &&
+        !canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+      ) {
+        stats.originGpsFreeBoardingPromptBlocked += 1;
+        log('origin-boarding-prompt-gps-free: skipped interval (different train still active)', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
         });
         return false;
       }
       return true;
     },
-    onFired: (pool, decision) => {
-      const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
+    onFired: (pool, decision, selectedTrainCode) => {
       stats.originGpsFreeBoardingPromptFired += 1;
       trip.boardingPromptState = markPromptFired(
         now,
@@ -7859,24 +7923,40 @@ export async function maybeFireLegBoardingPrompt(
   // "1회 발사 후 영구 차단"(구 `evaluateHopEndPromptGates`)이 아니라 반복 발사를 허용하되
   // 스팸은 하드 캡+최소 간격으로 막는다.
   const outcome = evaluateBoardingPromptRepeatGate(trip.legBoardingPromptState, now);
+  // #2898 (사용자 2회 지적 — 탑승 전엔 뜨고 정작 실제 도착 시엔 안 뜸) — 'fired-too-recently'
+  // (5분 간격)만 소프트 블록으로 다룬다. 이 시점엔 아직 pool을 몰라(Seoul API 호출 전) 지금
+  // 후보가 직전 발사와 같은 열차의 재확인(approaching→arrival, 스펙 ①)인지 아직 소진되지 않은
+  // 다른 열차의 스팸(ⓒ, 차단 유지)인지 구분할 수 없다 — 최종 판정은 pool/selectedTrainCode를
+  // 아는 `shouldProceedToSend`로 미룬다. silenced/max-fires-reached는 trainCode와 무관한 절대
+  // 차단이므로 기존처럼 즉시 return한다(5분 게이트 자체는 제거하지 않는다 — 세분화만).
+  let intervalSoftBlocked = false;
   if (outcome && !outcome.pass) {
-    stats.legBoardingPromptBlocked += 1;
     log('leg-boarding-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
       reason: outcome.reason,
       station: currentLegAnchor.boardingStation,
       line: currentLegAnchor.line,
     });
-    await recordLegBoardingPromptTransition(
-      env,
-      trip,
-      currentLegAnchor.boardingStation,
-      currentLegAnchor.line,
-      ssot,
-      'silenced',
-      now,
-    );
-    return;
+    // #2898 — firedTrainCodes가 비어있으면(이전 발사의 trainCode를 전혀 모름) same-train
+    // bypass 판정 자체가 불가능하다 — pool을 fetch해 봐야 무조건 차단될 것이므로, Seoul API
+    // 호출 없이 기존처럼 즉시 차단한다(불필요한 외부 호출 방지 + 기존 단위 테스트 동작 보존).
+    if (
+      outcome.reason !== 'fired-too-recently' ||
+      (trip.legBoardingPromptState?.firedTrainCodes?.length ?? 0) === 0
+    ) {
+      stats.legBoardingPromptBlocked += 1;
+      await recordLegBoardingPromptTransition(
+        env,
+        trip,
+        currentLegAnchor.boardingStation,
+        currentLegAnchor.line,
+        ssot,
+        'silenced',
+        now,
+      );
+      return;
+    }
+    intervalSoftBlocked = true;
   }
 
   const nextWaypoint = trip.waypoints[0];
@@ -7945,25 +8025,51 @@ export async function maybeFireLegBoardingPrompt(
     // (예: 사용자 실열차가 새로 후보에 들어옴) selectedTrainCode가 달라져 정상 통과한다.
     // #2880 — selectedTrainCode=null(후보 특정 실패)일 때도 `boardingPromptDedupKey`의 phase
     // fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
-    shouldProceedToSend: (pool, decision) => {
-      const selectedTrainCode =
-        pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
-      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
-      if (trip.legBoardingPromptState?.firedTrainCodes?.includes(dedupKey)) {
+    // #2898 — `isExactDuplicateFire`는 배포 경계에 남아있을 수 있는 구형식(":" 없는 bare
+    // trainCode) `firedTrainCodes` 항목도 안전하게 처리한다(phase 모르면 trainCode만으로
+    // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
+    shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
+      const firedTrainCodes = trip.legBoardingPromptState?.firedTrainCodes;
+      if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.legBoardingPromptBlocked += 1;
         log('leg-boarding-prompt: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
-          dedupKey,
-          firedTrainCodes: trip.legBoardingPromptState?.firedTrainCodes,
+          dedupKey: boardingPromptDedupKey(selectedTrainCode, decision),
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 같은 trainCode는 2회(approaching+arrival)까지만. phase가 달라도 3번째는 차단
+      // (스펙 ③, 거부 케이스 ⓑ — 5분 경과 후라도 같은 열차 3회째는 막는다).
+      if (!canFireForTrainCode(firedTrainCodes, selectedTrainCode)) {
+        stats.legBoardingPromptBlocked += 1;
+        log('leg-boarding-prompt: skipped train fire cap', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 위 early 게이트가 'fired-too-recently'로 소프트 블록했던 경우에만 여기서 최종
+      // 판정. 같은 열차의 재확인(소진 전, 스펙 ①)이거나, 직전 열차가 이미 소진된 뒤의 새 열차
+      // (스펙 ④)면 허용 — 그 외(소진되지 않은 다른 열차)는 여전히 5분 게이트로 차단
+      // (거부 케이스 ⓒ, 단배차 스팸 방지 유지).
+      if (
+        intervalSoftBlocked &&
+        !canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+      ) {
+        stats.legBoardingPromptBlocked += 1;
+        log('leg-boarding-prompt: skipped interval (different train still active)', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
         });
         return false;
       }
       return true;
     },
-    onFired: (pool, decision) => {
-      const selectedTrainCode =
-        pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
+    onFired: (pool, decision, selectedTrainCode) => {
       stats.legBoardingPromptFired += 1;
       trip.legBoardingPromptState = markPromptFired(
         now,
