@@ -6627,7 +6627,17 @@ async function runLocklessDestination(
     // 도착 알림은 이미 발사됐다(아래 최초 관측 분기) — `completeWaypointAdvance`가 내부에서
     // `cleanupTripWithLa`를 호출해 같은 reason으로 재발사를 시도해도 그 함수 자체의 KV
     // dedup(10분 TTL, 본 PR의 유예 상한 7분보다 길어 항상 유효)이 중복 push를 막는다.
-    await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+    await completeWaypointAdvance(
+      trip,
+      waypoint,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId,
+      'lockless-destination-waypoints-exhausted',
+    );
     return true;
   }
 
