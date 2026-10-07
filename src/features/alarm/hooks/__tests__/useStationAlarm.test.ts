@@ -2298,6 +2298,13 @@ describe('useStationAlarm', () => {
     // 신규 동작(유예·재확인·BG 안전망·측정 tagging)을 검증한다.
     describe('#2927 로컬 발사 유예 타이머 (isLocalFireDeferEnabled ON)', () => {
       const originalEnv = process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER;
+      // #2927 — 15s 실제 대기 없이 유예 타이머를 검증하기 위해 global.setTimeout을 가로챈다.
+      // useStationAlarm.ts 전체에서 setTimeout 호출부는 scheduleDeferredStationPassedFire
+      // 하나뿐이라(grep 확인) 다른 내부 동작과 충돌 없이 안전하게 가로챌 수 있다. jest
+      // fake timer(advanceTimersByTime) 대신 직접 콜백을 캡처하는 방식은 hydration effect의
+      // 비동기 micro-queue와 fake timer 간 상호작용으로 발생하는 "not wrapped in act" 경고를
+      // 피한다(hydration은 fake timer와 무관하게 real microtask로 진행돼야 하므로).
+      let capturedTimer: { cb: () => void; delay: number } | null = null;
 
       function renderDeferredStationPassed() {
         mockEvaluateAlarmPhase.mockReturnValue(null);
@@ -2314,13 +2321,31 @@ describe('useStationAlarm', () => {
         );
       }
 
+      async function flushDeferredTimer(): Promise<void> {
+        if (!capturedTimer) {
+          throw new Error('#2927 — setTimeout이 등록되지 않음(유예 타이머 미호출)');
+        }
+        await act(async () => {
+          capturedTimer?.cb();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      }
+
       beforeEach(() => {
         process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER = 'true';
-        jest.useFakeTimers();
+        capturedTimer = null;
+        jest.spyOn(global, 'setTimeout').mockImplementation(((
+          cb: () => void,
+          delay?: number,
+        ) => {
+          capturedTimer = { cb, delay: delay ?? 0 };
+          return 0 as unknown as ReturnType<typeof setTimeout>;
+        }) as typeof setTimeout);
       });
 
       afterEach(() => {
-        jest.useRealTimers();
+        (global.setTimeout as unknown as jest.Mock).mockRestore();
         if (originalEnv === undefined) {
           delete process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER;
         } else {
@@ -2330,7 +2355,7 @@ describe('useStationAlarm', () => {
 
       // ⓐ miss 0 — backend push가 끝내 오지 않는 트립(마커 계속 false)에서 유예 만료 후
       // 반드시 발사된다.
-      it('ⓐ 유예 만료 전에는 fireFgAuxStationPassedNotification이 호출되지 않는다', async () => {
+      it('ⓐ 유예 등록 시점에는 fireFgAuxStationPassedNotification이 호출되지 않고, LOCAL_FIRE_DEFER_GRACE_MS로 타이머가 등록된다', async () => {
         setAppState('active');
         mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
 
@@ -2340,9 +2365,10 @@ describe('useStationAlarm', () => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
         expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
+        expect(capturedTimer?.delay).toBe(LOCAL_FIRE_DEFER_GRACE_MS);
       });
 
-      it('ⓐ 유예(LOCAL_FIRE_DEFER_GRACE_MS) 만료 후 fireFgAuxStationPassedNotification이 발사되고, 발사 성공 시 device-proxy-fired로 기록된다', async () => {
+      it('ⓐ 유예 만료 후 fireFgAuxStationPassedNotification이 발사되고, 발사 성공 시 device-proxy-fired로 기록된다', async () => {
         setAppState('active');
         mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
 
@@ -2353,10 +2379,7 @@ describe('useStationAlarm', () => {
         });
         expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
 
-        await act(async () => {
-          jest.advanceTimersByTime(LOCAL_FIRE_DEFER_GRACE_MS);
-          await Promise.resolve();
-        });
+        await flushDeferredTimer();
 
         expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
           station.name,
@@ -2380,10 +2403,7 @@ describe('useStationAlarm', () => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
 
-        await act(async () => {
-          jest.advanceTimersByTime(LOCAL_FIRE_DEFER_GRACE_MS);
-          await Promise.resolve();
-        });
+        await flushDeferredTimer();
 
         expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalled();
         expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
@@ -2403,10 +2423,7 @@ describe('useStationAlarm', () => {
 
         setAppState('background');
 
-        await act(async () => {
-          jest.advanceTimersByTime(LOCAL_FIRE_DEFER_GRACE_MS);
-          await Promise.resolve();
-        });
+        await flushDeferredTimer();
 
         expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
         expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
@@ -2422,10 +2439,7 @@ describe('useStationAlarm', () => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
 
-        await act(async () => {
-          jest.advanceTimersByTime(LOCAL_FIRE_DEFER_GRACE_MS);
-          await Promise.resolve();
-        });
+        await flushDeferredTimer();
 
         expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
       });
