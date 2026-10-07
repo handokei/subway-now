@@ -365,6 +365,21 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       forbiddenStations: ['어린이대공원(세종대)', '군자(능동)', '중곡', '용마산', '사가정', '면목'],
       // 건대입구 환승 waypoint는 `locklessTransferAdvanced`(motion 게이트 미적용, 별도 경로)로
       // cycle 1에 즉시 advance — hop-end-prompt("하차했나요?") 채널로만 발사된다.
+      //
+      // #2920 설계상으로는 이 trip이 lock 없이(위 #2900 설명과 동일 trip) 목적지(용마산)
+      // 도착도 증거 없는 종료 유예 분기를 타야 하고, 그 유예 최초 stamp 시점에 "하차 확인"
+      // 프롬프트가 같은 hop-end 채널로 추가 발사돼야 한다 — 그러나 **현재 실제 동작은
+      // 그렇지 않다(알려진 결함, 추적처 #2926)**. #2894(confirm 후보창 1-hop 확장)가 merge된
+      // 뒤로 이 trip의 leg-2 leg-resolve가 7258(사용자가 타지 않은 후보, candidateTrains에
+      // 노출됐을 뿐 — `replay_20260918_leg2_wrong_lock.test.ts`의 7256=실제 탑승/7260=오탑승
+      // lock 계보 참고)을 2 cycle 연속 관측해 `trip.legResolveStreak`를 pending 상태로 채운다.
+      // `hasBoardingEvidence()`는 설계상(#2900 docstring, 과차단 방지 목적) `legResolveStreak
+      // !== undefined`를 "탑승 증거 있음"으로 인정하므로, 확정되지 않은 pending 후보 하나가
+      // false positive 증거가 되어 용마산 disembark 프롬프트를 억제한다 — ADR-010 첫 줄대로
+      // false positive와 miss는 동급이고, 이건 **false positive가 miss를 낳은** 사례다.
+      // 아래 '건대입구'만 남기는 것은 "정상 설계"가 아니라 "현재 실측과 일치"일 뿐이다 —
+      // 이 결함을 공개적으로 추적하는 전용 `it.fails`가
+      // `replay_20260918_destination_disembark_suppressed.test.ts`에 있다.
       hopEndPromptStations: ['건대입구'],
       // ADR-039 조건 1 재판정(3차, motion 주입 후) — 경유역 3개는 정상 통과 알림이 뜬다
       // (silent push, device가 로컬 알림 구성). **RED는 여기 없음** — 2차 결론(0건) 철회.

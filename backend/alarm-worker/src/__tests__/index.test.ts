@@ -3154,6 +3154,32 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.boardingLock).toBeUndefined();
       expect(stored.boardingPromptResponded).toBe(true);
     });
+
+    // #2920 — destinationConfirmPendingSince(#2900 증거 없는 목적지 유예) 중인 trip이 하차
+    // 확인 프롬프트의 [하차함] 응답(disembarked)을 받으면 남은 타임아웃(최대 7분)을 기다리지
+    // 않고 즉시 종료한다(사용자 확인 = ground truth). A2e 타임아웃 분기가 호출하는 바로 그
+    // completeWaypointAdvance를 재사용 — 새 종료 경로 신설 없음.
+    it('#2920 — destinationConfirmPendingSince 유예 중 disembarked 응답 → 즉시 종료(KV 삭제)', async () => {
+      fetchSpy.mockResolvedValue(new Response('', { status: 200 }));
+      const env = makeKvEnv();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(tripBody({ destinationConfirmPendingSince: CREATED })),
+      );
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ action: 'disembarked' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'released' });
+
+      expect(
+        await env.TRIPS.get('trip:tok-bc'),
+        '#2920 위반 — [하차함] 응답에도 trip이 KV에서 즉시 삭제되지 않음',
+      ).toBeNull();
+    });
   });
 
   describe('not-boarded', () => {

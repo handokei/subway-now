@@ -689,6 +689,11 @@ export type TripEndedReason =
  * - `'lockless-shift-empty'` — lockless intermediate shift 후 waypoints 소진(10/7 조기종료
  *   재현 불가의 두 후보 중 하나).
  * - `'http-delete'` — `DELETE /trips/:token`(사용자 명시 종료 또는 device 자체 cleanup).
+ * - `'http-destination-disembark-confirmed'` — `POST /trips/:token/boarding-confirm`
+ *   (action='disembarked')가 `destinationConfirmPendingSince` 유예 중인 trip을 즉시 완결(#2920/
+ *   #2923). waypoints가 자연 소진된 게 아니라 **사용자가 하차를 명시 확인**한 종료라
+ *   `lockless-destination-waypoints-exhausted`와 구분한다 — #2905가 측정해야 하는 "새 프롬프트가
+ *   실제 확정으로 전환됐는가"를 D1만으로 가리려면 이 값이 필요하다.
  */
 export type TripEndPath =
   | 'trip-expired'
@@ -703,7 +708,8 @@ export type TripEndPath =
   | 'push-unrecoverable-reschedule'
   | 'push-unrecoverable-lockless-intermediate'
   | 'lockless-shift-empty'
-  | 'http-delete';
+  | 'http-delete'
+  | 'http-destination-disembark-confirmed';
 
 /**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의
