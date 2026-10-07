@@ -7484,8 +7484,52 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(calls).toHaveLength(1);
     const headers = calls[0][1].headers as Record<string, string>;
     const collapseId = headers['apns-collapse-id'];
-    expect(collapseId).toBe(`station-${HEX64_TOKEN.slice(0, 16)}`);
+    expect(collapseId).toBe(`station-${HEX64_TOKEN.slice(0, 16)}-중곡`);
     expect(new TextEncoder().encode(collapseId).length).toBeLessThanOrEqual(64);
+  });
+
+  // #2909 (ADR-040 0단계) — fireArvlCdStationPush(arvlCd 본류, :3814)가 trip 단위
+  // collapseId를 쓰면 같은 trip의 역A 배너가 역B 배너에 덮여 알림센터에서 사라진다(10/7
+  // 사용자 피드백). 역 단위로 분리해 역마다 배너가 쌓여야 한다.
+  it('#2909 같은 trip 다른 두 역(arvlcd 본류) 발사 — collapseId가 서로 달라야 한다(역 단위)', async () => {
+    const { apnsFetch: fetchA } = await runArvlScheduled({
+      seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+      pushId: 'p-2909-a',
+    });
+    const { apnsFetch: fetchB } = await runArvlScheduled({
+      seoul: makeArvlCdFireSeoul('군자', 0, 1),
+      trip: makeLockTripFixture('arvl-tok', {
+        waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+      }),
+      pushId: 'p-2909-b',
+    });
+    const callsA = getStationPassedCalls(fetchA);
+    const callsB = getStationPassedCalls(fetchB);
+    expect(callsA).toHaveLength(1);
+    expect(callsB).toHaveLength(1);
+    const collapseIdA = (callsA[0][1].headers as Record<string, string>)['apns-collapse-id'];
+    const collapseIdB = (callsB[0][1].headers as Record<string, string>)['apns-collapse-id'];
+    // 같은 trip.token('arvl-tok')이지만 발사 역이 다르므로 collapseId도 달라야 한다.
+    expect(collapseIdA).not.toBe(collapseIdB);
+  });
+
+  // #2909 회귀 가드 ⓐ — 같은 trip·같은 역의 재발사는 여전히 같은 collapseId(중복 스택 방지 유지).
+  it('#2909 회귀 가드 ⓐ 같은 trip·같은 역 재발사 — collapseId는 여전히 동일', async () => {
+    const { apnsFetch: fetchFirst } = await runArvlScheduled({
+      seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+      pushId: 'p-2909-same-1',
+    });
+    const { apnsFetch: fetchSecond } = await runArvlScheduled({
+      seoul: makeArvlCdFireSeoul('중곡', 0, 1),
+      pushId: 'p-2909-same-2',
+    });
+    const collapseIdFirst = (getStationPassedCalls(fetchFirst)[0][1].headers as Record<string, string>)[
+      'apns-collapse-id'
+    ];
+    const collapseIdSecond = (getStationPassedCalls(fetchSecond)[0][1].headers as Record<string, string>)[
+      'apns-collapse-id'
+    ];
+    expect(collapseIdFirst).toBe(collapseIdSecond);
   });
 
   // Epic #1204 그룹 2 D3 (#1273)
@@ -8352,6 +8396,79 @@ describe('fireVanishFallbackStationPush — #2779 fire-attempt D1 기록', () =>
         ...(JSON.parse(args[5] as string) as { outcome: string; reason?: string; path?: string }),
       }));
   }
+
+  // #2909 (ADR-040 0단계) — fireVanishFallbackStationPush(:4662)가 trip 단위 collapseId를
+  // 쓰면 같은 trip의 역A 배너가 역B 배너에 덮여 알림센터에서 사라진다. 역 단위로 분리한다.
+  it('#2909 같은 trip 다른 두 역(vanish-fallback) 발사 — collapseId가 서로 달라야 한다(역 단위)', async () => {
+    const { db } = makeFireLogDb();
+    const kv = new InMemoryKV();
+    const trip = makeVanishTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const waypointA = { stationName: '중곡', line: '7', kind: 'intermediate' } as const;
+    const waypointB = { stationName: '건대입구', line: '7', kind: 'intermediate' } as const;
+    for (const waypoint of [waypointA, waypointB]) {
+      await fireVanishFallbackStationPush({
+        trip,
+        waypoint,
+        lock: trip.boardingLock!,
+        env: makeEnv(kv, undefined, db),
+        deps: {
+          seoul: stubSeoul(),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+        },
+        stats: makeFullEmptyStats(),
+        now: NOW,
+        log: () => undefined,
+        generatePushId: () => `p-2909-${waypoint.stationName}`,
+        origin: 'vanish-fallback',
+      });
+    }
+    expect(apnsFetch.mock.calls).toHaveLength(2);
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const [collapseIdA, collapseIdB] = calls
+      .map((c) => (c[1].headers as Record<string, string>)['apns-collapse-id']);
+    // 같은 trip.token이지만 발사 역이 다르므로 collapseId도 달라야 한다.
+    expect(collapseIdA).not.toBe(collapseIdB);
+  });
+
+  // #2909 회귀 가드 ⓐ — 같은 trip·같은 역의 재발사는 여전히 같은 collapseId(중복 스택 방지 유지).
+  it('#2909 회귀 가드 ⓐ 같은 trip·같은 역(vanish-fallback) 재발사 — collapseId는 여전히 동일', async () => {
+    const { db } = makeFireLogDb();
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    for (const pushId of ['p-2909-guard-1', 'p-2909-guard-2']) {
+      // 매 발사마다 fresh kv — 역 단위 station-passed dedup이 두 번째 발사를 skip하지 않게 한다.
+      const kv = new InMemoryKV();
+      const trip = makeVanishTrip();
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await fireVanishFallbackStationPush({
+        trip,
+        waypoint: { stationName: '중곡', line: '7', kind: 'intermediate' },
+        lock: trip.boardingLock!,
+        env: makeEnv(kv, undefined, db),
+        deps: {
+          seoul: stubSeoul(),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+        },
+        stats: makeFullEmptyStats(),
+        now: NOW,
+        log: () => undefined,
+        generatePushId: () => pushId,
+        origin: 'vanish-fallback',
+      });
+    }
+    expect(apnsFetch.mock.calls).toHaveLength(2);
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const [collapseIdFirst, collapseIdSecond] = calls
+      .map((c) => (c[1].headers as Record<string, string>)['apns-collapse-id']);
+    expect(collapseIdFirst).toBe(collapseIdSecond);
+  });
 
   it('발사 성공(origin=vanish-fallback) → outcome=sent + meta.path=vanish-fallback 기록', async () => {
     const { db, inserts } = makeFireLogDb();

@@ -3828,7 +3828,10 @@ export async function fireArvlCdStationPush(
         tripToken: trip.token,
         sound: stationNotifSound.sound,
         interruptionLevel: stationNotifSound.interruptionLevel,
-        collapseId: stationNotifCollapseId(trip.token),
+        // #2909 (ADR-040 0단계) — 역 단위 collapse. trip 단위였던 과거엔 같은 trip의
+        // 역A 배너가 역B 배너에 덮여 알림센터에서 사라졌다(10/7 사용자 피드백). station을
+        // 명시해 :4241(sync catch-up)과 동일하게 역마다 배너가 쌓이도록 통일한다.
+        collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
         expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
         data: buildSilentPushData(arvlcdPayload),
         contentAvailable: true,
@@ -4043,9 +4046,10 @@ export async function runMidCycleFireOnly(
             tripToken: trip.token,
             sound: soundFields.sound,
             interruptionLevel: soundFields.interruptionLevel,
-            // #2615 — 기존 arvlcd 발사 경로와 동일 collapse-id. 다음 정각 cron이 같은 역을
-            // 또 쏴도 iOS가 알림센터에서 최신으로 교체 — 사용자에겐 항상 1개.
-            collapseId: stationNotifCollapseId(trip.token),
+            // #2909 (ADR-040 0단계, 구 #2615 trip 단위 collapse 폐기) — 역 단위 collapse.
+            // 다음 정각 cron이 같은 역을 또 쏴도(같은 token+station) iOS가 알림센터에서
+            // 최신으로 교체해 중복 스택은 방지하면서, 다른 역 배너는 덮지 않고 나란히 쌓인다.
+            collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
             expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
             data: buildSilentPushData(payload),
             contentAvailable: true,
@@ -4684,7 +4688,8 @@ export async function fireVanishFallbackStationPush(
         tripToken: trip.token,
         sound: vanishStationNotifSound.sound,
         interruptionLevel: vanishStationNotifSound.interruptionLevel,
-        collapseId: stationNotifCollapseId(trip.token),
+        // #2909 (ADR-040 0단계) — 역 단위 collapse(fireArvlCdStationPush와 동일 정책).
+        collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
         expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
         data: buildSilentPushData(vanishPayload),
         contentAvailable: true,
