@@ -441,8 +441,14 @@ export async function cleanupTripWithLa(
  *
  * 실패는 fire-and-forget 성격이지만 흐름 일관성을 위해 await — APNs latency는 cron 1 cycle 안에서
  * 흡수. fireLiveActivityDismissal과 마찬가지로 trip 상태 변경 없이 best-effort.
+ *
+ * #2900 — export: `scheduled.ts`의 lockless destination "종료 유예" 경로가 실제 trip
+ * 삭제(`cleanupTripWithLa`)보다 먼저 이 알림만 독립적으로 발사한다(거부 케이스 ⓕ — 도착
+ * 알림은 증거 유무와 무관하게 즉시 발사). 이 함수 자체의 KV dedup(10분 TTL)이 나중에
+ * `cleanupTripWithLa`가 같은 reason으로 재호출해도 중복 발사를 막아준다 — 새 dedup 메커니즘
+ * 신설 없음.
  */
-async function fireTripEndedAlertPush(
+export async function fireTripEndedAlertPush(
   trip: Trip,
   reason: TripEndedReason,
   env: Env,

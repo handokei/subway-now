@@ -57,6 +57,7 @@ import {
   buildLiveActivityContentState,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
+  fireTripEndedAlertPush,
   resolveCurrentStationName,
   type LiveActivityStats,
 } from './liveActivity';
@@ -922,18 +923,20 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   locklessDestinationAdvanced: number;
   /**
-   * #2900 (옵션 C) — lockless destination waypoint가 arvlCd 도착 신호를 받았지만 탑승
-   * 증거(lock 활성/boardingCommitted/legResolveStreak)가 전혀 없어 **종료 대신** 확인 질문으로
-   * 전환한 횟수(trip당 최초 관측 1회 — `destinationConfirmPendingSince` 최초 stamp 시점에만
-   * 증가). 10/7 아침 사고(건대 환승 중 다른 열차 신호로 조기 종료, id154)가 이 분기로
-   * 흡수됐다는 증거 — 0건이면 모든 destination 신호가 증거 보유 상태에서만 왔다는 뜻.
+   * #2900 (옵션 C, 재설계) — lockless destination waypoint가 arvlCd 도착 신호를 받았지만
+   * 탑승 증거(lock 활성/lockEverAttached/boardingCommitted/legResolveStreak)가 전혀 없어
+   * **실제 종료만** 유예하기 시작한 횟수(trip당 최초 관측 1회 —
+   * `destinationConfirmPendingSince` 최초 stamp 시점에만 증가). 도착 알림(trip-ended alert)
+   * 자체는 이 분기에서도 즉시 발사된다(거부 케이스 ⓕ) — 이 카운터는 "알림은 갔지만 backend
+   * trip 삭제는 미룬" 횟수다. 10/7 아침 사고(건대 환승 중 다른 열차 신호로 조기 종료, id154)가
+   * 이 분기로 흡수됐다는 증거 — 0건이면 모든 destination 신호가 증거 보유 상태에서만 왔다는 뜻.
    */
   destinationConfirmFired: number;
   /**
-   * #2900 — 위 확인 질문이 `DESTINATION_CONFIRM_TIMEOUT_MS` 경과 후에도 응답 없이(또는 "아직"
-   * 응답만 받고) 종료로 수렴한 횟수. 거부 케이스 ⓒ(영구 잔존 금지)가 실제로 지켜지는지의
-   * 증거 — `destinationConfirmFired` 대비 이 값이 과도하게 크면(=거의 매번 타임아웃) 질문
-   * 자체가 사용자에게 도달하지 않거나 응답 UX가 깨졌다는 신호(옵션 D 식별 보강의 동기).
+   * #2900 — 위 유예가 `DESTINATION_CONFIRM_TIMEOUT_MS` 경과 후 실제 종료(KV 삭제/D1
+   * trip-end/LA dismissal)로 수렴한 횟수. 거부 케이스 ⓒ(영구 잔존 금지)가 실제로 지켜지는지의
+   * 증거 — 도착 알림은 이미 `destinationConfirmFired` 시점에 발사됐으므로 이 값은 순수하게
+   * "유예 종료"만 집계한다.
    */
   destinationConfirmTimedOut: number;
   /**
@@ -6485,13 +6488,19 @@ async function runLocklessTransfer(
  * 더 이상 건드리지 않고 continue해야 한다). false = 신호 미확보/미도착(caller는 기존
  * lockMissing 경로로 정상 fallthrough).
  *
- * #2900 (옵션 C, 결정: GitHub #2900 코멘트 "결정: C(질문 전환) 승인") — 10/7 아침 사고(id154,
- * 06:48:28 leg-resolve pending → 3.3초 뒤 destination-arrived 종료)의 근본은 "탑승 증거 없이
- * 목적지 확정"이다. 이 함수의 advance 판정(arvlCd ENTERING/ARRIVED) 자체는 바꾸지 않는다 — 새
- * 신호·새 게이트 도입 금지 지시(바로 위 문단)와 충돌하지 않도록, 바뀌는 것은 advance가
- * 확정된 "이후" 종료라는 최종 행동뿐이다. `hasBoardingEvidence`가 false면
- * `runLocklessDestinationAskInsteadOfEnd`로 위임 — 종료 대신 확인 질문(기존 train-reconfirm
- * 알림 채널 재사용) → 응답/타임아웃으로 전환한다.
+ * #2900 (옵션 C, 결정: GitHub #2900 코멘트 "결정: C(질문 전환) 승인", 재설계: 코디네이터
+ * 리뷰 2026-10-08) — 10/7 아침 사고(id154, 06:48:28 leg-resolve pending → 3.3초 뒤
+ * destination-arrived 종료)의 근본은 "탑승 증거 없이 목적지 확정"이다. 이 함수의 advance
+ * 판정(arvlCd ENTERING/ARRIVED) 자체는 바꾸지 않는다 — 새 신호·새 게이트 도입 금지 지시(바로
+ * 위 문단)와 충돌하지 않도록, 바뀌는 것은 advance가 확정된 "이후" **종료 타이밍**뿐이다.
+ *
+ * 1차 설계(질문으로 전환)는 두 가지 문제가 있어 폐기했다: (1) 도착 알림 자체가 사라져 실제로
+ * 도착한 증거 없는 trip(9/18 실측 — lock 전혀 없었지만 실제로는 도착) 사용자가 "도착" 알림을
+ * 못 받는 회귀, (2) 재사용한 `fireTrainReconfirmPush` 문구("탑승 열차를 찾을 수 없어요")가
+ * 도착 확인과 의미가 전혀 다름. 재설계: **도착 알림은 증거 유무와 무관하게 즉시 발사**하고
+ * (거부 케이스 ⓕ), 증거가 없을 때 유예하는 것은 **실제 종료 행위**(`cleanupTripWithLa`의 KV
+ * 삭제/D1 trip-end/LA dismissal)뿐이다. 새 질문 채널은 만들지 않는다(최소화 원칙 — 적합하지
+ * 않은 문구를 재사용하는 것보다 질문 없이 유예만 두는 쪽이 낫다는 코디네이터 판단).
  */
 const DESTINATION_CONFIRM_TIMEOUT_MS = 7 * 60 * 1000;
 
@@ -6502,9 +6511,9 @@ const DESTINATION_CONFIRM_TIMEOUT_MS = 7 * 60 * 1000;
  * 환승 후 재탑승 후보 관측) 중 하나라도 있으면 사용자가 실제로 열차에 타고 있었다는 근거가
  * 있다고 본다. `lockEverAttached` 포함이 과차단(거부 케이스 ⓐ) 방지의 핵심 — lock이 TTL로
  * 만료된 뒤 destination advance가 오는 기존 케이스(#2720 A2d)는 "탑승 증거 없음"이 아니라
- * "증거는 있었고 추적만 끊긴" 케이스라 질문 전환 대상이 아니다. 전부 없을 때만(=trip 생애
+ * "증거는 있었고 추적만 끊긴" 케이스라 종료 유예 대상이 아니다. 전부 없을 때만(=trip 생애
  * 전체에 lock이 한 번도 없었던 순수 lockless 상태에서 arvlCd 신호 하나로만 판단되는 상태)
- * 옵션 C의 "질문 전환" 분기(`runLocklessDestinationAskInsteadOfEnd`)를 탄다.
+ * 종료 유예 분기(`runLocklessDestination`의 `destinationConfirmPendingSince` 경로)를 탄다.
  */
 function hasBoardingEvidence(trip: Trip, now: number): boolean {
   return (
@@ -6513,66 +6522,6 @@ function hasBoardingEvidence(trip: Trip, now: number): boolean {
     trip.boardingCommitted === true ||
     trip.legResolveStreak !== undefined
   );
-}
-
-/**
- * #2900 (옵션 C) — 탑승 증거 없는 lockless destination 도착 신호를 **종료 대신 질문**으로
- * 전환한다. 새 push 채널을 신설하지 않고 기존 `fireTrainReconfirmPush`(#2157, "탑승 열차를
- * 찾을 수 없어요 — 다시 확인해주세요" alert, #2889 채널 경계 준수)를 그대로 재사용한다 —
- * 그 함수 자체의 KV dedup(`trainReconfirmAlertDedupKey`, trip.createdAt 기준이라 호출자가
- * `etaMissingDemotedAt`을 stamp하지 않는 이 경로에서는 trip 생애 1회로 자연히 수렴)이
- * 거부 케이스 ⓑ(질문 중복 발사 0)를 보장한다.
- *
- * 흐름:
- *  1. 최초 관측(`trip.destinationConfirmPendingSince === undefined`) — 그 시점을 stamp하고
- *     확인 push를 1회 발사한 뒤 false 반환(advance 미완료, trip 생존 — caller가 기존
- *     lockMissing/heartbeat 경로로 fallthrough).
- *  2. 재관측, 타임아웃 전 — 응답("아직") 여부와 무관하게 `destinationConfirmPendingSince`를
- *     갱신하지 않는다(연장 없음, 거부 케이스 ⓓ). false 반환, trip 생존.
- *  3. 재관측, 타임아웃 경과 — 응답 유무와 무관하게 종료(거부 케이스 ⓒ, 영구 잔존 금지 — B안의
- *     실패 모드 방지). 기존 `completeWaypointAdvance` 종료 경로를 그대로 재사용.
- *
- * 증거가 질문 발사 뒤 생기면(예: 사용자가 `/trips/:token/boarding-confirm`으로 lock 재형성)
- * 다음 cron tick은 이 함수에 진입하지 않고 `hasBoardingEvidence`가 true인 즉시종료 경로로
- * 수렴한다(거부 케이스 ⓐ와 동일 코드, 신규 로직 없음).
- */
-async function runLocklessDestinationAskInsteadOfEnd(
-  trip: Trip,
-  waypoint: Waypoint,
-  env: Env,
-  deps: ScheduledDeps,
-  stats: ScheduledStats,
-  now: number,
-  log: Logger,
-  generatePushId: () => string,
-): Promise<boolean> {
-  const pendingSince = trip.destinationConfirmPendingSince;
-  if (pendingSince === undefined) {
-    trip.destinationConfirmPendingSince = now;
-    stats.destinationConfirmFired += 1;
-    log('lockless-destination: no boarding evidence — asking instead of ending (#2900)', {
-      token: trip.token.slice(0, 8),
-      station: waypoint.stationName,
-      line: waypoint.line,
-    });
-    await putTrip(env.TRIPS, trip);
-    await fireTrainReconfirmPush(trip, env, deps, stats, now, log, generatePushId);
-    return false;
-  }
-
-  if (now - pendingSince < DESTINATION_CONFIRM_TIMEOUT_MS) {
-    return false;
-  }
-
-  stats.destinationConfirmTimedOut += 1;
-  stats.locklessDestinationAdvanced += 1;
-  log('lockless-destination: confirm timeout — ending trip (#2900)', {
-    token: trip.token.slice(0, 8),
-    station: waypoint.stationName,
-    pendingMs: now - pendingSince,
-  });
-  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
-  return true;
 }
 
 async function runLocklessDestination(
@@ -6587,6 +6536,27 @@ async function runLocklessDestination(
 ): Promise<boolean> {
   if (waypoint.kind !== 'destination') return false;
 
+  // #2900 — 이미 "종료 유예" 중이면(알림은 직전 cycle에서 이미 발사됨, 아래 참고) 새 arvlCd
+  // 조회 없이 타임아웃만 평가한다. 신호가 사라져도(열차가 플랫폼을 떠나는 등 arvlCd가 더 이상
+  // 매칭되지 않는 경우) 트립이 영구 유예에 빠지지 않는다(거부 케이스 ⓒ — 영구 잔존 금지).
+  if (trip.destinationConfirmPendingSince !== undefined) {
+    if (now - trip.destinationConfirmPendingSince < DESTINATION_CONFIRM_TIMEOUT_MS) {
+      return false;
+    }
+    stats.destinationConfirmTimedOut += 1;
+    stats.locklessDestinationAdvanced += 1;
+    log('lockless-destination: grace period elapsed — finalizing end (#2900)', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      pendingMs: now - trip.destinationConfirmPendingSince,
+    });
+    // 도착 알림은 이미 발사됐다(아래 최초 관측 분기) — `completeWaypointAdvance`가 내부에서
+    // `cleanupTripWithLa`를 호출해 같은 reason으로 재발사를 시도해도 그 함수 자체의 KV
+    // dedup(10분 TTL, 본 PR의 유예 상한 7분보다 길어 항상 유효)이 중복 push를 막는다.
+    await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+    return true;
+  }
+
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
@@ -6596,10 +6566,28 @@ async function runLocklessDestination(
   const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
   if (!fires) return false;
 
+  // #2900 거부 케이스 ⓕ — 증거가 없어도 도착 알림은 즉시 발사한다. 증거가 있으면(아래
+  // else 경로) 알림 + 실제 종료가 기존처럼 동시에 일어난다. 증거가 없으면 알림만 지금 보내고,
+  // 실제 종료(KV 삭제/D1 trip-end/LA dismissal)는 `DESTINATION_CONFIRM_TIMEOUT_MS`만큼
+  // 유예한다 — B안("증거 필수화")의 실패 모드(trip 영구 잔존)를 피하면서도, 10/7 사고의
+  // 핵심 피해(증거 없이 즉시 backend trip이 삭제되어 이후 boarding-confirm 404/재등록 실패
+  // 연쇄가 발생)만 늦춘다.
   if (!hasBoardingEvidence(trip, now)) {
-    return runLocklessDestinationAskInsteadOfEnd(
-      trip, waypoint, env, deps, stats, now, log, generatePushId,
-    );
+    stats.destinationConfirmFired += 1;
+    trip.destinationConfirmPendingSince = now;
+    log('lockless-destination: no boarding evidence — notify now, defer end (#2900)', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      line: waypoint.line,
+      arvlCd: signal.arvlCd,
+    });
+    await putTrip(env.TRIPS, trip);
+    // #2900 — 기존 trip-ended alert push(#1337, 'destination-arrived')를 그대로 재사용해
+    // 즉시 발사한다. 새 push 채널 신설 없음 — `cleanupTripWithLa`가 내부에서 쓰는 바로 그
+    // 함수를 export해 가져왔다(`liveActivity.ts`). 실제 trip 삭제/D1/LA dismissal은 아직
+    // 수행하지 않는다 — 그건 위 pending 분기가 타임아웃 후에 처리한다.
+    await fireTripEndedAlertPush(trip, 'destination-arrived', env, deps, now, log);
+    return false;
   }
 
   stats.locklessDestinationAdvanced += 1;

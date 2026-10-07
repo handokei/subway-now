@@ -126,18 +126,6 @@ function destinationArrivedFired(pushes: CapturedPush[]): boolean {
   });
 }
 
-/**
- * #2900 — "종료 대신 질문" 채널(기존 `fireTrainReconfirmPush`, #2157 재사용) 발사 감지.
- * 이 push가 뜨면 트립이 증거 없이 조용히/즉시 끝나지 않고 사용자에게 확인을 요청했다는 뜻.
- */
-function trainReconfirmFired(pushes: CapturedPush[]): boolean {
-  return pushes.some((push) => {
-    if (push.headers.pushType !== 'alert') return false;
-    const data = push.body.data as Record<string, unknown> | undefined;
-    return data?.kind === 'train-reconfirm';
-  });
-}
-
 describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다면 backend가 lock을 만들었을까', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -209,17 +197,20 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
     });
   });
 
-  it('lock 미부착 상태로 cron을 이어 재생하면 — lockless 경로가 목적지 확인 질문까지 이어진다(#2900 적용 후)', async () => {
+  it('lock 미부착 상태로 cron을 이어 재생하면 — lockless 경로가 목적지까지 완주한다(#2754 fix 후, #2900 재설계로 동작 보존)', async () => {
     // 위 테스트가 만든 상태(lockState:'none', boardingLock 없음 — 사유는 #2739 fix 이후에도
     // direction 인코딩 gap으로 여전히 'none')를 그대로 물려받아 cron이 15 cycle을 어떻게
     // 이어가는지 관찰한다 — "버튼을 눌렀다면 완주했을까"의 후반부.
     //
-    // #2900 (옵션 C) 업데이트 — 이 trip은 lock이 생애 전체에 한 번도 없는 순수 lockless다
-    // (10/7 아침 사고와 동일 모양). 과거(#2720/#2754) 기대값은 "lockless 경로가 목적지까지
-    // 완주(destination-arrived 즉시 발사)"였으나, 이는 이 PR이 사고 원인으로 지목한 바로 그
-    // 패턴이다 — 결정 후에는 즉시 완결이 아니라 확인 질문 전환으로 수렴한다. 15 cycle 재생
-    // 구간(실측 cron 간격)이 `DESTINATION_CONFIRM_TIMEOUT_MS`(7분)를 넘기지 못해 타임아웃
-    // 종료는 이 재생 범위 밖(합성 timeout 단위 테스트가 커버, scheduled.test.ts A2e).
+    // #2900 (옵션 C, 재설계 2026-10-08) — 이 trip은 lock이 생애 전체에 한 번도 없는 순수
+    // lockless다(10/7 아침 사고와 동일 모양). 1차 설계("질문 전환")는 이 재생에서 도착
+    // 알림 자체가 사라지는 회귀를 냈다 — 사용자는 실제로 용마산에 도착했을 것인데(증거만
+    // 없을 뿐) "도착" 알림을 못 받게 됐다. 재설계 후에는 **도착 알림은 증거 유무와 무관하게
+    // arvlCd 신호 확정 즉시 발사**된다(거부 케이스 ⓕ) — 이 아래 단언은 그 push만 확인한다
+    // (과거 #2720/#2754가 확인하던 것과 동일 push, 동일 타이밍). 변경된 것은 실제 backend
+    // trip 삭제(KV)가 증거 없을 때 `DESTINATION_CONFIRM_TIMEOUT_MS`만큼 늦춰진다는 점뿐이고,
+    // 그 타이밍은 이 테스트의 단언 범위 밖이다(합성 타임아웃 단위 테스트 — scheduled.test.ts
+    // A2e — 가 별도로 커버).
     const kv = new InMemoryKV(() => TAP_MS);
     const seedToken = TOKEN + '-cron-continuation';
     const tripAfterConfirm: Trip = { ...makeRide20260918LocklessTrip(seedToken) };
@@ -240,19 +231,11 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
 
     // #2754 fix 후 실측 재확인 — lock이 형성되지 않으므로(위 파일 헤더 "#2751 정정" 갱신
     // 참고, `replayLibrary.ts` 동일 entry에서 상세) station-passed(alert, lock-active 전용)
-    // 채널은 여전히 원리적으로 못 뜬다. lockless 경로는 어린이대공원/군자(능동)/중곡을 모두
-    // 통과한다(`replayLibrary.ts` 동일 entry의 `locklessIntermediateStations`와 동일 결론).
-    //
-    // #2900 (옵션 C) — 과거(#2720/#2754) 기대값은 여기서 destination-arrived까지 즉시
-    // 완주였다. 그러나 이 trip은 lock이 생애 전체에 한 번도 없는 순수 lockless다 — 정확히
-    // 10/7 아침 사고와 같은 모양(탑승 증거 없이 목적지 arvlCd 신호만으로 종료). 결정 후에는
-    // 즉시 완결 대신 기존 train-reconfirm 채널로 확인 질문을 1회 발사하고 trip은 생존한다.
-    // 이 재생 구간(15 cycle, 약 14분)은 타임아웃(7분)을 넘기지만 질문 발사 자체가 늦게
-    // 일어나(아래 실측) 그 뒤로 충분한 cycle이 남지 않아 타임아웃 종료까지는 도달하지 않는다
-    // — 타임아웃 분기는 합성 단위 테스트(scheduled.test.ts A2e)가 커버한다.
+    // 채널은 여전히 원리적으로 못 뜬다. 그러나 lockless 경로 자체는 목적지까지 완주한다 —
+    // 어린이대공원/군자(능동)/중곡을 모두 통과해 destination-arrived까지 이어진다
+    // (`replayLibrary.ts` 동일 entry의 `locklessIntermediateStations`/`tripEnded`와 동일 결론).
     expect(firedStationOccurrences(result.pushes)).toEqual([]);
-    expect(destinationArrivedFired(result.pushes)).toBe(false);
-    expect(trainReconfirmFired(result.pushes)).toBe(true);
+    expect(destinationArrivedFired(result.pushes)).toBe(true);
   });
 
   it('대조: promptDisplay가 seed에 있었다면(가정) anchor가 잡혀 lock이 부착됐을 것 — 미공급 입력의 영향력 확인용', async () => {

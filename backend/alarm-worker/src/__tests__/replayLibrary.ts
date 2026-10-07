@@ -383,16 +383,17 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       locklessIntermediateStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
       // 중곡 lockless 통과가 정상 트리거되어 목적지(용마산) "1정거장 전" 준비 알림이 다시 뜬다.
       prepareAlarmTargets: ['용마산'],
-      // #2720 fix(폐기) — 당시 lockless 경로가 destination waypoint를 arvlCd ground truth로
-      // 처리해 즉시 `cleanupTripWithLa(reason:'destination-arrived')`로 수렴했다(tripEnded
-      // 기대값을 이 entry에 명시). #2900 (옵션 C) — 이 trip은 lock이 생애 전체에 한 번도
-      // 없었다(10/7 아침 사고와 동일 모양: 탑승 증거 없이 다른 열차 신호로 목적지 확정). 결정
-      // 후에는 즉시 완결이 아니라 기존 train-reconfirm 채널로 확인 질문 전환 + 타임아웃
-      // 종료로 바뀌어 이 15 cycle(약 14분) 재생 구간 안에서는 더 이상 destination-arrived가
-      // 뜨지 않는다(질문 발사가 늦어 타임아웃 7분도 이 구간 안에서 넘기지 못함, 실측 재확인
-      // `replay_20260918_boarding_confirm.test.ts` 두 번째 테스트) — `tripEnded` 기대값
-      // 제거. 질문 채널(`train-reconfirm`) 발사 자체는 그 전용 테스트가 검증한다(이 generic
-      // 하네스는 `tripEnded`/`firedStations` 등 고정 채널만 보므로 범위 밖).
+      // #2720 fix — lockless 경로가 destination waypoint를 arvlCd ground truth로 처리해
+      // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다. #2754 fix 후 lock이
+      // 형성되지 않아(위 설명) lockless 경로가 다시 목적지까지 완주하므로 이 완결도 복원된다.
+      //
+      // #2900 (옵션 C, 재설계 2026-10-08) — 이 trip은 lock이 생애 전체에 한 번도 없었다
+      // (10/7 아침 사고와 동일 모양: 탑승 증거 없이 다른 열차 신호로 목적지 확정). 1차
+      // 설계("질문 전환")는 여기서 destination-arrived 알림 자체가 사라지는 회귀를 냈다 —
+      // 재설계 후에는 **도착 알림은 증거 유무와 무관하게 즉시 발사**되고(거부 케이스 ⓕ),
+      // 유예되는 것은 backend trip의 실제 KV 삭제뿐이다. 이 generic 하네스의 `tripEnded`
+      // 단언은 push 발사만 확인하므로(실제 KV 상태는 보지 않음) 이전과 동일하게 유지한다.
+      tripEnded: { reason: 'destination-arrived' },
       minPushes: 7,
     },
   },

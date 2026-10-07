@@ -178,21 +178,28 @@ export interface Trip {
    */
   etaMissingDemotedAt?: number;
   /**
-   * #2900 (옵션 C) — lockless destination waypoint에서 arvlCd 도착 신호(ENTERING/ARRIVED)가
-   * 왔지만 탑승 증거(lock 활성 / lockEverAttached / boardingCommitted / legResolveStreak)가
-   * 전혀 없을 때, 트립을
-   * 즉시 종료하는 대신 "도착 확인" 질문으로 전환한 시점(epoch ms). 부재 = 아직 그런 신호를
-   * 관측한 적 없음(기본 상태) 또는 증거가 있어 이 분기 자체를 타지 않음.
+   * #2900 (옵션 C, 재설계: 코디네이터 리뷰 2026-10-08) — lockless destination waypoint에서
+   * arvlCd 도착 신호(ENTERING/ARRIVED)가 왔지만 탑승 증거(lock 활성 / lockEverAttached /
+   * boardingCommitted / legResolveStreak)가 전혀 없을 때, **도착 알림은 그대로 즉시
+   * 발사하고**(거부 케이스 ⓕ — 증거 유무와 무관) **실제 종료(KV 삭제/D1 trip-end/LA
+   * dismissal)만** 유예하기 시작한 시점(epoch ms). 부재 = 아직 그런 신호를 관측한 적 없음
+   * (기본 상태) 또는 증거가 있어 이 분기 자체를 타지 않음(알림+종료가 그 자리에서 동시에
+   * 일어남, 지연 0).
    *
-   * 이 값이 서는 순간 기존 train-reconfirm alert 채널(`fireTrainReconfirmPush`, #2157)을
-   * 재사용해 1회만 발사한다(새 push 채널 신설 금지, #2889 채널 경계 준수) — 그 함수 자체의
-   * KV dedup(`trainReconfirmAlertDedupKey`, trip.createdAt 기준)이 중복 발사를 추가로 막는다.
-   * 이후 cron cycle마다: (1) 증거가 생기면(예: 사용자가 알림을 보고 재확인 응답 →
-   * `/trips/:token/boarding-confirm`으로 lock 형성) 다음 tick의 `hasBoardingEvidence` 검사가
-   * true가 되어 **기존 즉시종료 경로**로 수렴(신규 종료 로직 없음, 지연 0 — 거부 케이스 ⓐ와
-   * 동일 코드). (2) `DESTINATION_CONFIRM_TIMEOUT_MS` 경과 전까지는 응답("아직")과 무관하게
-   * 이 값을 갱신하지 않음(연장 없음, 거부 케이스 ⓓ). (3) 타임아웃 경과 시 응답 유무와 무관하게
-   * 종료(영구 잔존 금지, 거부 케이스 ⓒ — B안의 실패 모드 방지).
+   * (1차 설계였던 "종료 대신 질문" 전환은 폐기 — 도착 알림 자체가 사라지는 회귀(실제로
+   * 도착한 증거 없는 trip이 "도착" 알림을 못 받음, 9/18 실측 사례) + 재사용한
+   * train-reconfirm 문구가 도착 확인과 의미가 달라 폐기했다. 신규 질문 채널도 만들지
+   * 않는다 — 최소화 원칙.)
+   *
+   * 이 값이 서는 순간 기존 trip-ended alert push(#1337, `fireTripEndedAlertPush`,
+   * reason='destination-arrived')를 즉시 1회 발사한다(새 push 채널 신설 없음). 이후 cron
+   * cycle마다: (1) 증거가 생기면(예: 사용자가 `/trips/:token/boarding-confirm`으로 lock
+   * 형성) 다음 tick은 이 lockless 분기 자체에 진입하지 않고(`isBoardingLockActive` 게이트가
+   * 먼저 가로챔) lock-active 추적 경로로 자연 전환된다. (2) `DESTINATION_CONFIRM_TIMEOUT_MS`
+   * 경과 전까지는 이 값을 갱신하지 않음(연장 없음, 거부 케이스 ⓓ). (3) 타임아웃 경과 시
+   * 응답/증거 유무와 무관하게 `completeWaypointAdvance`로 실제 종료(영구 잔존 금지, 거부
+   * 케이스 ⓒ) — 이때 재발사를 시도하는 `cleanupTripWithLa`의 push 호출은
+   * `fireTripEndedAlertPush` 자체의 10분 KV dedup(유예 상한 7분보다 길다)이 중복을 막는다.
    */
   destinationConfirmPendingSince?: number;
   /**
