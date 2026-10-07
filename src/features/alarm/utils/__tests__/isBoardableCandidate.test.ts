@@ -1,4 +1,8 @@
-import { isBoardableCandidate, type BoardableCandidateContext } from '../isBoardableCandidate';
+import {
+  isBoardableCandidate,
+  isCandidateInBoardingScope,
+  type BoardableCandidateContext,
+} from '../isBoardableCandidate';
 import type { ArrivalInfo } from '../../../../shared/types/arrival';
 
 function arr(overrides: Partial<ArrivalInfo>): ArrivalInfo {
@@ -68,5 +72,51 @@ describe('isBoardableCandidate (#2696 — 탑승 후보 판정 단일 술어)', 
       nextTargetStationName: '건대입구',
     };
     expect(isBoardableCandidate(arr({ terminalStation: '잠실나루' }), ctx)).toBe(true);
+  });
+});
+
+describe('isCandidateInBoardingScope (#2886 — 상태 게이트 없는 scope 술어, boardingListArrivals 전용)', () => {
+  // #2886 — BoardingTrainList는 "곧 올 열차"를 전향적으로 제시하는 용도라, 아직 오지 않은
+  // 열차(arvlCd=99)도 노출돼야 한다. isBoardableCandidate의 상태 게이트(출발/도착/진입만)는
+  // 회고적 선택(usePrevTrainCandidate/boardingPromptAutoLock) 전용 — scope 술어는 그 게이트를
+  // 적용하지 않는다: direction/노선일치/조기종착만 본다.
+  it('direction===null → 항상 false (양방향 병합 금지, isBoardableCandidate와 동일 불변식)', () => {
+    expect(isCandidateInBoardingScope(arr({}), { ...CTX, direction: null })).toBe(false);
+  });
+
+  it('노선 불일치 → false', () => {
+    expect(isCandidateInBoardingScope(arr({ line: '9' }), CTX)).toBe(false);
+  });
+
+  it.each([0, 1, 2, 99])('arrivalCode=%d — 상태 게이트 없음, 노선/방향/종착만 통과하면 true', (code) => {
+    expect(isCandidateInBoardingScope(arr({ arrivalCode: code }), CTX)).toBe(true);
+  });
+
+  it('종착역이 다음 목표역 이전(조기종착) → false (arvlCd=99여도)', () => {
+    const ctx: BoardableCandidateContext = {
+      line: '2',
+      direction: 'down',
+      nextTargetStationName: '건대입구',
+    };
+    expect(
+      isCandidateInBoardingScope(arr({ arrivalCode: 99, terminalStation: '성수' }), ctx),
+    ).toBe(false);
+  });
+
+  it('종착역이 다음 목표역 이후(정상) + arvlCd=99 → true', () => {
+    const ctx: BoardableCandidateContext = {
+      line: '2',
+      direction: 'down',
+      nextTargetStationName: '건대입구',
+    };
+    expect(
+      isCandidateInBoardingScope(arr({ arrivalCode: 99, terminalStation: '잠실나루' }), ctx),
+    ).toBe(true);
+  });
+
+  it('isBoardableCandidate = isCandidateInBoardingScope && 상태게이트 — 단일 출처 합성 확인', () => {
+    const scopeOkButNotBoardable = arr({ arrivalCode: 99 });
+    expect(isCandidateInBoardingScope(scopeOkButNotBoardable, CTX)).toBe(true);
+    expect(isBoardableCandidate(scopeOkButNotBoardable, CTX)).toBe(false);
   });
 });
