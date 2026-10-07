@@ -738,6 +738,94 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(createLockMock).not.toHaveBeenCalled();
   });
 
+  // #2889 — 시나리오 S5 "철 지난 프롬프트 응답은 무효여야 한다". 10/7 실측 3건 기반.
+  //
+  // 기존 #2408 guard(readFreshBgLastStationForGuard 비교)는 `createPendingFallbackLock`
+  // (train 미확정 PENDING lock 경로)에만 존재하고, 이 describe 상단의 모든 "chosen"(실 trainCode
+  // 확정) 성공 경로(:561-591 부근, 아래 테스트가 가리키는 경로)에는 전혀 적용되지 않는다 —
+  // 두 실측 위반 사례(06:50:09·19:37:18) 모두 `autolock-success`(=chosen 경로)로 발사됐다.
+  describe('S5 (#2889) — 철 지난 프롬프트 응답 무효 시나리오', () => {
+    // 스펙 1 (과차단 금지 가드) — 신선한 BG 위치가 payload 역/노선과 정확히 일치하면 chosen
+    // 경로는 그대로 lock을 성립시켜야 한다. guard 신설이 정상 응답까지 막으면 이 테스트가 깨진다.
+    it('스펙 1 — 정상 시점(BG 위치==payload 역) + chosen 경로 → lock 성립', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      mockBgLastStation('2', 0, '강남');
+      const deps = makeDeps();
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'T1', boardingStationId: 'S1' }),
+        true,
+        'boarding-prompt-response',
+      );
+      expectAutoLockLogged('autolock-success');
+    });
+
+    // 스펙 2 정상 사례 — destinationId/storage 둘 다 없음(진짜 트립 종료) → lock 시도 자체를
+    // 안 하고 사유가 남아야 한다. 10/7 06:53:00 응답이 이 경로(autolock-no-trip)로 억제된
+    // 실측 "통과해야 하는" 사례. 기존 구현이 이미 만족(회귀 없음 확인용).
+    it(
+      '스펙 2 정상 사례 — destinationId/storage 모두 없음(진짜 트립 종료) → lock 생성 금지 ' +
+        '+ autolock-no-trip 사유 기록 (10/7 06:53:00 재구성)',
+      async () => {
+        const deps = makeDeps({ destinationId: null });
+        await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+        expect(createLockMock).not.toHaveBeenCalled();
+        expectAutoLockLogged('autolock-no-trip');
+      },
+    );
+
+    // 스펙 2/3 위반 의심 — 10/7 06:50:09. chosen 경로(실 trainCode 확정)에서 fresh BG 위치가
+    // payload 역과 모순(같은 2호선이지만 실제로는 한 정거장 지나 성수에 있음)되는데도 현재는
+    // chosen 경로에 guard가 없어 '건대입구' 앵커로 lock이 그대로 생성된다(red 기대).
+    it(
+      '스펙 2/3 — chosen 경로에서 동일 노선·다른 역(이미 이동함) BG 모순 → lock 생성 금지 ' +
+        '+ 사유 기록 (10/7 06:50:09 재구성)',
+      async () => {
+        (findStationByNameAndLine as jest.Mock).mockImplementation(
+          (name: string, line: string) => {
+            if (line !== '2') return null;
+            if (name === '건대입구') return { id: '2-K', line: '2', name: '건대입구' };
+            if (name === '성수') return { id: '2-S', line: '2', name: '성수' };
+            return null;
+          },
+        );
+        mockBgLastStation('2', 0, '성수');
+        const payload = { ...PAYLOAD, originStation: '건대입구' };
+        const deps = makeDeps();
+        await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+        expect(createLockMock).not.toHaveBeenCalled();
+        expectAutoLockLogged('fallback-skipped-position-contradiction', '건대입구', '2');
+      },
+    );
+
+    // 스펙 3 위반 의심 — 10/7 19:37:18. 용마산 도착 순간 응답인데 prompt가 가리키는 역은 두
+    // 정거장 전(건대입구). chosen 경로 guard 부재로 지난 역 앵커 lock이 그대로 생성된다(red 기대).
+    it(
+      '스펙 3 — chosen 경로에서 도착 순간(목표 단계를 이미 지남) BG 모순 → 해당 역 앵커로 ' +
+        'lock 생성 금지 (10/7 19:37:18 재구성)',
+      async () => {
+        (findStationByNameAndLine as jest.Mock).mockImplementation(
+          (name: string, line: string) => {
+            if (line !== '7') return null;
+            if (name === '건대입구') return { id: '7-K', line: '7', name: '건대입구' };
+            if (name === '용마산') return { id: '7-Y', line: '7', name: '용마산' };
+            return null;
+          },
+        );
+        mockBgLastStation('7', 0, '용마산');
+        const payload = { ...PAYLOAD, originStation: '건대입구', line: '7' };
+        const deps = makeDeps({
+          fetchArrivalsForStation: jest.fn(async () =>
+            makeArrivalWithUp([{ line: '7', arrivalCode: 2, arrivalSeconds: 60, trainCode: 'T7' }]),
+          ),
+        });
+        await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+        expect(createLockMock).not.toHaveBeenCalled();
+        expectAutoLockLogged('fallback-skipped-position-contradiction', '건대입구', '7');
+      },
+    );
+  });
+
   it.each([
     ['arrivalSeconds <= 0 (지나간 열차)', [{ arrivalMinutes: 0, arrivalSeconds: 0, trainCode: 'T-old' }]],
     ['line 불일치', LINE_MISMATCH_TRAIN],
