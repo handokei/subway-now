@@ -130,6 +130,7 @@ import type {
   StationPhaseState,
   TrainReconfirmAlertPushPayload,
   Trip,
+  TripEndPath,
   Waypoint,
 } from './types';
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
@@ -1548,7 +1549,10 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     if (trip.expiresAt <= now) {
       // #586 D — trip 만료 시 활성 LA가 남아 있으면 dismissal push로 정리하고 KV에서 제거.
       // #868 — 클라 state sync용 trip-ended silent push도 함께 발사 (reason=expired).
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: 'expired',
+        endPath: 'trip-expired',
+      });
       continue;
     }
 
@@ -1568,7 +1572,10 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         // ADR-023: backend는 이 값으로 발사 결정 X (log 전용).
         sleepMode: trip.sleepModeEnabled,
       });
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: 'expired',
+        endPath: 'lifecycle-force-end',
+      });
       continue;
     }
     if (lifecyclePhase === 'silence') {
@@ -1817,6 +1824,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           });
           await cleanupTripWithLa(trip, env, deps, stats, now, log, {
             reason: 'la-stale-backstop',
+            endPath: 'la-stale-backstop',
           });
           continue;
         }
@@ -3526,6 +3534,11 @@ async function recordFireAttempt(
   // 구분하기 위한 식별자. 생략(기존 arvlcd-fire call site)은 meta에 필드 자체를 싣지 않아
   // 기존 row 형태 불변 — 새 kind를 만들지 않고 기존 kind='cron-fire-attempt'를 그대로 쓴다.
   path?: string,
+  // #2893 — push 발사 시도(성공/실패)에 이미 생성된 pushId를 함께 적재해, device 수신 push와
+  // D1 cron-fire-attempt 행을 사후 1:1 대조할 수 있게 한다(10/7 "정체불명 push 2건"이 이 필드
+  // 부재로 영구 판정 불가였다). push 자체가 시도되지 않은 gate-skip 호출처(skipped-reason/
+  // skipped-by-shift)는 pushId가 없는 것이 의미상 정확 — 생략 시 meta에 필드 자체를 싣지 않는다.
+  pushId?: string,
 ): Promise<void> {
   await recordTripEvent(
     env.DB,
@@ -3540,6 +3553,7 @@ async function recordFireAttempt(
         reason,
         ...(midCycle ? { midCycle: true } : {}),
         ...(path !== undefined ? { path } : {}),
+        ...(pushId !== undefined ? { pushId } : {}),
       },
     },
     now,
@@ -3868,7 +3882,8 @@ export async function fireArvlCdStationPush(
       env.DB,
     );
     // #2343 — fire-attempt(실패) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
-    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason);
+    // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return { dirty };
   }
@@ -3924,7 +3939,8 @@ export async function fireArvlCdStationPush(
     staleMs: ssotForFireGate?.lastAdvanceAt ? now - ssotForFireGate.lastAdvanceAt : undefined,
   });
   // #2343 — fire-attempt(성공) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
-  await recordFireAttempt(env, trip, waypoint, 'sent', now);
+  // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId);
   return { dirty };
 }
 
@@ -4050,7 +4066,8 @@ export async function runMidCycleFireOnly(
           token: trip.token.slice(0, 8),
           station: waypoint.stationName,
         });
-        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, true);
+        // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, true, undefined, pushId);
         continue;
       }
 
@@ -4071,7 +4088,8 @@ export async function runMidCycleFireOnly(
           token: trip.token.slice(0, 8),
         });
       }
-      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, true);
+      // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, true, undefined, pushId);
     } catch (e) {
       stats.errors += 1;
       log('mid-cycle-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
@@ -4262,7 +4280,8 @@ export async function fireSyncSkippedStationPasses(
           station: waypoint.stationName,
         });
         stats.failed += 1;
-        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason);
+        // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId);
         continue;
       }
 
@@ -4282,10 +4301,13 @@ export async function fireSyncSkippedStationPasses(
           token: trip.token.slice(0, 8),
         });
       }
-      await recordFireAttempt(env, trip, waypoint, 'sent', now);
+      // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId);
     } catch (e) {
       stats.failed += 1;
       log('sync-skipped-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
+      // pushId는 try 블록 내부 선언이라 여기서 scope 밖 — 생성 자체가 실패했을 수 있어
+      // 의도적으로 생략한다(해당 attempt는 D1에서 pushId 없는 'failed' 행으로 남는다).
       await recordFireAttempt(env, trip, waypoint, 'failed', now, String(e));
     }
   }
@@ -4710,7 +4732,8 @@ export async function fireVanishFallbackStationPush(
       env.DB,
     );
     // #2779 — fire-attempt(실패) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘.
-    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, origin);
+    // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, origin, pushId);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return;
   }
@@ -4751,7 +4774,8 @@ export async function fireVanishFallbackStationPush(
   await env.TRIPS.put(stationFiredKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // #2779 — fire-attempt(성공) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘, meta.path로
   // vanish-fallback/vanish-release를 구분(신규 kind 신설 금지).
-  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, origin);
+  // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, origin, pushId);
 }
 
 /**
@@ -5111,7 +5135,12 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         endReason,
         seoulHttpErrors: deps.seoul.stats.httpErrorCount,
       });
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: endReason });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: endReason,
+        // #2893 — 이 분기는 endReason==='seoul-outage'일 때만 도달(eta-missing은 아래 demote
+        // 분기로 early return) — endPath를 고정 상수로 남겨도 정확하다.
+        endPath: 'eta-missing-seoul-outage',
+      });
       return;
     }
     // #2157 (2026-08-05 결정 A) — 순수 eta-missing(Seoul API는 정상 응답, trainCode만
@@ -5650,7 +5679,10 @@ export async function advanceBoardingLockWaypoint(
           kind: waypoint.kind,
           backstopElapsedMs,
         });
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+          reason: 'destination-arrived',
+          endPath: 'lock-active-destination-gps-far-backstop',
+        });
         await deleteSsot(env.TRIPS, trip.token);
         return { consumed: true, tripEnded: true };
       }
@@ -5669,7 +5701,10 @@ export async function advanceBoardingLockWaypoint(
 
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+      reason: 'destination-arrived',
+      endPath: 'lock-active-destination',
+    });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT 도 cleanup. cleanupTripWithLa 가 throw 하면
     // SSoT 가 남아있을 수 있으나 본 PR 스코프 외 (다음 cron 의 stale 정리 path 는 후속 PR).
     await deleteSsot(env.TRIPS, trip.token);
@@ -5682,7 +5717,17 @@ export async function advanceBoardingLockWaypoint(
   // #2323 rework (break #1) — waypoint advance 공통 블록(anchor stamp + hop-end prompt +
   // waypoints slice + LA/putTrip/mirrorProgress)을 lock-independent 헬퍼로 추출.
   // 이 시점 이전(evidence 게이트, destination cleanup)은 lock 활성 경로 전용이라 그대로 유지.
-  const { tripEnded } = await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  const { tripEnded } = await completeWaypointAdvance(
+    trip,
+    waypoint,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    'lock-active-waypoints-exhausted',
+  );
   return { consumed: true, tripEnded };
 }
 
@@ -5863,6 +5908,11 @@ async function completeWaypointAdvance(
   now: number,
   log: Logger,
   generatePushId: () => string,
+  // #2893 — 이 공유 헬퍼는 3개 caller(lock-active 전진 / `runLocklessTransfer` /
+  // `runLocklessDestination`)로부터 호출된다. waypoints 소진 시 cleanupTripWithLa로 수렴하는
+  // reason은 모두 'destination-arrived'로 동일해 D1만으로 caller를 구분할 수 없었다 — caller가
+  // 자신을 식별하는 endPath를 전달해 그대로 forward한다(이 헬퍼 자체는 호출자를 모른다).
+  endPath: TripEndPath,
 ): Promise<{ tripEnded: boolean }> {
   // #2066 (Phase 2-backend) — 취침 알람 평가. waypoints shift 전이라 trip.waypoints[1]이
   // waypoint(방금 arvlCd 확정된 직전역 후보) 바로 다음 대상(환승/도착 여부 판정용).
@@ -6114,7 +6164,10 @@ async function completeWaypointAdvance(
     // #1707 — 본 분기 진입 전 상단 isCleanupAdvance 게이트가 cross-check 완료. gps-far 케이스는
     // 이미 early return으로 차단됐다. 여기 도달 = within / stale-gps / no-gps / station-unknown
     // 중 하나 = 정상 cleanup 진행.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+      reason: 'destination-arrived',
+      endPath,
+    });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
     await deleteSsot(env.TRIPS, trip.token);
     return { tripEnded: true };
@@ -6371,7 +6424,10 @@ export async function maybeReschedulePush(
       // #868 — 클라 state sync용 trip-ended silent push도 발사 (reason=push-unrecoverable).
       // 단, 토큰 자체가 unrecoverable이면 push도 같은 이유로 실패할 가능성이 높음 — fireTripEndedPush
       // 내부에서 graceful log만 남기고 cleanup 흐름은 계속 진행한다.
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: 'push-unrecoverable',
+        endPath: 'push-unrecoverable-reschedule',
+      });
       return { cleanedUp: true };
     }
   }
@@ -6441,7 +6497,17 @@ async function runLocklessTransfer(
     arvlCd: signal.arvlCd,
   });
   await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'advanced', now);
-  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  await completeWaypointAdvance(
+    trip,
+    waypoint,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    'lockless-transfer-waypoints-exhausted',
+  );
   return true;
 }
 
@@ -6496,7 +6562,17 @@ async function runLocklessDestination(
     line: waypoint.line,
     arvlCd: signal.arvlCd,
   });
-  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  await completeWaypointAdvance(
+    trip,
+    waypoint,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    'lockless-destination-waypoints-exhausted',
+  );
   return true;
 }
 
@@ -6741,7 +6817,10 @@ export async function runLocklessIntermediate(
           envMismatchExhausted: heal.envMismatchExhausted,
         });
         // #868 — lockless push unrecoverable로 trip 폐기 시에도 클라 state sync push 발사.
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+          reason: 'push-unrecoverable',
+          endPath: 'push-unrecoverable-lockless-intermediate',
+        });
         return;
       }
       // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. unrecoverable / envMismatchExhausted
@@ -6840,7 +6919,10 @@ export async function runLocklessIntermediate(
   if (trip.waypoints.length === 0) {
     // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.
     // #868 — lockless trip의 effective destination-arrived도 동일 reason.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+      reason: 'destination-arrived',
+      endPath: 'lockless-shift-empty',
+    });
     return;
   }
   // 다음 waypoint를 위해 dedup stamp reset (위 shift 직후 첫 waypoint는 새 발사 대상).
