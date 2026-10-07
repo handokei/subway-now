@@ -16,7 +16,7 @@
  *   - push 실패 시 D1에 outcome='failed' + midCycle:true 기록, 발사 카운트 미증가
  */
 import { generateKeyPair, exportPKCS8 } from 'jose';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import {
   runMidCycleFireOnly,
@@ -279,6 +279,63 @@ describe('#2615 — runMidCycleFireOnly (allowlist fire-only 진입점)', () => 
     );
 
     expect(await kv.get(dedupKey)).toBe('1');
+  });
+
+  // #2909 (ADR-040 0단계) — runMidCycleFireOnly(:4029)가 trip 단위 collapseId를 쓰면 같은
+  // trip의 역A 배너가 역B 배너에 덮여 알림센터에서 사라진다. 역 단위로 분리한다.
+  it('#2909 같은 trip 다른 두 역(mid-cycle) 발사 — collapseId가 서로 달라야 한다(역 단위)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const snapshotA: MidCycleTripSnapshot = { trip, waypoint: trip.waypoints[0], lock: trip.boardingLock! };
+    const snapshotB: MidCycleTripSnapshot = { trip, waypoint: trip.waypoints[1], lock: trip.boardingLock! };
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [snapshotA, snapshotB],
+      {
+        seoul: makeSeoul([ENTERING_ARRIVAL]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+      },
+      NOW,
+      () => undefined,
+      () => 'push-2909-mid',
+    );
+    expect(stats.fired).toBe(2);
+    const [collapseIdA, collapseIdB] = apnsFetch.mock.calls.map(
+      (c) => (c[1] as RequestInit).headers as Record<string, string>,
+    ).map((h) => h['apns-collapse-id']);
+    // 같은 trip.token이지만 발사 역이 다르므로(중곡/군자) collapseId도 달라야 한다.
+    expect(collapseIdA).not.toBe(collapseIdB);
+  });
+
+  // #2909 회귀 가드 ⓐ — 같은 trip·같은 역의 재발사는 여전히 같은 collapseId(중복 스택 방지 유지).
+  it('#2909 회귀 가드 ⓐ 같은 trip·같은 역(mid-cycle) 재발사 — collapseId는 여전히 동일', async () => {
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    for (const pushId of ['p-2909-guard-mid-1', 'p-2909-guard-mid-2']) {
+      // 매 발사마다 fresh kv — station-passed dedup이 두 번째 발사를 skip하지 않게 한다.
+      const kv = new InMemoryKV(() => NOW);
+      const trip = makeTrip();
+      await runMidCycleFireOnly(
+        makeEnv(kv),
+        [{ trip, waypoint: trip.waypoints[0], lock: trip.boardingLock! }],
+        {
+          seoul: makeSeoul([ENTERING_ARRIVAL]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+        },
+        NOW,
+        () => undefined,
+        () => pushId,
+      );
+    }
+    expect(apnsFetch.mock.calls).toHaveLength(2);
+    const [collapseIdFirst, collapseIdSecond] = apnsFetch.mock.calls.map(
+      (c) => (c[1] as RequestInit).headers as Record<string, string>,
+    ).map((h) => h['apns-collapse-id']);
+    expect(collapseIdFirst).toBe(collapseIdSecond);
   });
 
   it('push 실패 시 D1에 outcome=failed + midCycle:true 기록, 발사 카운트 미증가', async () => {
