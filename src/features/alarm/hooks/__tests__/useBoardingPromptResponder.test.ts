@@ -1933,4 +1933,137 @@ describe('handleResponse — #2034 hop-end', () => {
     expect(releaseLockMock).toHaveBeenCalled();
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
   });
+
+  // #2923 — 목적지 하차 확인 응답을 backend `POST /trips/:token/boarding-confirm`
+  // (action='disembarked')로 forward한다. #2920/PR #2922가 "하차했나요?" 프롬프트를
+  // 목적지에도 재사용하면서 nextLine/nextStation을 전달하지 않는다
+  // (`backend/alarm-worker/src/scheduled.ts` `fireDestinationDisembarkPrompt`,
+  // `buildHopEndPromptMessage(waypoint.stationName, waypoint.line, null, null, ...)` 호출부 —
+  // PR #2922 본문 "목적지는 다음 leg가 없어 nextLine/nextStation을 전달하지 않음" 참고).
+  //
+  // 그러나 nextLine 부재만으로는 destination과 transfer를 구분할 수 없다 — 바로 위 "#2410
+  // nextLine 무효 시 route derive fallback" 블록이 보여주듯 **구버전 backend가 보낸 환승
+  // hop-end**도 nextLine이 없을 수 있다(기존에 이미 처리 중인 케이스, #2410). 따라서 이 구현은
+  // nextLine 유무가 아니라 `payload.originStation`(payload.line 위에서 resolve한 station)이
+  // 로컬 `destination`(widgetRefreshContext, DESTINATION_KEY SSoT) 과 동일한 station인지로
+  // 판정한다 — 환승역은 결코 trip의 최종 목적지와 같은 station일 수 없으므로 이 식별자 비교가
+  // nextLine 유무보다 안전한 유일한 신호다.
+  describe('#2923 — 목적지 하차(destination) 분기 → boarding-confirm forward', () => {
+    const DESTINATION_HOP_END_PAYLOAD = {
+      kind: 'boarding-prompt' as const,
+      originStation: '왕십리',
+      line: '2',
+      tripToken: 'tok-dest',
+      hopEndKind: 'disembark' as const,
+      // 목적지 프롬프트는 nextLine/nextStation을 절대 전달하지 않는다(backend #2920 설계) —
+      // fixture에 명시적으로 넣지 않아 undefined(실제 payload shape과 1:1).
+    };
+
+    function mockAsDestinationStation(): void {
+      // payload.originStation('왕십리')을 payload.line('2') 위에서 resolve한 station과
+      // widgetRefreshContext의 destination이 같은 station(id 'D-왕십리')으로 귀결되도록 설정 —
+      // "지금 하차 확인 중인 역 = trip의 최종 목적지"라는 유일한 판정 조건.
+      findStationByNameAndLine.mockReturnValue({ id: 'D-왕십리', line: '2', name: '왕십리' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D-왕십리', line: '2', name: '왕십리' },
+        route: makeDirectRoute(),
+        bgContext: null,
+      });
+    }
+
+    it('red/green — destination hop-end 확정 응답 → postBoardingConfirm(tripToken, "disembarked", station, line) 호출', async () => {
+      mockAsDestinationStation();
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        DESTINATION_HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+        'tok-dest',
+        'disembarked',
+        '왕십리',
+        '2',
+      );
+    });
+
+    it('ⓓ 중복 전송 0 — 한 번의 탭 = postBoardingConfirm 정확히 1회', async () => {
+      mockAsDestinationStation();
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        DESTINATION_HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('목적지 hop-end는 "다음 leg"가 없으므로 stampLegAdvance 호출 안 함', async () => {
+      mockAsDestinationStation();
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        DESTINATION_HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
+    });
+
+    it('ⓒ postBoardingConfirm 전송 실패해도 releaseLock(로컬 처리)은 정상 수행 + throw 없음', async () => {
+      mockAsDestinationStation();
+      (positionUpload.postBoardingConfirm as jest.Mock).mockRejectedValueOnce(
+        new Error('network down'),
+      );
+
+      await expect(
+        handleResponse(
+          DISEMBARK_ACTION_DISEMBARKED,
+          DESTINATION_HOP_END_PAYLOAD,
+          makeHandleResponseDeps(),
+        ),
+      ).resolves.not.toThrow();
+
+      expect(releaseLockMock).toHaveBeenCalledTimes(1);
+      expect(releaseLockMock).toHaveBeenCalledWith('user');
+      expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome: 'boarded' });
+    });
+
+    // ⓐ — 환승역 hop-end는 보호 대상 밖(station identity가 destination과 다름)이라 호출 안 함.
+    // #2889/PR #2888 경계 테스트(위 '[하차함] (DISEMBARKED action) → ... postBoardingConfirm
+    // 미호출')가 이미 이 가드를 고정하고 있으므로, 여기서는 "목적지와 다른 station" 케이스를
+    // 한 번 더 명시적으로 교차검증한다 — 같은 nextLine-부재 조건에서도 station identity가
+    // 다르면 transfer로 판정되어야 한다.
+    it('ⓐ station identity가 destination과 다르면(환승역) postBoardingConfirm 호출 안 함', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D-왕십리', line: '2', name: '왕십리' },
+        route: makeDirectRoute(),
+        bgContext: null,
+      });
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        { ...HOP_END_PAYLOAD, nextLine: undefined, nextStation: undefined },
+        makeHandleResponseDeps(),
+      );
+
+      expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
+    });
+
+    it('아직(NOT_YET) 응답은 destination이어도 기존 dismissBoardingPrompt 경로 그대로 — postBoardingConfirm 미호출', async () => {
+      mockAsDestinationStation();
+
+      await handleResponse(
+        DISEMBARK_ACTION_NOT_YET,
+        DESTINATION_HOP_END_PAYLOAD,
+        makeHandleResponseDeps(),
+      );
+
+      expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-dest');
+      expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
+    });
+  });
 });
