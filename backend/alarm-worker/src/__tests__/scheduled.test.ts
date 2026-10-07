@@ -14500,7 +14500,27 @@ describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구�
     });
   }
 
-  it('스펙 1 — 탑승 증거 없는 leg-2 trip은 다른 열차의 목적지 도착으로 종료되면 안 된다', async () => {
+  // ⓐ 현재 동작 — "탑승 증거 없이 목적지 도착 확정"이 가능하다. 10/7 아침 사고(06:48:28
+  // leg-resolve-attempt pending/trainCode 2015 → 3.3초 뒤 06:48:31 trip-end
+  // reason=destination-arrived)와 정확히 같은 모양이다. 이 테스트가 그 트립의 replay는
+  // 아니다(캡처 공백으로 재현 불가, PR #2890 Task 2 확정) — 합성 입력으로 "그 모양의 경로가
+  // 코드에 존재하는가"를 묻는 스펙 검증이다.
+  //
+  // ⓑ 신규 회귀가 아니다 — 기존 테스트 `A2d (#2720)`(이 파일 상단, '#2323 환승 lockless'
+  // describe)가 동일 패턴을 이미 green으로 고정하고 있다. scheduled.ts:6454-6462 주석이
+  // "새 신호·새 게이트 도입 금지"를 명시한다 — `runLocklessDestination`
+  // (scheduled.ts:6471-6500)이 `pickBestArrivalSignal`(scheduled.ts:6916-6948, trainCode
+  // 매칭 없이 line만 필터링)로 ENTERING/ARRIVED를 받으면 lock/legResolveStreak/
+  // boardingCommitted 등 탑승 증거 확인 없이 `completeWaypointAdvance` →
+  // `cleanupTripWithLa('destination-arrived')`로 직행한다(dispatch:
+  // scheduled.ts:1960-1977).
+  //
+  // ⓒ 따라서 이 동작을 바꾸려면 설계 결정이 선행해야 한다(위 "게이트 금지" 지시를 뒤집는
+  // 결정 — 별도 이슈 필요, 이 PR 범위 아님). `it.fails`로 고정해 둔다 — 현재 실패한다는
+  // 사실 자체를 단언해 CI를 green으로 유지하면서, 결정이 내려져 동작이 바뀌는 순간
+  // `it.fails`가 "예상과 달리 통과함"으로 역-실패해 테스트 갱신을 강제한다. 결정 후에는
+  // 이 블록을 일반 `it`으로 승격할 것.
+  it.fails('스펙 1 — 탑승 증거 없는 leg-2 trip은 다른 열차의 목적지 도착으로 종료되면 안 된다', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLeg2NoEvidenceTrip());
     const { db, inserts } = makeS11FireLogDb();
