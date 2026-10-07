@@ -14515,12 +14515,9 @@ describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구�
   // `cleanupTripWithLa('destination-arrived')`로 직행한다(dispatch:
   // scheduled.ts:1960-1977).
   //
-  // ⓒ 따라서 이 동작을 바꾸려면 설계 결정이 선행해야 한다(위 "게이트 금지" 지시를 뒤집는
-  // 결정 — 별도 이슈 필요, 이 PR 범위 아님). `it.fails`로 고정해 둔다 — 현재 실패한다는
-  // 사실 자체를 단언해 CI를 green으로 유지하면서, 결정이 내려져 동작이 바뀌는 순간
-  // `it.fails`가 "예상과 달리 통과함"으로 역-실패해 테스트 갱신을 강제한다. 결정 후에는
-  // 이 블록을 일반 `it`으로 승격할 것.
-  it.fails('스펙 1 — 탑승 증거 없는 leg-2 trip은 다른 열차의 목적지 도착으로 종료되면 안 된다', async () => {
+  // ⓒ #2900 결정 — 옵션 C(종료 대신 질문) 승인으로 동작이 바뀌었다. `it.fails` → 일반 `it`으로
+  // 승격(lessons.md L18 절차) — 승격 자체가 "동작이 바뀌었다"는 증거다.
+  it('스펙 1 — 탑승 증거 없는 leg-2 trip은 다른 열차의 목적지 도착으로 종료되면 안 된다', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLeg2NoEvidenceTrip());
     const { db, inserts } = makeS11FireLogDb();
