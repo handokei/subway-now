@@ -179,6 +179,28 @@ export type BoardingResolution =
 export type BoardingResolveOutcome = 'resolved' | 'none' | 'ambiguous' | 'walk-gated' | 'invalid-route';
 
 /**
+ * #2893 (진단 계측 only) — `outcome:'none'`이 서로 다른 3개 원인을 한 값으로 뭉개 PR #2890
+ * 재현(10/7 저녁 탑승확인 실패) 시 D1만으로 원인을 못 가려 수작업 코드 추적이 필요했다. `onOutcome`
+ * 콜백의 2번째(선택) 인자로만 통지 — `BoardingResolveOutcome` 반환 타입 자체는 무변경(하위호환).
+ *
+ * - `'info-mode-disabled'` — `trip.infoModeEnabled !== true`.
+ * - `'no-anchor'` — anchor 자체가 없고(promptDisplay/currentLegAnchor 둘 다 없음) walk-gate도
+ *   아니고 탭(`options.tapAnchor`)도 없음.
+ * - `'subwayid-mapping-failed'` — anchor.line에서 subwayId 매핑 실패.
+ * - `'position-resolve-none'` — `resolveTrainCodeFromPositions`가 후보 0건(`status:'none'`).
+ * - `'leg-transition-not-confirmed'` — `options.legTransition` 경로에서 confirmation이
+ *   confirmed가 아님(pending/rejected/none).
+ * - `'leg-segment-empty'` — `buildLegSegmentStations` 결과가 빈 배열(route 불일치).
+ */
+export type BoardingResolveNoneReason =
+  | 'info-mode-disabled'
+  | 'no-anchor'
+  | 'subwayid-mapping-failed'
+  | 'position-resolve-none'
+  | 'leg-transition-not-confirmed'
+  | 'leg-segment-empty';
+
+/**
  * anchor(방향/역명) 조건을 만족하고 신선한(POSITION_FRESHNESS_MS 이내) position 항목 전부 —
  * trainSttus 무관(DEPARTED 포함). `resolveTrainCodeFromPositions`(ARRIVED/APPROACHING만
  * 우선순위 채택)와 `evaluateLegBoardingTransition`(#2754, DEPARTED 전이 탐지) 둘 다 이
@@ -480,12 +502,14 @@ export async function attemptBoardingAnchorResolution(
   seoul: SeoulArrivalClient,
   now: number,
   options?: LegOriginResolutionOptions,
-  onOutcome?: (outcome: BoardingResolveOutcome) => void,
+  // #2893 — 2번째 선택 인자(detail)는 outcome==='none'일 때만 noneReason을 싣는다. 기존
+  // 호출자(1개 인자만 받는 콜백)는 완전 무영향.
+  onOutcome?: (outcome: BoardingResolveOutcome, detail?: { noneReason?: BoardingResolveNoneReason }) => void,
   onTapLegAdvance?: (advance: TapLegAdvance) => void,
   onLegTransition?: (confirmation: LegBoardingConfirmation) => void,
 ): Promise<BoardingLockMeta | null> {
   if (trip.infoModeEnabled !== true) {
-    onOutcome?.('none');
+    onOutcome?.('none', { noneReason: 'info-mode-disabled' });
     return null;
   }
   let anchor = resolveActiveLegOrigin(trip, now, options);
@@ -500,7 +524,7 @@ export async function attemptBoardingAnchorResolution(
       return null;
     }
     if (!options?.tapAnchor) {
-      onOutcome?.('none');
+      onOutcome?.('none', { noneReason: 'no-anchor' });
       return null;
     }
     // #2739 — 탭은 currentLegAnchor/promptDisplay 둘 다 없을 때만(요구사항 2 — 위에서 anchor
@@ -523,7 +547,7 @@ export async function attemptBoardingAnchorResolution(
 
   const subwayId = subwayIdForLine(anchor.line);
   if (!subwayId) {
-    onOutcome?.('none');
+    onOutcome?.('none', { noneReason: 'subwayid-mapping-failed' });
     return null;
   }
 
@@ -550,14 +574,17 @@ export async function attemptBoardingAnchorResolution(
     );
     onLegTransition?.(confirmation);
     if (confirmation.status !== 'confirmed') {
-      onOutcome?.('none');
+      onOutcome?.('none', { noneReason: 'leg-transition-not-confirmed' });
       return null;
     }
     resolvedTrainCode = confirmation.trainCode;
   } else {
     const resolution = resolveTrainCodeFromPositions(resolutionAnchor, positions, now);
     if (resolution.status !== 'resolved') {
-      onOutcome?.(resolution.status);
+      onOutcome?.(
+        resolution.status,
+        resolution.status === 'none' ? { noneReason: 'position-resolve-none' } : undefined,
+      );
       return null;
     }
     resolvedTrainCode = resolution.trainCode;
@@ -567,7 +594,7 @@ export async function attemptBoardingAnchorResolution(
   // `buildLegSegmentStations`는 legWaypoints[0]부터 수집하므로 origin이 빠져 있다 — prepend.
   const legSegment = buildLegSegmentStations(legWaypoints, anchor.line);
   if (legSegment.length === 0) {
-    onOutcome?.('none');
+    onOutcome?.('none', { noneReason: 'leg-segment-empty' });
     return null;
   }
   const segmentStations =
