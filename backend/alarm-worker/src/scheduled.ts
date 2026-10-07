@@ -6982,6 +6982,8 @@ function toKstHhmm(epochMs: number): string {
  * @param etaSeconds     arrivals에서 추출한 도착 잔여 초 (null = 정보 없음)
  * @param now            현재 epoch ms (ETA 절대 시각 계산용)
  * @param locale         #1895 — trip.locale (ko/en/ja/zh). 미지정 시 ko fallback.
+ * @param destinationStation #2904 — 발사 시점 선택된 열차(payload trainCode와 동일 출처)의
+ *   종착역. null/미지정이면 본문에서 생략(#1740 omit 패턴) — 기존 문구와 byte-level 동일.
  */
 export function buildBoardingPromptMessage(
   originStation: string,
@@ -6990,13 +6992,14 @@ export function buildBoardingPromptMessage(
   etaSeconds: number | null,
   now: number,
   locale?: SupportedLocale,
+  destinationStation?: string | null,
 ): { title: string; body: string } {
   const strings = t(locale);
   const etaTimeStr =
     etaSeconds === null ? null : toKstHhmm(now + etaSeconds * 1000);
   return {
     title: strings.boardingPromptTitle,
-    body: strings.boardingPromptBody({ originStation, line, nextStation, etaTimeStr }),
+    body: strings.boardingPromptBody({ originStation, line, nextStation, etaTimeStr, destinationStation }),
   };
 }
 
@@ -7260,11 +7263,25 @@ async function fireBoardingPromptForAnchor(inputs: {
     return;
   }
 
-  const { title, body } = buildBoardingPromptMessage(station, line, nextStation, etaSeconds, now, trip.locale);
-
   // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
   // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경).
   const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, line, direction) : null;
+  // #2904 — 본문 종착역은 selectedTrainCode와 반드시 같은 pool 엔트리에서 가져온다(다른 열차
+  // 혼입 방지). 이미 받은 arrivals 응답의 `terminus`(trainLineNm 파싱 결과)를 재사용 —
+  // 신규 Seoul API 호출 없음. 매칭 엔트리 없음/순환선(terminus=null) → 접두사 생략(#1740 omit).
+  const destinationStation = selectedTrainCode
+    ? pool.find((entry) => entry.trainCode === selectedTrainCode)?.terminus ?? null
+    : null;
+
+  const { title, body } = buildBoardingPromptMessage(
+    station,
+    line,
+    nextStation,
+    etaSeconds,
+    now,
+    trip.locale,
+    destinationStation,
+  );
 
   const pushId = generatePushId();
   const heal = await sendWithEnvHeal(
