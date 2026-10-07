@@ -979,20 +979,27 @@ export function buildStationPassedContent(
  * 알림이다 — targetKind(transfer/destination)는 카운트다운 "대상"일 뿐 이 알림 자체의 kind가
  * 아니다(회귀 안전: 중간역 tracking은 여전히 무음 유지).
  */
+/**
+ * #2927 (ADR-040 2단계) — 반환값 `boolean`은 "실제로 로컬 알림을 발사했는지"를 알려준다.
+ * useStationAlarm.ts의 유예 타이머 만료 콜백이 이 값으로 스킵(false)과 발사(true)를 구분해야만
+ * `device-proxy-fired` 측정 로그를 실제 발사 건에만 정확히 남길 수 있다(#2905 측정 input —
+ * 스킵을 발사로 오집계하면 대리 발사 비율이 부풀려진다). 기존 호출부(flag OFF, 즉시 발사
+ * 경로)는 이 반환값을 그대로 무시하므로 동작 변화 없음(ⓓ).
+ */
 export async function fireFgAuxStationPassedNotification(
   stationName: string,
   count: number,
   targetKind: StationPassedTargetKind,
   targetName: string,
   line: string,
-): Promise<void> {
+): Promise<boolean> {
   // #2902 — 양방향 대칭 가드의 반대쪽 절반. backend push가 먼저 도착해 이미 표시됐다면(위
   // markRemoteShownForBidirectionalDedup이 같은 store에 기록), 이 로컬 발사는 스킵한다 — 발사하지
   // 않으므로 markLocalStationFired도 호출하지 않는다(#2488 회귀 금지: 발사 안 한 경로가 마킹하면
   // 다음 정상 로컬 발사까지 억제된다).
-  if (await hasRecentLocalStationFire(stationName, 'station-passed')) return;
+  if (await hasRecentLocalStationFire(stationName, 'station-passed')) return false;
   const deviceToken = await AsyncStorage.getItem(APNS_TOKEN_KEY);
-  if (!deviceToken) return;
+  if (!deviceToken) return false;
   const identifier = buildStationNotifCollapseId(deviceToken);
   const { title, body } = buildStationPassedContent(stationName, count, targetKind, targetName);
   const soundFields = resolveStationNotifSoundFields('intermediate');
@@ -1004,6 +1011,7 @@ export async function fireFgAuxStationPassedNotification(
     data: { kind: 'intermediate', stationName, line },
   });
   await markLocalStationFired(stationName, 'station-passed');
+  return true;
 }
 
 /**
