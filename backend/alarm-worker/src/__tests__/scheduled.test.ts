@@ -12978,6 +12978,63 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       ]);
     });
   });
+
+  describe('#2904 — 본문 종착역과 payload trainCode 동일 출처', () => {
+    function makeMultiTrainArrivalsResponse(
+      rows: Array<{ btrainNo: string; isUp: boolean; arvlCd: number; trainLineNm: string }>,
+    ): typeof fetch {
+      return (async () =>
+        new Response(
+          JSON.stringify({
+            realtimeArrivalList: rows.map((r) => ({
+              barvlDt: '120',
+              recptnDt: '',
+              updnLine: r.isUp === false ? '하행' : '상행',
+              trainLineNm: r.trainLineNm,
+              btrainNo: r.btrainNo,
+              subwayNm: '지하철7호선',
+              arvlCd: r.arvlCd,
+            })),
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch;
+    }
+
+    it('후보 중 선택된 trainCode의 종착역만 본문에 실린다 — 다른 후보 종착역은 섞이지 않는다', async () => {
+      // 선택 우선순위(pickAutoTrainCode: 2>1>0)상 arvlCd=1(ARRIVED) 단일 후보가 최종 선택된다.
+      // 선택되지 않는 쪽(arvlCd=0, "신도림행")의 종착역이 본문에 등장하면 "다른 출처" 혼입 회귀다.
+      const fetchImpl = vi.fn(
+        makeMultiTrainArrivalsResponse([
+          { btrainNo: '7001', isUp: true, arvlCd: 0, trainLineNm: '신도림행' },
+          { btrainNo: '7246', isUp: true, arvlCd: 1, trainLineNm: '성수행' },
+        ]),
+      );
+      // waypoint.line을 display.line('7')과 다르게 둬 direction을 null로 고정한다(inferLegDirection
+      // 미호출) — 이 테스트의 관심사는 실제 노선 방향이 아니라 "선택된 trainCode와 본문 종착역이
+      // 같은 출처"이므로 방향 추론과 무관하게 양쪽 후보가 모두 pickAutoTrainCode 입력에 들어가게 한다.
+      const trip = makeTrip({ waypoints: [{ stationName: '군자', line: 'x', kind: 'intermediate' }] });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin-dest',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      const alertCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('/3/device/'));
+      expect(alertCall).toBeDefined();
+      const [, init] = alertCall as unknown as [string, RequestInit];
+      const payload = JSON.parse(init.body as string);
+      // payload.body.trainCode (#2819) — 발사 시점 단일 확정 trainCode.
+      expect(payload.body.trainCode).toBe('7246');
+      // 본문(aps.alert.body)에는 선택된 trainCode(7246)의 종착역("성수")만 실린다.
+      expect(payload.aps.alert.body).toContain('성수행');
+      expect(payload.aps.alert.body).not.toContain('신도림');
+    });
+  });
 });
 
 // #2844 — subsumption 증명(이슈 본문)의 유일 반례: 은퇴 전 GPS 9단 경로는 `originProximityAt`의
