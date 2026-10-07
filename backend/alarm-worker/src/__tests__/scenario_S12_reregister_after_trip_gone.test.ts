@@ -25,6 +25,7 @@
  * 어떤 이유로든 종료됐으면, **payload가 완전히 유효해도(waypoints 비지 않음)** 재등록이
  * 400으로 거부된다. 10/7 트립은 06:48:31 destination-arrived로 종료됐고, 재시도는
  * +1:42/+1:58/+2:30/+3:32 뒤 — 전부 1시간 retention 안이다.
+
  *
  * #2912 (후속 fix) — 위 메커니즘 판정을 근거로, destination 종료 + 재등록 payload에 남은
  * waypoints가 있을 때만 쿨다운을 우회하는 좁은 예외가 `index.ts`(cooldownBypass.ts 쿼터

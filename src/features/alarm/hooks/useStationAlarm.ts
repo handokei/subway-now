@@ -104,9 +104,12 @@ import {
   fireLocalAlarmNotification,
   type StationPassedTargetKind,
 } from '../utils/stationNotification';
-import { markLocalStationFired } from '../utils/recentLocalStationFires';
+import {
+  markLocalStationFired,
+  LOCAL_FIRE_DEFER_GRACE_MS,
+} from '../utils/recentLocalStationFires';
 import { resolveNotificationSource } from '../utils/notificationSource';
-import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
+import { isMinimalAlarmEnabled, isLocalFireDeferEnabled } from '../../../shared/constants/debugFlags';
 
 const logger = createLogger('StationAlarm');
 
@@ -394,23 +397,67 @@ async function dispatchStationPassed(params: {
     // #2362 — count/target(환승역|도착역) 배선. route/destination은 호출부 effect가 이미
     // `!route || !destination` 가드로 non-null을 보장한 뒤에만 여기 도달한다.
     if (AppState.currentState === 'active' && lock && route && destination) {
+      const target = deriveStationPassedTarget(route, destination, candidateStation);
+      // #2927 (ADR-040 2단계) — flag OFF(기본)면 바로 아래 else 분기(#2122 기존 즉시 발사)를
+      // 그대로 타 ⓓ 바이트 수준 동일 동작을 보장한다. flag ON일 때만 유예 타이머 분기로 간다.
+      if (isLocalFireDeferEnabled()) {
+        scheduleDeferredStationPassedFire(candidateStation, target);
+      } else {
+        try {
+          await fireFgAuxStationPassedNotification(
+            candidateStation.name,
+            target.count,
+            target.targetKind,
+            target.targetName,
+            candidateStation.line,
+          );
+          logFiredStationPassed(source, candidateStation.name);
+        } catch (e) {
+          logger.error('FG 보조 발사 실패:', e);
+        }
+      }
+    }
+  } catch (e) {
+    logger.error(errorLogPrefix, e);
+  }
+}
+
+/**
+ * #2927 (ADR-040 2단계) — 유예 타이머. LOCAL_FIRE_DEFER_GRACE_MS 뒤 fireFgAuxStationPassedNotification을
+ * 호출한다. 그 함수 내부 가드(#2902, hasRecentLocalStationFire)가 호출 **시점**에 마커를 재확인
+ * 하므로 — 대기 중 backend push가 먼저 표시되면 자동으로 스킵(false 반환)된다. 별도 타이머
+ * 취소 메커니즘이 필요 없는 race-free 설계(단일 재확인 지점, ⓒ).
+ *
+ * ⓔ — 유예 중 app이 background로 전이되면(#2064 봉인) 만료 시점에도 발사하지 않는다 —
+ * dispatchStationPassed 진입 시점의 AppState==='active' 체크를 만료 시점에도 재확인한다.
+ *
+ * fireFgAuxStationPassedNotification이 실제로 발사한 경우(true)에만 `device-proxy-fired`
+ * source로 logFiredStationPassed를 적재한다 — 스킵(false)을 발사로 오집계하지 않기 위해
+ * (#2905 측정 input 정확도, ⓑ).
+ */
+function scheduleDeferredStationPassedFire(
+  candidateStation: Station,
+  target: StationPassedTarget,
+): void {
+  setTimeout(() => {
+    void (async () => {
       try {
-        const target = deriveStationPassedTarget(route, destination, candidateStation);
-        await fireFgAuxStationPassedNotification(
+        if (AppState.currentState !== 'active') return;
+        const fired = await fireFgAuxStationPassedNotification(
           candidateStation.name,
           target.count,
           target.targetKind,
           target.targetName,
           candidateStation.line,
         );
-        logFiredStationPassed(source, candidateStation.name);
+        if (fired) {
+          logFiredStationPassed('device-proxy-fired', candidateStation.name);
+        }
       } catch (e) {
-        logger.error('FG 보조 발사 실패:', e);
+        logger.error('FG 보조 발사(유예) 실패:', e);
       }
-    }
-  } catch (e) {
-    logger.error(errorLogPrefix, e);
-  }
+    })();
+  }, LOCAL_FIRE_DEFER_GRACE_MS);
 }
 
 /**

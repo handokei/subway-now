@@ -3154,6 +3154,32 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.boardingLock).toBeUndefined();
       expect(stored.boardingPromptResponded).toBe(true);
     });
+
+    // #2920 — destinationConfirmPendingSince(#2900 증거 없는 목적지 유예) 중인 trip이 하차
+    // 확인 프롬프트의 [하차함] 응답(disembarked)을 받으면 남은 타임아웃(최대 7분)을 기다리지
+    // 않고 즉시 종료한다(사용자 확인 = ground truth). A2e 타임아웃 분기가 호출하는 바로 그
+    // completeWaypointAdvance를 재사용 — 새 종료 경로 신설 없음.
+    it('#2920 — destinationConfirmPendingSince 유예 중 disembarked 응답 → 즉시 종료(KV 삭제)', async () => {
+      fetchSpy.mockResolvedValue(new Response('', { status: 200 }));
+      const env = makeKvEnv();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify(tripBody({ destinationConfirmPendingSince: CREATED })),
+      );
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ action: 'disembarked' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'released' });
+
+      expect(
+        await env.TRIPS.get('trip:tok-bc'),
+        '#2920 위반 — [하차함] 응답에도 trip이 KV에서 즉시 삭제되지 않음',
+      ).toBeNull();
+    });
   });
 
   describe('not-boarded', () => {
@@ -3258,6 +3284,34 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(buildBoardingConfirmEventMeta('none', 'walk-gated', undefined)).toEqual({
         lockState: 'none',
         outcome: 'walk-gated',
+      });
+    });
+
+    // #2893 — outcome:'none'의 3개 독립 원인(후보0/subwayId 매핑 실패/legSegment 산출 실패)을
+    // noneReason으로 분리 — D1만으로 원인 구분 가능하게 한다.
+    it('outcome=none + noneReason 있으면 meta에 포함', () => {
+      expect(
+        buildBoardingConfirmEventMeta('none', 'none', undefined, 'position-resolve-none'),
+      ).toEqual({
+        lockState: 'none',
+        outcome: 'none',
+        noneReason: 'position-resolve-none',
+      });
+    });
+
+    it('noneReason 미지정 시 meta에서 생략(backward compat)', () => {
+      expect(buildBoardingConfirmEventMeta('none', 'none', undefined)).toEqual({
+        lockState: 'none',
+        outcome: 'none',
+      });
+    });
+
+    it('outcome이 none이 아니면 noneReason을 전달해도 meta에 싣지 않는다', () => {
+      expect(
+        buildBoardingConfirmEventMeta('leg1', 'resolved', undefined, 'subwayid-mapping-failed'),
+      ).toEqual({
+        lockState: 'leg1',
+        outcome: 'resolved',
       });
     });
   });

@@ -383,8 +383,32 @@ async function handleHopEndResponse(
       // #2410 — nextLine이 유효한 LineNumber가 아니면(구버전 backend 등 payload 누락)
       // 하차 등록 전체를 silent skip하지 않고 로컬 route에서 다음 leg 노선을 도출해 stamp한다.
       // route/destination 부재나 waypoint 매칭 실패(도출 불가)면 기존대로 graceful skip.
-      const derivedLine = await deriveNextLegLineFromRoute(payload);
-      if (derivedLine) {
+      //
+      // #2923 — nextLine 부재는 destination hop-end(다음 leg 없음, backend가 절대 nextLine을
+      // 보내지 않음 — PR #2922 `fireDestinationDisembarkPrompt`, `buildHopEndPromptMessage(...,
+      // null, null, ...)`)와 "구버전 backend가 보낸 환승 hop-end"(바로 위 #2410) 양쪽 모두에서
+      // 발생해 nextLine 유무만으로는 구분할 수 없다. `resolveHopEndRouteContext`가 station
+      // identity(현재 하차 역 === trip의 최종 목적지)로 둘을 가른다 — 환승역은 결코 최종
+      // 목적지와 같은 station일 수 없으므로 이 식별자 비교가 유일하게 안전한 판정 신호다.
+      const { isDestinationHopEnd, derivedLine } = await resolveHopEndRouteContext(payload);
+      if (isDestinationHopEnd) {
+        // #2923 (Wire-completion #1582) — 목적지 하차 확인은 사용자가 방금 [하차함]으로 명시한
+        // ground truth다. backend `POST /trips/:token/boarding-confirm`(action='disembarked')로
+        // forward해야 7분 유예 타임아웃을 기다리지 않고 즉시 종료(#2920/PR #2922의 "질문" 단계가
+        // 소비하는 바로 그 엔드포인트). fire-and-forget — postBoardingConfirm은 내부에서 실패를
+        // swallow하므로 이 await가 critical path를 막거나 throw하지 않는다(#2852와 동일 double
+        // defense 패턴).
+        try {
+          await postBoardingConfirm(
+            payload.tripToken,
+            'disembarked',
+            payload.originStation,
+            payload.line,
+          );
+        } catch (err) {
+          log.warn('destination disembark boarding-confirm forward failed — non-critical', err as Error);
+        }
+      } else if (derivedLine) {
         await useLegAdvanceStore.getState().stampLegAdvance(derivedLine);
       }
     }
@@ -403,9 +427,29 @@ async function handleHopEndResponse(
   await dismissBoardingPrompt(payload.tripToken);
 }
 
+interface HopEndRouteResolution {
+  /**
+   * #2923 — 지금 하차 확인 중인 station(payload.originStation을 payload.line 위에서 resolve)이
+   * trip의 최종 목적지(widgetRefreshContext.destination)와 동일한 station인지. true면 "다음
+   * leg"가 존재하지 않는 destination hop-end — caller가 route derive를 건너뛰고 즉시
+   * boarding-confirm(action='disembarked')을 forward해야 한다.
+   */
+  isDestinationHopEnd: boolean;
+  /** #2410 — 환승 hop-end일 때(isDestinationHopEnd===false) 로컬 route에서 도출한 다음 leg 노선. */
+  derivedLine: LineNumber | null;
+}
+
 /**
  * #2410 — hop-end push의 `payload.nextLine`이 없거나 유효한 LineNumber가 아닐 때, 로컬
  * route + `payload.originStation`(환승/하차역)으로 다음 leg 노선을 도출한다.
+ *
+ * #2923 — nextLine 부재는 destination hop-end(backend가 설계상 절대 nextLine을 보내지
+ * 않음 — PR #2922 `fireDestinationDisembarkPrompt`)와 구버전 backend가 보낸 환승
+ * hop-end(바로 위 #2410 사유) 양쪽에서 발생해 이 함수에 진입하는 시점만으로는 둘을 구분할
+ * 수 없다. 그래서 이 함수가 두 분기 모두를 판정해 반환한다 — station identity(resolve한
+ * currentStation.id === destination.id)가 유일하게 안전한 신호다: 환승역은 결코 trip의
+ * 최종 목적지와 같은 station일 수 없다(해당 역에서 또 환승해 그 역이 종착지가 되는
+ * 데이터는 route 생성 단계에서 성립하지 않음).
  *
  * `findLocklessTransferWaypoint`(#2319)를 재사용 — 이 함수는 lock 존재를 전제하는
  * `findActiveTransferContext`와 달리 lock-비종속으로 설계되어, handleHopEndResponse가
@@ -417,24 +461,31 @@ async function handleHopEndResponse(
  * 읽는다 — silent push 등 BG 컨텍스트에서도 React state 없이 동일하게 동작하는 기존 채널.
  * currentStation은 payload.originStation을 payload.line(현재/직전 leg 노선)으로 조회한다.
  *
- * 아래 중 하나라도 실패하면 null (caller가 graceful skip):
+ * `{ isDestinationHopEnd: false, derivedLine: null }`로 graceful skip하는 경우:
  *  - payload.line이 유효한 LineNumber가 아님
  *  - originStation을 payload.line 위에서 찾지 못함(역명 불일치)
- *  - route 또는 destination이 storage에 없음(cold-start 미hydrate 등)
- *  - findLocklessTransferWaypoint가 현재 위치를 환승 waypoint로 매칭하지 못함
+ *  - destination이 storage에 없음(cold-start 미hydrate 등)
+ *  - (환승 판정 경로) route가 없거나 findLocklessTransferWaypoint가 현재 위치를 환승
+ *    waypoint로 매칭하지 못함
  */
-async function deriveNextLegLineFromRoute(
+async function resolveHopEndRouteContext(
   payload: BoardingPromptPayload,
-): Promise<LineNumber | null> {
-  if (!isValidLineNumber(payload.line)) return null;
+): Promise<HopEndRouteResolution> {
+  const skip: HopEndRouteResolution = { isDestinationHopEnd: false, derivedLine: null };
+  if (!isValidLineNumber(payload.line)) return skip;
   const currentStation = findStationByNameAndLine(payload.originStation, payload.line);
-  if (!currentStation) return null;
+  if (!currentStation) return skip;
 
   const { destination, route } = await readWidgetRefreshContext();
-  if (!route || !destination) return null;
+  if (!destination) return skip;
 
+  if (currentStation.id === destination.id) {
+    return { isDestinationHopEnd: true, derivedLine: null };
+  }
+
+  if (!route) return skip;
   const waypoint = findLocklessTransferWaypoint(route, destination.name, currentStation);
-  return waypoint?.nextLine ?? null;
+  return { isDestinationHopEnd: false, derivedLine: waypoint?.nextLine ?? null };
 }
 
 async function tryAutoLock(
@@ -558,6 +609,17 @@ async function tryAutoLock(
     return;
   }
 
+  // #2889 (S5) — chosen(실 trainCode 확정) 경로. 기존에는 #2408 위치 모순 guard가
+  // `createPendingFallbackLock`에만 있고 이 성공 경로에는 없어, 10/7 06:50:09·19:37:18 실측
+  // 둘 다 "지난 역" 앵커로 실 lock이 그대로 생성됐다(S5 RCA). PENDING fallback과 동일한
+  // `hasPositionContradiction` 판정을 여기도 적용 — fresh BG 위치가 payload 역과 모순되면
+  // lock을 만들지 않고 사유를 남긴다(그 외 검증 불가/일치는 기존대로 탭을 신뢰).
+  if (await hasPositionContradiction(payload)) {
+    log.info('chosen lock skipped — position contradiction with fresh BG context');
+    logBoardingPromptAutoLock({ reason: 'fallback-skipped-position-contradiction', ...telemetry });
+    return;
+  }
+
   // boardingStationId — payload.originStation/line으로 정확 매칭. 매칭 실패는 manual fallback.
   const station = findStationByNameAndLine(payload.originStation, chosen.line);
   if (!station) {
@@ -612,6 +674,38 @@ async function readFreshBgLastStationForGuard() {
 }
 
 /**
+ * #2889 (S5) — fresh BG_LAST_STATION이 payload가 가리키는 역과 실제로 다른 물리적 역인지
+ * 판정한다("철 지난 프롬프트 응답" 모순 감지). true면 모순(= lock 생성 금지), false면 모순
+ * 아님(검증 불가 포함, 기존 "탭을 신뢰한다" 정책 유지).
+ *
+ * #2408이 처음 도입했던 gate는 `bgContext.station.line !== payload.line`일 때만 검사해
+ * **같은 노선 위에서 사용자가 이미 다음 정거장으로 이동한 케이스**(예: payload는 건대입구를
+ * 가리키는데 BG는 같은 2/7호선의 성수·용마산을 가리킴)를 전혀 못 잡았다 — 10/7 06:50:09·
+ * 19:37:18 두 실측 모두 이 결을 타고 "지난 역" 앵커로 lock이 생성됐다(#2889 RCA).
+ *
+ * line 비교를 선행 gate로 쓰지 않고, BG 관측역과 payload 역을 둘 다 payload.line 위에서
+ * resolve해 canonical 이름을 직접 비교한다 — #2408 Gap A(환승역에서 다른 노선으로 관측돼도
+ * 같은 물리적 역이면 모순 아님)는 그대로 보존된다(같은 이름으로 resolve되면 통과).
+ */
+async function hasPositionContradiction(payload: BoardingPromptPayload): Promise<boolean> {
+  const bgContext = await readFreshBgLastStationForGuard();
+  if (!bgContext) return false;
+
+  const promptLine = isValidLineNumber(payload.line) ? payload.line : null;
+  const bgStationOnPromptLine = promptLine
+    ? findStationByNameAndLine(bgContext.station.name, promptLine)
+    : null;
+  const promptStation = promptLine
+    ? findStationByNameAndLine(payload.originStation, promptLine)
+    : null;
+  const isSameStation =
+    bgStationOnPromptLine !== null &&
+    promptStation !== null &&
+    bgStationOnPromptLine.name === promptStation.name;
+  return !isSameStation;
+}
+
+/**
  * #2819 — device 자체 재조회(arrivals fetch)가 실패했을 때(arrival null / chosen null)만
  * 호출되는 fallback. backend가 발사 시점에 `pickAutoTrainCode`로 **단일** 확정한 trainCode
  * (`payload.trainCode`)가 있으면 기존 성공 경로(`tryAutoLock`의 chosen-확정 블록)와 동일하게
@@ -626,6 +720,10 @@ async function readFreshBgLastStationForGuard() {
  * evidence=true — 사용자가 방금 [탑승] 응답으로 탑승 상태를 명시했고(ADR-014), trainCode는
  * backend가 이 발사 사이클에 새로 계산한 확정값(device 재전송 stale 아님)이므로 기존 chosen
  * 성공 경로(:538-553 부근)와 동일하게 평가한다.
+ *
+ * #2889 (S5) — fresh BG 위치가 payload 역과 모순되면(하단 `hasPositionContradiction`) 이 경로도
+ * false를 반환해 caller가 기존 PENDING fallback으로 흐르게 한다 — 그 경로도 동일 guard를 거치므로
+ * 최종적으로 lock 없이 graceful skip된다.
  */
 async function tryEmbeddedTrainCodeLock(
   payload: BoardingPromptPayload,
@@ -635,6 +733,7 @@ async function tryEmbeddedTrainCodeLock(
 ): Promise<boolean> {
   if (!payload.trainCode) return false;
   if (!isValidLineNumber(payload.line)) return false;
+  if (await hasPositionContradiction(payload)) return false;
   const station = findStationByNameAndLine(payload.originStation, payload.line);
   if (!station) return false;
 
@@ -679,38 +778,17 @@ async function createPendingFallbackLock(
 ): Promise<void> {
   const telemetry = { originStation: payload.originStation, line: payload.line };
 
-  // #2408 (위험1 guard) — stale prompt → 잘못된 lock 방지. device가 최근에 관측한
-  // BG_LAST_STATION(현재 위치)이 payload.line과 다른 노선이면, 이 prompt가 사용자의 실제 현재
-  // 위치와 모순되는 오래된(stale) 알림이라고 판단해 lock 생성을 skip한다. BG_LAST_STATION이
-  // 없거나(WhileInUse 등) 신선도 기준을 넘었거나(검증 불가) line이 일치하면 기존대로 진행 —
-  // 사용자의 명시 탭을 신뢰한다(ADR-014).
-  const bgContext = await readFreshBgLastStationForGuard();
-  if (bgContext && bgContext.station.line !== payload.line) {
-    // #2408 Gap A — 환승역(예: 건대입구=2호선+7호선)에서는 BG fusion이 payload.line과 다른
-    // 노선으로 최근접역을 stamp할 수 있다. line만 비교하면 "같은 물리적 역, 다른 유효 노선"을
-    // 진짜 위치 모순으로 오판해 lock 생성을 skip한다(실사용자가 정확히 그 역에 있는데도 차단).
-    // bgContext.station.name과 payload.originStation을 각각 payload.line 위에서 조회해 같은
-    // canonical station으로 귀결되는지(findStationByNameAndLine이 alias/정규화까지 흡수) 확인 —
-    // 둘 다 유효하고 이름이 같은 station으로 resolve되면 환승역 관측 차이일 뿐 모순이 아니다.
-    const promptLine = isValidLineNumber(payload.line) ? payload.line : null;
-    const bgStationOnPromptLine = promptLine
-      ? findStationByNameAndLine(bgContext.station.name, promptLine)
-      : null;
-    const promptStation = promptLine
-      ? findStationByNameAndLine(payload.originStation, promptLine)
-      : null;
-    const isSameTransferStation =
-      bgStationOnPromptLine !== null &&
-      promptStation !== null &&
-      bgStationOnPromptLine.name === promptStation.name;
-    if (!isSameTransferStation) {
-      log.info('pending fallback lock skipped — position contradiction with fresh BG context');
-      logBoardingPromptAutoLock({
-        reason: 'fallback-skipped-position-contradiction',
-        ...telemetry,
-      });
-      return;
-    }
+  // #2408 (위험1 guard, #2889 S5 일반화) — stale prompt → 잘못된 lock 방지. BG_LAST_STATION이
+  // 없거나(WhileInUse 등) 신선도 기준을 넘었거나(검증 불가) payload 역과 동일 물리적 역으로
+  // resolve되면 기존대로 진행 — 사용자의 명시 탭을 신뢰한다(ADR-014). 판정 로직은
+  // `hasPositionContradiction`(위, #2408 Gap A 환승역 동일성 비교 보존)로 단일화되어 있다.
+  if (await hasPositionContradiction(payload)) {
+    log.info('pending fallback lock skipped — position contradiction with fresh BG context');
+    logBoardingPromptAutoLock({
+      reason: 'fallback-skipped-position-contradiction',
+      ...telemetry,
+    });
+    return;
   }
 
   if (!isValidLineNumber(payload.line)) {

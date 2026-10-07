@@ -40,7 +40,7 @@ import {
   deleteTrip,
   resolveTripDeviceToken,
 } from './trips';
-import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
+import type { ApnsEnv, Env, Trip, TripEndedReason, TripEndPath, Waypoint } from './types';
 import { writeTripEndedStatus } from './tripStatus';
 
 // S7763 — direct re-export avoids local rebinding when only forwarding the type.
@@ -353,6 +353,12 @@ function tripEndedAlertDedupKey(tripToken: string, createdAt: number): string {
  *
  * Sonar maintainability(파라미터 수 ≤7) — `reason`/`metricsReason`을 `options` 객체로 묶었다.
  * 둘의 분리 목적(위 문단)은 그대로 유지, 파라미터 개수만 축소.
+ *
+ * #2893 (진단 계측 only) — `options.endPath`는 호출처 식별자(`TripEndPath`, types.ts). 여러
+ * 호출처가 같은 `reason`(예: `'destination-arrived'`)을 공유해 D1만으로 어느 코드 경로가
+ * 종료시켰는지 구분 불가능했다(10/7 조기종료 재현 불가, PR #2890). 값이 있으면 D1
+ * `trip_events`(kind='trip-end') meta에 그대로 싣는다 — 발사/cleanup 로직에는 관여하지 않는다.
+ * 생략 시(과도기 호출처) meta에 필드 자체를 싣지 않아 기존 row 형태 불변.
  */
 export async function cleanupTripWithLa(
   trip: Trip,
@@ -361,9 +367,9 @@ export async function cleanupTripWithLa(
   stats: LiveActivityStats,
   now: number,
   log: Logger,
-  options?: { reason?: TripEndedReason; metricsReason?: string },
+  options?: { reason?: TripEndedReason; metricsReason?: string; endPath?: TripEndPath },
 ): Promise<void> {
-  const { reason, metricsReason } = options ?? {};
+  const { reason, metricsReason, endPath } = options ?? {};
   await fireLiveActivityDismissal(trip, deps, stats, now, log);
   if (reason) {
     await fireTripEndedAlertPush(trip, reason, env, deps, now, log);
@@ -429,7 +435,10 @@ export async function cleanupTripWithLa(
     tokenHash: hashTripToken(trip.token),
     kind: 'trip-end',
     station: trip.destination ?? undefined,
-    meta: { reason: metricsReason ?? reason ?? 'user-delete' },
+    meta: {
+      reason: metricsReason ?? reason ?? 'user-delete',
+      ...(endPath !== undefined ? { endPath } : {}),
+    },
   });
 }
 
@@ -441,8 +450,14 @@ export async function cleanupTripWithLa(
  *
  * 실패는 fire-and-forget 성격이지만 흐름 일관성을 위해 await — APNs latency는 cron 1 cycle 안에서
  * 흡수. fireLiveActivityDismissal과 마찬가지로 trip 상태 변경 없이 best-effort.
+ *
+ * #2900 — export: `scheduled.ts`의 lockless destination "종료 유예" 경로가 실제 trip
+ * 삭제(`cleanupTripWithLa`)보다 먼저 이 알림만 독립적으로 발사한다(거부 케이스 ⓕ — 도착
+ * 알림은 증거 유무와 무관하게 즉시 발사). 이 함수 자체의 KV dedup(10분 TTL)이 나중에
+ * `cleanupTripWithLa`가 같은 reason으로 재호출해도 중복 발사를 막아준다 — 새 dedup 메커니즘
+ * 신설 없음.
  */
-async function fireTripEndedAlertPush(
+export async function fireTripEndedAlertPush(
   trip: Trip,
   reason: TripEndedReason,
   env: Env,

@@ -20,6 +20,7 @@ import {
   attemptBoardingAnchorResolution,
   buildLockFromKnownTrainCode,
   resolveActiveLegOrigin,
+  type BoardingResolveNoneReason,
   type BoardingResolveOutcome,
 } from './boardingAnchorResolver';
 import {
@@ -86,6 +87,7 @@ import { SeoulArrivalClient } from './seoul';
 import { isTransferOrDestination } from './transferDestinationGate';
 import {
   advanceBoardingLockWaypoint,
+  completeWaypointAdvance,
   createEmptyScheduledStats,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
@@ -2217,11 +2219,18 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   const now = Date.now();
   let lockState: 'leg1' | 'leg2' | 'released' | 'none' = 'none';
   let resolveOutcome: BoardingResolveOutcome | undefined;
+  // #2893 — outcome:'none'이 3개 독립 원인(후보0/subwayId 매핑 실패/legSegment 산출 실패)을
+  // 한 값으로 뭉개 D1만으로 원인 구분이 불가했다(PR #2890 재현 시 수작업 코드 추적 필요).
+  let resolveNoneReason: BoardingResolveNoneReason | undefined;
   // #2739 요구사항 4 — anchor 출처(D1 meta용). activeOrigin(currentLegAnchor/promptDisplay)이
   // 있으면 그 출처, 없고 walk-gate도 아니면 탭이 시도된 것 — resolve 성공 여부와 무관하게
   // "무엇을 근거로 시도했는지"를 남긴다(invalid-route 거부도 anchorSource:'tap'으로 남는다).
   let anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined;
   let working: Trip = existing;
+  // #2920 — destinationConfirmPendingSince 유예 trip의 즉시 종료 분기(아래 'disembarked')가
+  // completeWaypointAdvance로 trip을 이미 KV에서 삭제했을 때 true. 공통 경로의 putTrip이
+  // 삭제된 trip을 재생성하지 않도록 가드한다.
+  let tripFinalized = false;
 
   if (payload.action === 'boarded') {
     if (working.infoModeEnabled !== true) {
@@ -2255,8 +2264,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           { allowLegTransfer: true, tapAnchor: { boardingStation: payload.station, line: payload.line } },
           // ADR-037 D2b (#2535, 진단 계측 only) — resolve outcome 관측. lock 판정/생성 자체는
           // anchorLock 반환값 그대로 사용 — 이 콜백은 D1 append 용 부가 관측이다.
-          (outcome) => {
+          // #2893 — outcome==='none'일 때만 detail.noneReason이 채워진다(세부 사유 D1 관측).
+          (outcome, detail) => {
             resolveOutcome = outcome;
+            resolveNoneReason = detail?.noneReason;
           },
           // #2739 — 탭이 leg 2+(환승 지점) 경유로 채택되면 waypoints가 그 leg부터 다시 시작하도록
           // advance 정보를 받는다. 아래에서 lock과 함께 반영해야 다음 cron이 올바른 정거장
@@ -2303,11 +2314,37 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
     }
   } else if (payload.action === 'disembarked') {
-    if (existing.boardingLock !== undefined) {
-      working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
-      await deleteProgress(c.env.TRIPS, token);
+    // #2920 — destinationConfirmPendingSince(#2900 증거 없는 목적지 유예) 중인 trip의 [하차함]
+    // 응답은 "탑승 증거 없이 시작된 유예"의 사용자 확인 자체가 ground truth다. 남은
+    // DESTINATION_CONFIRM_TIMEOUT_MS(7분)을 기다리지 않고 A2e(cron 타임아웃)와 동일한 종료
+    // 경로(`completeWaypointAdvance`)로 즉시 완결한다 — 새 종료 경로 신설 없음, 호출 시점만
+    // 앞당긴다. 이 trip은 lock이 없으므로(그래서 유예 분기를 탔다) 아래 일반 lock 해제
+    // 분기와는 상호 배타.
+    if (existing.destinationConfirmPendingSince !== undefined) {
+      const destinationWaypoint = existing.waypoints[0];
+      if (destinationWaypoint) {
+        const archFlag = await getArchFlag(c.env.TRIPS).catch(() => ARCH_FLAG_DEFAULT);
+        await completeWaypointAdvance(
+          existing,
+          destinationWaypoint,
+          c.env,
+          buildSyncScheduledDeps(c.env, archFlag),
+          createEmptyScheduledStats(now),
+          now,
+          createJsonLogger(),
+          () => crypto.randomUUID(),
+          'http-destination-disembark-confirmed',
+        );
+      }
+      tripFinalized = true;
+      lockState = 'released';
+    } else {
+      if (existing.boardingLock !== undefined) {
+        working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
+        await deleteProgress(c.env.TRIPS, token);
+      }
+      lockState = 'released';
     }
-    lockState = 'released';
   } else {
     // 'not-boarded' — POST /boarding-prompt/dismiss와 동일 의미(재현).
     working = {
@@ -2322,7 +2359,12 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // 버전은 stamp가 분기별 putTrip 안에 있어 disembarked인데 existing.boardingLock===undefined인
   // 케이스(lock이 이미 해제/만료된 상태에서 응답)가 putTrip 자체를 타지 않아 responded=0으로
   // 남았다(이 PR이 수리하려던 하드코딩 0 갭이 그 분기에서 재발) — 공통 경로로 올려 근본 차단.
-  await putTrip(c.env.TRIPS, markBoardingPromptResponded(working));
+  // #2920 — tripFinalized(위 destinationConfirmPendingSince 즉시종료 분기)가 true면
+  // completeWaypointAdvance가 이미 trip을 KV에서 삭제했다. 여기서 putTrip을 또 호출하면
+  // 삭제된 trip을 그대로 재생성하는 회귀가 되므로 이 경로에서만 stamp write를 skip한다.
+  if (!tripFinalized) {
+    await putTrip(c.env.TRIPS, markBoardingPromptResponded(working));
+  }
 
   // SonarCloud S5145 — token(URL param)/station/line/action은 전부 요청에서 유래한
   // user-controlled 값이라 신규코드 게이트에서 taint로 잡힌다(tokenPrefix로 마스킹해도
@@ -2337,7 +2379,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(token),
     kind: 'boarding-confirm-result',
-    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome, anchorSource),
+    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome, anchorSource, resolveNoneReason),
   });
   return c.json({ ok: true, lockState });
 });
@@ -2350,19 +2392,26 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
  * #2739 요구사항 4 — `anchorSource`(`'tap' | 'currentLegAnchor' | 'promptDisplay'`)도 같은 규칙
  * (undefined면 생략)으로 남긴다. resolve를 시도조차 안 한 경로(이미 lock 활성/disembarked/
  * not-boarded/walk-gated)는 anchorSource도 undefined다.
+ *
+ * #2893 — `noneReason`은 `resolveOutcome==='none'`일 때만 meta에 싣는다(다른 outcome에 섞여
+ * 들어오면 무시 — 호출자 실수 방어). outcome:'none'의 3개 독립 원인(후보0/subwayId 매핑 실패/
+ * legSegment 산출 실패)을 D1만으로 구분하기 위한 계측 전용 필드.
  */
 export function buildBoardingConfirmEventMeta(
   lockState: 'leg1' | 'leg2' | 'released' | 'none',
   resolveOutcome: BoardingResolveOutcome | undefined,
   anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined,
+  noneReason?: BoardingResolveNoneReason,
 ): {
   lockState: 'leg1' | 'leg2' | 'released' | 'none';
   outcome?: BoardingResolveOutcome;
   anchorSource?: 'tap' | 'currentLegAnchor' | 'promptDisplay';
+  noneReason?: BoardingResolveNoneReason;
 } {
   return {
     lockState,
     ...(resolveOutcome !== undefined ? { outcome: resolveOutcome } : {}),
+    ...(resolveOutcome === 'none' && noneReason !== undefined ? { noneReason } : {}),
     ...(anchorSource !== undefined ? { anchorSource } : {}),
   };
 }
@@ -3416,7 +3465,8 @@ app.delete('/trips/:token', async (c) => {
     makeLaStats(),
     Date.now(),
     createJsonLogger(),
-    { metricsReason },
+    // #2893 — 호출처 식별자. 이 엔드포인트가 유일한 HTTP DELETE 경로라 고정 상수로 정확하다.
+    { metricsReason, endPath: 'http-delete' },
   );
   return c.json({ ok: true, deleted: true });
 });

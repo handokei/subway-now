@@ -178,6 +178,31 @@ export interface Trip {
    */
   etaMissingDemotedAt?: number;
   /**
+   * #2900 (옵션 C, 재설계: 코디네이터 리뷰 2026-10-08) — lockless destination waypoint에서
+   * arvlCd 도착 신호(ENTERING/ARRIVED)가 왔지만 탑승 증거(lock 활성 / lockEverAttached /
+   * boardingCommitted / legResolveStreak)가 전혀 없을 때, **도착 알림은 그대로 즉시
+   * 발사하고**(거부 케이스 ⓕ — 증거 유무와 무관) **실제 종료(KV 삭제/D1 trip-end/LA
+   * dismissal)만** 유예하기 시작한 시점(epoch ms). 부재 = 아직 그런 신호를 관측한 적 없음
+   * (기본 상태) 또는 증거가 있어 이 분기 자체를 타지 않음(알림+종료가 그 자리에서 동시에
+   * 일어남, 지연 0).
+   *
+   * (1차 설계였던 "종료 대신 질문" 전환은 폐기 — 도착 알림 자체가 사라지는 회귀(실제로
+   * 도착한 증거 없는 trip이 "도착" 알림을 못 받음, 9/18 실측 사례) + 재사용한
+   * train-reconfirm 문구가 도착 확인과 의미가 달라 폐기했다. 신규 질문 채널도 만들지
+   * 않는다 — 최소화 원칙.)
+   *
+   * 이 값이 서는 순간 기존 trip-ended alert push(#1337, `fireTripEndedAlertPush`,
+   * reason='destination-arrived')를 즉시 1회 발사한다(새 push 채널 신설 없음). 이후 cron
+   * cycle마다: (1) 증거가 생기면(예: 사용자가 `/trips/:token/boarding-confirm`으로 lock
+   * 형성) 다음 tick은 이 lockless 분기 자체에 진입하지 않고(`isBoardingLockActive` 게이트가
+   * 먼저 가로챔) lock-active 추적 경로로 자연 전환된다. (2) `DESTINATION_CONFIRM_TIMEOUT_MS`
+   * 경과 전까지는 이 값을 갱신하지 않음(연장 없음, 거부 케이스 ⓓ). (3) 타임아웃 경과 시
+   * 응답/증거 유무와 무관하게 `completeWaypointAdvance`로 실제 종료(영구 잔존 금지, 거부
+   * 케이스 ⓒ) — 이때 재발사를 시도하는 `cleanupTripWithLa`의 push 호출은
+   * `fireTripEndedAlertPush` 자체의 10분 KV dedup(유예 상한 7분보다 길다)이 중복을 막는다.
+   */
+  destinationConfirmPendingSince?: number;
+  /**
    * #816 C — 사용자 opt-in lockless station-passed (UI: "전체역 보기").
    * BoardingLock 없는 trip에서도 station-passed(intermediate) 알림을 발사할지 여부.
    *
@@ -637,6 +662,54 @@ export type TripEndedReason =
   | 'expired'
   | 'push-unrecoverable'
   | 'la-stale-backstop';
+
+/**
+ * #2893 (진단 계측 only) — `cleanupTripWithLa`(liveActivity.ts) 호출처 식별자. 여러 호출처가
+ * 같은 `TripEndedReason`(예: `'destination-arrived'`)을 공유해 D1 `trip_events`(kind='trip-end')
+ * 만으로는 어느 코드 경로가 실제로 종료시켰는지 구분할 수 없었다(10/7 조기종료 재현 불가 — PR #2890
+ * "lock-active 분기와 lockless shift 분기 중 어느 쪽이 실행됐는지조차 코드만으로 결정 불가"). 발사/
+ * 판정 로직에는 관여하지 않는 순수 관측 식별자 — 호출처 추가 시 새 값을 데이터 주도로 늘린다.
+ *
+ * - `'trip-expired'` — `trip.expiresAt <= now`(cron 상단 만료 체크).
+ * - `'lifecycle-force-end'` — staged lifecycle backstop 9h+ force-end.
+ * - `'la-stale-backstop'` — LA push 5분 침묵 auto-end.
+ * - `'eta-missing-seoul-outage'` — lock-active eta-missing 임계 초과 + Seoul API outage.
+ * - `'lock-active-destination-gps-far-backstop'` — lock-active destination, gps-far 상태가
+ *   `DESTINATION_REACH_BACKSTOP_MS`를 초과해 강제 cleanup.
+ * - `'lock-active-destination'` — lock-active destination waypoint 정상 도착.
+ * - `'lock-active-waypoints-exhausted'` — lock-active 경로에서 `completeWaypointAdvance`가
+ *   waypoints 소진을 감지(transfer/intermediate advance 이후).
+ * - `'lockless-transfer-waypoints-exhausted'` — `runLocklessTransfer`가 advance 후
+ *   `completeWaypointAdvance`를 거쳐 waypoints 소진.
+ * - `'lockless-destination-waypoints-exhausted'` — `runLocklessDestination`이 advance 후
+ *   `completeWaypointAdvance`를 거쳐 waypoints 소진.
+ * - `'push-unrecoverable-reschedule'` — reschedule push가 unrecoverable APNs 에러로 폐기.
+ * - `'push-unrecoverable-lockless-intermediate'` — lockless intermediate push가 unrecoverable
+ *   APNs 에러로 폐기.
+ * - `'lockless-shift-empty'` — lockless intermediate shift 후 waypoints 소진(10/7 조기종료
+ *   재현 불가의 두 후보 중 하나).
+ * - `'http-delete'` — `DELETE /trips/:token`(사용자 명시 종료 또는 device 자체 cleanup).
+ * - `'http-destination-disembark-confirmed'` — `POST /trips/:token/boarding-confirm`
+ *   (action='disembarked')가 `destinationConfirmPendingSince` 유예 중인 trip을 즉시 완결(#2920/
+ *   #2923). waypoints가 자연 소진된 게 아니라 **사용자가 하차를 명시 확인**한 종료라
+ *   `lockless-destination-waypoints-exhausted`와 구분한다 — #2905가 측정해야 하는 "새 프롬프트가
+ *   실제 확정으로 전환됐는가"를 D1만으로 가리려면 이 값이 필요하다.
+ */
+export type TripEndPath =
+  | 'trip-expired'
+  | 'lifecycle-force-end'
+  | 'la-stale-backstop'
+  | 'eta-missing-seoul-outage'
+  | 'lock-active-destination-gps-far-backstop'
+  | 'lock-active-destination'
+  | 'lock-active-waypoints-exhausted'
+  | 'lockless-transfer-waypoints-exhausted'
+  | 'lockless-destination-waypoints-exhausted'
+  | 'push-unrecoverable-reschedule'
+  | 'push-unrecoverable-lockless-intermediate'
+  | 'lockless-shift-empty'
+  | 'http-delete'
+  | 'http-destination-disembark-confirmed';
 
 /**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의
