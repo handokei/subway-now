@@ -980,6 +980,25 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   describe('#2819 — payload.trainCode embed fallback', () => {
     const EMBEDDED_PAYLOAD = { ...PAYLOAD, trainCode: 'EMB1' };
 
+    // #2889 (S5) — embed 경로도 fresh BG 위치 모순이면 false를 반환해 기존 PENDING fallback으로
+    // 흐른다. 그 fallback도 동일 guard를 거치므로 최종적으로 lock 없이 graceful skip된다.
+    // (embed → pending 두 경로 모두 hasPositionContradiction을 거치므로 AsyncStorage.getItem이
+    // 2회 호출된다 — mockImplementation으로 두 호출 모두 동일 fresh 응답을 반환하도록 고정.)
+    it('#2889 — fresh BG 위치가 payload 역과 모순 → embed 시도 skip, PENDING fallback도 동일 모순으로 skip', async () => {
+      (findStationByNameAndLine as jest.Mock).mockImplementation((name: string, line: string) => {
+        if (line !== '2') return null;
+        if (name === '강남') return { id: 'S1', line: '2', name: '강남' };
+        if (name === '성수') return { id: 'S2', line: '2', name: '성수' };
+        return null;
+      });
+      mockBgLastStation('2', 0, '성수'); // embed 경로 1차 read.
+      mockBgLastStation('2', 0, '성수'); // pending fallback 경로 2차 read(동일 fresh 응답).
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
+      expect(createLockMock).not.toHaveBeenCalled();
+      expectAutoLockLogged('fallback-skipped-position-contradiction');
+    });
+
     it('arrivals null(재조회 실패) + payload.trainCode 있음 + station 매칭 성공 → 실 lock 생성(PENDING 아님)', async () => {
       (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
       const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
