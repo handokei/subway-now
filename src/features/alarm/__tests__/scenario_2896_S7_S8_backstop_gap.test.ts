@@ -131,7 +131,25 @@ describe('S8 — backend push 미수신: 로컬 폴백이 반드시 발사돼야
     expect(waypoints[0].kind).toBe('destination');
   });
 
-  it('outageConfirmed=true(backend 침묵 확인된 최선의 경우)에도 중간역 로컬 폴백은 0건 발사된다 (RED)', async () => {
+  // #2905 ([측정→결정] 매역 push 전달률 측정 후 폴백 여부 결정 + collapse-id 분리) —
+  // tasks/lessons.md L18 정책에 따라 `it.failing`으로 전환(사용자 2026-10-08 승인). 임의
+  // CI 우회가 아니라 "알려진 결함을 등록해 green 유지"하는 절차다.
+  //
+  // ⓐ 현재 동작: 중간역(station-passed) 로컬 폴백은 구조적으로 0건이다 —
+  //   `SafetyNetWaypoint.kind: AlarmLocalKind`(`alarmLocalAuthority.ts:29`)가
+  //   `'transfer' | 'destination'`만 가질 수 있어 `'station-passed'`가 타입에 아예 없다
+  //   (위 테스트의 tsc TS2367 실측과 동일 근거). outageConfirmed=true 최선의 경우에도
+  //   `registerSafetyNetAlarms`가 중간역에 대해 `scheduleNotificationAsync`를 호출하는
+  //   경로 자체가 없다.
+  // ⓑ 이건 ADR-026(2026-08-07, Decision 2/3)의 **의도된 설계**다 — 매역 사전예약 채널을
+  //   퇴역시키고 backend 단일 emitter로 수렴한 트레이드오프(`ADR-026-fire-authority-single-emitter.md:66`
+  //   "miss 위험: ... safetyNet 하나에 의존" — 그 safetyNet 자체가 애초에 중간역을 커버하지
+  //   않는다는 사실까지는 그 ADR이 명시하지 않았다). 코드만 고쳐서 해결할 수 있는 결함이
+  //   아니라, "중간역에 백스톱이 필요한가"부터 제품 결정이 선행돼야 한다.
+  // ⓒ 승격 조건: #2905의 실측(매역 push 전달률) 결과에 따라 폴백 신설이 결정되면, 이 테스트는
+  //   `it.failing` → 일반 `it`으로 승격하고(구현 PR과 짝), 결정이 "폴백 불필요"로 나면 이
+  //   테스트 자체를 스펙(expect 반대 방향)으로 재작성한다.
+  it.failing('outageConfirmed=true(backend 침묵 확인된 최선의 경우)에도 중간역 로컬 폴백은 0건 발사된다 (RED, 추적: #2905)', async () => {
     await registerSafetyNetAlarms({
       tripToken: 'TOKEN-S8',
       route: makeDirectRoute(5, '7'),
@@ -147,7 +165,7 @@ describe('S8 — backend push 미수신: 로컬 폴백이 반드시 발사돼야
     });
 
     // 스펙(S8): backend 미수신 시 로컬 폴백이 "반드시" 발사돼야 한다. 중간역에 대한 로컬
-    // 폴백은 safetyNetScheduler 구조상 존재하지 않아 0건 — RED.
+    // 폴백은 safetyNetScheduler 구조상 존재하지 않아 0건 — RED(`it.failing`이라 suite는 green).
     expect(intermediateFireCalls.length).toBeGreaterThan(0);
   });
 
