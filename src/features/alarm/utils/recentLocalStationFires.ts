@@ -18,6 +18,14 @@ const logger = createLogger('RecentLocalStationFires');
 /** backend alert push 실측 지연 35~51s(#2122) + 안전 마진. */
 export const RECENT_LOCAL_STATION_FIRE_TTL_MS = 2 * 60 * 1000;
 
+/**
+ * #2927 (ADR-040 2단계) — 로컬 FG 보조 발사(station-passed) 유예 길이. backend push 실측
+ * 지연(35~51s, #2122)보다 짧게 잡는다 — "둘 다 안 뜸(miss)"이 "거의 동시 도착"보다 나쁘기
+ * 때문(ADR-010: false positive와 miss는 동급). 초기값은 ADR-040이 제안한 범위(15~20s)의
+ * 하한 — #2905 전달률/지연 분포 측정 후 재조정 전제(이 상수 1곳만 바꾸면 됨).
+ */
+export const LOCAL_FIRE_DEFER_GRACE_MS = 15 * 1000;
+
 type FireMap = Record<string, number>;
 
 function keyOf(stationName: string, kind: string): string {

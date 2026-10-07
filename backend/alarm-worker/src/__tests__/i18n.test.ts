@@ -118,3 +118,99 @@ describe('t() — boardingPromptBody nextStation 있고 etaTimeStr null (#1895)'
     expect(t('zh').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 [6] → 마포구청方向');
   });
 });
+
+describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별 정보)', () => {
+  const ARGS_WITH_DEST = {
+    originStation: '뚝섬',
+    line: '2',
+    nextStation: '성수',
+    etaTimeStr: '06:46',
+    destinationStation: '성수',
+  };
+
+  it('locale=ko → "종착역행 · 출발역 [호선] → 다음역 방면 HH:MM 진입"', () => {
+    expect(t('ko').boardingPromptBody(ARGS_WITH_DEST)).toBe(
+      '성수행 · 뚝섬 [2] → 성수 방면 06:46 진입',
+    );
+  });
+
+  it('locale=en → "Bound for 종착역 · ..."', () => {
+    expect(
+      t('en').boardingPromptBody({
+        ...ARGS_WITH_DEST,
+        originStation: 'Ttukseom',
+        nextStation: 'Seongsu',
+        destinationStation: 'Seongsu',
+      }),
+    ).toBe('Bound for Seongsu · Ttukseom [2] → Seongsu bound 06:46 arrival');
+  });
+
+  it('locale=ja → "종착역行き · ..."', () => {
+    expect(
+      t('ja').boardingPromptBody({
+        ...ARGS_WITH_DEST,
+        originStation: 'ttukseom',
+        nextStation: 'seongsu',
+        destinationStation: 'seongsu',
+      }),
+    ).toBe('seongsu行き · ttukseom [2] → seongsu方面 06:46進入');
+  });
+
+  it('locale=zh → "开往종착역 · ..."', () => {
+    expect(
+      t('zh').boardingPromptBody({
+        ...ARGS_WITH_DEST,
+        originStation: 'ttukseom',
+        nextStation: 'seongsu',
+        destinationStation: 'seongsu',
+      }),
+    ).toBe('开往seongsu · ttukseom [2] → seongsu方向 06:46到达');
+  });
+
+  it.each([
+    ['ko' as SupportedLocale],
+    ['en' as SupportedLocale],
+    ['ja' as SupportedLocale],
+    ['zh' as SupportedLocale],
+  ])(
+    'locale=%s — destinationStation=null이면 기존 문구와 완전 동일(회귀 가드, #1740 omit 패턴)',
+    (lc) => {
+      const withNull = t(lc).boardingPromptBody({ ...ARGS_WITH_DEST, destinationStation: null });
+      const without = t(lc).boardingPromptBody({
+        originStation: ARGS_WITH_DEST.originStation,
+        line: ARGS_WITH_DEST.line,
+        nextStation: ARGS_WITH_DEST.nextStation,
+        etaTimeStr: ARGS_WITH_DEST.etaTimeStr,
+      });
+      expect(withNull).toBe(without);
+    },
+  );
+
+  it.each([
+    ['ko' as SupportedLocale],
+    ['en' as SupportedLocale],
+    ['ja' as SupportedLocale],
+    ['zh' as SupportedLocale],
+  ])('locale=%s — destinationStation 필드 생략(undefined)도 기존 문구와 동일', (lc) => {
+    const omitted = t(lc).boardingPromptBody({
+      originStation: ARGS_WITH_DEST.originStation,
+      line: ARGS_WITH_DEST.line,
+      nextStation: ARGS_WITH_DEST.nextStation,
+      etaTimeStr: ARGS_WITH_DEST.etaTimeStr,
+    });
+    const explicitNull = t(lc).boardingPromptBody({ ...ARGS_WITH_DEST, destinationStation: null });
+    expect(omitted).toBe(explicitNull);
+  });
+
+  it('nextStation=null(기존 fallback)이면 destinationStation이 있어도 "${line} · ${originStation}" 그대로', () => {
+    expect(
+      t('ko').boardingPromptBody({
+        originStation: '시청',
+        line: '2',
+        nextStation: null,
+        etaTimeStr: null,
+        destinationStation: '성수',
+      }),
+    ).toBe('2 · 시청');
+  });
+});

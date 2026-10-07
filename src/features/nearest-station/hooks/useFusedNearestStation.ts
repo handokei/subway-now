@@ -130,6 +130,7 @@ import {
   allowedLinesFromRoute,
   getStationById,
   getStationsOnLine,
+  terminusReachesTarget,
   type Route,
 } from '../../../shared/utils/stationRoute';
 
@@ -811,21 +812,25 @@ export function useFusedNearestStation(
 
   // #2696 (4번째 picker) — pickCandidateTrains에 lock leg의 진행 방향을 전달하기 위한 산출.
   // boardingLock.boardingStationId를 anchor로 resolveTripDirection을 호출해 'up'(상행/내선)|
-  // 'down'(하행/외선)을 얻고, realtimePosition API의 numeric updnLine 인코딩(실측 52쌍 확정:
-  // '0'=상행·내선=up, '1'=하행·외선=down — `memory/reference_seoul_updnline_format_differs.md`)
-  // 으로 변환한다. lock 없음/route 없음/방향 미해결(순환선 양끝점 등) 시 undefined — pickCandidateTrains가
-  // direction 미전달과 동일하게 다뤄 기존 동작(필터 미적용) 그대로 유지한다.
-  const lockedTrainUpdnLine = useMemo<0 | 1 | undefined>(() => {
-    if (!boardingLock || !routeContext?.route || !routeContext.destination) return undefined;
-    const direction = resolveTripDirection(
+  // 'down'(하행/외선)을 얻는다. lock 없음/route 없음/방향 미해결(순환선 양끝점 등) 시 null —
+  // #2914부터는 "필터 미적용"이 아니라 "후보 0건(trainCode 정확 일치만 예외)"으로 다룬다
+  // (양방향 병합 금지, 10/7 아침 pt=한양대 오매칭 재발 방지).
+  const lockedTripDirection = useMemo<'up' | 'down' | null>(() => {
+    if (!boardingLock || !routeContext?.route || !routeContext.destination) return null;
+    return resolveTripDirection(
       routeContext.route,
       routeContext.destination.name,
       boardingLock.boardingStationId,
     );
-    if (direction === 'up') return 0;
-    if (direction === 'down') return 1;
-    return undefined;
   }, [boardingLock, routeContext]);
+
+  // realtimePosition API의 numeric updnLine 인코딩(실측 52쌍 확정: '0'=상행·내선=up,
+  // '1'=하행·외선=down — `memory/reference_seoul_updnline_format_differs.md`)으로 변환.
+  const lockedTrainUpdnLine = useMemo<0 | 1 | undefined>(() => {
+    if (lockedTripDirection === 'up') return 0;
+    if (lockedTripDirection === 'down') return 1;
+    return undefined;
+  }, [lockedTripDirection]);
 
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
@@ -867,11 +872,19 @@ export function useFusedNearestStation(
         rejectCount >= CANDIDATE_REJECT_ANCHOR_EXPAND_THRESHOLD
           ? CANDIDATE_ANCHOR_WINDOW_EXPANDED
           : CANDIDATE_ANCHOR_WINDOW_DEFAULT;
+      // #2914 — lock이 이 line을 추적 중일 때만 "해석된 direction"이 의미를 갖는다. 다른
+      // line(또는 lock 없음)은 기존 동작 그대로(direction 미전달 → 필터 미적용).
+      const isLockLine = boardingLock != null && lp.line === boardingLock.boardingLine;
       const picked = pickCandidateTrains({
         positions: [lp],
         line: lp.line,
         anchorStationName: anchor,
         windowStations,
+        // #2914 (결함 1) — lock leg 진행 방향이 해석됐으면 enumeration 단계에서 바로 반대
+        // 방향을 배제한다(이전에는 미전달로 늘 merge). 방향 미해결(lockedTrainUpdnLine
+        // undefined)이면 undefined 그대로 전달 — 그 경우의 "0건" 강제는 아래 filteredPicked가
+        // 전담한다(lockedTrainCode exact match 예외는 pickCandidateTrains 자체의 bypass로 보존).
+        direction: isLockLine ? lockedTrainUpdnLine : undefined,
         // #2713 (ADR-039 1단계) — stale fix로 실측 열차 신호(trainCode 일치)를 거리로 오거부하는
         // 회귀의 실제 발생 지점(2026-09-18 라이드 7256/중곡 3030m reject 실측). stale이면
         // decisionUserLocation=null → distanceGateActive=false(가드 자체 비활성, graceful fallback).
@@ -906,37 +919,82 @@ export function useFusedNearestStation(
             distanceKm: info.distanceKm,
           });
         },
+        // #2914 (결함 1) — enumeration 단계에서 direction 불일치로 제외된 candidate를
+        // V/X 관측(candidateRejectBuffer)에 기존 'candidate-opposite-direction' reason으로
+        // 그대로 올린다 — #2696이 만든 사후 필터와 동일 reason이라 DebugModal 변경 불필요.
+        onCandidateDirectionReject: (info) => {
+          pushCandidateRejectEntry({
+            kind: 'candidate-reject',
+            ts: Date.now(),
+            reason: 'candidate-opposite-direction',
+            trainNo: info.trainNo,
+            stationName: info.stationName,
+            line: info.line,
+          });
+        },
       });
       // #1748 — 이번 cycle에 후보가 채택됐으면(reject 없이 통과) 해당 line 카운트 리셋.
       if (picked.length > 0) {
         consecutiveRejectByLineRef.current.delete(lp.line);
       }
-      // #2696 (4번째 picker) — lock이 추적 중인 line에서, lock.trainCode와 다른 trainNo인데
-      // 방향(updnLine)이 lock leg의 진행 방향과 다른 candidate(반대 방향 열차)를 제외한다.
-      // lock.trainCode와 일치하는 candidate는 절대 제외하지 않는다 — pickCandidateTrains의
-      // arc bypass(line 165-169)와 동일 정신: 실측 열차 신호(trainCode 일치)는 신뢰하고,
-      // "방향 불일치"로 오거부되지 않게 한다(fixture/API 순간 noise로 자기 자신의 updnLine이
-      // 흔들려도 트래킹이 끊기지 않아야 함). 다른 line/lock 없음/방향 미해결(lockedTrainUpdnLine
-      // undefined)이면 필터 미적용(기존 동작 그대로, 과차단 회귀 가드).
-      const filteredPicked =
-        boardingLock && lp.line === boardingLock.boardingLine && lockedTrainUpdnLine !== undefined
-          ? picked.filter((c) => {
-              const keep = c.trainNo === boardingLock.trainCode || c.direction === lockedTrainUpdnLine;
-              if (!keep) {
-                // #2696 — DebugModal/candidateRejectBuffer로 가시화(V/X). 기존 candidate-line/
-                // candidate-distance와 같은 buffer 재사용 — 신규 인프라 없이 관찰 가능.
-                pushCandidateRejectEntry({
-                  kind: 'candidate-reject',
-                  ts: Date.now(),
-                  reason: 'candidate-opposite-direction',
-                  trainNo: c.trainNo,
-                  stationName: c.currentStationName,
-                  line: c.line,
-                });
-              }
-              return keep;
-            })
-          : picked;
+      // #2696 (4번째 picker) + #2914 (결함 1/2) — lock이 추적 중인 line에서 "탑승 가능 후보"
+      // 불변식(#2696 소유)을 position-train enumeration에도 적용한다. lock.trainCode와 정확히
+      // 일치하는 candidate는 어떤 조건에서도 제외하지 않는다(거부 케이스 ⓑ — 실측 열차 신호는
+      // 신뢰). 그 외 candidate는 순서대로: ① route/destination이 있는데도 방향 해석이
+      // 실패(순환선 양끝점 등)하면 전부 제외(거부 케이스 ⓒ — 양방향 병합 금지). route/destination
+      // 자체가 없으면(#671 — 순수 line-equality 환승 가드, 방향 개념이 적용될 트립 컨텍스트가
+      // 아님) 기존 동작 그대로(필터 미적용, 과차단 회귀 가드 — 거부 케이스 ⓐ) ② 반대 방향
+      // (enumeration 단계에서 이미 걸러지지만 이중 방어로 재확인) ③ 조기 종착(결함 2 —
+      // terminalStationName이 사용자 목적지에 도달 못 하면 제외, destination/terminal 정보가
+      // 없으면 판정 불가로 보수적 통과 — 거부 케이스 ⓐ·ⓓ: 과차단·크래시 금지).
+      const directionResolutionAttempted =
+        boardingLock != null && routeContext?.route != null && routeContext.destination != null;
+      const filteredPicked = !isLockLine
+        ? picked
+        : picked.filter((c) => {
+            if (c.trainNo === boardingLock?.trainCode) return true;
+            if (lockedTrainUpdnLine === undefined) {
+              if (!directionResolutionAttempted) return true;
+              pushCandidateRejectEntry({
+                kind: 'candidate-reject',
+                ts: Date.now(),
+                reason: 'candidate-direction-unresolved',
+                trainNo: c.trainNo,
+                stationName: c.currentStationName,
+                line: c.line,
+              });
+              return false;
+            }
+            // #2914 (중복 정리) — 반대 방향 candidate는 이제 enumeration 단계
+            // (`onCandidateDirectionReject`)에서 trainCode-bypass까지 동일하게 걸러지므로,
+            // lockedTrainUpdnLine이 resolved인 이 분기에 도달하는 candidate는 이미 같은
+            // 방향(또는 트레인코드 일치로 위에서 return)뿐이다. #2696의 사후 필터 자체(이
+            // picked.filter 블록)는 유지하되, 중복된 반대방향 재검사는 제거했다.
+            if (
+              lockedTripDirection != null &&
+              c.terminalStationName &&
+              routeContext?.destination &&
+              !terminusReachesTarget(
+                c.line,
+                lockedTripDirection,
+                c.terminalStationName,
+                routeContext.destination.name,
+              )
+            ) {
+              // #2914 (결함 2) — 조기 종착 열차. V/X는 candidate-opposite-direction과 같은
+              // candidateRejectBuffer를 재사용(신규 인프라 없이 관찰 가능).
+              pushCandidateRejectEntry({
+                kind: 'candidate-reject',
+                ts: Date.now(),
+                reason: 'candidate-early-terminus',
+                trainNo: c.trainNo,
+                stationName: c.currentStationName,
+                line: c.line,
+              });
+              return false;
+            }
+            return true;
+          });
       out.push(...filteredPicked);
     }
     // #2594 (P5 리뷰 fix) — memo 본문에서는 ref에만 저장, record는 아래 effect가 수행.

@@ -197,7 +197,14 @@ export type AlarmLogSource =
   // 9/21 코멘트) — 다음 라이드에서 이 로그와 실제 POST /trips CALL 횟수를 1:1 대조해 완전
   // 확정한다. outcome은 항상 'received'(비알람 진단 stamp) — hasActiveTrip은 stationName
   // 슬롯에 인코딩(logSubsurfaceRegisterTransition 참고, 리뷰 2라운드 항목 4).
-  | 'subsurface-register-confirmed';
+  | 'subsurface-register-confirmed'
+  // #2927 (ADR-040 2단계) — 로컬 FG 보조 발사(station-passed)를 유예 타이머 뒤로 미뤘다가, 유예
+  // 만료 시점까지도 backend push가 표시되지 않았을 때(hasRecentLocalStationFire=false 유지)
+  // 실제로 발사한 1건. 'fg'(즉시 발사, flag OFF)와 구분해 #2905 전달률/지연 분포 측정에서
+  // "대리 발사가 실제로 발생한 비율"을 독립적으로 집계할 수 있게 한다. fireFgAuxStationPassedNotification이
+  // 내부 마커 재확인(#2902)으로 스킵(false 반환)한 케이스는 이 source로 적재되지 않는다
+  // (스킵=미발사를 발사로 오집계하지 않기 위해).
+  | 'device-proxy-fired';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -1935,6 +1942,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'arrival-auto-clear-fired': null,
   // #2699 — subsurface 확정 전환 계측은 silent push와 무관한 별도 채널.
   'subsurface-register-confirmed': null,
+  // #2927 — 유예 타이머 후 대리 발사는 silent push와 무관한 별도 채널(FG 로컬 알림).
+  'device-proxy-fired': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -2027,6 +2036,9 @@ export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   // #2699 — subsurface 확정 전환은 backend threshold 조정 신호이지 사용자에게 노출되는
   // station-passed/transfer/destination 알람이 아니다. fire 분모 오염 방지 위해 제외.
   'subsurface-register-confirmed': false,
+  // #2927 — 유예 만료 후 실제 발사된 station-passed 로컬 배너는 'fg'/'fg-arvlcd'와 동등하게
+  // 사용자에게 실제 노출되는 알람이므로 fire 분모에 포함.
+  'device-proxy-fired': true,
 };
 
 /**

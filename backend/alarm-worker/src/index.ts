@@ -20,6 +20,7 @@ import {
   attemptBoardingAnchorResolution,
   buildLockFromKnownTrainCode,
   resolveActiveLegOrigin,
+  type BoardingResolveNoneReason,
   type BoardingResolveOutcome,
 } from './boardingAnchorResolver';
 import {
@@ -2160,6 +2161,9 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   const now = Date.now();
   let lockState: 'leg1' | 'leg2' | 'released' | 'none' = 'none';
   let resolveOutcome: BoardingResolveOutcome | undefined;
+  // #2893 — outcome:'none'이 3개 독립 원인(후보0/subwayId 매핑 실패/legSegment 산출 실패)을
+  // 한 값으로 뭉개 D1만으로 원인 구분이 불가했다(PR #2890 재현 시 수작업 코드 추적 필요).
+  let resolveNoneReason: BoardingResolveNoneReason | undefined;
   // #2739 요구사항 4 — anchor 출처(D1 meta용). activeOrigin(currentLegAnchor/promptDisplay)이
   // 있으면 그 출처, 없고 walk-gate도 아니면 탭이 시도된 것 — resolve 성공 여부와 무관하게
   // "무엇을 근거로 시도했는지"를 남긴다(invalid-route 거부도 anchorSource:'tap'으로 남는다).
@@ -2198,8 +2202,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           { allowLegTransfer: true, tapAnchor: { boardingStation: payload.station, line: payload.line } },
           // ADR-037 D2b (#2535, 진단 계측 only) — resolve outcome 관측. lock 판정/생성 자체는
           // anchorLock 반환값 그대로 사용 — 이 콜백은 D1 append 용 부가 관측이다.
-          (outcome) => {
+          // #2893 — outcome==='none'일 때만 detail.noneReason이 채워진다(세부 사유 D1 관측).
+          (outcome, detail) => {
             resolveOutcome = outcome;
+            resolveNoneReason = detail?.noneReason;
           },
           // #2739 — 탭이 leg 2+(환승 지점) 경유로 채택되면 waypoints가 그 leg부터 다시 시작하도록
           // advance 정보를 받는다. 아래에서 lock과 함께 반영해야 다음 cron이 올바른 정거장
@@ -2280,7 +2286,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(token),
     kind: 'boarding-confirm-result',
-    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome, anchorSource),
+    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome, anchorSource, resolveNoneReason),
   });
   return c.json({ ok: true, lockState });
 });
@@ -2293,19 +2299,26 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
  * #2739 요구사항 4 — `anchorSource`(`'tap' | 'currentLegAnchor' | 'promptDisplay'`)도 같은 규칙
  * (undefined면 생략)으로 남긴다. resolve를 시도조차 안 한 경로(이미 lock 활성/disembarked/
  * not-boarded/walk-gated)는 anchorSource도 undefined다.
+ *
+ * #2893 — `noneReason`은 `resolveOutcome==='none'`일 때만 meta에 싣는다(다른 outcome에 섞여
+ * 들어오면 무시 — 호출자 실수 방어). outcome:'none'의 3개 독립 원인(후보0/subwayId 매핑 실패/
+ * legSegment 산출 실패)을 D1만으로 구분하기 위한 계측 전용 필드.
  */
 export function buildBoardingConfirmEventMeta(
   lockState: 'leg1' | 'leg2' | 'released' | 'none',
   resolveOutcome: BoardingResolveOutcome | undefined,
   anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined,
+  noneReason?: BoardingResolveNoneReason,
 ): {
   lockState: 'leg1' | 'leg2' | 'released' | 'none';
   outcome?: BoardingResolveOutcome;
   anchorSource?: 'tap' | 'currentLegAnchor' | 'promptDisplay';
+  noneReason?: BoardingResolveNoneReason;
 } {
   return {
     lockState,
     ...(resolveOutcome !== undefined ? { outcome: resolveOutcome } : {}),
+    ...(resolveOutcome === 'none' && noneReason !== undefined ? { noneReason } : {}),
     ...(anchorSource !== undefined ? { anchorSource } : {}),
   };
 }
@@ -3359,7 +3372,8 @@ app.delete('/trips/:token', async (c) => {
     makeLaStats(),
     Date.now(),
     createJsonLogger(),
-    { metricsReason },
+    // #2893 — 호출처 식별자. 이 엔드포인트가 유일한 HTTP DELETE 경로라 고정 상수로 정확하다.
+    { metricsReason, endPath: 'http-delete' },
   );
   return c.json({ ok: true, deleted: true });
 });

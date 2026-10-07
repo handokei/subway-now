@@ -43,4 +43,10 @@ export interface CandidateTrain {
   currentStationName: string;
   trainStatus: number;
   receivedAtMs: number;
+  /**
+   * #2914 — 종착역 이름. `TrainPosition.terminalStationName`을 보존한다(이전에는
+   * `buildCandidate`가 드롭해 이 레이어에서 조기종착 판정이 구조적으로 불가능했다).
+   * 레거시 입력(필드 없음) 호환을 위해 optional.
+   */
+  terminalStationName?: string;
 }

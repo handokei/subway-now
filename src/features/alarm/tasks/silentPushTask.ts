@@ -1387,12 +1387,14 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     // scheduledAlarmReceiver의 presched 실발사, useStationAlarm의 device 로컬 발사)에서만 호출돼야
     // 하는 계약 — 이 no-op 경로는 그 계약을 어겼으므로 호출을 제거한다.
     const localKind = mapBackendKindToLocalFireKind(payload.kind);
-    // istanbul ignore next -- 이 지점에 도달하는 payload.kind는 이미 위에서 reschedule/trip-ended/
-    // boarding-prompt/sleep-alarm-companion/missing-kind 분기로 전부 걸러진 뒤라
-    // 'transfer'|'destination'|'intermediate' 3종뿐이고, mapBackendKindToLocalFireKind는 이 3종을
-    // 전부 non-null로 매핑한다(stationNotification.ts BACKEND_PUSH_KIND_TO_LOCAL_FIRE_KIND) — else
-    // 분기는 두 소스가 서로 어긋나는 회귀가 생기기 전까지는 도달 불가능한 방어 코드.
-    if (localKind === 'transfer' || localKind === 'destination' || localKind === 'station-passed') {
+    // #2916 (ADR-040 1단계 D) — 'station-passed'(intermediate kind) 분기를 제거했다.
+    // AlarmLocalKind('transfer'|'destination', alarmLocalAuthority.ts:29)에는 'station-passed'가
+    // 없고, ADR-026 Decision 2(stationPrescheduler.ts 헤더 주석)로 station-passed 사전예약 등록
+    // 함수(`registerPrescheduledStationAlarms`) 자체가 삭제돼 이 kind의 presched 알림은 애초에
+    // 생성되지 않는다 — cancelPrescheduledByStationKind(station, 'station-passed')는 항상
+    // targets.length===0인 no-op 조회였다(없는 것을 매번 취소). transfer/destination은 여전히
+    // 실제 presched 알림이 존재할 수 있으므로 무변경.
+    if (localKind === 'transfer' || localKind === 'destination') {
       await cancelPrescheduledByStationKind(payload.nextWaypoint, localKind).catch((e: unknown) => {
         logger.warn('presched cancel-on-remote-arrival 실패:', e);
       });

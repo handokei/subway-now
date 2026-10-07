@@ -2,14 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { ARRIVAL_CODE } from '../alarm';
 import {
   boardingPromptDedupKey,
+  canBypassRepeatIntervalForTrainTransition,
+  canFireForTrainCode,
   decideBoardingPromptFire,
   DISMISS_SILENCE_MS,
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
+  isExactDuplicateFire,
   markPromptFired,
   markPromptSilenced,
+  MAX_FIRES_PER_TRAIN_CODE,
   pickAutoTrainCode,
+  trainCodeFireCount,
 } from '../boardingPrompt';
 import type { ArrivalEntry } from '../seoul';
 
@@ -103,10 +108,19 @@ describe('markPromptFired / markPromptSilenced', () => {
 
 // #2880 — selectedTrainCode=null dedup fail-open fix. firedTrainCodes dedup이 trainCode를
 // 특정할 수 없을 때도(null) 작동하도록 phase 기반 fallback 키를 반환한다.
+// #2898 — selectedTrainCode가 non-null이어도 phase(decision)를 포함하도록 변경(아래 신규
+// describe 참고) — approaching→arrival 재확인(스펙 ①)이 동일 trainCode라는 이유만으로
+// dedup에 막히지 않으려면 phase까지 키에 포함해야 한다.
 describe('boardingPromptDedupKey (#2880)', () => {
-  it('selectedTrainCode가 non-null이면 그 값 그대로 반환(기존 동작 무변경)', () => {
-    expect(boardingPromptDedupKey('U1', 'approaching')).toBe('U1');
-    expect(boardingPromptDedupKey('U1', 'imminent')).toBe('U1');
+  it('selectedTrainCode가 non-null이면 "trainCode:decision" 형식(#2898 — phase도 키에 포함)', () => {
+    expect(boardingPromptDedupKey('U1', 'approaching')).toBe('U1:approaching');
+    expect(boardingPromptDedupKey('U1', 'imminent')).toBe('U1:imminent');
+  });
+
+  it('#2898 — 같은 trainCode라도 phase가 다르면 다른 키(재발사 허용의 입력)', () => {
+    expect(boardingPromptDedupKey('U1', 'approaching')).not.toBe(
+      boardingPromptDedupKey('U1', 'imminent'),
+    );
   });
 
   it('selectedTrainCode=null이면 phase(decision)를 포함한 fallback 키 반환', () => {
@@ -121,6 +135,121 @@ describe('boardingPromptDedupKey (#2880)', () => {
     expect(boardingPromptDedupKey(null, 'approaching')).not.toBe(
       boardingPromptDedupKey(null, 'imminent'),
     );
+  });
+});
+
+// #2898 — 같은 trainCode에 대해 phase 무관 최대 2회(approaching+arrival)까지만 허용하는 하드 캡.
+describe('trainCodeFireCount / canFireForTrainCode (#2898)', () => {
+  it('firedTrainCodes가 비어있으면 count=0, canFire=true', () => {
+    expect(trainCodeFireCount(undefined, 'U1')).toBe(0);
+    expect(canFireForTrainCode(undefined, 'U1')).toBe(true);
+  });
+
+  it('같은 trainCode의 phase별 키가 섞여 있어도 trainCode 기준으로 센다', () => {
+    const firedTrainCodes = ['U1:approaching', 'U2:imminent'];
+    expect(trainCodeFireCount(firedTrainCodes, 'U1')).toBe(1);
+    expect(trainCodeFireCount(firedTrainCodes, 'U2')).toBe(1);
+    expect(trainCodeFireCount(firedTrainCodes, 'U3')).toBe(0);
+  });
+
+  it(`MAX_FIRES_PER_TRAIN_CODE(${MAX_FIRES_PER_TRAIN_CODE}) 도달 시 canFireForTrainCode=false`, () => {
+    const firedTrainCodes = ['U1:approaching', 'U1:imminent'];
+    expect(trainCodeFireCount(firedTrainCodes, 'U1')).toBe(MAX_FIRES_PER_TRAIN_CODE);
+    expect(canFireForTrainCode(firedTrainCodes, 'U1')).toBe(false);
+  });
+
+  it('selectedTrainCode=null이면 null-trainCode 토큰으로 센다(#2880 fallback과 정합)', () => {
+    const firedTrainCodes = ['null-trainCode:approaching'];
+    expect(trainCodeFireCount(firedTrainCodes, null)).toBe(1);
+    expect(canFireForTrainCode(firedTrainCodes, null)).toBe(true);
+  });
+
+  // #2898 배포 경계 — 이 fix 이전에는 dedup 키가 phase 없이 trainCode 그대로였다(':' 없음).
+  // 배포 시점에 in-flight인 trip의 firedTrainCodes가 구형식으로 남아있을 수 있으므로, ':' 없는
+  // 키도 트레인코드 전체를 토큰으로 안전하게 인식해야 한다(하위 호환).
+  it('구형식 키(":" 없는 bare trainCode)도 토큰 전체로 안전하게 인식한다(배포 경계 하위 호환)', () => {
+    const firedTrainCodes = ['U1'];
+    expect(trainCodeFireCount(firedTrainCodes, 'U1')).toBe(1);
+    expect(canFireForTrainCode(firedTrainCodes, 'U1')).toBe(true);
+  });
+});
+
+// #2898 — 'fired-too-recently'(5분 간격) 소프트 블록의 same-train bypass 최종 판정.
+describe('canBypassRepeatIntervalForTrainTransition (#2898)', () => {
+  it('firedTrainCodes가 비어있으면(발사 이력 없음) bypass 불가(false) — 호출 전제 위반 방어', () => {
+    expect(canBypassRepeatIntervalForTrainTransition(undefined, 'U1')).toBe(false);
+    expect(canBypassRepeatIntervalForTrainTransition([], 'U1')).toBe(false);
+  });
+
+  it('스펙 ① — 같은 trainCode(U1) 재확인, 직전 발사 1회뿐(소진 전) → bypass 허용', () => {
+    expect(canBypassRepeatIntervalForTrainTransition(['U1:approaching'], 'U1')).toBe(true);
+  });
+
+  it('스펙 ③(거부 ⓑ) — 같은 trainCode(U1)가 이미 2회(소진) → bypass 거부', () => {
+    expect(
+      canBypassRepeatIntervalForTrainTransition(['U1:approaching', 'U1:imminent'], 'U1'),
+    ).toBe(false);
+  });
+
+  it('스펙 ④ — 직전 trainCode(U1)가 2회 소진된 뒤 다른 trainCode(U3) → bypass 허용(새 cycle)', () => {
+    expect(
+      canBypassRepeatIntervalForTrainTransition(['U1:approaching', 'U1:imminent'], 'U3'),
+    ).toBe(true);
+  });
+
+  it('거부 케이스 ⓒ — 직전 trainCode(U1)가 1회뿐(소진 전)인데 다른 trainCode(U5) → bypass 거부(단배차 스팸 방지)', () => {
+    expect(canBypassRepeatIntervalForTrainTransition(['U1:approaching'], 'U5')).toBe(false);
+  });
+
+  it('거부 케이스 ⓓ — selectedTrainCode=null이어도 동일 로직(null-trainCode 토큰)으로 판정', () => {
+    expect(
+      canBypassRepeatIntervalForTrainTransition(['null-trainCode:approaching'], null),
+    ).toBe(true);
+    expect(
+      canBypassRepeatIntervalForTrainTransition(['U1:approaching'], null),
+    ).toBe(false);
+  });
+
+  // #2898 배포 경계 — 구형식 키(':' 없음)가 마지막 발사로 남아있어도 토큰 비교가 안전하게
+  // 동작한다(trainCodeFireCount와 동일 하위 호환).
+  it('구형식 마지막 키(":" 없음)도 토큰 전체로 비교한다(배포 경계 하위 호환)', () => {
+    expect(canBypassRepeatIntervalForTrainTransition(['U1'], 'U1')).toBe(true);
+  });
+});
+
+// #2898 배포 경계 하위호환 — fix 배포 순간 in-flight였던 trip은 firedTrainCodes에 구형식
+// (':' 없는 bare trainCode, phase 정보 없음) 항목을 가질 수 있다. exact-duplicate 판정이
+// 새 dedupKey(`trainCode:decision`)로만 정확매치하면 그 항목을 못 알아봐 똑같은 phase를
+// 다시 관측해도(=진행 없음, 진짜 중복) 재발사를 허용할 위험이 있다 — 구형식을 만나면
+// trainCode만으로 보수적으로 "중복"으로 간주해 그 위험을 없앤다.
+describe('isExactDuplicateFire (#2898, 배포 경계 하위호환)', () => {
+  it('firedTrainCodes가 비어있으면 중복 아님', () => {
+    expect(isExactDuplicateFire(undefined, 'U1', 'imminent')).toBe(false);
+    expect(isExactDuplicateFire([], 'U1', 'imminent')).toBe(false);
+  });
+
+  it('신형식 — 같은 trainCode라도 phase가 다르면 중복 아님(재확인 허용, 스펙 ①)', () => {
+    expect(isExactDuplicateFire(['U1:approaching'], 'U1', 'imminent')).toBe(false);
+  });
+
+  it('신형식 — trainCode+phase가 완전히 같으면 중복', () => {
+    expect(isExactDuplicateFire(['U1:imminent'], 'U1', 'imminent')).toBe(true);
+  });
+
+  it('구형식(":" 없음) — phase 무관 trainCode 일치만으로 보수적으로 중복 처리(배포 경계)', () => {
+    // 구코드는 trainCode만 보고 차단했다 — 구형식 항목을 만나면 phase가 뭐였는지 알 수 없으니
+    // 지금 phase와 무관하게 "이미 이 trainCode로 쐈다"로 보고 차단한다(과차단이 안전).
+    expect(isExactDuplicateFire(['U1'], 'U1', 'imminent')).toBe(true);
+    expect(isExactDuplicateFire(['U1'], 'U1', 'approaching')).toBe(true);
+  });
+
+  it('구형식(":" 없음) — trainCode 자체가 다르면 중복 아님', () => {
+    expect(isExactDuplicateFire(['U1'], 'U2', 'imminent')).toBe(false);
+  });
+
+  it('selectedTrainCode=null — null-trainCode 토큰 기준으로 신/구형식 동일 로직 적용', () => {
+    expect(isExactDuplicateFire(['null-trainCode:imminent'], null, 'imminent')).toBe(true);
+    expect(isExactDuplicateFire(['null-trainCode:approaching'], null, 'imminent')).toBe(false);
   });
 });
 

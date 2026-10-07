@@ -188,8 +188,18 @@ export type IntermediateRouteBranch = 'lockless' | 'no-intent';
  * 경로는 3값 전부, `lock-active`(`runTrainCodeTracking`) 경로는 `no-arvlcd`/`advanced` 2값만 쓴다
  * (lock 활성 경로는 arvlCd ENTERING/ARRIVED 확정 시에만 advance를 시도하므로 `not-fires` 중간
  * 상태가 없다).
+ *
+ * #2921 — `ambiguous-candidates`(direction-필터링된 pool에 서로 다른 trainCode의 fire
+ * 신호가 2개+, 임의 선택 거부) 추가 — `lockless` 경로 전용(leg 전진 후보 제한은 lock-active
+ * 경로를 건드리지 않는다, 거부 케이스 ⓔ). 시간창 게이트(거부 케이스 ⓑ)는
+ * `runLocklessDestination`에만 적용되고 그 함수는 이 진단 표식을 쓰지 않는다(destination은
+ * `stats.legAdvanceWindowBlocked`로만 관측 — 아래 참고).
  */
-export type TransferAdvanceOutcome = 'no-arvlcd' | 'not-fires' | 'advanced';
+export type TransferAdvanceOutcome =
+  | 'no-arvlcd'
+  | 'not-fires'
+  | 'advanced'
+  | 'ambiguous-candidates';
 
 /** `transfer-advance` 이벤트가 어느 코드 경로에서 관측됐는지(데이터 주도). */
 export type TransferAdvancePath = 'lockless' | 'lock-active';

@@ -33,10 +33,13 @@ import { CRON_INTERVAL_MS } from './cronConstants';
 import {
   type BoardingFireDecision,
   boardingPromptDedupKey,
+  canBypassRepeatIntervalForTrainTransition,
+  canFireForTrainCode,
   decideBoardingPromptFire,
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
+  isExactDuplicateFire,
   isNearOrigin,
   markPromptFired,
   pickAutoTrainCode,
@@ -57,6 +60,7 @@ import {
   buildLiveActivityContentState,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
+  fireTripEndedAlertPush,
   resolveCurrentStationName,
   type LiveActivityStats,
 } from './liveActivity';
@@ -130,6 +134,7 @@ import type {
   StationPhaseState,
   TrainReconfirmAlertPushPayload,
   Trip,
+  TripEndPath,
   Waypoint,
 } from './types';
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
@@ -922,6 +927,36 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   locklessDestinationAdvanced: number;
   /**
+   * #2900 (옵션 C, 재설계) — lockless destination waypoint가 arvlCd 도착 신호를 받았지만
+   * 탑승 증거(lock 활성/lockEverAttached/boardingCommitted/legResolveStreak)가 전혀 없어
+   * **실제 종료만** 유예하기 시작한 횟수(trip당 최초 관측 1회 —
+   * `destinationConfirmPendingSince` 최초 stamp 시점에만 증가). 도착 알림(trip-ended alert)
+   * 자체는 이 분기에서도 즉시 발사된다(거부 케이스 ⓕ) — 이 카운터는 "알림은 갔지만 backend
+   * trip 삭제는 미룬" 횟수다. 10/7 아침 사고(건대 환승 중 다른 열차 신호로 조기 종료, id154)가
+   * 이 분기로 흡수됐다는 증거 — 0건이면 모든 destination 신호가 증거 보유 상태에서만 왔다는 뜻.
+   */
+  destinationConfirmFired: number;
+  /**
+   * #2900 — 위 유예가 `DESTINATION_CONFIRM_TIMEOUT_MS` 경과 후 실제 종료(KV 삭제/D1
+   * trip-end/LA dismissal)로 수렴한 횟수. 거부 케이스 ⓒ(영구 잔존 금지)가 실제로 지켜지는지의
+   * 증거 — 도착 알림은 이미 `destinationConfirmFired` 시점에 발사됐으므로 이 값은 순수하게
+   * "유예 종료"만 집계한다.
+   */
+  destinationConfirmTimedOut: number;
+  /**
+   * #2921 — lockless leg 전진(transfer/destination/intermediate) 후보 제한이 "leg가 막
+   * 시작돼 사용자가 아직 탑승할 수 없었던 시간 창"(`legBoardingEligibleAt` 도보 게이트,
+   * #2511/#2515와 동일 신호 재사용)에서 advance를 보류한 횟수. 10/7 사고(leg-resolve pending
+   * 3.3초 뒤 destination-arrived)가 이 분기로 흡수됐다는 증거 — 0건이면 모든 leg 전진이
+   * 도보 창이 열린 뒤에만 일어났다는 뜻.
+   */
+  legAdvanceWindowBlocked: number;
+  /**
+   * #2921 — direction-필터링된 pool 안에서 "곧 도착"(ENTERING/ARRIVED) 신호를 내는 서로 다른
+   * trainCode가 2개 이상이라 임의 선택을 거부하고 advance를 보류한 횟수(거부 케이스 ⓒ).
+   */
+  legAdvanceAmbiguous: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -1358,6 +1393,10 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     hopEndPromptSkippedNoOptIn: 0,
     locklessTransferAdvanced: 0,
     locklessDestinationAdvanced: 0,
+    destinationConfirmFired: 0,
+    destinationConfirmTimedOut: 0,
+    legAdvanceWindowBlocked: 0,
+    legAdvanceAmbiguous: 0,
     legBoardingPromptFired: 0,
     legBoardingPromptSkippedWalking: 0,
     legBoardingPromptBlocked: 0,
@@ -1548,7 +1587,10 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     if (trip.expiresAt <= now) {
       // #586 D — trip 만료 시 활성 LA가 남아 있으면 dismissal push로 정리하고 KV에서 제거.
       // #868 — 클라 state sync용 trip-ended silent push도 함께 발사 (reason=expired).
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: 'expired',
+        endPath: 'trip-expired',
+      });
       continue;
     }
 
@@ -1568,7 +1610,10 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         // ADR-023: backend는 이 값으로 발사 결정 X (log 전용).
         sleepMode: trip.sleepModeEnabled,
       });
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'expired' });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: 'expired',
+        endPath: 'lifecycle-force-end',
+      });
       continue;
     }
     if (lifecyclePhase === 'silence') {
@@ -1817,6 +1862,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           });
           await cleanupTripWithLa(trip, env, deps, stats, now, log, {
             reason: 'la-stale-backstop',
+            endPath: 'la-stale-backstop',
           });
           continue;
         }
@@ -3526,6 +3572,11 @@ async function recordFireAttempt(
   // 구분하기 위한 식별자. 생략(기존 arvlcd-fire call site)은 meta에 필드 자체를 싣지 않아
   // 기존 row 형태 불변 — 새 kind를 만들지 않고 기존 kind='cron-fire-attempt'를 그대로 쓴다.
   path?: string,
+  // #2893 — push 발사 시도(성공/실패)에 이미 생성된 pushId를 함께 적재해, device 수신 push와
+  // D1 cron-fire-attempt 행을 사후 1:1 대조할 수 있게 한다(10/7 "정체불명 push 2건"이 이 필드
+  // 부재로 영구 판정 불가였다). push 자체가 시도되지 않은 gate-skip 호출처(skipped-reason/
+  // skipped-by-shift)는 pushId가 없는 것이 의미상 정확 — 생략 시 meta에 필드 자체를 싣지 않는다.
+  pushId?: string,
 ): Promise<void> {
   await recordTripEvent(
     env.DB,
@@ -3540,6 +3591,7 @@ async function recordFireAttempt(
         reason,
         ...(midCycle ? { midCycle: true } : {}),
         ...(path !== undefined ? { path } : {}),
+        ...(pushId !== undefined ? { pushId } : {}),
       },
     },
     now,
@@ -3811,7 +3863,10 @@ export async function fireArvlCdStationPush(
         tripToken: trip.token,
         sound: stationNotifSound.sound,
         interruptionLevel: stationNotifSound.interruptionLevel,
-        collapseId: stationNotifCollapseId(trip.token),
+        // #2909 (ADR-040 0단계) — 역 단위 collapse. trip 단위였던 과거엔 같은 trip의
+        // 역A 배너가 역B 배너에 덮여 알림센터에서 사라졌다(10/7 사용자 피드백). station을
+        // 명시해 :4241(sync catch-up)과 동일하게 역마다 배너가 쌓이도록 통일한다.
+        collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
         expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
         data: buildSilentPushData(arvlcdPayload),
         contentAvailable: true,
@@ -3868,7 +3923,8 @@ export async function fireArvlCdStationPush(
       env.DB,
     );
     // #2343 — fire-attempt(실패) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
-    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason);
+    // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return { dirty };
   }
@@ -3924,7 +3980,8 @@ export async function fireArvlCdStationPush(
     staleMs: ssotForFireGate?.lastAdvanceAt ? now - ssotForFireGate.lastAdvanceAt : undefined,
   });
   // #2343 — fire-attempt(성공) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
-  await recordFireAttempt(env, trip, waypoint, 'sent', now);
+  // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId);
   return { dirty };
 }
 
@@ -4024,9 +4081,10 @@ export async function runMidCycleFireOnly(
             tripToken: trip.token,
             sound: soundFields.sound,
             interruptionLevel: soundFields.interruptionLevel,
-            // #2615 — 기존 arvlcd 발사 경로와 동일 collapse-id. 다음 정각 cron이 같은 역을
-            // 또 쏴도 iOS가 알림센터에서 최신으로 교체 — 사용자에겐 항상 1개.
-            collapseId: stationNotifCollapseId(trip.token),
+            // #2909 (ADR-040 0단계, 구 #2615 trip 단위 collapse 폐기) — 역 단위 collapse.
+            // 다음 정각 cron이 같은 역을 또 쏴도(같은 token+station) iOS가 알림센터에서
+            // 최신으로 교체해 중복 스택은 방지하면서, 다른 역 배너는 덮지 않고 나란히 쌓인다.
+            collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
             expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
             data: buildSilentPushData(payload),
             contentAvailable: true,
@@ -4050,7 +4108,8 @@ export async function runMidCycleFireOnly(
           token: trip.token.slice(0, 8),
           station: waypoint.stationName,
         });
-        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, true);
+        // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, true, undefined, pushId);
         continue;
       }
 
@@ -4071,7 +4130,8 @@ export async function runMidCycleFireOnly(
           token: trip.token.slice(0, 8),
         });
       }
-      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, true);
+      // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, true, undefined, pushId);
     } catch (e) {
       stats.errors += 1;
       log('mid-cycle-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
@@ -4262,7 +4322,8 @@ export async function fireSyncSkippedStationPasses(
           station: waypoint.stationName,
         });
         stats.failed += 1;
-        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason);
+        // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId);
         continue;
       }
 
@@ -4282,10 +4343,13 @@ export async function fireSyncSkippedStationPasses(
           token: trip.token.slice(0, 8),
         });
       }
-      await recordFireAttempt(env, trip, waypoint, 'sent', now);
+      // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId);
     } catch (e) {
       stats.failed += 1;
       log('sync-skipped-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
+      // pushId는 try 블록 내부 선언이라 여기서 scope 밖 — 생성 자체가 실패했을 수 있어
+      // 의도적으로 생략한다(해당 attempt는 D1에서 pushId 없는 'failed' 행으로 남는다).
       await recordFireAttempt(env, trip, waypoint, 'failed', now, String(e));
     }
   }
@@ -4659,7 +4723,8 @@ export async function fireVanishFallbackStationPush(
         tripToken: trip.token,
         sound: vanishStationNotifSound.sound,
         interruptionLevel: vanishStationNotifSound.interruptionLevel,
-        collapseId: stationNotifCollapseId(trip.token),
+        // #2909 (ADR-040 0단계) — 역 단위 collapse(fireArvlCdStationPush와 동일 정책).
+        collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
         expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
         data: buildSilentPushData(vanishPayload),
         contentAvailable: true,
@@ -4710,7 +4775,8 @@ export async function fireVanishFallbackStationPush(
       env.DB,
     );
     // #2779 — fire-attempt(실패) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘.
-    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, origin);
+    // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, origin, pushId);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return;
   }
@@ -4751,7 +4817,8 @@ export async function fireVanishFallbackStationPush(
   await env.TRIPS.put(stationFiredKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // #2779 — fire-attempt(성공) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘, meta.path로
   // vanish-fallback/vanish-release를 구분(신규 kind 신설 금지).
-  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, origin);
+  // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, origin, pushId);
 }
 
 /**
@@ -5111,7 +5178,12 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         endReason,
         seoulHttpErrors: deps.seoul.stats.httpErrorCount,
       });
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: endReason });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: endReason,
+        // #2893 — 이 분기는 endReason==='seoul-outage'일 때만 도달(eta-missing은 아래 demote
+        // 분기로 early return) — endPath를 고정 상수로 남겨도 정확하다.
+        endPath: 'eta-missing-seoul-outage',
+      });
       return;
     }
     // #2157 (2026-08-05 결정 A) — 순수 eta-missing(Seoul API는 정상 응답, trainCode만
@@ -5650,7 +5722,10 @@ export async function advanceBoardingLockWaypoint(
           kind: waypoint.kind,
           backstopElapsedMs,
         });
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+          reason: 'destination-arrived',
+          endPath: 'lock-active-destination-gps-far-backstop',
+        });
         await deleteSsot(env.TRIPS, trip.token);
         return { consumed: true, tripEnded: true };
       }
@@ -5669,7 +5744,10 @@ export async function advanceBoardingLockWaypoint(
 
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+      reason: 'destination-arrived',
+      endPath: 'lock-active-destination',
+    });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT 도 cleanup. cleanupTripWithLa 가 throw 하면
     // SSoT 가 남아있을 수 있으나 본 PR 스코프 외 (다음 cron 의 stale 정리 path 는 후속 PR).
     await deleteSsot(env.TRIPS, trip.token);
@@ -5682,7 +5760,17 @@ export async function advanceBoardingLockWaypoint(
   // #2323 rework (break #1) — waypoint advance 공통 블록(anchor stamp + hop-end prompt +
   // waypoints slice + LA/putTrip/mirrorProgress)을 lock-independent 헬퍼로 추출.
   // 이 시점 이전(evidence 게이트, destination cleanup)은 lock 활성 경로 전용이라 그대로 유지.
-  const { tripEnded } = await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  const { tripEnded } = await completeWaypointAdvance(
+    trip,
+    waypoint,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    'lock-active-waypoints-exhausted',
+  );
   return { consumed: true, tripEnded };
 }
 
@@ -5863,6 +5951,11 @@ async function completeWaypointAdvance(
   now: number,
   log: Logger,
   generatePushId: () => string,
+  // #2893 — 이 공유 헬퍼는 3개 caller(lock-active 전진 / `runLocklessTransfer` /
+  // `runLocklessDestination`)로부터 호출된다. waypoints 소진 시 cleanupTripWithLa로 수렴하는
+  // reason은 모두 'destination-arrived'로 동일해 D1만으로 caller를 구분할 수 없었다 — caller가
+  // 자신을 식별하는 endPath를 전달해 그대로 forward한다(이 헬퍼 자체는 호출자를 모른다).
+  endPath: TripEndPath,
 ): Promise<{ tripEnded: boolean }> {
   // #2066 (Phase 2-backend) — 취침 알람 평가. waypoints shift 전이라 trip.waypoints[1]이
   // waypoint(방금 arvlCd 확정된 직전역 후보) 바로 다음 대상(환승/도착 여부 판정용).
@@ -6114,7 +6207,10 @@ async function completeWaypointAdvance(
     // #1707 — 본 분기 진입 전 상단 isCleanupAdvance 게이트가 cross-check 완료. gps-far 케이스는
     // 이미 early return으로 차단됐다. 여기 도달 = within / stale-gps / no-gps / station-unknown
     // 중 하나 = 정상 cleanup 진행.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+      reason: 'destination-arrived',
+      endPath,
+    });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
     await deleteSsot(env.TRIPS, trip.token);
     return { tripEnded: true };
@@ -6371,7 +6467,10 @@ export async function maybeReschedulePush(
       // #868 — 클라 state sync용 trip-ended silent push도 발사 (reason=push-unrecoverable).
       // 단, 토큰 자체가 unrecoverable이면 push도 같은 이유로 실패할 가능성이 높음 — fireTripEndedPush
       // 내부에서 graceful log만 남기고 cleanup 흐름은 계속 진행한다.
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+        reason: 'push-unrecoverable',
+        endPath: 'push-unrecoverable-reschedule',
+      });
       return { cleanedUp: true };
     }
   }
@@ -6380,6 +6479,88 @@ export async function maybeReschedulePush(
     await putTrip(env.TRIPS, trip);
   }
   return { cleanedUp: false };
+}
+
+/**
+ * #2921 (#2900 결정 D) — lockless leg 전진(transfer/destination/intermediate) 후보 제한.
+ * "사용자가 탔을 수 있는 열차"로 신호 풀을 좁힌다 — #2875(vanish swap 후보창)·#2892(confirm/
+ * leg-resolve 후보창)가 이미 두 번 적용한 "`inferLegDirection` 방향 추론 + `isUp` 필터" 패턴을
+ * lockless leg 전진에 세 번째로 적용한다(이 두 선례는 PositionEntry 기반이라 직접 재사용하지
+ * 않고, 같은 추론 함수(`inferLegDirection`)만 공유 — ArrivalEntry는 별도 shape).
+ *
+ * leg origin은 `trip.currentLegAnchor`(leg 2+, 환승 후 앵커)가 현재 waypoint.line과 일치하면
+ * 그 값을, 아니면 `trip.originStationName`(leg 1)을 쓴다. 둘 다 없거나 `inferLegDirection`이
+ * 추론 불가(비단조 노선 등)면 null — 기존 양방향 허용 동작 그대로 유지한다(거부 케이스 ⓓ
+ * 과차단 금지 — 추론 불가 노선은 지금까지와 동일하게 어느 방향 신호든 받아들인다).
+ */
+function resolveLegDirectionForWaypoint(trip: Trip, waypoint: Waypoint): 'up' | 'down' | null {
+  const originStation =
+    trip.currentLegAnchor?.line === waypoint.line
+      ? trip.currentLegAnchor.boardingStation
+      : trip.originStationName;
+  if (originStation === undefined) return null;
+  return inferLegDirection(waypoint.line, originStation, waypoint.stationName);
+}
+
+/**
+ * #2921 거부 케이스 ⓐ — direction 추론 가능하면 arrivals를 그 방향으로 좁힌다(반대 방향
+ * 열차가 advance를 발사하지 못하게 차단). 추론 불가(null)면 전체 arrivals 그대로 반환한다
+ * (기존 동작 유지).
+ */
+function restrictArrivalsByLegDirection(
+  trip: Trip,
+  waypoint: Waypoint,
+  arrivals: readonly ArrivalEntry[],
+): readonly ArrivalEntry[] {
+  const direction = resolveLegDirectionForWaypoint(trip, waypoint);
+  if (direction === null) return arrivals;
+  const wantUp = direction === 'up';
+  return arrivals.filter((a) => a.isUp === wantUp);
+}
+
+/**
+ * #2921 거부 케이스 ⓑ — leg가 막 시작돼 사용자가 아직 물리적으로 탑승할 수 없었던 시간 창을
+ * 걸러낸다. 신규 게이트가 아니라 #2511/#2515가 이미 도입한 도보시간 게이트
+ * (`trip.legBoardingEligibleAt`, leg anchor 부착과 항상 함께 stamp —
+ * `stampCurrentLegAnchor`/index.ts tap-advance 둘 다 원자적으로 같이 쓴다)를 재사용할 뿐이다.
+ * leg 1(currentLegAnchor 없음 또는 다른 line)에는 적용하지 않는다 — 기존 동작 유지(과차단
+ * 금지).
+ *
+ * **`runLocklessDestination`에만 적용한다** — leg 중간의 transfer/intermediate 전진에는
+ * 적용하지 않는다(해당 함수들의 호출부 주석 참고). 9/18 실측 재생
+ * (`replay_20260918_boarding_confirm.test.ts`)이 반증했다: 환승 직후 바로 이어지는
+ * intermediate 통과 push가 이 시간창 안에서 발생해야 트립이 끝까지 완주하는 실제 사례가
+ * 있었다 — 중간 전진에 이 게이트를 걸면 정상 트립을 막는 과차단(거부 케이스 ⓓ)이 된다.
+ * 10/7 사고(leg-resolve pending 3.3초 뒤 destination-arrived **종료**)는 destination 확정의
+ * 문제였으므로, 시간창 게이트의 적용 범위를 그 지점으로 좁혔다 — "fixture는 실측이고 불변,
+ * 통과시키려 코드를 조정"이 아니라 게이트 범위 자체를 스펙 의도(목적지 확정 보호)에 맞게
+ * 정정한 것이다.
+ */
+function isLegAdvanceWindowOpen(trip: Trip, waypoint: Waypoint, now: number): boolean {
+  if (trip.currentLegAnchor?.line !== waypoint.line) return true;
+  const eligibleAt = trip.legBoardingEligibleAt;
+  if (eligibleAt === undefined) return true;
+  return now >= eligibleAt;
+}
+
+/**
+ * #2921 거부 케이스 ⓒ — direction-필터링된 pool 안에서 "곧 도착"(ENTERING/ARRIVED) 신호를
+ * 내는 서로 다른 trainCode가 2개 이상이면 모호 — 임의로 하나를 골라 전진하지 않는다(#2875
+ * 이슈 본문의 동률/복수 후보 ambiguity 정책과 동형). `pickBestArrivalSignal`의 line-매칭
+ * fallback pool 산출과 동일 규칙을 그대로 반복한다(그 함수는 트레인코드를 노출하지 않아
+ * 재사용이 불가능해 의도적으로 분리 — 재사용 대신 병렬 구현).
+ */
+function hasAmbiguousLegFireCandidates(
+  arrivals: readonly ArrivalEntry[],
+  waypoint: Waypoint,
+): boolean {
+  const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, waypoint.line));
+  const pool = matchingLine.length > 0 ? matchingLine : arrivals;
+  const firing = pool.filter(
+    (a) => a.arvlCd === ARRIVAL_CODE.ENTERING || a.arvlCd === ARRIVAL_CODE.ARRIVED,
+  );
+  const distinctTrainCodes = new Set(firing.map((a) => a.trainCode));
+  return distinctTrainCodes.size > 1;
 }
 
 /**
@@ -6417,8 +6598,17 @@ async function runLocklessTransfer(
 ): Promise<boolean> {
   if (waypoint.kind !== 'transfer') return false;
 
+  // #2921 — 거부 케이스 ⓑ(시간창)는 `runLocklessDestination`에만 적용한다(아래 주석 참고).
+  // 이 함수(leg 중간의 환승 통과)에는 적용하지 않는다 — 9/18 실측 재생
+  // (`replay_20260918_boarding_confirm.test.ts`)이 반증했다: 건대입구 환승 직후
+  // `legBoardingEligibleAt`이 stamp된 뒤에도 바로 이어지는 어린이대공원/군자/중곡 통과
+  // push가 실제로 그 도보 창 안에서 발생해야 트립이 끝까지 완주한다 — 여기에 시간창 게이트를
+  // 걸면 정상 트립이 막혀 과차단(거부 케이스 ⓓ)이 된다. #2323/#2720 주석의 "새 게이트
+  // 금지" 지시와도 정합 — direction 후보 제한(ⓐ)만 추가하고 시간창은 추가하지 않는다.
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
+  const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
     await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'no-arvlcd', now);
@@ -6432,6 +6622,13 @@ async function runLocklessTransfer(
     await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'not-fires', now);
     return false;
   }
+  // #2921 거부 케이스 ⓒ — 서로 다른 trainCode가 2개 이상 동시에 fire 신호를 내면 모호 —
+  // 임의로 하나를 골라 전진하지 않는다.
+  if (hasAmbiguousLegFireCandidates(candidateArrivals, waypoint)) {
+    stats.legAdvanceAmbiguous += 1;
+    await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'ambiguous-candidates', now);
+    return false;
+  }
 
   stats.locklessTransferAdvanced += 1;
   log('lockless-transfer: waypoint advance (ground truth arvlCd)', {
@@ -6441,7 +6638,17 @@ async function runLocklessTransfer(
     arvlCd: signal.arvlCd,
   });
   await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'advanced', now);
-  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  await completeWaypointAdvance(
+    trip,
+    waypoint,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    'lockless-transfer-waypoints-exhausted',
+  );
   return true;
 }
 
@@ -6467,7 +6674,43 @@ async function runLocklessTransfer(
  * 반환값 true = advance 완료(trip이 이미 persist/cleanup됨 — caller는 이 cycle에서 trip을
  * 더 이상 건드리지 않고 continue해야 한다). false = 신호 미확보/미도착(caller는 기존
  * lockMissing 경로로 정상 fallthrough).
+ *
+ * #2900 (옵션 C, 결정: GitHub #2900 코멘트 "결정: C(질문 전환) 승인", 재설계: 코디네이터
+ * 리뷰 2026-10-08) — 10/7 아침 사고(id154, 06:48:28 leg-resolve pending → 3.3초 뒤
+ * destination-arrived 종료)의 근본은 "탑승 증거 없이 목적지 확정"이다. 이 함수의 advance
+ * 판정(arvlCd ENTERING/ARRIVED) 자체는 바꾸지 않는다 — 새 신호·새 게이트 도입 금지 지시(바로
+ * 위 문단)와 충돌하지 않도록, 바뀌는 것은 advance가 확정된 "이후" **종료 타이밍**뿐이다.
+ *
+ * 1차 설계(질문으로 전환)는 두 가지 문제가 있어 폐기했다: (1) 도착 알림 자체가 사라져 실제로
+ * 도착한 증거 없는 trip(9/18 실측 — lock 전혀 없었지만 실제로는 도착) 사용자가 "도착" 알림을
+ * 못 받는 회귀, (2) 재사용한 `fireTrainReconfirmPush` 문구("탑승 열차를 찾을 수 없어요")가
+ * 도착 확인과 의미가 전혀 다름. 재설계: **도착 알림은 증거 유무와 무관하게 즉시 발사**하고
+ * (거부 케이스 ⓕ), 증거가 없을 때 유예하는 것은 **실제 종료 행위**(`cleanupTripWithLa`의 KV
+ * 삭제/D1 trip-end/LA dismissal)뿐이다. 새 질문 채널은 만들지 않는다(최소화 원칙 — 적합하지
+ * 않은 문구를 재사용하는 것보다 질문 없이 유예만 두는 쪽이 낫다는 코디네이터 판단).
  */
+const DESTINATION_CONFIRM_TIMEOUT_MS = 7 * 60 * 1000;
+
+/**
+ * #2900 — "탑승 증거"가 하나라도 있는지 판정. lock 활성(#640) / lock 생애 1회 이상 부착
+ * 이력(`lockEverAttached`, #2628 — 만료·해제됐어도 한 번 실제로 탄 적이 있다는 ground truth는
+ * 그대로 유효) / 탑승 커밋(boardingCommitted, #2524) / leg-resolve 진행 중(legResolveStreak,
+ * 환승 후 재탑승 후보 관측) 중 하나라도 있으면 사용자가 실제로 열차에 타고 있었다는 근거가
+ * 있다고 본다. `lockEverAttached` 포함이 과차단(거부 케이스 ⓐ) 방지의 핵심 — lock이 TTL로
+ * 만료된 뒤 destination advance가 오는 기존 케이스(#2720 A2d)는 "탑승 증거 없음"이 아니라
+ * "증거는 있었고 추적만 끊긴" 케이스라 종료 유예 대상이 아니다. 전부 없을 때만(=trip 생애
+ * 전체에 lock이 한 번도 없었던 순수 lockless 상태에서 arvlCd 신호 하나로만 판단되는 상태)
+ * 종료 유예 분기(`runLocklessDestination`의 `destinationConfirmPendingSince` 경로)를 탄다.
+ */
+function hasBoardingEvidence(trip: Trip, now: number): boolean {
+  return (
+    isBoardingLockActive(trip, now) ||
+    trip.lockEverAttached === true ||
+    trip.boardingCommitted === true ||
+    trip.legResolveStreak !== undefined
+  );
+}
+
 async function runLocklessDestination(
   trip: Trip,
   waypoint: Waypoint,
@@ -6480,14 +6723,84 @@ async function runLocklessDestination(
 ): Promise<boolean> {
   if (waypoint.kind !== 'destination') return false;
 
+  // #2900 — 이미 "종료 유예" 중이면(알림은 직전 cycle에서 이미 발사됨, 아래 참고) 새 arvlCd
+  // 조회 없이 타임아웃만 평가한다. 신호가 사라져도(열차가 플랫폼을 떠나는 등 arvlCd가 더 이상
+  // 매칭되지 않는 경우) 트립이 영구 유예에 빠지지 않는다(거부 케이스 ⓒ — 영구 잔존 금지).
+  if (trip.destinationConfirmPendingSince !== undefined) {
+    if (now - trip.destinationConfirmPendingSince < DESTINATION_CONFIRM_TIMEOUT_MS) {
+      return false;
+    }
+    stats.destinationConfirmTimedOut += 1;
+    stats.locklessDestinationAdvanced += 1;
+    log('lockless-destination: grace period elapsed — finalizing end (#2900)', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      pendingMs: now - trip.destinationConfirmPendingSince,
+    });
+    // 도착 알림은 이미 발사됐다(아래 최초 관측 분기) — `completeWaypointAdvance`가 내부에서
+    // `cleanupTripWithLa`를 호출해 같은 reason으로 재발사를 시도해도 그 함수 자체의 KV
+    // dedup(10분 TTL, 본 PR의 유예 상한 7분보다 길어 항상 유효)이 중복 push를 막는다.
+    await completeWaypointAdvance(
+      trip,
+      waypoint,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId,
+      'lockless-destination-waypoints-exhausted',
+    );
+    return true;
+  }
+
+  // #2921 거부 케이스 ⓑ — leg 시작 직후 도보 창 안이면 후보창이 아직 열리지 않은 것으로 보고
+  // advance 판정 자체를 보류한다(기존 lockMissing/LA heartbeat 경로로 fallthrough).
+  if (!isLegAdvanceWindowOpen(trip, waypoint, now)) {
+    stats.legAdvanceWindowBlocked += 1;
+    return false;
+  }
+
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
+  const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
     return false;
   }
   const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
   if (!fires) return false;
+  // #2921 거부 케이스 ⓒ — 서로 다른 trainCode가 2개 이상 동시에 fire 신호를 내면 모호 —
+  // 임의로 하나를 골라 전진/종료하지 않는다.
+  if (hasAmbiguousLegFireCandidates(candidateArrivals, waypoint)) {
+    stats.legAdvanceAmbiguous += 1;
+    return false;
+  }
+
+  // #2900 거부 케이스 ⓕ — 증거가 없어도 도착 알림은 즉시 발사한다. 증거가 있으면(아래
+  // else 경로) 알림 + 실제 종료가 기존처럼 동시에 일어난다. 증거가 없으면 알림만 지금 보내고,
+  // 실제 종료(KV 삭제/D1 trip-end/LA dismissal)는 `DESTINATION_CONFIRM_TIMEOUT_MS`만큼
+  // 유예한다 — B안("증거 필수화")의 실패 모드(trip 영구 잔존)를 피하면서도, 10/7 사고의
+  // 핵심 피해(증거 없이 즉시 backend trip이 삭제되어 이후 boarding-confirm 404/재등록 실패
+  // 연쇄가 발생)만 늦춘다.
+  if (!hasBoardingEvidence(trip, now)) {
+    stats.destinationConfirmFired += 1;
+    trip.destinationConfirmPendingSince = now;
+    log('lockless-destination: no boarding evidence — notify now, defer end (#2900)', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      line: waypoint.line,
+      arvlCd: signal.arvlCd,
+    });
+    await putTrip(env.TRIPS, trip);
+    // #2900 — 기존 trip-ended alert push(#1337, 'destination-arrived')를 그대로 재사용해
+    // 즉시 발사한다. 새 push 채널 신설 없음 — `cleanupTripWithLa`가 내부에서 쓰는 바로 그
+    // 함수를 export해 가져왔다(`liveActivity.ts`). 실제 trip 삭제/D1/LA dismissal은 아직
+    // 수행하지 않는다 — 그건 위 pending 분기가 타임아웃 후에 처리한다.
+    await fireTripEndedAlertPush(trip, 'destination-arrived', env, deps, now, log);
+    return false;
+  }
 
   stats.locklessDestinationAdvanced += 1;
   log('lockless-destination: waypoint advance (ground truth arvlCd)', {
@@ -6496,7 +6809,17 @@ async function runLocklessDestination(
     line: waypoint.line,
     arvlCd: signal.arvlCd,
   });
-  await completeWaypointAdvance(trip, waypoint, env, deps, stats, now, log, generatePushId);
+  await completeWaypointAdvance(
+    trip,
+    waypoint,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+    'lockless-destination-waypoints-exhausted',
+  );
   return true;
 }
 
@@ -6544,11 +6867,17 @@ export async function runLocklessIntermediate(
     trip.stationPhase = fusion.phaseState;
     dirty = true;
   }
+  // #2921 — 거부 케이스 ⓑ(시간창)는 `runLocklessDestination`에만 적용한다. intermediate
+  // "통과" push에는 적용하지 않는다 — 9/18 실측 재생(`replay_20260918_boarding_confirm.test.ts`)이
+  // 반증했다: 환승 직후 바로 이어지는 intermediate 통과 push가 도보 창 안에서 발생해야 트립이
+  // 끝까지 완주한다(위 `runLocklessTransfer`의 동일 주석 참고, 과차단 금지 ⓓ).
   // #1729 paradigm shift — maybeBindLocklessTrainCode(Path B') 제거됨.
   // lockless trip은 boardingPrompt push 경로로 사용자 인지 후 BoardingTrainList에서 명시 탭.
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
+  const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
   // #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 차단 (환승 후 stale 신호 방지).
-  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
     // #2027 — line mismatch 로 인해 archFlag='on' 에서 null 이 반환된 경우 skip reason stamp.
@@ -6567,6 +6896,13 @@ export async function runLocklessIntermediate(
   const fires =
     signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
   if (!fires) {
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #2921 거부 케이스 ⓒ — 서로 다른 trainCode가 2개 이상 동시에 fire 신호를 내면 모호 —
+  // 임의로 하나를 골라 통과 처리하지 않는다.
+  if (hasAmbiguousLegFireCandidates(candidateArrivals, waypoint)) {
+    stats.legAdvanceAmbiguous += 1;
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
@@ -6741,7 +7077,10 @@ export async function runLocklessIntermediate(
           envMismatchExhausted: heal.envMismatchExhausted,
         });
         // #868 — lockless push unrecoverable로 trip 폐기 시에도 클라 state sync push 발사.
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'push-unrecoverable' });
+        await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+          reason: 'push-unrecoverable',
+          endPath: 'push-unrecoverable-lockless-intermediate',
+        });
         return;
       }
       // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. unrecoverable / envMismatchExhausted
@@ -6840,7 +7179,10 @@ export async function runLocklessIntermediate(
   if (trip.waypoints.length === 0) {
     // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.
     // #868 — lockless trip의 effective destination-arrived도 동일 reason.
-    await cleanupTripWithLa(trip, env, deps, stats, now, log, { reason: 'destination-arrived' });
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, {
+      reason: 'destination-arrived',
+      endPath: 'lockless-shift-empty',
+    });
     return;
   }
   // 다음 waypoint를 위해 dedup stamp reset (위 shift 직후 첫 waypoint는 새 발사 대상).
@@ -6982,6 +7324,8 @@ function toKstHhmm(epochMs: number): string {
  * @param etaSeconds     arrivals에서 추출한 도착 잔여 초 (null = 정보 없음)
  * @param now            현재 epoch ms (ETA 절대 시각 계산용)
  * @param locale         #1895 — trip.locale (ko/en/ja/zh). 미지정 시 ko fallback.
+ * @param destinationStation #2904 — 발사 시점 선택된 열차(payload trainCode와 동일 출처)의
+ *   종착역. null/미지정이면 본문에서 생략(#1740 omit 패턴) — 기존 문구와 byte-level 동일.
  */
 export function buildBoardingPromptMessage(
   originStation: string,
@@ -6990,13 +7334,14 @@ export function buildBoardingPromptMessage(
   etaSeconds: number | null,
   now: number,
   locale?: SupportedLocale,
+  destinationStation?: string | null,
 ): { title: string; body: string } {
   const strings = t(locale);
   const etaTimeStr =
     etaSeconds === null ? null : toKstHhmm(now + etaSeconds * 1000);
   return {
     title: strings.boardingPromptTitle,
-    body: strings.boardingPromptBody({ originStation, line, nextStation, etaTimeStr }),
+    body: strings.boardingPromptBody({ originStation, line, nextStation, etaTimeStr, destinationStation }),
   };
 }
 
@@ -7161,18 +7506,30 @@ async function fireBoardingPromptForAnchor(inputs: {
    * #2880 — decision(phase)을 함께 전달해 caller가 `selectedTrainCode=null`일 때도
    * `boardingPromptDedupKey`로 fallback dedup을 수행할 수 있게 한다(trainCode 특정 실패
    * 중에도 fail-open하지 않음).
+   *
+   * #2898 — `selectedTrainCode`를 세 번째 인자로 함께 전달한다. 이 함수가 이미 pool에서
+   * `pickAutoTrainCode`로 선택을 확정해 fire-once key에도 재사용하므로, caller가 같은 pool로
+   * 다시 선택을 재계산(및 재계산 결과가 어긋날 위험)할 필요가 없다 — caller는 이 값으로
+   * repeat-interval soft-block의 same-train bypass(스펙 ①④) 여부만 판정한다.
    */
   shouldProceedToSend?: (
     pool: readonly ArrivalEntry[],
     decision: BoardingFireDecision['decision'],
+    selectedTrainCode: string | null,
   ) => boolean;
   /**
    * #2801 (3차 reopen) — `decideBoardingPromptFire`가 반환한 fire 사유('imminent'/
    * 'approaching'/'fallback-unobservable')를 caller가 D1 meta(`gateDecision`)로 기록할 수
    * 있도록 전달. 조기 불만 재발 시 D1만으로 어느 창(imminent/approaching)이 발사했는지 측정
    * 가능해야 한다(이슈 Wire §2).
+   *
+   * #2898 — `selectedTrainCode`도 함께 전달(위 `shouldProceedToSend`와 동일 이유 — 재계산 제거).
    */
-  onFired: (pool: readonly ArrivalEntry[], decision: BoardingFireDecision['decision']) => void;
+  onFired: (
+    pool: readonly ArrivalEntry[],
+    decision: BoardingFireDecision['decision'],
+    selectedTrainCode: string | null,
+  ) => void;
 }): Promise<void> {
   const {
     trip,
@@ -7239,7 +7596,12 @@ async function fireBoardingPromptForAnchor(inputs: {
     return;
   }
 
-  if (shouldProceedToSend && !shouldProceedToSend(pool, gate.decision)) {
+  // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
+  // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경). #2898 — shouldProceedToSend/
+  // fire-once key/onFired가 모두 이 단일 계산 결과를 공유한다(재계산 드리프트 방지).
+  const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, line, direction) : null;
+
+  if (shouldProceedToSend && !shouldProceedToSend(pool, gate.decision, selectedTrainCode)) {
     return;
   }
 
@@ -7248,7 +7610,14 @@ async function fireBoardingPromptForAnchor(inputs: {
   // 반영되기 전에 다음 cycle이 stale trip을 받으면 repeat gate 자체가 우회된다(9/30 e25e1158
   // 06:42→06:44 실측). trip 객체와 무관한 독립 key로 "최근 5분 내 발사" 여부를 재확인한다 —
   // repeat gate(trip 경유)는 무변경, 이 검사는 이중 방어로 얹는다.
-  if (await isBoardingPromptFireOnceBlocked(env, trip.token, station, now)) {
+  //
+  // #2898 — key를 station 단독이 아니라 `${station}:${trainCode:phase}`로 세분화한다. station
+  // 단독 키는 approaching/arrival처럼 같은 역에서 phase가 다른 재확인(스펙 ①)까지 5분간 묶어
+  // 차단해, boardingPrompt.ts의 same-train bypass(아래 shouldProceedToSend)를 이 독립 방어선이
+  // 다시 전부 막는 재발을 낳는다 — dedup 단위를 상위 게이트와 동일한 (trainCode, phase) 축으로
+  // 정렬한다(세분화만, "최근 5분 내 발사 여부"라는 판정 자체는 무변경).
+  const fireOnceAnchorKey = `${station}:${boardingPromptDedupKey(selectedTrainCode, gate.decision)}`;
+  if (await isBoardingPromptFireOnceBlocked(env, trip.token, fireOnceAnchorKey, now)) {
     log(`${logPrefix}: gate blocked`, {
       token: trip.token.slice(0, 8),
       reason: 'fire-once-key',
@@ -7260,11 +7629,23 @@ async function fireBoardingPromptForAnchor(inputs: {
     return;
   }
 
-  const { title, body } = buildBoardingPromptMessage(station, line, nextStation, etaSeconds, now, trip.locale);
+  // #2904 — 본문 종착역은 selectedTrainCode(위 #2898 — fire-once key/gate와 공유하는 단일
+  // 계산 결과)와 반드시 같은 pool 엔트리에서 가져온다(다른 열차 혼입 방지). 이미 받은 arrivals
+  // 응답의 `terminus`(trainLineNm 파싱 결과)를 재사용 — 신규 Seoul API 호출 없음. 매칭 엔트리
+  // 없음/순환선(terminus=null) → 접두사 생략(#1740 omit).
+  const destinationStation = selectedTrainCode
+    ? pool.find((entry) => entry.trainCode === selectedTrainCode)?.terminus ?? null
+    : null;
 
-  // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
-  // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경).
-  const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, line, direction) : null;
+  const { title, body } = buildBoardingPromptMessage(
+    station,
+    line,
+    nextStation,
+    etaSeconds,
+    now,
+    trip.locale,
+    destinationStation,
+  );
 
   const pushId = generatePushId();
   const heal = await sendWithEnvHeal(
@@ -7306,8 +7687,8 @@ async function fireBoardingPromptForAnchor(inputs: {
   if (heal.result.ok) {
     stats.silentPushFiredByKind.boardingPrompt += 1;
     // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota).
-    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, station, now);
-    onFired(pool, gate.decision);
+    await stampBoardingPromptFireOnce(env.TRIPS, trip.token, fireOnceAnchorKey, now);
+    onFired(pool, gate.decision, selectedTrainCode);
     dirty = true;
     log(`${logPrefix}: fired`, {
       token: trip.token.slice(0, 8),
@@ -7509,24 +7890,39 @@ export async function maybeFireOriginBoardingPromptGpsFree(
 
   // #2531 — GPS 경로(`evaluateBoardingPromptGates`)와 동일 dedup 게이트 + 동일 ledger 공유.
   const repeatOutcome = evaluateBoardingPromptRepeatGate(trip.boardingPromptState, now);
+  // #2898 — 'fired-too-recently'(5분 간격)만 소프트 블록으로 다룬다. 이 시점엔 아직 pool을
+  // 몰라(Seoul API 호출 전) 지금 후보가 직전 발사와 같은 열차의 재확인(approaching→arrival,
+  // 스펙 ①)인지 아직 소진되지 않은 다른 열차의 스팸(ⓒ, 차단 유지)인지 구분할 수 없다 — 최종
+  // 판정은 pool/selectedTrainCode를 아는 `shouldProceedToSend`로 미룬다. silenced/
+  // max-fires-reached는 trainCode와 무관한 절대 차단이므로 기존처럼 즉시 return한다.
+  let intervalSoftBlocked = false;
   if (repeatOutcome && !repeatOutcome.pass) {
-    stats.originGpsFreeBoardingPromptBlocked += 1;
     log('origin-boarding-prompt-gps-free: gate blocked', {
       token: trip.token.slice(0, 8),
       reason: repeatOutcome.reason,
       originStation: display.originStation,
       line: display.line,
     });
-    await recordOriginBoardingPromptTransition(
-      env,
-      trip,
-      display.originStation,
-      display.line,
-      ssot,
-      'silenced',
-      now,
-    );
-    return;
+    // #2898 — firedTrainCodes가 비어있으면(이전 발사의 trainCode를 전혀 모름) same-train
+    // bypass 판정 자체가 불가능하다 — pool을 fetch해 봐야 무조건 차단될 것이므로, Seoul API
+    // 호출 없이 기존처럼 즉시 차단한다(불필요한 외부 호출 방지 + 기존 단위 테스트 동작 보존).
+    if (
+      repeatOutcome.reason !== 'fired-too-recently' ||
+      (trip.boardingPromptState?.firedTrainCodes?.length ?? 0) === 0
+    ) {
+      stats.originGpsFreeBoardingPromptBlocked += 1;
+      await recordOriginBoardingPromptTransition(
+        env,
+        trip,
+        display.originStation,
+        display.line,
+        ssot,
+        'silenced',
+        now,
+      );
+      return;
+    }
+    intervalSoftBlocked = true;
   }
 
   const nextWaypoint = trip.waypoints[0];
@@ -7593,23 +7989,49 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
     // 재발사하지 않는다. #2880 — selectedTrainCode=null(후보 특정 실패)일 때도
     // `boardingPromptDedupKey`의 phase fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
-    shouldProceedToSend: (pool, decision) => {
-      const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
-      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
-      if (trip.boardingPromptState?.firedTrainCodes?.includes(dedupKey)) {
+    // #2898 — `isExactDuplicateFire`는 배포 경계에 남아있을 수 있는 구형식(":" 없는 bare
+    // trainCode) `firedTrainCodes` 항목도 안전하게 처리한다(phase 모르면 trainCode만으로
+    // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
+    shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
+      const firedTrainCodes = trip.boardingPromptState?.firedTrainCodes;
+      if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.originGpsFreeBoardingPromptBlocked += 1;
         log('origin-boarding-prompt-gps-free: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
-          dedupKey,
-          firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
+          dedupKey: boardingPromptDedupKey(selectedTrainCode, decision),
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 같은 trainCode는 2회(approaching+arrival)까지만. phase가 달라도 3번째는 차단.
+      if (!canFireForTrainCode(firedTrainCodes, selectedTrainCode)) {
+        stats.originGpsFreeBoardingPromptBlocked += 1;
+        log('origin-boarding-prompt-gps-free: skipped train fire cap', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 위 early 게이트가 'fired-too-recently'로 소프트 블록했던 경우에만 여기서 최종
+      // 판정. 같은 열차의 재확인(소진 전)이거나, 직전 열차가 이미 소진된 뒤의 새 열차면 허용 —
+      // 그 외(소진되지 않은 다른 열차)는 여전히 5분 게이트로 차단(단배차 스팸 방지 유지).
+      if (
+        intervalSoftBlocked &&
+        !canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+      ) {
+        stats.originGpsFreeBoardingPromptBlocked += 1;
+        log('origin-boarding-prompt-gps-free: skipped interval (different train still active)', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
         });
         return false;
       }
       return true;
     },
-    onFired: (pool, decision) => {
-      const selectedTrainCode = pool.length > 0 ? pickAutoTrainCode(pool, display.line, direction) : null;
+    onFired: (pool, decision, selectedTrainCode) => {
       stats.originGpsFreeBoardingPromptFired += 1;
       trip.boardingPromptState = markPromptFired(
         now,
@@ -7777,24 +8199,40 @@ export async function maybeFireLegBoardingPrompt(
   // "1회 발사 후 영구 차단"(구 `evaluateHopEndPromptGates`)이 아니라 반복 발사를 허용하되
   // 스팸은 하드 캡+최소 간격으로 막는다.
   const outcome = evaluateBoardingPromptRepeatGate(trip.legBoardingPromptState, now);
+  // #2898 (사용자 2회 지적 — 탑승 전엔 뜨고 정작 실제 도착 시엔 안 뜸) — 'fired-too-recently'
+  // (5분 간격)만 소프트 블록으로 다룬다. 이 시점엔 아직 pool을 몰라(Seoul API 호출 전) 지금
+  // 후보가 직전 발사와 같은 열차의 재확인(approaching→arrival, 스펙 ①)인지 아직 소진되지 않은
+  // 다른 열차의 스팸(ⓒ, 차단 유지)인지 구분할 수 없다 — 최종 판정은 pool/selectedTrainCode를
+  // 아는 `shouldProceedToSend`로 미룬다. silenced/max-fires-reached는 trainCode와 무관한 절대
+  // 차단이므로 기존처럼 즉시 return한다(5분 게이트 자체는 제거하지 않는다 — 세분화만).
+  let intervalSoftBlocked = false;
   if (outcome && !outcome.pass) {
-    stats.legBoardingPromptBlocked += 1;
     log('leg-boarding-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
       reason: outcome.reason,
       station: currentLegAnchor.boardingStation,
       line: currentLegAnchor.line,
     });
-    await recordLegBoardingPromptTransition(
-      env,
-      trip,
-      currentLegAnchor.boardingStation,
-      currentLegAnchor.line,
-      ssot,
-      'silenced',
-      now,
-    );
-    return;
+    // #2898 — firedTrainCodes가 비어있으면(이전 발사의 trainCode를 전혀 모름) same-train
+    // bypass 판정 자체가 불가능하다 — pool을 fetch해 봐야 무조건 차단될 것이므로, Seoul API
+    // 호출 없이 기존처럼 즉시 차단한다(불필요한 외부 호출 방지 + 기존 단위 테스트 동작 보존).
+    if (
+      outcome.reason !== 'fired-too-recently' ||
+      (trip.legBoardingPromptState?.firedTrainCodes?.length ?? 0) === 0
+    ) {
+      stats.legBoardingPromptBlocked += 1;
+      await recordLegBoardingPromptTransition(
+        env,
+        trip,
+        currentLegAnchor.boardingStation,
+        currentLegAnchor.line,
+        ssot,
+        'silenced',
+        now,
+      );
+      return;
+    }
+    intervalSoftBlocked = true;
   }
 
   const nextWaypoint = trip.waypoints[0];
@@ -7863,25 +8301,51 @@ export async function maybeFireLegBoardingPrompt(
     // (예: 사용자 실열차가 새로 후보에 들어옴) selectedTrainCode가 달라져 정상 통과한다.
     // #2880 — selectedTrainCode=null(후보 특정 실패)일 때도 `boardingPromptDedupKey`의 phase
     // fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
-    shouldProceedToSend: (pool, decision) => {
-      const selectedTrainCode =
-        pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
-      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
-      if (trip.legBoardingPromptState?.firedTrainCodes?.includes(dedupKey)) {
+    // #2898 — `isExactDuplicateFire`는 배포 경계에 남아있을 수 있는 구형식(":" 없는 bare
+    // trainCode) `firedTrainCodes` 항목도 안전하게 처리한다(phase 모르면 trainCode만으로
+    // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
+    shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
+      const firedTrainCodes = trip.legBoardingPromptState?.firedTrainCodes;
+      if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.legBoardingPromptBlocked += 1;
         log('leg-boarding-prompt: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
-          dedupKey,
-          firedTrainCodes: trip.legBoardingPromptState?.firedTrainCodes,
+          dedupKey: boardingPromptDedupKey(selectedTrainCode, decision),
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 같은 trainCode는 2회(approaching+arrival)까지만. phase가 달라도 3번째는 차단
+      // (스펙 ③, 거부 케이스 ⓑ — 5분 경과 후라도 같은 열차 3회째는 막는다).
+      if (!canFireForTrainCode(firedTrainCodes, selectedTrainCode)) {
+        stats.legBoardingPromptBlocked += 1;
+        log('leg-boarding-prompt: skipped train fire cap', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
+        });
+        return false;
+      }
+      // #2898 — 위 early 게이트가 'fired-too-recently'로 소프트 블록했던 경우에만 여기서 최종
+      // 판정. 같은 열차의 재확인(소진 전, 스펙 ①)이거나, 직전 열차가 이미 소진된 뒤의 새 열차
+      // (스펙 ④)면 허용 — 그 외(소진되지 않은 다른 열차)는 여전히 5분 게이트로 차단
+      // (거부 케이스 ⓒ, 단배차 스팸 방지 유지).
+      if (
+        intervalSoftBlocked &&
+        !canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+      ) {
+        stats.legBoardingPromptBlocked += 1;
+        log('leg-boarding-prompt: skipped interval (different train still active)', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+          firedTrainCodes,
         });
         return false;
       }
       return true;
     },
-    onFired: (pool, decision) => {
-      const selectedTrainCode =
-        pool.length > 0 ? pickAutoTrainCode(pool, currentLegAnchor.line, direction) : null;
+    onFired: (pool, decision, selectedTrainCode) => {
       stats.legBoardingPromptFired += 1;
       trip.legBoardingPromptState = markPromptFired(
         now,

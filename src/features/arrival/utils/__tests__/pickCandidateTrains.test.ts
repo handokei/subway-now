@@ -505,7 +505,7 @@ describe('pickCandidateTrains', () => {
     });
   });
 
-  it('maps fields correctly (trainNo/line/direction/currentStationName/trainStatus/receivedAtMs)', () => {
+  it('maps fields correctly (trainNo/line/direction/currentStationName/trainStatus/receivedAtMs/terminalStationName)', () => {
     const result = pickCandidateTrains({
       positions: [
         makeLine([
@@ -515,6 +515,7 @@ describe('pickCandidateTrains', () => {
             statnNm: '뚝섬',
             trainStatus: 2,
             receivedAtMs: 9_999,
+            terminalStationName: '잠실나루',
           }),
         ]),
       ],
@@ -528,7 +529,24 @@ describe('pickCandidateTrains', () => {
         currentStationName: '뚝섬',
         trainStatus: 2,
         receivedAtMs: 9_999,
+        // #2914 — buildCandidate가 더 이상 terminalStationName을 드롭하지 않는다.
+        terminalStationName: '잠실나루',
       },
     ]);
+  });
+
+  it('#2914 (결함1) — lockedTrainCode와 정확히 일치하는 trainNo는 direction 불일치여도 제외되지 않는다', () => {
+    const result = pickCandidateTrains({
+      positions: [
+        makeLine([
+          makeTrain({ trainNo: 'LOCKED', updnLine: 1 }),
+          makeTrain({ trainNo: 'OTHER', updnLine: 1 }),
+        ]),
+      ],
+      line: LINE,
+      direction: 0,
+      lockedTrainCode: 'LOCKED',
+    });
+    expect(result.map((c) => c.trainNo)).toEqual(['LOCKED']);
   });
 });
