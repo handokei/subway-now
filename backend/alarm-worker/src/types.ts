@@ -639,6 +639,48 @@ export type TripEndedReason =
   | 'la-stale-backstop';
 
 /**
+ * #2893 (진단 계측 only) — `cleanupTripWithLa`(liveActivity.ts) 호출처 식별자. 여러 호출처가
+ * 같은 `TripEndedReason`(예: `'destination-arrived'`)을 공유해 D1 `trip_events`(kind='trip-end')
+ * 만으로는 어느 코드 경로가 실제로 종료시켰는지 구분할 수 없었다(10/7 조기종료 재현 불가 — PR #2890
+ * "lock-active 분기와 lockless shift 분기 중 어느 쪽이 실행됐는지조차 코드만으로 결정 불가"). 발사/
+ * 판정 로직에는 관여하지 않는 순수 관측 식별자 — 호출처 추가 시 새 값을 데이터 주도로 늘린다.
+ *
+ * - `'trip-expired'` — `trip.expiresAt <= now`(cron 상단 만료 체크).
+ * - `'lifecycle-force-end'` — staged lifecycle backstop 9h+ force-end.
+ * - `'la-stale-backstop'` — LA push 5분 침묵 auto-end.
+ * - `'eta-missing-seoul-outage'` — lock-active eta-missing 임계 초과 + Seoul API outage.
+ * - `'lock-active-destination-gps-far-backstop'` — lock-active destination, gps-far 상태가
+ *   `DESTINATION_REACH_BACKSTOP_MS`를 초과해 강제 cleanup.
+ * - `'lock-active-destination'` — lock-active destination waypoint 정상 도착.
+ * - `'lock-active-waypoints-exhausted'` — lock-active 경로에서 `completeWaypointAdvance`가
+ *   waypoints 소진을 감지(transfer/intermediate advance 이후).
+ * - `'lockless-transfer-waypoints-exhausted'` — `runLocklessTransfer`가 advance 후
+ *   `completeWaypointAdvance`를 거쳐 waypoints 소진.
+ * - `'lockless-destination-waypoints-exhausted'` — `runLocklessDestination`이 advance 후
+ *   `completeWaypointAdvance`를 거쳐 waypoints 소진.
+ * - `'push-unrecoverable-reschedule'` — reschedule push가 unrecoverable APNs 에러로 폐기.
+ * - `'push-unrecoverable-lockless-intermediate'` — lockless intermediate push가 unrecoverable
+ *   APNs 에러로 폐기.
+ * - `'lockless-shift-empty'` — lockless intermediate shift 후 waypoints 소진(10/7 조기종료
+ *   재현 불가의 두 후보 중 하나).
+ * - `'http-delete'` — `DELETE /trips/:token`(사용자 명시 종료 또는 device 자체 cleanup).
+ */
+export type TripEndPath =
+  | 'trip-expired'
+  | 'lifecycle-force-end'
+  | 'la-stale-backstop'
+  | 'eta-missing-seoul-outage'
+  | 'lock-active-destination-gps-far-backstop'
+  | 'lock-active-destination'
+  | 'lock-active-waypoints-exhausted'
+  | 'lockless-transfer-waypoints-exhausted'
+  | 'lockless-destination-waypoints-exhausted'
+  | 'push-unrecoverable-reschedule'
+  | 'push-unrecoverable-lockless-intermediate'
+  | 'lockless-shift-empty'
+  | 'http-delete';
+
+/**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의
  * `data` 필드. 구 silent push payload(`TripEndedPushPayload`)는 force-quit 앱에 전달되지 않아
  * killed 상태 알림 누락 사고가 있어 alert로 전환됐다(#1337).
