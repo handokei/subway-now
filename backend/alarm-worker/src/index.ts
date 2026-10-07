@@ -186,6 +186,7 @@ import {
   readTripEndedStatus,
   deleteTripEndedStatus,
 } from './tripStatus';
+import { tryConsumeCooldownBypass } from './cooldownBypass';
 import type {
   AccelSummary,
   BoardingLockMeta,
@@ -970,6 +971,62 @@ app.post('/trips', async (c) => {
         }),
       );
       // cooldown skip — 아래 getTrip / isSameSession 경로로 정상 진행
+    } else if (recentlyEnded.endReason === 'destination' && incoming.waypoints.length > 0) {
+      // #2912 — destination-recovery 좁은 예외. 10/7 아침 사고(S12, #2907/PR #2911)에서 backend가
+      // trip을 destination으로 조기 종료했는데 사용자는 실제로 도달하지 않았던 사례 — payload가
+      // 완전히 유효하고(waypoints 남음 = 아직 도달하지 않았다는 device 측 주장) 쿨다운이
+      // 무조건 복구를 봉쇄했다. 쿨다운 자체는 제거하지 않는다 — 이 세 조건(①직전 종료 사유가
+      // destination ②incoming waypoints 존재 ③아래 쿼터 미소진)을 모두 만족할 때만 우회한다.
+      // 그 외 사유(eta-missing/expired/push-unrecoverable)는 기존대로 계속 차단(else 분기).
+      // user-delete로 끝난 trip은 `writeTripEndedStatus`가 애초에 호출되지 않아(cleanupTripWithLa의
+      // HTTP DELETE 호출부, options.reason 미지정) 이 tripStatus 마커 자체가 존재하지 않는다 —
+      // 이 분기에 도달조차 하지 않는다.
+      const { allowed, count: bypassCount } = await tryConsumeCooldownBypass(
+        c.env.TRIPS,
+        incoming.token,
+      );
+      if (allowed) {
+        console.log(
+          JSON.stringify({
+            msg: 'trip-recently-ended: bypass cooldown (#2912 destination-recovery)',
+            tokenPrefix: tokenPrefix(incoming.token),
+            endedAt: recentlyEnded.endedAt,
+            endReason: recentlyEnded.endReason,
+            ageMs: Date.now() - recentlyEnded.endedAt,
+            waypointsRemaining: incoming.waypoints.length,
+            bypassCount,
+          }),
+        );
+        // 관측(금지 사항 2 — 우회 발생 시 D1에 사유 기록, 남용/오작동 사후 판정용).
+        await recordTripEvent(c.env.DB, {
+          tokenHash: hashTripToken(incoming.token),
+          kind: 'cooldown-bypass',
+          meta: {
+            endReason: recentlyEnded.endReason,
+            ageMs: Date.now() - recentlyEnded.endedAt,
+            waypointsRemaining: incoming.waypoints.length,
+            bypassCount,
+          },
+        });
+        // cooldown skip — 아래 getTrip / isSameSession 경로로 정상 진행
+      } else {
+        // 쿼터(DESTINATION_COOLDOWN_BYPASS_MAX) 소진 — 같은 token이 짧은 시간에 "destination
+        // 종료 → 우회"를 반복(진짜 race/오작동 신호)한 경우 기존 쿨다운 거부로 fall back한다.
+        console.log(
+          JSON.stringify({
+            msg: 'trip-recently-ended: reject re-register (#1425, #2912 bypass quota exhausted)',
+            tokenPrefix: tokenPrefix(incoming.token),
+            endedAt: recentlyEnded.endedAt,
+            endReason: recentlyEnded.endReason,
+            ageMs: Date.now() - recentlyEnded.endedAt,
+            bypassCount,
+          }),
+        );
+        return c.json(
+          { error: 'trip-recently-ended', reason: recentlyEnded.endReason },
+          400,
+        );
+      }
     } else {
       console.log(
         JSON.stringify({

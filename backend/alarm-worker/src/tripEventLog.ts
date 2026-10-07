@@ -141,6 +141,13 @@ import { captureXEvent } from './sentry';
  *   - `'swap-attempt'`: `attemptVanishSwap`이 threshold 도달로 실제 시도된 tick의 결과(후보
  *     없음/ambiguity로 실패=true, 성공=false) 전이. `meta.failed`.
  * 둘 다 전이 시에만(#2073 quota 보호) append — 발사/advance/lock 판정에는 관여하지 않는다.
+ *
+ * `cooldown-bypass` (#2912) — POST /trips(index.ts)가 `#1425 trip-recently-ended` 쿨다운을
+ * destination-recovery 좁은 예외(직전 종료 사유가 destination이고 incoming waypoints가 남아
+ * 있을 때, `cooldownBypass.ts`의 쿼터 안에서만)로 우회해 재등록을 실제로 허용한 시점에 1건
+ * append한다. `meta`에 `{ endReason, ageMs, waypointsRemaining, bypassCount }`를 싣는다 —
+ * 우회가 남용/오작동(같은 token이 반복적으로 destination 종료→우회를 도는 패턴)인지 사후
+ * 판정하기 위한 관측 전용 kind. fire/advance/lock 판정에는 관여하지 않는다.
  */
 export type TripEventKind =
   | 'sync-received'
@@ -165,7 +172,8 @@ export type TripEventKind =
   | 'route-signature-mismatch'
   | 'leg-resolve-attempt'
   | 'promotion-rejected-uncorroborated'
-  | 'vanish-swap';
+  | 'vanish-swap'
+  | 'cooldown-bypass';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.
