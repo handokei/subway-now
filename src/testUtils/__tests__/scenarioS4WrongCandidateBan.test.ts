@@ -467,16 +467,24 @@ describe('S4 P4 — pickCandidateTrains (position-train enumeration)', () => {
   });
 
   it(
-    '판정(결함, 스펙2) — CandidateTrain은 terminalStation을 전혀 보존하지 않아 이 레이어에서 ' +
-      '조기종착 판정 자체가 불가능하다 (TrainPosition.terminalStationName이 buildCandidate에서 ' +
-      '드롭됨 — src/features/arrival/utils/pickCandidateTrains.ts:90-103)',
+    '픽스(#2914 결함2) — CandidateTrain이 terminalStationName을 보존해 이 레이어에서도 ' +
+      '조기종착 판정이 가능하다 (TrainPosition.terminalStationName을 buildCandidate가 더 이상 ' +
+      '드롭하지 않음 — src/features/arrival/utils/pickCandidateTrains.ts buildCandidate)',
     () => {
       const pickedDown = pickCandidateTrains({ positions, line: '2', direction: 1 });
       const candidate = pickedDown.find((c) => c.trainNo === '3169');
       expect(candidate).toBeDefined();
-      expect(candidate).not.toHaveProperty('terminalStation');
+      expect(candidate?.terminalStationName).toBe('잠실나루');
       expect(Object.keys(candidate as object).sort()).toEqual(
-        ['currentStationName', 'direction', 'line', 'receivedAtMs', 'trainNo', 'trainStatus'].sort(),
+        [
+          'currentStationName',
+          'direction',
+          'line',
+          'receivedAtMs',
+          'terminalStationName',
+          'trainNo',
+          'trainStatus',
+        ].sort(),
       );
     },
   );
