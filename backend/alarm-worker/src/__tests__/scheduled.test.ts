@@ -13596,6 +13596,91 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     },
   );
 
+  // #2920 — A2d와 같은 시점(유예 최초 stamp)에 "하차 확인" 프롬프트를 기존 hop-end 채널
+  // (DISEMBARK_PROMPT_CATEGORY, hopEndKind='disembark')로 재사용해 1회 발사한다. 새 채널/문구
+  // 신설 금지 — 목적지는 다음 leg가 없어(nextLine/nextStation 미전달) i18n hopEndPromptBody가
+  // "{line}호선 {역}에서 내려주세요." 단일 문장으로 자연 축약된다(buildHopEndPromptMessage 기존
+  // 분기, 신규 문구 없음). title은 이슈 본문이 명시한 그대로 "{역}에서 하차하셨나요?".
+  it('A2f (#2920) — 유예 시작 시 하차 확인 프롬프트(hop-end 채널 재사용)가 1회 발사된다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTransferTrip(TOKEN_A2, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: NOW,
+      }),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulFull({ 용마산: [arrivalOnLine('7', '용마산', 0, 1, '7256')] }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-2920-a2f',
+    });
+    expect(stats.destinationConfirmFired).toBe(1);
+    const disembarkCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        try {
+          const body = JSON.parse(call[1].body as string);
+          return body?.body?.kind === 'boarding-prompt' && body?.body?.hopEndKind === 'disembark';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(
+      disembarkCall,
+      'A2f 위반 — 유예 시작 시 하차 확인 프롬프트(hop-end 채널 재사용)가 발사되지 않음',
+    ).toBeDefined();
+    const [, init] = disembarkCall as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.aps.alert.title).toBe('용마산에서 하차하셨나요?');
+    expect(body.aps.category).toBe(DISEMBARK_PROMPT_CATEGORY);
+    // 목적지는 다음 leg가 없다 — 환승 hop-end와 달리 nextLine/nextStation을 전달하지 않는다.
+    expect(body.body.nextLine).toBeUndefined();
+    expect(body.body.nextStation).toBeUndefined();
+  });
+
+  // #2920 거부 케이스 ⓑ — 같은 유예 기간 중(타임아웃 전) cron이 다시 돌아도 하차 확인
+  // 프롬프트가 중복 발사되면 안 된다. `destinationConfirmPendingSince` guard(상단 early return)
+  // 자체가 "트립당 1회"를 보장한다 — 별도 dedup 채널 신설 없음.
+  it('A2g (#2920) — 같은 유예 기간 중 하차 확인 프롬프트가 중복 발사되지 않는다(거부 케이스 ⓑ)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTransferTrip(TOKEN_A2, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: NOW,
+        destinationConfirmPendingSince: NOW,
+      }),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stillWithinGrace = NOW + 60_000;
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulFull({ 용마산: [arrivalOnLine('7', '용마산', 0, 1, '7256')] }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => stillWithinGrace,
+      generatePushId: () => 'p-2920-a2g',
+    });
+    const disembarkCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find(
+      (call) => {
+        try {
+          const body = JSON.parse(call[1].body as string);
+          return body?.body?.kind === 'boarding-prompt' && body?.body?.hopEndKind === 'disembark';
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(disembarkCall, 'A2g 위반 — 유예 중 하차 확인 프롬프트가 중복 발사됨').toBeUndefined();
+  });
+
   // #2900 — A2d의 짝 테스트: 질문 전환 후 타임아웃이 경과하면(사용자 응답 유무와 무관) 거부
   // 케이스 ⓒ대로 반드시 종료한다 — "영구 잔존"은 B안의 실패 모드라 금지된다.
   it('A2e (#2900) — 확인 질문 타임아웃 경과 시 응답 없이도 종료한다(영구 잔존 금지, 거부케이스 ⓒ)', async () => {
