@@ -30,8 +30,13 @@ import type { LineNumber } from '../../../shared/types/station';
  *    lock.trainCode와 다른 trainNo이면서 lock leg의 진행 방향(updnLine)과 반대인 후보를
  *    제외한 횟수. 10/3 한양대 d=1589m 8178(반대 방향) 오채택 evidence — pickCandidateTrains가
  *    enumerate 단계에서 direction을 몰라 통과시킨 후보를 여기서 한 번 더 차단한다.
+ *  - `candidate-direction-unresolved` (#2914): lock이 추적 중인 line인데 lock leg의 진행
+ *    방향(resolveTripDirection)을 해석할 수 없어(route/destination 없음 등) 전체 후보를
+ *    무효화한 횟수(trainCode 정확 일치만 예외). 양방향 merge 재발 방지(#2696 불변식 ②).
+ *  - `candidate-early-terminus` (#2914): lock.trainCode와 다른 trainNo이면서 종착역이
+ *    사용자 목적지에 도달하지 못해 제외한 횟수(10/3 성수 3174 내선·성수종착 패턴).
  *
- * 다섯 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
+ * 일곱 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
  * 신호로 진단 시점에 비교 관찰이 유효. DebugModal에서 reason 키별 분포 표시.
  */
 export const CANDIDATE_REJECT_BUFFER_CAPACITY = 50;
@@ -42,7 +47,9 @@ export type CandidateRejectReason =
   | 'candidate-env'
   | 'gps-stale'
   | 'candidate-arc'
-  | 'candidate-opposite-direction';
+  | 'candidate-opposite-direction'
+  | 'candidate-direction-unresolved'
+  | 'candidate-early-terminus';
 
 export interface CandidateRejectEntry {
   kind: 'candidate-reject';
