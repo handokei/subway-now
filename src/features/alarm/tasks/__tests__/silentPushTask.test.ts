@@ -1954,12 +1954,30 @@ describe('silentPushTask', () => {
       // (station,kind)를 "발사됨"으로 마킹하면 recentLocalStationFires(#2122 dedup store)에 phantom
       // 플래그가 남고, 뒤이어 도착하는 backend의 실제 visible arrival push가 FG에서
       // isRecentLocalAuxFireDuplicate(stationNotification.ts)에 의해 오억제된다.
-      it('kind=intermediate → cancelPrescheduledByStationKind는 호출하되 markLocalStationFired는 호출하지 않는다 (발사 없이 mark 금지)', async () => {
+      //
+      // #2916 (ADR-040 1단계 D) — kind=intermediate의 cancelPrescheduledByStationKind('station-passed')
+      // 호출은 제거됐다. AlarmLocalKind('transfer'|'destination')에 'station-passed'가 없고,
+      // ADR-026 Decision 2로 station-passed 사전예약 등록 자체가 삭제돼 이 kind의 presched 알림은
+      // 애초에 존재하지 않는다 — 매번 "없는 것을 취소"하는 OS 조회였다(no-op 제거).
+      it('kind=intermediate → cancelPrescheduledByStationKind를 호출하지 않는다 (존재하지 않는 station-passed presched 취소 제거, #2916)', async () => {
         await handleSilentPush(
           payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '건대입구' }),
         );
-        expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('건대입구', 'station-passed');
+        expect(mockCancelPrescheduledByStationKind).not.toHaveBeenCalled();
         expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      });
+
+      // 회귀 가드 — transfer/destination의 cancelPrescheduledByStationKind 호출은 #2916 범위 밖(무변경).
+      it('kind=transfer/destination → cancelPrescheduledByStationKind는 여전히 호출된다 (무변경 회귀 가드, #2916)', async () => {
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', nextWaypoint: '왕십리' }),
+        );
+        expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('왕십리', 'transfer');
+        mockCancelPrescheduledByStationKind.mockClear();
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', nextWaypoint: '잠실' }),
+        );
+        expect(mockCancelPrescheduledByStationKind).toHaveBeenCalledWith('잠실', 'destination');
       });
 
       it('kind=transfer/destination도 markLocalStationFired를 호출하지 않는다', async () => {
