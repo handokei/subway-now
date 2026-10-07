@@ -289,6 +289,32 @@ export function boardingPromptDedupKey(
 }
 
 /**
+ * #2898 배포 경계 하위호환 — `firedTrainCodes`에 이 fix 이전 포맷(":" 없는 bare trainCode,
+ * phase 정보 없음)인 항목이 섞여 있을 수 있다(배포 순간 in-flight였던 trip). 그런 trip이
+ * 이 fix 이후 처음 평가될 때, 새 dedupKey(`${trainCode}:${decision}`)와 구형식 bare 키는
+ * 문자열이 달라 `includes` 정확매치로는 "이미 쐈다"를 못 잡는다 — 구코드가 trainCode만
+ * 보고(phase 무관) 차단했던 것과 달리 새 코드가 그 보호를 놓치면, 똑같은 phase를 다시
+ * 관측했을 때(= 진행 없음, 진짜 중복) 최악의 경우 1회 더 발사할 수 있다.
+ *
+ * 그 위험을 없애기 위해, exact-duplicate 판정은 구형식 항목을 만나면 phase를 모르니
+ * trainCode 일치만으로 보수적으로 "중복"으로 간주한다(과소차단보다 과차단이 안전 — 구코드와
+ * 동일 엄격도). 이 fix 이후 기록되는 항목은 전부 신형식(":" 포함)이라, 정상 배포 완료 후에는
+ * 이 분기가 더 이상 실질적으로 쓰이지 않는다(해당 trip이 만료/삭제되면 자연 소멸하는
+ * 일시적 하위호환 경로).
+ */
+export function isExactDuplicateFire(
+  firedTrainCodes: readonly string[] | undefined,
+  selectedTrainCode: string | null,
+  decision: BoardingFireDecision['decision'],
+): boolean {
+  const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
+  const token = resolveTrainCodeToken(selectedTrainCode);
+  return (firedTrainCodes ?? []).some((key) =>
+    key.includes(':') ? key === dedupKey : key === token,
+  );
+}
+
+/**
  * #2898 (사용자 2회 지적 — 탑승 전엔 프롬프트가 뜨고 정작 실제 도착 시엔 아무것도 안 옴) — 같은
  * trainCode에 대해 phase(approaching/imminent 등)를 불문하고 허용하는 최대 발사 횟수.
  * approaching 1회 + 실제 도착(arrival) 재확인 1회까지만 — 그 열차에 대해 3번째 발사는 하지

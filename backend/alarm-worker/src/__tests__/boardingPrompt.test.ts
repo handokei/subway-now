@@ -9,6 +9,7 @@ import {
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
+  isExactDuplicateFire,
   markPromptFired,
   markPromptSilenced,
   MAX_FIRES_PER_TRAIN_CODE,
@@ -213,6 +214,42 @@ describe('canBypassRepeatIntervalForTrainTransition (#2898)', () => {
   // 동작한다(trainCodeFireCount와 동일 하위 호환).
   it('구형식 마지막 키(":" 없음)도 토큰 전체로 비교한다(배포 경계 하위 호환)', () => {
     expect(canBypassRepeatIntervalForTrainTransition(['U1'], 'U1')).toBe(true);
+  });
+});
+
+// #2898 배포 경계 하위호환 — fix 배포 순간 in-flight였던 trip은 firedTrainCodes에 구형식
+// (':' 없는 bare trainCode, phase 정보 없음) 항목을 가질 수 있다. exact-duplicate 판정이
+// 새 dedupKey(`trainCode:decision`)로만 정확매치하면 그 항목을 못 알아봐 똑같은 phase를
+// 다시 관측해도(=진행 없음, 진짜 중복) 재발사를 허용할 위험이 있다 — 구형식을 만나면
+// trainCode만으로 보수적으로 "중복"으로 간주해 그 위험을 없앤다.
+describe('isExactDuplicateFire (#2898, 배포 경계 하위호환)', () => {
+  it('firedTrainCodes가 비어있으면 중복 아님', () => {
+    expect(isExactDuplicateFire(undefined, 'U1', 'imminent')).toBe(false);
+    expect(isExactDuplicateFire([], 'U1', 'imminent')).toBe(false);
+  });
+
+  it('신형식 — 같은 trainCode라도 phase가 다르면 중복 아님(재확인 허용, 스펙 ①)', () => {
+    expect(isExactDuplicateFire(['U1:approaching'], 'U1', 'imminent')).toBe(false);
+  });
+
+  it('신형식 — trainCode+phase가 완전히 같으면 중복', () => {
+    expect(isExactDuplicateFire(['U1:imminent'], 'U1', 'imminent')).toBe(true);
+  });
+
+  it('구형식(":" 없음) — phase 무관 trainCode 일치만으로 보수적으로 중복 처리(배포 경계)', () => {
+    // 구코드는 trainCode만 보고 차단했다 — 구형식 항목을 만나면 phase가 뭐였는지 알 수 없으니
+    // 지금 phase와 무관하게 "이미 이 trainCode로 쐈다"로 보고 차단한다(과차단이 안전).
+    expect(isExactDuplicateFire(['U1'], 'U1', 'imminent')).toBe(true);
+    expect(isExactDuplicateFire(['U1'], 'U1', 'approaching')).toBe(true);
+  });
+
+  it('구형식(":" 없음) — trainCode 자체가 다르면 중복 아님', () => {
+    expect(isExactDuplicateFire(['U1'], 'U2', 'imminent')).toBe(false);
+  });
+
+  it('selectedTrainCode=null — null-trainCode 토큰 기준으로 신/구형식 동일 로직 적용', () => {
+    expect(isExactDuplicateFire(['null-trainCode:imminent'], null, 'imminent')).toBe(true);
+    expect(isExactDuplicateFire(['null-trainCode:approaching'], null, 'imminent')).toBe(false);
   });
 });
 

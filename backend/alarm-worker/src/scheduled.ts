@@ -39,6 +39,7 @@ import {
   evaluateBoardingPromptRepeatGate,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
+  isExactDuplicateFire,
   isNearOrigin,
   markPromptFired,
   pickAutoTrainCode,
@@ -7630,15 +7631,17 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     // #2130 A4와 동일 ledger — 같은 trainCode가 이미 발사됐으면(GPS 경로가 먼저 쐈을 수 있음)
     // 재발사하지 않는다. #2880 — selectedTrainCode=null(후보 특정 실패)일 때도
     // `boardingPromptDedupKey`의 phase fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
+    // #2898 — `isExactDuplicateFire`는 배포 경계에 남아있을 수 있는 구형식(":" 없는 bare
+    // trainCode) `firedTrainCodes` 항목도 안전하게 처리한다(phase 모르면 trainCode만으로
+    // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
     shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
       const firedTrainCodes = trip.boardingPromptState?.firedTrainCodes;
-      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
-      if (firedTrainCodes?.includes(dedupKey)) {
+      if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.originGpsFreeBoardingPromptBlocked += 1;
         log('origin-boarding-prompt-gps-free: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
-          dedupKey,
+          dedupKey: boardingPromptDedupKey(selectedTrainCode, decision),
           firedTrainCodes,
         });
         return false;
@@ -7940,15 +7943,17 @@ export async function maybeFireLegBoardingPrompt(
     // (예: 사용자 실열차가 새로 후보에 들어옴) selectedTrainCode가 달라져 정상 통과한다.
     // #2880 — selectedTrainCode=null(후보 특정 실패)일 때도 `boardingPromptDedupKey`의 phase
     // fallback 키로 dedup을 건너뛰지 않는다(fail-open 차단).
+    // #2898 — `isExactDuplicateFire`는 배포 경계에 남아있을 수 있는 구형식(":" 없는 bare
+    // trainCode) `firedTrainCodes` 항목도 안전하게 처리한다(phase 모르면 trainCode만으로
+    // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
     shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
       const firedTrainCodes = trip.legBoardingPromptState?.firedTrainCodes;
-      const dedupKey = boardingPromptDedupKey(selectedTrainCode, decision);
-      if (firedTrainCodes?.includes(dedupKey)) {
+      if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.legBoardingPromptBlocked += 1;
         log('leg-boarding-prompt: skipped train duplicate', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
-          dedupKey,
+          dedupKey: boardingPromptDedupKey(selectedTrainCode, decision),
           firedTrainCodes,
         });
         return false;
