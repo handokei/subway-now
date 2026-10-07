@@ -14863,11 +14863,28 @@ describe('S-2921 (#2921) — lockless leg 전진 후보 제한', () => {
   // 않기로 했으므로(9/18 실측 재생이 적용 시 과차단을 반증 — 위 `runLocklessTransfer`/
   // `runLocklessIntermediate` 호출부 주석 참고) 이 틈은 **의도적으로 남긴 잔존 위험**이다.
   //
+  // 추적 이슈: **#2926** ("lockless intermediate/transfer가 '단일 오열차'로 전진 가능 —
+  // 도보창 게이트는 과차단 때문에 destination에만 적용됨").
+  //   ⓐ 현재 동작 — 올바른 방향으로 가는 단일 trainCode가 사용자의 실제 탑승 열차가
+  //      아니어도(사용자가 아직 타지 않았어도) intermediate가 통과(waypoint shift)된다.
+  //      ⓒ는 "같은 arvlCd 우선순위 tier에 서로 다른 trainCode가 2개 이상"일 때만 모호로
+  //      보고 거부하므로, 후보가 1개뿐이면(틀렸어도) 그대로 통과한다.
+  //   ⓑ 지금 못 고치는 이유 — ⓑ(도보 시간창, `isLegAdvanceWindowOpen`)를 transfer/
+  //      intermediate에도 적용하면 닫을 수 있어 보이지만, 9/18 실측 재생
+  //      (`replay_20260918_boarding_confirm.test.ts`)으로 **실증**했듯 건대입구 환승 직후
+  //      바로 이어지는 어린이대공원/군자/중곡 통과 push가 바로 그 도보 창 안에서 실제로
+  //      발생해야 트립이 완주한다 — 거기에 ⓑ를 걸면 정상 트립을 과차단한다(거부 케이스
+  //      ⓓ 위반, `git stash` 격리로 확인됨). 과차단 없이 이 갭을 닫으려면 "방향만이 아니라
+  //      사용자 위치/시간과 더 정교하게 결합된 새 판정"이 필요하고, 그건 이 PR(#2921)
+  //      범위를 넘는 별도 설계 작업이다.
+  //   ⓒ #2926 해결 후 — 이 `it.fails`를 일반 `it`으로 승격한다(S11 #2893과 동일 절차,
+  //      승격 자체가 "동작이 바뀌었다"는 증거 — lessons.md L18).
+  //
   // CLAUDE.md 불변식 승격 룰(L18, docs/agents/invariants.md) — load-bearing 불변식을 주석
   // 에만 남기지 않는다. S11(#2893)의 `it.fails` 선례와 동일하게, "이상적 동작(사용자가 타지
   // 않은 단일 열차로는 intermediate가 통과되면 안 된다)"은 아직 구현되지 않았다는 사실을
-  // 코드에 고정한다 — 이 테스트가 통과(동작이 바뀜)하게 되면 일반 `it`으로 승격해야 한다는
-  // 신호다. 상세: `docs/agents/invariants.md` "scheduled.ts — intermediate/transfer ⓑ 미적용".
+  // 코드에 고정한다. 상세: `docs/agents/invariants.md` "scheduled.ts — intermediate/transfer
+  // ⓑ 미적용"(#2926).
   it.fails(
     '(알려진 잔존 위험, 미해결) leg 시작 직후 단일 틀린 trainCode의 intermediate 통과를 ⓒ는 막지 못한다',
     async () => {
