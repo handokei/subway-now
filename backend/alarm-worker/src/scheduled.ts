@@ -944,6 +944,19 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   destinationConfirmTimedOut: number;
   /**
+   * #2921 — lockless leg 전진(transfer/destination/intermediate) 후보 제한이 "leg가 막
+   * 시작돼 사용자가 아직 탑승할 수 없었던 시간 창"(`legBoardingEligibleAt` 도보 게이트,
+   * #2511/#2515와 동일 신호 재사용)에서 advance를 보류한 횟수. 10/7 사고(leg-resolve pending
+   * 3.3초 뒤 destination-arrived)가 이 분기로 흡수됐다는 증거 — 0건이면 모든 leg 전진이
+   * 도보 창이 열린 뒤에만 일어났다는 뜻.
+   */
+  legAdvanceWindowBlocked: number;
+  /**
+   * #2921 — direction-필터링된 pool 안에서 "곧 도착"(ENTERING/ARRIVED) 신호를 내는 서로 다른
+   * trainCode가 2개 이상이라 임의 선택을 거부하고 advance를 보류한 횟수(거부 케이스 ⓒ).
+   */
+  legAdvanceAmbiguous: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -1382,6 +1395,8 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     locklessDestinationAdvanced: 0,
     destinationConfirmFired: 0,
     destinationConfirmTimedOut: 0,
+    legAdvanceWindowBlocked: 0,
+    legAdvanceAmbiguous: 0,
     legBoardingPromptFired: 0,
     legBoardingPromptSkippedWalking: 0,
     legBoardingPromptBlocked: 0,
@@ -6467,6 +6482,88 @@ export async function maybeReschedulePush(
 }
 
 /**
+ * #2921 (#2900 결정 D) — lockless leg 전진(transfer/destination/intermediate) 후보 제한.
+ * "사용자가 탔을 수 있는 열차"로 신호 풀을 좁힌다 — #2875(vanish swap 후보창)·#2892(confirm/
+ * leg-resolve 후보창)가 이미 두 번 적용한 "`inferLegDirection` 방향 추론 + `isUp` 필터" 패턴을
+ * lockless leg 전진에 세 번째로 적용한다(이 두 선례는 PositionEntry 기반이라 직접 재사용하지
+ * 않고, 같은 추론 함수(`inferLegDirection`)만 공유 — ArrivalEntry는 별도 shape).
+ *
+ * leg origin은 `trip.currentLegAnchor`(leg 2+, 환승 후 앵커)가 현재 waypoint.line과 일치하면
+ * 그 값을, 아니면 `trip.originStationName`(leg 1)을 쓴다. 둘 다 없거나 `inferLegDirection`이
+ * 추론 불가(비단조 노선 등)면 null — 기존 양방향 허용 동작 그대로 유지한다(거부 케이스 ⓓ
+ * 과차단 금지 — 추론 불가 노선은 지금까지와 동일하게 어느 방향 신호든 받아들인다).
+ */
+function resolveLegDirectionForWaypoint(trip: Trip, waypoint: Waypoint): 'up' | 'down' | null {
+  const originStation =
+    trip.currentLegAnchor?.line === waypoint.line
+      ? trip.currentLegAnchor.boardingStation
+      : trip.originStationName;
+  if (originStation === undefined) return null;
+  return inferLegDirection(waypoint.line, originStation, waypoint.stationName);
+}
+
+/**
+ * #2921 거부 케이스 ⓐ — direction 추론 가능하면 arrivals를 그 방향으로 좁힌다(반대 방향
+ * 열차가 advance를 발사하지 못하게 차단). 추론 불가(null)면 전체 arrivals 그대로 반환한다
+ * (기존 동작 유지).
+ */
+function restrictArrivalsByLegDirection(
+  trip: Trip,
+  waypoint: Waypoint,
+  arrivals: readonly ArrivalEntry[],
+): readonly ArrivalEntry[] {
+  const direction = resolveLegDirectionForWaypoint(trip, waypoint);
+  if (direction === null) return arrivals;
+  const wantUp = direction === 'up';
+  return arrivals.filter((a) => a.isUp === wantUp);
+}
+
+/**
+ * #2921 거부 케이스 ⓑ — leg가 막 시작돼 사용자가 아직 물리적으로 탑승할 수 없었던 시간 창을
+ * 걸러낸다. 신규 게이트가 아니라 #2511/#2515가 이미 도입한 도보시간 게이트
+ * (`trip.legBoardingEligibleAt`, leg anchor 부착과 항상 함께 stamp —
+ * `stampCurrentLegAnchor`/index.ts tap-advance 둘 다 원자적으로 같이 쓴다)를 재사용할 뿐이다.
+ * leg 1(currentLegAnchor 없음 또는 다른 line)에는 적용하지 않는다 — 기존 동작 유지(과차단
+ * 금지).
+ *
+ * **`runLocklessDestination`에만 적용한다** — leg 중간의 transfer/intermediate 전진에는
+ * 적용하지 않는다(해당 함수들의 호출부 주석 참고). 9/18 실측 재생
+ * (`replay_20260918_boarding_confirm.test.ts`)이 반증했다: 환승 직후 바로 이어지는
+ * intermediate 통과 push가 이 시간창 안에서 발생해야 트립이 끝까지 완주하는 실제 사례가
+ * 있었다 — 중간 전진에 이 게이트를 걸면 정상 트립을 막는 과차단(거부 케이스 ⓓ)이 된다.
+ * 10/7 사고(leg-resolve pending 3.3초 뒤 destination-arrived **종료**)는 destination 확정의
+ * 문제였으므로, 시간창 게이트의 적용 범위를 그 지점으로 좁혔다 — "fixture는 실측이고 불변,
+ * 통과시키려 코드를 조정"이 아니라 게이트 범위 자체를 스펙 의도(목적지 확정 보호)에 맞게
+ * 정정한 것이다.
+ */
+function isLegAdvanceWindowOpen(trip: Trip, waypoint: Waypoint, now: number): boolean {
+  if (trip.currentLegAnchor?.line !== waypoint.line) return true;
+  const eligibleAt = trip.legBoardingEligibleAt;
+  if (eligibleAt === undefined) return true;
+  return now >= eligibleAt;
+}
+
+/**
+ * #2921 거부 케이스 ⓒ — direction-필터링된 pool 안에서 "곧 도착"(ENTERING/ARRIVED) 신호를
+ * 내는 서로 다른 trainCode가 2개 이상이면 모호 — 임의로 하나를 골라 전진하지 않는다(#2875
+ * 이슈 본문의 동률/복수 후보 ambiguity 정책과 동형). `pickBestArrivalSignal`의 line-매칭
+ * fallback pool 산출과 동일 규칙을 그대로 반복한다(그 함수는 트레인코드를 노출하지 않아
+ * 재사용이 불가능해 의도적으로 분리 — 재사용 대신 병렬 구현).
+ */
+function hasAmbiguousLegFireCandidates(
+  arrivals: readonly ArrivalEntry[],
+  waypoint: Waypoint,
+): boolean {
+  const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, waypoint.line));
+  const pool = matchingLine.length > 0 ? matchingLine : arrivals;
+  const firing = pool.filter(
+    (a) => a.arvlCd === ARRIVAL_CODE.ENTERING || a.arvlCd === ARRIVAL_CODE.ARRIVED,
+  );
+  const distinctTrainCodes = new Set(firing.map((a) => a.trainCode));
+  return distinctTrainCodes.size > 1;
+}
+
+/**
  * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 통과하도록 하는 lock-
  * independent 헬퍼. C 토글(`infoModeEnabled`) ON/OFF 둘 다 대상이다 — dispatch에서
  * `runLocklessIntermediate`(C ON, intermediate 전용) / (C OFF, intermediate 전용 — #2766에서
@@ -6501,8 +6598,17 @@ async function runLocklessTransfer(
 ): Promise<boolean> {
   if (waypoint.kind !== 'transfer') return false;
 
+  // #2921 — 거부 케이스 ⓑ(시간창)는 `runLocklessDestination`에만 적용한다(아래 주석 참고).
+  // 이 함수(leg 중간의 환승 통과)에는 적용하지 않는다 — 9/18 실측 재생
+  // (`replay_20260918_boarding_confirm.test.ts`)이 반증했다: 건대입구 환승 직후
+  // `legBoardingEligibleAt`이 stamp된 뒤에도 바로 이어지는 어린이대공원/군자/중곡 통과
+  // push가 실제로 그 도보 창 안에서 발생해야 트립이 끝까지 완주한다 — 여기에 시간창 게이트를
+  // 걸면 정상 트립이 막혀 과차단(거부 케이스 ⓓ)이 된다. #2323/#2720 주석의 "새 게이트
+  // 금지" 지시와도 정합 — direction 후보 제한(ⓐ)만 추가하고 시간창은 추가하지 않는다.
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
+  const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
     await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'no-arvlcd', now);
@@ -6514,6 +6620,13 @@ async function runLocklessTransfer(
   const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
   if (!fires) {
     await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'not-fires', now);
+    return false;
+  }
+  // #2921 거부 케이스 ⓒ — 서로 다른 trainCode가 2개 이상 동시에 fire 신호를 내면 모호 —
+  // 임의로 하나를 골라 전진하지 않는다.
+  if (hasAmbiguousLegFireCandidates(candidateArrivals, waypoint)) {
+    stats.legAdvanceAmbiguous += 1;
+    await recordTransferAdvanceTransition(env, trip, waypoint, ssot, 'lockless', 'ambiguous-candidates', now);
     return false;
   }
 
@@ -6641,14 +6754,29 @@ async function runLocklessDestination(
     return true;
   }
 
+  // #2921 거부 케이스 ⓑ — leg 시작 직후 도보 창 안이면 후보창이 아직 열리지 않은 것으로 보고
+  // advance 판정 자체를 보류한다(기존 lockMissing/LA heartbeat 경로로 fallthrough).
+  if (!isLegAdvanceWindowOpen(trip, waypoint, now)) {
+    stats.legAdvanceWindowBlocked += 1;
+    return false;
+  }
+
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
+  const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
     return false;
   }
   const fires = signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
   if (!fires) return false;
+  // #2921 거부 케이스 ⓒ — 서로 다른 trainCode가 2개 이상 동시에 fire 신호를 내면 모호 —
+  // 임의로 하나를 골라 전진/종료하지 않는다.
+  if (hasAmbiguousLegFireCandidates(candidateArrivals, waypoint)) {
+    stats.legAdvanceAmbiguous += 1;
+    return false;
+  }
 
   // #2900 거부 케이스 ⓕ — 증거가 없어도 도착 알림은 즉시 발사한다. 증거가 있으면(아래
   // else 경로) 알림 + 실제 종료가 기존처럼 동시에 일어난다. 증거가 없으면 알림만 지금 보내고,
@@ -6739,11 +6867,17 @@ export async function runLocklessIntermediate(
     trip.stationPhase = fusion.phaseState;
     dirty = true;
   }
+  // #2921 — 거부 케이스 ⓑ(시간창)는 `runLocklessDestination`에만 적용한다. intermediate
+  // "통과" push에는 적용하지 않는다 — 9/18 실측 재생(`replay_20260918_boarding_confirm.test.ts`)이
+  // 반증했다: 환승 직후 바로 이어지는 intermediate 통과 push가 도보 창 안에서 발생해야 트립이
+  // 끝까지 완주한다(위 `runLocklessTransfer`의 동일 주석 참고, 과차단 금지 ⓓ).
   // #1729 paradigm shift — maybeBindLocklessTrainCode(Path B') 제거됨.
   // lockless trip은 boardingPrompt push 경로로 사용자 인지 후 BoardingTrainList에서 명시 탭.
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
+  const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
   // #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 차단 (환승 후 stale 신호 방지).
-  const signal = pickBestArrivalSignal(arrivals, waypoint, deps.archFlag);
+  const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
     // #2027 — line mismatch 로 인해 archFlag='on' 에서 null 이 반환된 경우 skip reason stamp.
@@ -6762,6 +6896,13 @@ export async function runLocklessIntermediate(
   const fires =
     signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
   if (!fires) {
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #2921 거부 케이스 ⓒ — 서로 다른 trainCode가 2개 이상 동시에 fire 신호를 내면 모호 —
+  // 임의로 하나를 골라 통과 처리하지 않는다.
+  if (hasAmbiguousLegFireCandidates(candidateArrivals, waypoint)) {
+    stats.legAdvanceAmbiguous += 1;
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }

@@ -191,7 +191,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -240,6 +240,10 @@ function makeArvlCdFireSeoul(
   seconds: number,
   arvlCd: number | null,
   trainCode = '7246',
+  // #2921 — 기존 18개 호출자는 전부 방향 무관(currentLegAnchor 미설정 또는 비단조 노선)이라
+  // 기본값 '상행'(isUp=true)을 유지해 100% 무변경. direction-필터링 후보창을 테스트하는 신규
+  // 호출자만 명시적으로 isUp을 override한다.
+  isUp = true,
 ): SeoulArrivalClient {
   return new SeoulArrivalClient({
     apiKey: 'K',
@@ -252,7 +256,7 @@ function makeArvlCdFireSeoul(
             {
               barvlDt: String(seconds),
               recptnDt: '',
-              updnLine: '상행',
+              updnLine: isUp ? '상행' : '하행',
               trainLineNm: stationName,
               btrainNo: trainCode,
               subwayNm: '지하철7호선',
@@ -14748,6 +14752,13 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
   });
 });
 
+// #2921 — S11과 S-2921(이 파일 하단)이 공유하는 "trip-end가 D1 trip_events에 기록됐는가"
+// 추출 헬퍼. 모듈 스코프의 기존 `makeFireLogDb`(#2343)를 그대로 재사용한다(중복 구현 금지).
+function findTripEndInsert(inserts: unknown[][]): unknown[] | undefined {
+  // bind 인자 순서: [tokenHash, ts, kind, station, line, meta]
+  return inserts.find((args) => args[2] === 'trip-end');
+}
+
 // S11 (#2893) — 사용자 탑승 증거 없이 목적지 도착을 확정하면 안 된다.
 //
 // 배경: 10/7 아침 트립(id154) 06:48:28 `leg-resolve-attempt`가 pending(=탑승 미확정, trainCode
@@ -14762,26 +14773,7 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
 //   2. 탑승 증거가 있는 상태에서 열차가 목적지에 도착하면 정상 종료한다(과차단 금지 — 거부 케이스).
 //   3. 종료 시 D1 trip_events(kind='trip-end')에 종료 사유가 남는다.
 describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구한다', () => {
-  function makeS11FireLogDb(): { db: D1Database; inserts: unknown[][] } {
-    const inserts: unknown[][] = [];
-    const db = {
-      prepare: () => ({
-        bind: (...args: unknown[]) => {
-          inserts.push(args);
-          return {
-            run: async () => ({ success: true }),
-            first: async () => null,
-          };
-        },
-      }),
-    } as unknown as D1Database;
-    return { db, inserts };
-  }
-
-  function findTripEndInsert(inserts: unknown[][]): unknown[] | undefined {
-    // bind 인자 순서: [tokenHash, ts, kind, station, line, meta]
-    return inserts.find((args) => args[2] === 'trip-end');
-  }
+  const makeS11FireLogDb = makeFireLogDb;
 
   // 환승 후 lock 해제된 leg-2 — 성수에서 환승해 다음 역(destination) 뚝섬으로 향하는 구간.
   // 성수는 이미 통과(waypoints에서 shift됨)해 남은 waypoint는 뚝섬(destination) 1개 — #2720
@@ -14829,7 +14821,10 @@ describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구�
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv, undefined, db), {
       // '다른 열차'(2099) — 사용자가 어느 열차에도 탑승 확정되지 않은 상태에서 관측된 신호.
-      seoul: makeArvlCdFireSeoul('뚝섬', 0, 1, '2099'),
+      // #2921 — isUp=false(하행/외선): 성수→뚝섬 leg의 진행 방향(inferLegDirection 실측,
+      // forward arc=42>backward arc=1 → 'down')과 맞춰야 이 테스트의 의도("같은 방향이지만
+      // 다른 trainCode")가 #2921의 direction 후보창 필터에 걸러지지 않고 그대로 검증된다.
+      seoul: makeArvlCdFireSeoul('뚝섬', 0, 1, '2099', false),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -14905,6 +14900,252 @@ describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구�
     const meta = JSON.parse((tripEndRow as unknown[])[5] as string) as { reason?: string };
     expect(meta.reason).toBe('destination-arrived');
   });
+});
+
+// S-2921 (#2921, #2900 결정 D) — lockless leg 전진·목적지 확정은 "사용자가 탔을 수 있는 열차"
+// 후보로 제한한다. #2875(vanish swap)·#2892(confirm/leg-resolve)가 이미 두 번 적용한 후보창
+// 패턴(`inferLegDirection` 방향 추론 + `isUp` 필터, `legBoardingEligibleAt` 도보 게이트)을
+// lockless leg 전진(`runLocklessTransfer`/`runLocklessDestination`/`runLocklessIntermediate`)에
+// 세 번째로 적용한다.
+//
+// S11(위, #2893/#2900)은 "탑승 증거가 전혀 없는" 경로를 종료 유예로 이미 막았다 — 본 describe는
+// **증거가 있어도(lockEverAttached=true)** candidate 제한 자체가 반대 방향/도보 시간창 밖/
+// 모호 후보를 걸러내는지를 검증한다(증거 유무와 독립적인 레이어 — S11의 보수적 defer 분기를
+// 거치지 않고 direct-advance 분기로 바로 진입시켜야 이 레이어의 결함이 가려지지 않는다).
+describe('S-2921 (#2921) — lockless leg 전진 후보 제한', () => {
+  // 7호선 중곡(7-016)→군자(7-017) leg-2. 비역전 monotonic 노선 — 실측 공식(id 증가=하행)으로
+  // from.id(016) < to.id(017) → 'down'(하행). isUp=false가 정방향, isUp=true는 반대 방향.
+  function makeLeg2EvidenceTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 's2921-destination',
+      route: {
+        type: 'transfer', fromLine: '7', toLine: '7', transferName: '중곡',
+        stopsToTransfer: 0, stopsFromTransfer: 1,
+      },
+      destination: '군자',
+      waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+      currentLegAnchor: { boardingStation: '중곡', line: '7' },
+      legBoardingEligibleAt: NOW,
+      // 탑승 증거 있음 — S11의 "증거 없음" defer 분기가 아니라 direct-advance 분기를 탄다.
+      lockEverAttached: true,
+      ...overrides,
+    });
+  }
+
+  it('ⓐ 반대 방향 열차의 도착 신호로는 destination advance가 발사되지 않는다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLeg2EvidenceTrip());
+    const { db, inserts } = makeFireLogDb();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      // isUp=true(상행) — 중곡→군자 leg의 실제 진행 방향(하행)과 반대.
+      seoul: makeArvlCdFireSeoul('군자', 0, 0, '9999', true),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-s2921-a',
+    });
+    expect(
+      stats.locklessDestinationAdvanced,
+      'ⓐ 위반 — 반대 방향 열차로 destination advance 발사됨',
+    ).toBe(0);
+    const stored = await kv.get('trip:s2921-destination');
+    expect(stored, 'ⓐ 위반 — 반대 방향 열차 신호로 trip이 종료(KV 삭제)됨').not.toBeNull();
+    expect(
+      findTripEndInsert(inserts),
+      'ⓐ 위반 — 반대 방향 열차 신호로 trip-end가 기록됨',
+    ).toBeUndefined();
+  });
+
+  it('ⓑ leg 시작 직후(도보 창 안)의 도착 신호로는 destination advance가 발사되지 않는다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      // 도보 게이트가 아직 5분 남음 — 10/7 사고(leg-resolve pending 3.3초 뒤 destination-arrived)
+      // 재구성: leg 시작 직후라 사용자가 물리적으로 탑승할 수 없었던 시간 창.
+      makeLeg2EvidenceTrip({ legBoardingEligibleAt: NOW + 5 * 60_000 }),
+    );
+    const { db, inserts } = makeFireLogDb();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      // 방향은 맞지만(하행) 도보 창이 아직 안 열렸다.
+      seoul: makeArvlCdFireSeoul('군자', 0, 0, '9999', false),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-s2921-b',
+    });
+    expect(
+      stats.locklessDestinationAdvanced,
+      'ⓑ 위반 — 도보 창 안인데 destination advance 발사됨',
+    ).toBe(0);
+    expect(
+      stats.legAdvanceWindowBlocked,
+      'ⓑ 위반 — legAdvanceWindowBlocked 카운터가 증가하지 않음',
+    ).toBe(1);
+    const stored = await kv.get('trip:s2921-destination');
+    expect(stored, 'ⓑ 위반 — 도보 창 안의 신호로 trip이 종료됨').not.toBeNull();
+    expect(findTripEndInsert(inserts), 'ⓑ 위반 — 도보 창 안의 신호로 trip-end가 기록됨').toBeUndefined();
+  });
+
+  it('ⓒ 서로 다른 trainCode가 동시에 도착 신호를 내면 모호 후보로 보류한다(임의 선택 금지)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLeg2EvidenceTrip());
+    const { db, inserts } = makeFireLogDb();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const seoul = makeSeoul([
+      { destination: '', arrivalSeconds: 0, trainCode: 'A', isUp: false, subwayNm: '지하철7호선', arvlCd: 0 },
+      { destination: '', arrivalSeconds: 0, trainCode: 'B', isUp: false, subwayNm: '지하철7호선', arvlCd: 0 },
+    ]);
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-s2921-c',
+    });
+    expect(
+      stats.locklessDestinationAdvanced,
+      'ⓒ 위반 — 모호 후보인데 destination advance 발사됨',
+    ).toBe(0);
+    expect(
+      stats.legAdvanceAmbiguous,
+      'ⓒ 위반 — legAdvanceAmbiguous 카운터가 증가하지 않음',
+    ).toBe(1);
+    const stored = await kv.get('trip:s2921-destination');
+    expect(stored, 'ⓒ 위반 — 모호 후보 신호로 trip이 종료됨').not.toBeNull();
+    expect(findTripEndInsert(inserts), 'ⓒ 위반 — 모호 후보 신호로 trip-end가 기록됨').toBeUndefined();
+  });
+
+  it('ⓓ (과차단 금지) 올바른 방향·시간창 안의 단일 후보는 기존처럼 정상 전진·종료한다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLeg2EvidenceTrip());
+    const { db, inserts } = makeFireLogDb();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      // 올바른 방향(하행) + 시간창 열림(legBoardingEligibleAt=NOW) + 단일 후보.
+      seoul: makeArvlCdFireSeoul('군자', 0, 1, '2015', false),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-s2921-d',
+    });
+    expect(
+      stats.locklessDestinationAdvanced,
+      'ⓓ 위반(과차단) — 정상 후보인데 advance되지 않음',
+    ).toBe(1);
+    const stored = await kv.get('trip:s2921-destination');
+    expect(stored, 'ⓓ 위반(과차단) — 정상 후보인데 trip이 종료되지 않음').toBeNull();
+    const tripEndRow = findTripEndInsert(inserts);
+    expect(tripEndRow, 'ⓓ 위반(과차단) — 정상 종료인데 trip-end가 기록되지 않음').toBeDefined();
+  });
+
+  // transfer waypoint(leg-1, `runLocklessTransfer`)도 같은 candidate 제한을 쓴다 — ⓐ 변형.
+  it('transfer waypoint도 반대 방향 열차로는 전진하지 않는다(ⓐ 변형, #2921)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 's2921-transfer',
+      route: {
+        type: 'transfer', fromLine: '7', toLine: '5', transferName: '중곡',
+        stopsToTransfer: 1, stopsFromTransfer: 2,
+      },
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'transfer' },
+        { stationName: '군자', line: '5', kind: 'destination' },
+      ],
+      // leg-1(currentLegAnchor 없음) — origin은 trip.originStationName으로 추론.
+      // 용마산(7-015)→중곡(7-016): id 증가 → 'down'(하행)이 정방향.
+      originStationName: '용마산',
+      lockEverAttached: true,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      // isUp=true(상행) — 용마산→중곡 leg의 실제 방향(하행)과 반대.
+      seoul: makeArvlCdFireSeoul('중곡', 0, 0, '9999', true),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-s2921-transfer',
+    });
+    expect(
+      stats.locklessTransferAdvanced,
+      'transfer ⓐ 위반 — 반대 방향 열차로 transfer advance 발사됨',
+    ).toBe(0);
+    const stored = JSON.parse((await kv.get('trip:s2921-transfer')) as string) as Trip;
+    expect(
+      stored.waypoints.length,
+      'transfer ⓐ 위반 — waypoints가 shift됨(전진함)',
+    ).toBe(2);
+  });
+
+  // /audit-sides 감사(커밋 078d9e8c, #2921 PR 본문) 판정 — ⓒ(모호 후보 차단)는 "같은
+  // 방향의 복수 trainCode 동시 fire"만 막는다. "같은 방향의 단일(틀린) trainCode fire"는
+  // 막지 못한다. leg가 막 시작된 직후(intermediate/transfer)에는 ⓑ(시간창)를 적용하지
+  // 않기로 했으므로(9/18 실측 재생이 적용 시 과차단을 반증 — 위 `runLocklessTransfer`/
+  // `runLocklessIntermediate` 호출부 주석 참고) 이 틈은 **의도적으로 남긴 잔존 위험**이다.
+  //
+  // 추적 이슈: **#2926** ("lockless intermediate/transfer가 '단일 오열차'로 전진 가능 —
+  // 도보창 게이트는 과차단 때문에 destination에만 적용됨").
+  //   ⓐ 현재 동작 — 올바른 방향으로 가는 단일 trainCode가 사용자의 실제 탑승 열차가
+  //      아니어도(사용자가 아직 타지 않았어도) intermediate가 통과(waypoint shift)된다.
+  //      ⓒ는 "같은 arvlCd 우선순위 tier에 서로 다른 trainCode가 2개 이상"일 때만 모호로
+  //      보고 거부하므로, 후보가 1개뿐이면(틀렸어도) 그대로 통과한다.
+  //   ⓑ 지금 못 고치는 이유 — ⓑ(도보 시간창, `isLegAdvanceWindowOpen`)를 transfer/
+  //      intermediate에도 적용하면 닫을 수 있어 보이지만, 9/18 실측 재생
+  //      (`replay_20260918_boarding_confirm.test.ts`)으로 **실증**했듯 건대입구 환승 직후
+  //      바로 이어지는 어린이대공원/군자/중곡 통과 push가 바로 그 도보 창 안에서 실제로
+  //      발생해야 트립이 완주한다 — 거기에 ⓑ를 걸면 정상 트립을 과차단한다(거부 케이스
+  //      ⓓ 위반, `git stash` 격리로 확인됨). 과차단 없이 이 갭을 닫으려면 "방향만이 아니라
+  //      사용자 위치/시간과 더 정교하게 결합된 새 판정"이 필요하고, 그건 이 PR(#2921)
+  //      범위를 넘는 별도 설계 작업이다.
+  //   ⓒ #2926 해결 후 — 이 `it.fails`를 일반 `it`으로 승격한다(S11 #2893과 동일 절차,
+  //      승격 자체가 "동작이 바뀌었다"는 증거 — lessons.md L18).
+  //
+  // CLAUDE.md 불변식 승격 룰(L18, docs/agents/invariants.md) — load-bearing 불변식을 주석
+  // 에만 남기지 않는다. S11(#2893)의 `it.fails` 선례와 동일하게, "이상적 동작(사용자가 타지
+  // 않은 단일 열차로는 intermediate가 통과되면 안 된다)"은 아직 구현되지 않았다는 사실을
+  // 코드에 고정한다. 상세: `docs/agents/invariants.md` "scheduled.ts — intermediate/transfer
+  // ⓑ 미적용"(#2926).
+  it.fails(
+    '(알려진 잔존 위험, 미해결) leg 시작 직후 단일 틀린 trainCode의 intermediate 통과를 ⓒ는 막지 못한다',
+    async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        token: 's2921-known-gap',
+        route: { type: 'direct', line: '7', stops: 2 },
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+        infoModeEnabled: true,
+        // leg-1 origin — 용마산(7-015)→중곡(7-016): direction='down'(하행) 추론 가능.
+        originStationName: '용마산',
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        // 올바른 방향(하행)·단일 trainCode('9999', 사용자가 타지 않은 다른 열차) — ⓐ는
+        // 통과시키고(방향 일치) ⓒ도 통과시킨다(후보 1개뿐이라 모호 아님).
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1, '9999', false),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-s2921-known-gap',
+      });
+      // 이상적 동작(미구현) — 사용자가 타지 않은 단일 열차로는 intermediate가 통과되면 안
+      // 된다. 현재는 통과된다(locklessIntermediateFired===1) — 이 assertion은 지금 실패하고,
+      // it.fails가 그 실패 자체를 "예상대로"로 받아들인다.
+      expect(stats.locklessIntermediateFired).toBe(0);
+    },
+  );
 });
 
 // #2861 (T3) — lock-경로 advance(`advanceBoardingLockWaypoint` evidence=undefined, 실제로는
