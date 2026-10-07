@@ -8399,9 +8399,9 @@ describe('fireVanishFallbackStationPush — #2779 fire-attempt D1 기록', () =>
       });
     }
     expect(apnsFetch.mock.calls).toHaveLength(2);
-    const [collapseIdA, collapseIdB] = apnsFetch.mock.calls.map(
-      (c) => (c[1] as RequestInit).headers as Record<string, string>,
-    ).map((h) => h['apns-collapse-id']);
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const [collapseIdA, collapseIdB] = calls
+      .map((c) => (c[1].headers as Record<string, string>)['apns-collapse-id']);
     // 같은 trip.token이지만 발사 역이 다르므로 collapseId도 달라야 한다.
     expect(collapseIdA).not.toBe(collapseIdB);
   });
@@ -8435,9 +8435,9 @@ describe('fireVanishFallbackStationPush — #2779 fire-attempt D1 기록', () =>
       });
     }
     expect(apnsFetch.mock.calls).toHaveLength(2);
-    const [collapseIdFirst, collapseIdSecond] = apnsFetch.mock.calls.map(
-      (c) => (c[1] as RequestInit).headers as Record<string, string>,
-    ).map((h) => h['apns-collapse-id']);
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const [collapseIdFirst, collapseIdSecond] = calls
+      .map((c) => (c[1].headers as Record<string, string>)['apns-collapse-id']);
     expect(collapseIdFirst).toBe(collapseIdSecond);
   });
 
