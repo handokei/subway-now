@@ -1966,7 +1966,7 @@ describe('handleResponse — #2034 hop-end', () => {
       findStationByNameAndLine.mockReturnValue({ id: 'D-왕십리', line: '2', name: '왕십리' });
       readWidgetRefreshContextMock.mockResolvedValueOnce({
         destination: { id: 'D-왕십리', line: '2', name: '왕십리' },
-        route: makeDirectRoute(),
+        route: makeDirectRoute(3, '2'),
         bgContext: null,
       });
     }
@@ -2040,7 +2040,7 @@ describe('handleResponse — #2034 hop-end', () => {
       findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
       readWidgetRefreshContextMock.mockResolvedValueOnce({
         destination: { id: 'D-왕십리', line: '2', name: '왕십리' },
-        route: makeDirectRoute(),
+        route: makeDirectRoute(3, '2'),
         bgContext: null,
       });
 
@@ -2051,6 +2051,24 @@ describe('handleResponse — #2034 hop-end', () => {
       );
 
       expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
+    });
+
+    it('station identity가 destination과 다르고 route도 없으면 — stampLegAdvance/postBoardingConfirm 둘 다 호출 안 함 (graceful skip)', async () => {
+      findStationByNameAndLine.mockReturnValue({ id: 'S-성수-2', line: '2', name: '성수' });
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'D-왕십리', line: '2', name: '왕십리' },
+        route: null,
+        bgContext: null,
+      });
+
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        { ...HOP_END_PAYLOAD, nextLine: undefined, nextStation: undefined },
+        makeHandleResponseDeps(),
+      );
+
+      expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
+      expect(stampLegAdvanceMock).not.toHaveBeenCalled();
     });
 
     it('아직(NOT_YET) 응답은 destination이어도 기존 dismissBoardingPrompt 경로 그대로 — postBoardingConfirm 미호출', async () => {

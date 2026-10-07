@@ -383,8 +383,32 @@ async function handleHopEndResponse(
       // #2410 — nextLine이 유효한 LineNumber가 아니면(구버전 backend 등 payload 누락)
       // 하차 등록 전체를 silent skip하지 않고 로컬 route에서 다음 leg 노선을 도출해 stamp한다.
       // route/destination 부재나 waypoint 매칭 실패(도출 불가)면 기존대로 graceful skip.
-      const derivedLine = await deriveNextLegLineFromRoute(payload);
-      if (derivedLine) {
+      //
+      // #2923 — nextLine 부재는 destination hop-end(다음 leg 없음, backend가 절대 nextLine을
+      // 보내지 않음 — PR #2922 `fireDestinationDisembarkPrompt`, `buildHopEndPromptMessage(...,
+      // null, null, ...)`)와 "구버전 backend가 보낸 환승 hop-end"(바로 위 #2410) 양쪽 모두에서
+      // 발생해 nextLine 유무만으로는 구분할 수 없다. `resolveHopEndRouteContext`가 station
+      // identity(현재 하차 역 === trip의 최종 목적지)로 둘을 가른다 — 환승역은 결코 최종
+      // 목적지와 같은 station일 수 없으므로 이 식별자 비교가 유일하게 안전한 판정 신호다.
+      const { isDestinationHopEnd, derivedLine } = await resolveHopEndRouteContext(payload);
+      if (isDestinationHopEnd) {
+        // #2923 (Wire-completion #1582) — 목적지 하차 확인은 사용자가 방금 [하차함]으로 명시한
+        // ground truth다. backend `POST /trips/:token/boarding-confirm`(action='disembarked')로
+        // forward해야 7분 유예 타임아웃을 기다리지 않고 즉시 종료(#2920/PR #2922의 "질문" 단계가
+        // 소비하는 바로 그 엔드포인트). fire-and-forget — postBoardingConfirm은 내부에서 실패를
+        // swallow하므로 이 await가 critical path를 막거나 throw하지 않는다(#2852와 동일 double
+        // defense 패턴).
+        try {
+          await postBoardingConfirm(
+            payload.tripToken,
+            'disembarked',
+            payload.originStation,
+            payload.line,
+          );
+        } catch (err) {
+          log.warn('destination disembark boarding-confirm forward failed — non-critical', err as Error);
+        }
+      } else if (derivedLine) {
         await useLegAdvanceStore.getState().stampLegAdvance(derivedLine);
       }
     }
@@ -403,9 +427,29 @@ async function handleHopEndResponse(
   await dismissBoardingPrompt(payload.tripToken);
 }
 
+interface HopEndRouteResolution {
+  /**
+   * #2923 — 지금 하차 확인 중인 station(payload.originStation을 payload.line 위에서 resolve)이
+   * trip의 최종 목적지(widgetRefreshContext.destination)와 동일한 station인지. true면 "다음
+   * leg"가 존재하지 않는 destination hop-end — caller가 route derive를 건너뛰고 즉시
+   * boarding-confirm(action='disembarked')을 forward해야 한다.
+   */
+  isDestinationHopEnd: boolean;
+  /** #2410 — 환승 hop-end일 때(isDestinationHopEnd===false) 로컬 route에서 도출한 다음 leg 노선. */
+  derivedLine: LineNumber | null;
+}
+
 /**
  * #2410 — hop-end push의 `payload.nextLine`이 없거나 유효한 LineNumber가 아닐 때, 로컬
  * route + `payload.originStation`(환승/하차역)으로 다음 leg 노선을 도출한다.
+ *
+ * #2923 — nextLine 부재는 destination hop-end(backend가 설계상 절대 nextLine을 보내지
+ * 않음 — PR #2922 `fireDestinationDisembarkPrompt`)와 구버전 backend가 보낸 환승
+ * hop-end(바로 위 #2410 사유) 양쪽에서 발생해 이 함수에 진입하는 시점만으로는 둘을 구분할
+ * 수 없다. 그래서 이 함수가 두 분기 모두를 판정해 반환한다 — station identity(resolve한
+ * currentStation.id === destination.id)가 유일하게 안전한 신호다: 환승역은 결코 trip의
+ * 최종 목적지와 같은 station일 수 없다(해당 역에서 또 환승해 그 역이 종착지가 되는
+ * 데이터는 route 생성 단계에서 성립하지 않음).
  *
  * `findLocklessTransferWaypoint`(#2319)를 재사용 — 이 함수는 lock 존재를 전제하는
  * `findActiveTransferContext`와 달리 lock-비종속으로 설계되어, handleHopEndResponse가
@@ -417,24 +461,31 @@ async function handleHopEndResponse(
  * 읽는다 — silent push 등 BG 컨텍스트에서도 React state 없이 동일하게 동작하는 기존 채널.
  * currentStation은 payload.originStation을 payload.line(현재/직전 leg 노선)으로 조회한다.
  *
- * 아래 중 하나라도 실패하면 null (caller가 graceful skip):
+ * `{ isDestinationHopEnd: false, derivedLine: null }`로 graceful skip하는 경우:
  *  - payload.line이 유효한 LineNumber가 아님
  *  - originStation을 payload.line 위에서 찾지 못함(역명 불일치)
- *  - route 또는 destination이 storage에 없음(cold-start 미hydrate 등)
- *  - findLocklessTransferWaypoint가 현재 위치를 환승 waypoint로 매칭하지 못함
+ *  - destination이 storage에 없음(cold-start 미hydrate 등)
+ *  - (환승 판정 경로) route가 없거나 findLocklessTransferWaypoint가 현재 위치를 환승
+ *    waypoint로 매칭하지 못함
  */
-async function deriveNextLegLineFromRoute(
+async function resolveHopEndRouteContext(
   payload: BoardingPromptPayload,
-): Promise<LineNumber | null> {
-  if (!isValidLineNumber(payload.line)) return null;
+): Promise<HopEndRouteResolution> {
+  const skip: HopEndRouteResolution = { isDestinationHopEnd: false, derivedLine: null };
+  if (!isValidLineNumber(payload.line)) return skip;
   const currentStation = findStationByNameAndLine(payload.originStation, payload.line);
-  if (!currentStation) return null;
+  if (!currentStation) return skip;
 
   const { destination, route } = await readWidgetRefreshContext();
-  if (!route || !destination) return null;
+  if (!destination) return skip;
 
+  if (currentStation.id === destination.id) {
+    return { isDestinationHopEnd: true, derivedLine: null };
+  }
+
+  if (!route) return skip;
   const waypoint = findLocklessTransferWaypoint(route, destination.name, currentStation);
-  return waypoint?.nextLine ?? null;
+  return { isDestinationHopEnd: false, derivedLine: waypoint?.nextLine ?? null };
 }
 
 async function tryAutoLock(
