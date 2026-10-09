@@ -31,6 +31,19 @@ jobs:
       - name: Orphan export 검사 (ts-prune)
         run: npm run lint:orphan
 
+  adr-conflict-section:
+    name: ADR Conflict Declaration Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃 (base ref 비교 위해 전체 history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ADR "수정·대체·모순하는 결정" 섹션 검사 (#2931)
+        run: bash scripts/check-adr-conflict-section.sh "origin/${{ github.base_ref || 'dev' }}"
+
   swift-mirror-check:
     name: Swift MIRROR Sync Check
     runs-on: ubuntu-latest
