@@ -21,12 +21,13 @@ import {
 } from './pushReceiptBuffer';
 import type {
   PushReceiptDetail,
+  PushReceiptDisplaySource,
   PushReceiptKind,
   PushReceiptType,
 } from './rawSignalBuffer';
 import { getCurrentTripCorrIdSync } from './tripCorrId';
 
-export type { PushReceiptDetail, PushReceiptKind, PushReceiptType };
+export type { PushReceiptDetail, PushReceiptDisplaySource, PushReceiptKind, PushReceiptType };
 
 export interface LogPushReceiptInput {
   pushId: string | null | undefined;
@@ -35,6 +36,8 @@ export interface LogPushReceiptInput {
   pushType: PushReceiptType;
   displayed: boolean;
   suppressedReason?: string;
+  /** #2930 — displayed=true일 때 "누가 표시했는가" 라벨. 의미는 PushReceiptDetail 주석 참고. */
+  source?: PushReceiptDisplaySource;
   /** 테스트에서 결정적 ts 주입용. 미지정 시 `Date.now()`. */
   receivedAt?: number;
 }
@@ -53,6 +56,7 @@ export function logPushReceipt(input: LogPushReceiptInput): void {
     pushType: input.pushType,
     displayed: input.displayed,
     ...(input.suppressedReason !== undefined ? { suppressedReason: input.suppressedReason } : {}),
+    ...(input.source !== undefined ? { source: input.source } : {}),
   };
   const entry: PushReceiptBufferEntry = {
     ts: input.receivedAt ?? Date.now(),
