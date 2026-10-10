@@ -1270,11 +1270,27 @@ export function isBoardingLockActive(
 export const PENDING_TRAIN_CODE_SENTINEL = 'PENDING-TRAIN-CODE';
 
 /**
- * #2939 — "해당 leg의 lock이 이미 실 trainCode를 가졌는가"(leg-scoped, line 단위 판정).
+ * #2939 — "해당 leg의 lock이 이미 실 trainCode를 가졌는가"(leg-scoped 판정).
  *
  * `isBoardingLockActive`(전역 lock 유무)와 다르다 — 전역 판정으로 쓰면 leg-1 lock이 leg-2
- * 프롬프트/응답을 막는 과차단이 된다(10/9 실측이 정확히 그 상태, 거부 케이스 ⓐ). 이 함수는
- * `boardingLock.line`이 호출자가 묻는 leg의 line과 **일치할 때만** true를 반환한다.
+ * 프롬프트/응답을 막는 과차단이 된다(10/9 실측이 정확히 그 상태, 거부 케이스 ⓐ).
+ *
+ * **`boardingLock.line` 비교만으로는 leg를 특정할 수 없다** (코드리뷰 — 과차단 구멍, 거부
+ * 케이스 ⓓ). 지선은 본선과 `line` 값이 같다 — `legDirection.ts:100`의
+ * `(s) => s.line === line && s.id >= firstId && s.id <= lastId` 필터와 `:105` 주석
+ * `// 지선 (mainIdRange 밖)`이 이를 명시한다(예: 2호선 본선과 성수지선 모두 `line === "2"`).
+ * 즉 "2호선 본선 → 성수지선"처럼 **같은 line, 다른 탑승역**인 환승에서 line만 비교하면
+ * leg-1 lock이 leg-2 anchor와 line이 같다는 이유로 오판되어 leg-2 프롬프트가 영구 차단된다
+ * (10/9가 보여준 "한 번 더 묻는" 회귀보다 나쁜 "완전 침묵" 회귀).
+ *
+ * 그래서 `line` 일치에 더해 **lock의 탑승역**(`segmentStations[0]`)이 leg anchor의
+ * `boardingStation`과도 일치해야 한다. `segmentStations[0]`이 탑승역이라는 보장은
+ * `BoardingLockMeta.segmentStations` 필드 doc("출발역 → 구간 끝", types.ts)과
+ * `boardingAnchorResolver.ts`(`segmentStations[0] === anchor.originStation`, 필요 시
+ * prepend) + `lockSwap.buildLegSegmentStations`(새 leg의 첫 waypoint부터 수집) 양쪽 생성
+ * 경로가 공통으로 지키는 계약이다 — 둘 다 거쳐 만들어지는 모든 backend 생성 lock에 적용된다.
+ * **다음에 "line만으로 충분해 보인다"며 역 비교를 되돌리지 말 것** — 위 지선/본선 사례가
+ * 바로 그 되돌림이 재발시키는 회귀다.
  *
  * `PENDING` sentinel trainCode(`PENDING_TRAIN_CODE_SENTINEL`)는 특정된 것으로 보지 않는다
  * (거부 케이스 ⓒ — 해소 전엔 묻는 게 맞다).
@@ -1284,9 +1300,15 @@ export const PENDING_TRAIN_CODE_SENTINEL = 'PENDING-TRAIN-CODE';
  * `maybeFireLegBoardingPrompt`와 W2의 응답측 로직이 **이 함수를 공유**한다(scheduled.ts에
  * export해 index.ts에서도 import 가능 — isBoardingLockActive와 동일 패턴).
  */
-export function isLockActiveForLeg(trip: Trip, legLine: LineNumber, now: number): boolean {
+export function isLockActiveForLeg(
+  trip: Trip,
+  legLine: LineNumber,
+  legBoardingStation: string,
+  now: number,
+): boolean {
   if (!isBoardingLockActive(trip, now)) return false;
   if (trip.boardingLock.line !== legLine) return false;
+  if (trip.boardingLock.segmentStations[0] !== legBoardingStation) return false;
   if (trip.boardingLock.trainCode === PENDING_TRAIN_CODE_SENTINEL) return false;
   return true;
 }
@@ -8328,7 +8350,7 @@ export async function maybeFireLegBoardingPrompt(
   // (거부 케이스 ⓐ, 10/9가 정확히 그 상태). #2898의 5분 soft-block(같은 열차 approaching→
   // imminent 재확인 허용)은 "lock 없음"을 전제로 설계됐으므로 이 게이트가 그보다 먼저 평가돼
   // lock 활성 trip은 아예 그 경로에 진입하지 않는다.
-  if (isLockActiveForLeg(trip, currentLegAnchor.line, now)) {
+  if (isLockActiveForLeg(trip, currentLegAnchor.line, currentLegAnchor.boardingStation, now)) {
     stats.legBoardingPromptBlocked += 1;
     log('leg-boarding-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
