@@ -21,12 +21,3 @@ export const DEBUG_MODAL_TRIGGER_RESET_MS = 1500;
 export function isMinimalAlarmEnabled(): boolean {
   return process.env.EXPO_PUBLIC_MINIMAL_ALARM === 'true';
 }
-
-// #2927 (ADR-040 2단계) — device 로컬 FG 보조 발사(fireFgAuxStationPassedNotification,
-// useStationAlarm.ts dispatchStationPassed)를 "즉시"에서 "유예 후 backend 미수신 확인"으로
-// 축소하는 전환 스위치. OFF(기본)면 기존 즉시 발사 동작과 바이트 수준 동일 — 유예 타이머 자체가
-// 생성되지 않는다(dispatchStationPassed가 isLocalFireDeferEnabled() 분기 이전의 기존 코드
-// 경로를 그대로 탄다). isMinimalAlarmEnabled와 동일 패턴(의도적 opt-in, __DEV__ 자동 활성 없음).
-export function isLocalFireDeferEnabled(): boolean {
-  return process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER === 'true';
-}

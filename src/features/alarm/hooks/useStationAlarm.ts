@@ -109,7 +109,7 @@ import {
   LOCAL_FIRE_DEFER_GRACE_MS,
 } from '../utils/recentLocalStationFires';
 import { resolveNotificationSource } from '../utils/notificationSource';
-import { isMinimalAlarmEnabled, isLocalFireDeferEnabled } from '../../../shared/constants/debugFlags';
+import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 
 const logger = createLogger('StationAlarm');
 
@@ -398,24 +398,11 @@ async function dispatchStationPassed(params: {
     // `!route || !destination` 가드로 non-null을 보장한 뒤에만 여기 도달한다.
     if (AppState.currentState === 'active' && lock && route && destination) {
       const target = deriveStationPassedTarget(route, destination, candidateStation);
-      // #2927 (ADR-040 2단계) — flag OFF(기본)면 바로 아래 else 분기(#2122 기존 즉시 발사)를
-      // 그대로 타 ⓓ 바이트 수준 동일 동작을 보장한다. flag ON일 때만 유예 타이머 분기로 간다.
-      if (isLocalFireDeferEnabled()) {
-        scheduleDeferredStationPassedFire(candidateStation, target);
-      } else {
-        try {
-          await fireFgAuxStationPassedNotification(
-            candidateStation.name,
-            target.count,
-            target.targetKind,
-            target.targetName,
-            candidateStation.line,
-          );
-          logFiredStationPassed(source, candidateStation.name);
-        } catch (e) {
-          logger.error('FG 보조 발사 실패:', e);
-        }
-      }
+      // #2940 (plan W3, P3=D1) — #2927/#2928의 유예 타이머를 기본값화했다. 기존 flag
+      // (isLocalFireDeferEnabled)가 OFF일 때 타던 즉시 발사 경로는 제거됐고, 모든 FG 보조
+      // 발사는 항상 유예 타이머를 거친다. 대리 발사 자체는 유지된다(backend 미전달 트립의
+      // 매역 알림 0건 방지) — "제거"가 아니라 "기본값화"다.
+      scheduleDeferredStationPassedFire(candidateStation, target);
     }
   } catch (e) {
     logger.error(errorLogPrefix, e);
