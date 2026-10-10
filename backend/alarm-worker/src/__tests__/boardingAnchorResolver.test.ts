@@ -88,14 +88,18 @@ describe('resolveTrainCodeFromPositions', () => {
     expect(result).toEqual({ status: 'none' });
   });
 
-  it('direction=null이면 양방향 모두 허용', () => {
+  // #2944 (H-6) — direction=null fail-closed. 구 "양방향 모두 허용"은 lock 승격(이 함수의
+  // 유일한 목적) 경로의 fail-open 지점이었다 — 10/9 반대 방향 lock 사고(군자→광화문, 5호선)는
+  // device sync promotion → `attemptBoardingAnchorResolution` 경로였다(이슈 #2944 코멘트).
+  // 방향을 모르면 그 자리에 있는 어느 방향 열차도 lock 후보로 승격하지 않는다(0건, none).
+  it('direction=null → 후보 0건 (fail-closed, #2944 — 구 "양방향 허용" 회귀 차단, 10/9 lock 사고 경로)', () => {
     const anchor: BoardingAnchor = { ...ANCHOR, direction: null };
     const result = resolveTrainCodeFromPositions(
       anchor,
       [position({ trainCode: '7246', isUp: true })],
       NOW,
     );
-    expect(result).toEqual({ status: 'resolved', trainCode: '7246' });
+    expect(result).toEqual({ status: 'none' });
   });
 
   it('stationName 불일치 → 후보에서 제외', () => {
@@ -519,15 +523,17 @@ describe('attemptBoardingAnchorResolution', () => {
     expect(result).toBeNull();
   });
 
-  it('waypoints[0].stationName === origin(동일역) → direction=null이어도 resolved + segmentStations prepend 생략', async () => {
+  // #2944 (H-6) — waypoints[0].stationName === origin(동일역)이면 `inferLegDirection`의
+  // from===to라 direction은 여전히 null이다. 구 동작은 이 경우도 resolved(fail-open)였다 —
+  // 이제 fail-closed(null)로 전환한다. segmentStations는 비지 않으므로(['중곡']) ⓖ(leg-segment-
+  // empty) 와는 다른 경로 — resolveTrainCodeFromPositions까지 도달해 'none'으로 떨어진다.
+  it('waypoints[0].stationName === origin(동일역) → direction=null → fail-closed, null (#2944)', async () => {
     const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
     const trip = makeTrip({
       waypoints: [{ stationName: '중곡', line: '7', kind: 'destination' }],
     });
     const result = await attemptBoardingAnchorResolution(trip, seoul, NOW);
-    expect(result).not.toBeNull();
-    expect(result?.trainCode).toBe('7246');
-    expect(result?.segmentStations).toEqual(['중곡']);
+    expect(result).toBeNull();
   });
 
   // #2754 — options.legTransition 배선(cron leg-2 전용 경로).
@@ -616,7 +622,12 @@ describe('attemptBoardingAnchorResolution', () => {
       expect(noneReason).toBe('subwayid-mapping-failed');
     });
 
-    it('legSegment 산출 실패(direction=null fallback → 빈 배열) → noneReason: leg-segment-empty', async () => {
+    // #2944 ⓖ 판정 — 이 테스트의 legSegment 공백은 `buildLegSegmentStations`가 첫 waypoint에서
+    // line 불일치로 즉시 break해 생긴다(direction 값과 무관 — direction이 non-null이었어도
+    // 똑같이 빈 배열이 됐을 것). 즉 "nextWaypoint.line !== anchor.line → direction=null" 조합이
+    // 후보 0건을 만드는 것이 아니라, legSegment 자체가 이미 비어 **그 이전에** 종료된다 —
+    // H-6의 fail-closed 전환이 새로 만드는 과차단이 아니라 기존에 있던 별도 게이트.
+    it('legSegment 산출 실패(line 불일치로 즉시 break, direction 값과 무관) → noneReason: leg-segment-empty', async () => {
       const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
       const trip = makeTrip({
         waypoints: [{ stationName: '어린이대공원', line: '다른선', kind: 'destination' }],
@@ -630,6 +641,28 @@ describe('attemptBoardingAnchorResolution', () => {
       expect(result).toBeNull();
       expect(outcome).toBe('none');
       expect(noneReason).toBe('leg-segment-empty');
+    });
+
+    // #2944 (H-6) — direction=null로 인해 resolveTrainCodeFromPositions가 (legSegment와는
+    // 무관하게) 'none'으로 떨어지는 경로는 'position-resolve-none'이 아니라 구분 가능한
+    // 'direction-unknown'으로 기록한다 — "방향 때문인지 열차가 없어서인지"를 D1/stats에서
+    // 구분할 수 있어야 한다(이슈 측정 plan 요구).
+    it('direction=null로 인한 none → noneReason: direction-unknown (position-resolve-none과 구분)', async () => {
+      // waypoints[0].stationName === origin(중곡) → from===to → inferLegDirection null.
+      // legSegment=['중곡'](비지 않음) → resolveTrainCodeFromPositions까지 도달.
+      const seoul = makeSeoulWithPositions([{ trainCode: '7246' }]);
+      const trip = makeTrip({
+        waypoints: [{ stationName: '중곡', line: '7', kind: 'destination' }],
+      });
+      let outcome: string | undefined;
+      let noneReason: string | undefined;
+      const result = await attemptBoardingAnchorResolution(trip, seoul, NOW, undefined, (o, detail) => {
+        outcome = o;
+        noneReason = detail?.noneReason;
+      });
+      expect(result).toBeNull();
+      expect(outcome).toBe('none');
+      expect(noneReason).toBe('direction-unknown');
     });
 
     it('resolved 성공 시 noneReason은 통지되지 않는다(2번째 인자 undefined)', async () => {
