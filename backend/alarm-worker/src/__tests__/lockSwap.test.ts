@@ -164,6 +164,23 @@ describe('attachTrainCodeForLeg', () => {
     });
   });
 
+  // #2944 (H-6) — resolveLegOriginStation의 currentLegAnchor 분기(leg 2+). line이 일치하면
+  // originStationName보다 currentLegAnchor를 우선한다 — 일부러 originStationName을 다른(틀린)
+  // 값으로 둬서 currentLegAnchor가 실제로 채택됨을 증명한다.
+  it('segmentStations=1, currentLegAnchor(line 일치)가 originStationName보다 우선 — direction 추론', async () => {
+    const seoul = makeSeoul([makeArrival('7246', 1, 60, '지하철7호선', true)]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip([targetWaypoint], {
+        originStationName: '엉뚱한역',
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      }),
+      targetWaypoint,
+      seoul,
+      now: NOW,
+    });
+    expect(lock?.trainCode).toBe('7246');
+  });
+
   // #2944 (H-6) — 위 테스트의 대조군: leg 앵커(originStationName/currentLegAnchor)가 전혀 없는
   // trip(구 client / 캡처 전)은 segmentStations=1에서 진짜로 방향을 추론할 수 없다 — 이 경우만
   // fail-closed(null)가 남는다(구 "양방향 허용"은 10/9 사고의 근본 원인이라 복원하지 않음).

@@ -72,7 +72,16 @@
  * ======
  * `lockSwap.attachTrainCodeForLeg` 가 segmentStations[0] + segmentStations[last] 로 호출.
  * segmentStations.length < 2 (target == leg 마지막) 일 때는 caller 가 segmentStations[0] +
- * targetStation 으로 호출해도 결과 null (동일 역) → 안전.
+ * targetStation 으로 호출해도 결과 null(동일 역). **"안전"이 아니다** — 거짓 근거였다
+ * (#2944 H-6 정정). null 은 이 함수 아래 fail-open 소비자(`pickAutoTrainCode` 구버전,
+ * `freshCandidatesAtAnchor` 등)에서 "양방향 허용"으로 해석돼 반대 방향 열차가 후보에 그대로
+ * 남는다 — 10/9 반대 방향 lock 사고(군자→광화문, 5호선)가 바로 이 null이 fail-open으로
+ * 소비된 결과다. #2944 이후 이 null의 소비처는 전부 fail-closed로 전환됐고,
+ * `lockSwap.ts:resolveLegOriginStation`가 segmentStations.length<2 (트립 꼬리)인 경우
+ * trip의 leg 시작 앵커(`currentLegAnchor`/`originStationName`)를 "첫 역"으로 보강해 애초에
+ * 이 null 자체를 줄인다 — 앵커조차 없을 때만 null이 남고, 그 경우는 fail-closed(후보 0건)로
+ * 수렴한다. 상세는 `docs/agents/invariants.md` "거짓 근거" 항목 참고 — 이 근거로 새
+ * fail-open을 만들지 말 것.
  */
 
 import { findStationByNameAndLine } from '../../../src/shared/utils/stationLookup';
