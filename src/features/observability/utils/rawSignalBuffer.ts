@@ -65,6 +65,19 @@ export type PushReceiptKind = 'station-passed' | 'transfer' | 'destination' | 'p
 export type PushReceiptType = 'alert' | 'background';
 
 /**
+ * #2930 — displayed가 "사용자에게 보였는가"로 통일되면서, "누가 보여줬는가"(backend remote
+ * alert push의 OS 시스템 배너 vs device 로컬 발사)를 별개 필드로 분리한다. 두 질문을 한 값에
+ * 담지 않는다(#2930 스펙 item 3) — `markLocalStationFired`(device 로컬 발사 authority 마킹)와는
+ * 무관한 관측 전용 라벨이다.
+ *
+ * 'backend-alert' — backend가 보낸 APNs alert(title/body 동반)를 OS가 직접 표시했고, device는
+ * 로컬 알림을 발사하지 않았다(station-kind no-op 경로, #2064).
+ * 'device-local-fire' — device가 실제로 로컬 알림을 발사해 표시했다(예: kind-skew fallback).
+ * 미지정 — displayed=false(미표시)이거나, 과거 호출자가 아직 라벨을 채우지 않은 경우.
+ */
+export type PushReceiptDisplaySource = 'backend-alert' | 'device-local-fire';
+
+/**
  * #2541 (obs: whole-chain 관측) — device push-receipt 상세. backend가 push를 발사(D1
  * cron-fire-attempt sent)한 뒤 device가 실제로 그 push를 받았는지/표시했는지를 station+시각
  * 기준으로 backend와 대조하기 위한 필드 집합.
@@ -80,6 +93,8 @@ export interface PushReceiptDetail {
   pushType: PushReceiptType;
   displayed: boolean;
   suppressedReason?: string;
+  /** #2930 — displayed=true일 때 "누가 표시했는가" 라벨. displayed=false면 의미 없음(미설정). */
+  source?: PushReceiptDisplaySource;
 }
 
 export interface RawSignalEntry {

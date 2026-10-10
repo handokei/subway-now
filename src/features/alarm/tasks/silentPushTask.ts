@@ -451,8 +451,41 @@ type _ControlPushKindCoverageCheck = ControlPushKindCoverageAssert<
  *  항상 null로 떨어졌다.)
  */
 interface NotificationBackgroundTaskData {
-  data?: Record<string, unknown>;
+  data?: {
+    /**
+     * #2930 — aps.alert(title/body)가 있는 payload는 Swift 변환이 이 필드에 non-null alert
+     * dictionary를 채운다. silent push(content-available only)는 null. 위 헤더 주석의 변환
+     * 공식 참고 — `taskData.data.notification`.
+     */
+    notification?: unknown;
+    /**
+     * #2930 — raw APNs aps dictionary. `aps.alert`가 있으면 OS가 시스템 배너를 직접 렌더한
+     * visible push(backend `sendAlertPush`, scheduled.ts:3855)라는 증거. `notification`이 변환
+     * 과정에서 누락되는 경우를 대비한 2차 판정 소스.
+     */
+    aps?: unknown;
+    [key: string]: unknown;
+  };
   error?: { message: string } | null;
+}
+
+/**
+ * #2930 — payload가 APNs alert(배너/사운드 등 OS가 직접 표시하는 영역)를 동반했는지 판정하는
+ * 순수 함수. `NotificationBackgroundTaskData['data']`(Swift 변환 후 레이어, `notification`/`aps`가
+ * 위치하는 곳) 하나만 보고 side-effect 없이 boolean만 반환 — 발사/표시 동작은 바꾸지 않는다
+ * (#2930 금지사항: 이 PR은 계측 전용).
+ *
+ * 판정 기준(둘 중 하나라도 true면 alert 동반):
+ *   1. `taskData.notification`이 non-null — Swift `BackgroundEventTransformer`가 `aps.alert`를
+ *      그대로 이 필드에 올린다(파일 상단 변환 공식 주석).
+ *   2. `taskData.aps.alert`가 non-null — notification 필드가 어떤 이유로든 누락된 경우의 2차
+ *      판정(raw aps dictionary 직접 확인).
+ */
+export function hasAlertPayload(taskData: NotificationBackgroundTaskData['data']): boolean {
+  if (!taskData) return false;
+  if (taskData.notification !== null && taskData.notification !== undefined) return true;
+  const apsRecord = asPlainObject(taskData.aps);
+  return apsRecord !== null && apsRecord.alert !== null && apsRecord.alert !== undefined;
 }
 
 /**
@@ -1410,15 +1443,31 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       phaseId: payload.phase,
       reason: 'legacy-station-kind-ignored',
     });
-    // #2541 — device push-receipt. 이 silent push는 로컬 알림을 발사하지 않는다(backend visible
-    // alert push가 실제 표시 채널, #2064 Phase 1-device) — displayed=false + 사유 명시.
+    // #2541 — device push-receipt. 이 silent push 경로 자체는 로컬 알림을 발사하지 않는다
+    // (#2064 Phase 1-device no-op, markLocalStationFired 미호출 — 금지사항 유지).
+    //
+    // #2930 — 그런데 backend `sendAlertPush`(scheduled.ts:3855)는 title/body를 동봉한 APNs
+    // *alert* push를 보낸다 — content-available은 상태 sync용 병기(#2092)일 뿐, 실제 표시는
+    // OS가 시스템 배너로 직접 렌더한다(JS가 개입하지 않음). 종전에는 "device가 로컬 발사
+    // 안 했다"와 "사용자에게 아무것도 안 보였다"를 같은 displayed=false 값에 섞어, alert가
+    // 동반된 production push까지 거짓으로 미표시 기록했다(10/9 D1 실측: backend sent=13,
+    // device displayed=0).
+    //
+    // displayed는 "사용자에게 보였는가"로 통일한다 — alert 동반이면 OS가 보여줬으므로 true.
+    // source는 "누가 보여줬는가"를 displayed와 분리해 기록한다('backend-alert' = backend
+    // remote alert push가 표시, device 로컬 발사는 없었다). alert 미동반(순수 content-available
+    // only push, 구버전 backend 포함)은 기존 displayed=false + suppressedReason 그대로 유지
+    // (거부 케이스 — #2930 테스트).
+    const alertAccompanied = hasAlertPayload(input.data);
     logPushReceipt({
       pushId: payload.pushId,
       station: payload.nextWaypoint,
       kind: mapWaypointKindToReceiptKind(payload.kind),
       pushType: 'background',
-      displayed: false,
-      suppressedReason: 'legacy-station-kind-ignored',
+      displayed: alertAccompanied,
+      ...(alertAccompanied
+        ? { source: 'backend-alert' as const }
+        : { suppressedReason: 'legacy-station-kind-ignored' }),
     });
     void ackOutcome(payload.pushId, apnsToken, 'skipped', 'legacy-station-kind-ignored');
     logger.info(

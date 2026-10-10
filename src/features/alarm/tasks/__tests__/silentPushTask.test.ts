@@ -292,12 +292,18 @@ import {
   extractPayload,
   getSilentPushRegistrationStatus,
   handleSilentPush,
+  hasAlertPayload,
   persistBackendSsotMirror,
   readBackendSsotMirror,
   registerSilentPushTask,
   SILENT_PUSH_TASK,
   validSsotMirror,
 } from '../silentPushTask';
+// #2930 — 실 구현(mock 없음)으로 pushReceiptBuffer 읽어 displayed/source 진실성 검증.
+import {
+  clearPushReceiptEntries,
+  getPushReceiptEntries,
+} from '../../../observability/utils/pushReceiptBuffer';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
@@ -396,6 +402,22 @@ function bgTaskData(fields: Record<string, unknown>) {
     data: { data: fields, dataString: null },
     notification: null,
     aps: { 'content-available': 1 },
+  };
+}
+
+/**
+ * #2930 — `payload()`와 동일 모양이지만 notification/aps.alert를 동봉한 production alert push
+ * (backend `sendAlertPush`, scheduled.ts:3855)를 재현. `payload()`(notification: null)와의 유일한
+ * 차이가 alert 동반 여부다.
+ */
+function payloadWithAlert(extra: Record<string, unknown> = {}) {
+  const alert = { title: '강남', body: '곧 도착합니다' };
+  return {
+    data: {
+      data: { data: bgFields(extra), dataString: null },
+      notification: alert,
+      aps: { 'content-available': 1, alert },
+    },
   };
 }
 
@@ -2021,6 +2043,126 @@ describe('silentPushTask', () => {
         expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
           expect.objectContaining({ reason: 'legacy-station-kind-ignored' }),
         );
+      });
+    });
+
+    // #2930 — station-kind no-op(legacy-station-kind-ignored) 경로가 backend alert push(title/body
+    // 동반, scheduled.ts:3855) 수신을 `displayed: false`로 거짓 기록하는 회귀. iOS가 OS 배너로 직접
+    // 표시했는데도 device가 "표시 안 됨"으로 적어 주 알림 채널 양성 증거가 0건이 되는 문제(이슈 본문
+    // 10/9 D1 실측, cron-fire-attempt outcome=sent 13건 vs device displayed=0).
+    //
+    // 금지사항 검증(이슈 본문): 발사 동작 변경 없음(scheduleNotificationAsync 미호출 유지) +
+    // markLocalStationFired 미호출 유지 — 계측(logPushReceipt)만 바뀐다.
+    describe('#2930 — legacy-station-kind-ignored displayed 진실성 (alert 동반 여부)', () => {
+      beforeEach(() => {
+        // pushReceiptBuffer.clear가 AsyncStorage.removeItem().catch(...)를 호출 — 이 파일 상단
+        // 전역 mock(removeItem: jest.fn(), 미설정 시 undefined 반환)과 달리 실제 promise가 필요.
+        (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+        clearPushReceiptEntries();
+      });
+
+      it('alert 동반(notification/aps.alert 존재) station payload → displayed:true + source=backend-alert, suppressedReason 없음', async () => {
+        await handleSilentPush(
+          payloadWithAlert({
+            kind: 'destination',
+            phase: 'imminent',
+            nextWaypoint: '강남',
+            pushId: 'p-alert-1',
+          }),
+        );
+        const entries = getPushReceiptEntries();
+        expect(entries).toHaveLength(1);
+        expect(entries[0]!.detail).toEqual(
+          expect.objectContaining({
+            station: '강남',
+            kind: 'destination',
+            pushType: 'background',
+            displayed: true,
+            source: 'backend-alert',
+          }),
+        );
+        expect(entries[0]!.detail.suppressedReason).toBeUndefined();
+        // 금지사항 — 발사 동작 무변경.
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      });
+
+      // 거부 케이스 — alert 없는 순수 silent payload(기존 기본값, notification:null)는 고친 뒤에도
+      // displayed:false로 남아야 한다(회귀 아님, 기존 동작 보존).
+      it('alert 없는 순수 silent station payload → displayed:false 유지 (거부 케이스, 회귀 아님)', async () => {
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            nextWaypoint: '강남',
+            pushId: 'p-noalert-1',
+          }),
+        );
+        const entries = getPushReceiptEntries();
+        expect(entries).toHaveLength(1);
+        expect(entries[0]!.detail).toEqual(
+          expect.objectContaining({
+            station: '강남',
+            kind: 'destination',
+            pushType: 'background',
+            displayed: false,
+            suppressedReason: 'legacy-station-kind-ignored',
+          }),
+        );
+        expect(entries[0]!.detail.source).toBeUndefined();
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockMarkLocalStationFired).not.toHaveBeenCalled();
+      });
+
+      it('kind=transfer + alert 동반 → displayed:true + source=backend-alert (kind=destination과 동일 분기 회귀 가드)', async () => {
+        await handleSilentPush(
+          payloadWithAlert({
+            kind: 'transfer',
+            phase: 'imminent',
+            nextWaypoint: '왕십리',
+            pushId: 'p-alert-transfer',
+          }),
+        );
+        const entries = getPushReceiptEntries();
+        expect(entries).toHaveLength(1);
+        expect(entries[0]!.detail).toEqual(
+          expect.objectContaining({
+            station: '왕십리',
+            kind: 'transfer',
+            displayed: true,
+            source: 'backend-alert',
+          }),
+        );
+      });
+    });
+
+    describe('#2930 — hasAlertPayload (순수 함수)', () => {
+      it('notification이 non-null이면 true', () => {
+        expect(hasAlertPayload({ notification: { title: 'x' }, aps: {} })).toBe(true);
+      });
+
+      it('notification이 null이고 aps.alert도 없으면 false (순수 silent)', () => {
+        expect(hasAlertPayload({ notification: null, aps: { 'content-available': 1 } })).toBe(
+          false,
+        );
+      });
+
+      it('notification이 null이어도 aps.alert가 있으면 true', () => {
+        expect(
+          hasAlertPayload({ notification: null, aps: { alert: { title: 'x' } } }),
+        ).toBe(true);
+      });
+
+      it('taskData 자체가 undefined/falsy면 false', () => {
+        expect(hasAlertPayload(undefined)).toBe(false);
+      });
+
+      it('notification/aps 필드가 모두 없으면 false', () => {
+        expect(hasAlertPayload({})).toBe(false);
+      });
+
+      it('aps가 object가 아니면(string 등) false', () => {
+        expect(hasAlertPayload({ notification: null, aps: 'not-object' })).toBe(false);
       });
     });
 
