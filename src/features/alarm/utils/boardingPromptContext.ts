@@ -38,10 +38,48 @@ import {
   getNextStationOnLine,
 } from '../../../shared/utils/stationRoute';
 import { haversine } from '../../../shared/utils/haversine';
-import { resolveTravelDirection } from '../../route/utils/travelDirection';
-import { inferLoopDirection } from '../../route/utils/loopDirection';
+import { directionOnLine } from '../../route/utils/directionOnLine';
 import { findLocklessActiveLegWaypoint } from '../../route/utils/findActiveTransferContext';
 import { findSegmentEndStationName } from './buildBoardingLockMeta';
+import lineTopology from '../../../data/lineTopology.json';
+
+/**
+ * #2946 (H-7 결함2) — 이전엔 `resolveTravelDirection`(단조 노선)과 `inferLoopDirection`(순환/
+ * 하이브리드 노선, forward/backward 호 길이 비교)을 `??`로 조합했다. 둘은 서로 다른 화이트리스트
+ * (`monotonicLines`/`closedLoops`)를 쓰므로 한 line에서 동시에 값을 내지 않아 "조합 자체가
+ * 충돌"하지는 않지만, 2호선 seam(시청↔충정로·시청↔교대)에서 `inferLoopDirection`의 forward/
+ * backward 호 길이 비교가 `directionOnLine`(`shortestLinePathIndices` 기반, #2455/#2867 ground
+ * truth와 같은 단일 알고리즘, `resolveTripDirection`이 app 전역에서 쓰는 것과 동일 계산)과
+ * **다른 답**을 낸다(실측: 시청→충정로 old=down new=up). `directionOnLine`으로 교체해
+ * device 내부에서 "방향을 아는 두 가지 다른 방법"을 하나로 통일한다.
+ *
+ * `directionOnLine` 자체는 화이트리스트가 없어 모든 line에 콘크리트 방향을 내지만, 기존
+ * 코드가 `monotonicLines ∪ closedLoops` 밖 line(1/5/경의중앙선처럼 다중 종착·분기가 있어
+ * "방향 미해결 → 양방향 허용"이 안전한 기본값이었던 노선)에서 null을 반환하던 범위는
+ * 그대로 보존한다(DIRECTION_RESOLVABLE_LINES 게이트) — 이 PR의 범위는 #2455가 지적한
+ * 기존 두 유틸(2호선/6호선) 조합의 불일치 해소이며, 직선/분기 노선에 새로 방향 판정을
+ * 도입하는 것은 별도 스펙 없이 다루지 않는다(전수 대조 결과 PR 본문 참고).
+ */
+const DIRECTION_RESOLVABLE_LINES = new Set<LineNumber>([
+  ...(lineTopology.monotonicLines as LineNumber[]),
+  ...(Object.keys(lineTopology.closedLoops) as LineNumber[]),
+]);
+
+function resolveStableDirection(
+  line: LineNumber,
+  fromStationId: string,
+  toName: string,
+): 'up' | 'down' | null {
+  if (!DIRECTION_RESOLVABLE_LINES.has(line)) return null;
+  const toStation = findStationByNameAndLine(toName, line);
+  /* istanbul ignore next -- toName(leg.endName/segmentEndName)은 getFirstLeg/
+   * findSegmentEndStationName이 같은 route의 같은 line 위에서 산출한 station 이름이라
+   * line 위에 항상 존재한다는 invariant(옛 resolveTravelDirection/inferLoopDirection의
+   * indexOf 실패 분기도 같은 이유로 실측 호출에서 도달 불능이었다). findStationByNameAndLine의
+   * normalize fallback까지 거치므로 BLDN_NM drift(#1410)도 흡수 — 방어용으로만 유지. */
+  if (!toStation) return null;
+  return directionOnLine(line, fromStationId, toStation.id);
+}
 
 /** #2130 (B-2) — 등록 시점 GPS fix. 근접 스탬프 입력. */
 export interface GpsFix {
@@ -143,12 +181,15 @@ export function buildBoardingPromptContext({
   /* istanbul ignore next -- getNextStationName이 같은 line에서 lookup한 name이므로 재조회 실패 불가 */
   if (!nextStation) return null;
 
-  // 단조 노선은 resolveTravelDirection이, 순환/하이브리드 노선(2호선/6호선)은 inferLoopDirection
-  // 이 fallback으로 방향을 채운다(#1703). 둘 다 null이면 양방향 후보 허용 — backend
-  // `pickAutoTrainCode`는 stationName 필터로 implicit 방향 해소(허용 가능한 false negative).
-  const direction =
-    resolveTravelDirection(leg.line, currentStation.name, leg.endName)?.direction ??
-    inferLoopDirection(leg.line, currentStation.name, leg.endName);
+  // #2946 (H-7 결함2) — directionOnLine 단일 알고리즘(resolveStableDirection, 파일 상단).
+  // monotonicLines∪closedLoops 밖 line은 null(양방향 후보 허용, 기존 범위 보존).
+  //
+  // #2946 (H-7 결함2 (b)) — 이전 주석("stationName 필터로 implicit 방향 해소")은 거짓이었다.
+  // backend(`arrivalsFromPositions.ts:111-129`)의 실체는 "경로상 어느 역에 있는가"
+  // (segmentStations.indexOf)만 본다 — 10/9 5559가 군자(segmentStations[0])에 있어 idx=0으로
+  // 통과한 사례가 보여주듯 탑승역 그 자리의 열차 방향은 원리적으로 구분 불가하다. 교차 링크:
+  // #2944(H-6, backend 대응) / docs/agents/invariants.md(#2944가 소유 — 본 PR은 미기록).
+  const direction = resolveStableDirection(leg.line, currentStation.id, leg.endName);
 
   const origin = { lat: currentStation.lat, lng: currentStation.lng };
   return {
@@ -190,9 +231,8 @@ function buildSegmentContext({
   /* istanbul ignore next -- getNextStationOnLine이 line 위에서 찾은 name이므로 재조회 실패 불가 */
   if (nextStation == null) return null;
 
-  const direction =
-    resolveTravelDirection(line, currentStation.name, segmentEndName)?.direction ??
-    inferLoopDirection(line, currentStation.name, segmentEndName);
+  // #2946 (H-7 결함2) — directionOnLine 단일 알고리즘(resolveStableDirection, 파일 상단 참고).
+  const direction = resolveStableDirection(line, currentStation.id, segmentEndName);
 
   const origin = { lat: currentStation.lat, lng: currentStation.lng };
   return {

@@ -141,6 +141,35 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptGeoContext.direction).toBe('down');
     });
 
+    it(
+      '#2946 (H-7 결함2) — 시청→충정로(2호선 seam) directionOnLine 단일 알고리즘으로 up ' +
+        '(옛 resolveTravelDirection??inferLoopDirection 조합은 down을 냈다 — #2455가 경고한 ' +
+        '두 유틸 불일치의 실측 사례, PR 본문 before/after 표 참고)',
+      () => {
+        const ctx = buildBoardingPromptContext({
+          route: makeDirectRoute(20, '2'),
+          currentStation: st('2-001'), // 시청
+          destination: st('2-043'), // 충정로(경기대입구)
+        });
+        expect(ctx).not.toBeNull();
+        expect(ctx?.promptGeoContext.direction).toBe('up');
+      },
+    );
+
+    it(
+      '#2946 (H-7 결함2) — 시청→교대(법원.검찰청)도 up (시청→충정로와 동일 seam 성격, ' +
+        '옛 조합은 down)',
+      () => {
+        const ctx = buildBoardingPromptContext({
+          route: makeDirectRoute(22, '2'),
+          currentStation: st('2-001'), // 시청
+          destination: st('2-023'), // 교대(법원.검찰청)
+        });
+        expect(ctx).not.toBeNull();
+        expect(ctx?.promptGeoContext.direction).toBe('up');
+      },
+    );
+
     it('비단조/closedLoops 미포함 line(1호선) — direction null fallback', () => {
       // 1호선은 단조 화이트리스트 + closedLoops 둘 다 없음 → 양쪽 모두 null → 양방향 허용.
       const current = st('1-001');

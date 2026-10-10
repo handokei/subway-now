@@ -18,6 +18,7 @@ import { pollTrainPositionsIfDue } from '../../nearest-station/tasks/bgPositionT
 import { pickCandidateTrains } from '../../arrival/utils/pickCandidateTrains';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
+import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { getStationById, type Route } from '../../../shared/utils/stationRoute';
 import { DESTINATION_KEY, SLEEP_MODE_KEY, ROUTE_KEY, BG_LAST_STATION_KEY } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
@@ -134,10 +135,23 @@ export async function evaluatePositionTrainFire(): Promise<boolean> {
     return false;
   }
 
+  // #2946 (H-7 결함1) — 이 경로는 route+destination+lock.boardingStationId를 전부 갖고 있어
+  // (useFusedNearestStation.ts:818~833과 동일 재료) 방향을 알 수 있는데도 지금까지 pickCandidateTrains에
+  // 전혀 전달하지 않아 enumeration 단계가 반대 방향 열차를 조용히 섞어 넣었다(결함1 fail-open).
+  // resolveTripDirection으로 lock leg 방향을 계산해 전달한다 — updnLine 인코딩(0=상행/내선,
+  // 1=하행/외선)은 useFusedNearestStation.ts:827-833과 동일. lockedTrainCode도 함께 넘겨
+  // 방향이 어긋나는 edge case에서도 실측 lock.trainCode 신호(sticky 매칭의 유일한 근거)가
+  // enumeration 단계에서 거부되지 않게 한다(#2728 ADR-039 2단계와 동일 bypass 계약).
+  const tripDirection = resolveTripDirection(storedRoute, destination.name, lock.boardingStationId);
+  const direction: 0 | 1 | undefined =
+    tripDirection === 'up' ? 0 : tripDirection === 'down' ? 1 : undefined;
+
   const candidates = pickCandidateTrains({
     positions: [positions],
     line: lock.boardingLine,
     anchorStationName,
+    direction,
+    lockedTrainCode: lock.trainCode,
   });
   const trainProgress = trackTrainProgress({
     candidates,
