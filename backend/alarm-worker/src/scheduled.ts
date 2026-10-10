@@ -1258,6 +1258,61 @@ export function isBoardingLockActive(
   return trip.boardingLock !== undefined && trip.boardingLock.expiresAt > now;
 }
 
+/**
+ * #2939 (plan 2026-10-10 W1, P1/A1) — device가 PENDING fallback lock에 쓰는 sentinel
+ * trainCode(`src/shared/constants/boardingLock.ts`의 `PENDING_TRAIN_CODE`와 동일 리터럴).
+ * `boardingAnchorResolver.ts` 헤더 주석대로 backend는 이 값을 정상 경로에서 받지 않지만
+ * (device가 `buildBoardingLockMeta.ts`에서 필드 자체를 생략), 방어적으로 같은 값을 여기서도
+ * "특정 안 됨"으로 취급한다 — ADR-036 "PENDING 해소" 보조 항목과 동일 정책(해소 전엔 묻는 게
+ * 맞다). 리터럴을 device 모듈에서 직접 import하지 않는 이유는 backend/device가 별도
+ * 패키지 경계이기 때문(레포 전역 import 경계 룰).
+ */
+export const PENDING_TRAIN_CODE_SENTINEL = 'PENDING-TRAIN-CODE';
+
+/**
+ * #2939 — "해당 leg의 lock이 이미 실 trainCode를 가졌는가"(leg-scoped 판정).
+ *
+ * `isBoardingLockActive`(전역 lock 유무)와 다르다 — 전역 판정으로 쓰면 leg-1 lock이 leg-2
+ * 프롬프트/응답을 막는 과차단이 된다(10/9 실측이 정확히 그 상태, 거부 케이스 ⓐ).
+ *
+ * **`boardingLock.line` 비교만으로는 leg를 특정할 수 없다** (코드리뷰 — 과차단 구멍, 거부
+ * 케이스 ⓓ). 지선은 본선과 `line` 값이 같다 — `legDirection.ts:100`의
+ * `(s) => s.line === line && s.id >= firstId && s.id <= lastId` 필터와 `:105` 주석
+ * `// 지선 (mainIdRange 밖)`이 이를 명시한다(예: 2호선 본선과 성수지선 모두 `line === "2"`).
+ * 즉 "2호선 본선 → 성수지선"처럼 **같은 line, 다른 탑승역**인 환승에서 line만 비교하면
+ * leg-1 lock이 leg-2 anchor와 line이 같다는 이유로 오판되어 leg-2 프롬프트가 영구 차단된다
+ * (10/9가 보여준 "한 번 더 묻는" 회귀보다 나쁜 "완전 침묵" 회귀).
+ *
+ * 그래서 `line` 일치에 더해 **lock의 탑승역**(`segmentStations[0]`)이 leg anchor의
+ * `boardingStation`과도 일치해야 한다. `segmentStations[0]`이 탑승역이라는 보장은
+ * `BoardingLockMeta.segmentStations` 필드 doc("출발역 → 구간 끝", types.ts)과
+ * `boardingAnchorResolver.ts`(`segmentStations[0] === anchor.originStation`, 필요 시
+ * prepend) + `lockSwap.buildLegSegmentStations`(새 leg의 첫 waypoint부터 수집) 양쪽 생성
+ * 경로가 공통으로 지키는 계약이다 — 둘 다 거쳐 만들어지는 모든 backend 생성 lock에 적용된다.
+ * **다음에 "line만으로 충분해 보인다"며 역 비교를 되돌리지 말 것** — 위 지선/본선 사례가
+ * 바로 그 되돌림이 재발시키는 회귀다.
+ *
+ * `PENDING` sentinel trainCode(`PENDING_TRAIN_CODE_SENTINEL`)는 특정된 것으로 보지 않는다
+ * (거부 케이스 ⓒ — 해소 전엔 묻는 게 맞다).
+ *
+ * W2(#2939 plan §4, E1+C2 — 탭이 제시된 leg·열차로 lock 생성)가 만드는 lock도 이 함수로
+ * 즉시 인식돼야 한다 — plan 코멘트의 "두 작업의 lock 판정 기준을 동일하게 둔다" 요구사항이라
+ * `maybeFireLegBoardingPrompt`와 W2의 응답측 로직이 **이 함수를 공유**한다(scheduled.ts에
+ * export해 index.ts에서도 import 가능 — isBoardingLockActive와 동일 패턴).
+ */
+export function isLockActiveForLeg(
+  trip: Trip,
+  legLine: LineNumber,
+  legBoardingStation: string,
+  now: number,
+): boolean {
+  if (!isBoardingLockActive(trip, now)) return false;
+  if (trip.boardingLock.line !== legLine) return false;
+  if (trip.boardingLock.segmentStations[0] !== legBoardingStation) return false;
+  if (trip.boardingLock.trainCode === PENDING_TRAIN_CODE_SENTINEL) return false;
+  return true;
+}
+
 export interface ScheduledDeps {
   seoul: SeoulArrivalClient;
   apnsConfig: ApnsConfig;
@@ -8201,6 +8256,9 @@ const ANCHOR_PRESENT_OUTCOMES: readonly LegBoardingPromptOutcome[] = [
   // #2801 — 이 outcome도 anchor 존재를 전제로만 기록된다(fireBoardingPromptForAnchor 호출 자체가
   // anchor 있어야 진입). 누락 시 정상 조기-억제 cycle이 anchor-not-stamped로 오분류된다.
   'suppressed-not-imminent',
+  // #2939 — lock 게이트도 anchor 존재(currentLegAnchor)를 전제로만 평가된다(이 outcome이
+  // 기록되는 분기가 anchor null 체크 통과 이후). 누락 시 같은 오분류가 재발한다.
+  'lock-already-attached',
 ];
 
 function classifyMissingLegAnchor(
@@ -8281,6 +8339,32 @@ export async function maybeFireLegBoardingPrompt(
       undefined,
       ssot,
       classifyMissingLegAnchor(trip, ssot),
+      now,
+    );
+    return;
+  }
+
+  // #2939 (10/9 실측 — 11:37:51 lock 5559 부착 후 11:38:24 또 fired) — 해당 leg의 lock이 이미
+  // 실 trainCode를 가지면 발사하지 않는다. `isLockActiveForLeg`는 **현재 leg/line**에 해당하는
+  // lock만 본다 — 전역 lock 유무로 판정하면 leg-1 lock이 leg-2 프롬프트를 막는 과차단이 된다
+  // (거부 케이스 ⓐ, 10/9가 정확히 그 상태). #2898의 5분 soft-block(같은 열차 approaching→
+  // imminent 재확인 허용)은 "lock 없음"을 전제로 설계됐으므로 이 게이트가 그보다 먼저 평가돼
+  // lock 활성 trip은 아예 그 경로에 진입하지 않는다.
+  if (isLockActiveForLeg(trip, currentLegAnchor.line, currentLegAnchor.boardingStation, now)) {
+    stats.legBoardingPromptBlocked += 1;
+    log('leg-boarding-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: 'lock-already-attached',
+      station: currentLegAnchor.boardingStation,
+      line: currentLegAnchor.line,
+    });
+    await recordLegBoardingPromptTransition(
+      env,
+      trip,
+      currentLegAnchor.boardingStation,
+      currentLegAnchor.line,
+      ssot,
+      'lock-already-attached',
       now,
     );
     return;
