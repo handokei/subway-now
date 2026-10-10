@@ -56,6 +56,7 @@ import {
   resolveWaypointEnvironment,
   advanceBoardingLockWaypoint,
   createEmptyScheduledStats,
+  restrictArrivalsByLegDirection,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -15527,6 +15528,55 @@ describe('advanceBoardingLockWaypoint — alarmEvents stamping (#2861 T3)', () =
 
     const after = await readSsot(kv as unknown as KVNamespace, trip.token);
     expect(after?.alarmEvents).toHaveLength(1);
+  });
+});
+
+/**
+ * #2944 (H-6) — restrictArrivalsByLegDirection — lockless leg 전진(#2921) 후보 제한.
+ * direction 추론 불가(resolveLegDirectionForWaypoint null)일 때 기존 "전체 arrivals 그대로
+ * 반환"(fail-open)은 10/9 반대 방향 lock 사고 계열의 잔여 null 경로 중 하나다 — 지금은
+ * fail-closed(빈 배열)로 전환한다.
+ */
+describe('restrictArrivalsByLegDirection (#2944, H-6)', () => {
+  function arrival(overrides: Partial<ArrivalEntry> & { trainCode: string }): ArrivalEntry {
+    return {
+      destination: '',
+      arrivalSeconds: 60,
+      isUp: false,
+      subwayNm: '지하철7호선',
+      arvlCd: 0,
+      ...overrides,
+    };
+  }
+
+  it('direction 추론 가능 — 반대 방향 열차는 제외되고 같은 방향만 남는다 (기존 동작 불변)', () => {
+    // trip.originStationName='어린이대공원' + waypoint='군자'(line 7) → inferLegDirection='up'.
+    const trip = makeTrip({
+      route: { type: 'direct', line: '7', stops: 2 },
+      originStationName: '어린이대공원',
+      waypoints: [{ stationName: '군자', line: '7', kind: 'intermediate' }],
+    });
+    const waypoint: Waypoint = { stationName: '군자', line: '7', kind: 'intermediate' };
+    const arrivals = [
+      arrival({ trainCode: 'UP', isUp: true }),
+      arrival({ trainCode: 'DOWN', isUp: false }),
+    ];
+    const result = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+    expect(result.map((a) => a.trainCode)).toEqual(['UP']);
+  });
+
+  // #2944 — direction 추론 불가(currentLegAnchor/originStationName 둘 다 없음, 구 client)
+  // → fail-closed(빈 배열). 구 동작("전체 arrivals 그대로 반환")은 10/9 사고 계열의 잔여
+  // fail-open 경로였다.
+  it('direction 추론 불가(앵커/origin 둘 다 없음) → 후보 0건 (fail-closed, 구 "전체 반환" 회귀 차단)', () => {
+    const trip = makeTrip({
+      route: { type: 'direct', line: '7', stops: 2 },
+      waypoints: [{ stationName: '군자', line: '7', kind: 'intermediate' }],
+    });
+    const waypoint: Waypoint = { stationName: '군자', line: '7', kind: 'intermediate' };
+    const arrivals = [arrival({ trainCode: 'UP', isUp: true }), arrival({ trainCode: 'DOWN', isUp: false })];
+    const result = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+    expect(result).toEqual([]);
   });
 });
 
