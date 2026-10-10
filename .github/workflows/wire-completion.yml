@@ -34,6 +34,10 @@ jobs:
   adr-conflict-section:
     name: ADR Conflict Declaration Check
     runs-on: ubuntu-latest
+    # base가 dev인 PR(ADR을 새로 작성하는 PR)에만 실행한다. base가 main인 릴리스 PR(dev→main)은
+    # main 이후 작성된 모든 ADR이 diff-filter=A(added)로 집계돼 소급 강제가 되므로 skip한다(#2935, #2932 회귀).
+    # push 이벤트(github.base_ref 없음)는 dev와 동일하게 취급해 계속 검사한다.
+    if: github.event_name != 'pull_request' || github.base_ref == 'dev'
 
     steps:
       - name: 코드 체크아웃 (base ref 비교 위해 전체 history)
