@@ -12035,18 +12035,25 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     // "지선(mainIdRange 밖)" — 2호선 본선/성수지선 둘 다 line="2"). leg-1 lock이 line만으로
     // 판정되면 "같은 노선 내 환승"(예: 2호선 본선 건대입구 → 성수지선 신설동)에서 line이
     // 같다는 이유로 leg-2 프롬프트가 차단된다 — 10/9가 보여준 것보다 나쁜 회귀(완전 침묵).
-    // leg-1 lock의 탑승역(segmentStations[0]='군자')과 leg-2 anchor의 탑승역('건대입구')이
-    // 다르므로, 역까지 함께 비교하면 이 케이스는 발사돼야 한다.
-    it('거부 ⓓ — 같은 노선 내 환승(leg-1 lock line="2"+ leg-2 anchor line="2", 탑승역 다름) → 발사된다(과차단 금지)', async () => {
+    // leg-1 lock의 탑승역(segmentStations[0])과 leg-2 anchor의 탑승역(boardingStation)이
+    // 다르므로, 역까지 함께 비교하면 이 케이스는 발사돼야 한다(아래 테스트는 공유 Seoul
+    // mock 제약상 line="7"로 재현 — 주석 본문 참고).
+    it('거부 ⓓ — 같은 노선 값(line="7") + 탑승역 다름(지선/본선 등 line만으론 구분 불가한 환승) → 발사된다(과차단 금지)', async () => {
+      // makeTrip 기본 currentLegAnchor = { boardingStation: '건대입구', line: '7' }를 그대로 둔다
+      // (line 값을 anchor와 동일하게 고정) — 실제 지선/본선 사례(2호선 본선/성수지선 둘 다
+      // line="2")와 동형이되, 이 describe의 공유 Seoul mock(`makeArrivalsResponse`)이
+      // subwayNm을 7호선으로 고정하므로 line="7"로 재현한다(검증 관심사는 "line만 같고
+      // 탑승역이 다른 lock을 같은 leg로 오판하는가"이지 실제 노선 식별자 자체가 아니다).
+      // leg-1 lock은 **다른 역**(중곡)에서 탑승한 것 — segmentStations[0]='중곡' ≠
+      // anchor.boardingStation='건대입구'.
       const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
       const trip = makeTrip({
-        currentLegAnchor: { boardingStation: '성수', line: '2' },
         boardingLock: {
           trainCode: '2371',
-          line: '2',
-          subwayId: '1002',
+          line: '7',
+          subwayId: '1007',
           selectedDepartureTime: NOW - 10 * 60_000,
-          segmentStations: ['건대입구', '성수'],
+          segmentStations: ['중곡', '건대입구'],
           expiresAt: NOW + 10 * 60_000,
         },
       });
