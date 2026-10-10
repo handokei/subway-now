@@ -12031,6 +12031,32 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
       expect(trip.legBoardingPromptState?.fired).toBe(true);
     });
 
+    // 거부 ⓓ (코드리뷰 — 과차단 구멍) — 지선은 본선과 `line` 값이 같다(legDirection.ts:100,105
+    // "지선(mainIdRange 밖)" — 2호선 본선/성수지선 둘 다 line="2"). leg-1 lock이 line만으로
+    // 판정되면 "같은 노선 내 환승"(예: 2호선 본선 건대입구 → 성수지선 신설동)에서 line이
+    // 같다는 이유로 leg-2 프롬프트가 차단된다 — 10/9가 보여준 것보다 나쁜 회귀(완전 침묵).
+    // leg-1 lock의 탑승역(segmentStations[0]='군자')과 leg-2 anchor의 탑승역('건대입구')이
+    // 다르므로, 역까지 함께 비교하면 이 케이스는 발사돼야 한다.
+    it('거부 ⓓ — 같은 노선 내 환승(leg-1 lock line="2"+ leg-2 anchor line="2", 탑승역 다름) → 발사된다(과차단 금지)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '성수', line: '2' },
+        boardingLock: {
+          trainCode: '2371',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW - 10 * 60_000,
+          segmentStations: ['건대입구', '성수'],
+          expiresAt: NOW + 10 * 60_000,
+        },
+      });
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+      expect(fetchImpl).toHaveBeenCalled();
+      expect(stats.legBoardingPromptFired).toBe(1);
+      expect(trip.legBoardingPromptState?.fired).toBe(true);
+    });
+
     // 거부 ⓒ — trainCode=PENDING sentinel은 특정된 것으로 보지 않는다(ADR-036 보조 항목과 동일
     // 정책) — 해소 전엔 묻는 게 맞다. line은 현재 leg와 일치시켜 "line만 보고 차단"하는 회귀를
     // 함께 막는다.
