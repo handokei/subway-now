@@ -10,6 +10,16 @@
 # — "기존 38개 ADR에 섹션 소급 추가 금지"(#2931 금지사항)와 상충하지 않도록 added-only로
 # 스코프한다. renamed/modified까지 넓히면 이 PR의 ADR-014 수정 자체가 CI를 깨뜨린다.
 #
+# ★★★ 토폴로지 제약 (#2935, #2932 회귀) ★★★
+# 이 스크립트는 base가 **dev인 PR 전용**이다 — ADR 작성은 feature→dev에서 일어난다.
+# base가 main(릴리스 PR, dev→main)이면 main 이후 작성된 모든 ADR이 "added"로 집계되어
+# 섹션 없는 기존 ADR 전부가 FAIL하는 소급 강제가 된다(의도와 반대). 그래서:
+#   1) 워크플로 레벨에서 base=main PR은 이 job 자체를 실행하지 않는다
+#      (.github/workflows/wire-completion.yml의 job-level `if`).
+#   2) 이 스크립트도 전달된 BASE_REF가 origin/main과 동일한 커밋을 가리키면
+#      자체적으로 skip + 사유 로그 + exit 0 한다 — 워크플로 if 없이 로컬/다른 경로로
+#      직접 호출되어도("base=main" 검증 포함) 안전하게 동작하도록 하는 방어선이다.
+#
 # 검사 내용:
 #   1. "## 이 ADR이 수정·대체·모순하는 결정" 섹션이 존재하고, 본문이 비어있지 않을 것.
 #   2. 그 섹션 본문에 언급된 "ADR-0NN" 패턴이 실제로 docs/decisions/ADR-0NN-*.md로 존재할 것.
@@ -35,6 +45,16 @@ if [ -z "$BASE_REF" ]; then
   else
     BASE_REF="HEAD~1"
   fi
+fi
+
+# base=main(릴리스 PR) skip: BASE_REF가 origin/main과 동일 커밋을 가리키면
+# "새로 작성하는 ADR"이 아니라 "이미 승인된 ADR을 배송만" 하는 경우이므로 검사하지 않는다.
+# 조용한 통과로 오인되지 않게 사유를 로그에 명시한다(이슈 스펙 2항목).
+RESOLVED_BASE_SHA=$(git -C "$REPO_ROOT" rev-parse "$BASE_REF" 2>/dev/null || echo "")
+MAIN_SHA=$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || echo "")
+if [ -n "$RESOLVED_BASE_SHA" ] && [ -n "$MAIN_SHA" ] && [ "$RESOLVED_BASE_SHA" = "$MAIN_SHA" ]; then
+  echo "base=main (릴리스 PR) — ADR 작성 PR이 아니므로 skip"
+  exit 0
 fi
 
 CHANGED_FILES=$(git -C "$REPO_ROOT" diff --name-only --diff-filter=A "$BASE_REF" -- 'docs/decisions/ADR-*.md' || true)
