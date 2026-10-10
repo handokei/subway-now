@@ -2060,7 +2060,19 @@ describe('useStationAlarm', () => {
     // #2122 — FG 보조 발사. backend APNs 전달 지연(실측 35~51s)을 FG에서 디바이스 자체 판정으로
     // 우회. #2064 봉인은 유지하되 AppState==='active' && lock 활성일 때만 예외적으로 로컬
     // station-passed 배너를 추가 발사한다.
-    describe('#2122 FG 보조 발사 (AppState active 한정)', () => {
+    // #2940 (plan W3, P3=D1) — #2927/#2928의 유예 타이머를 기본값화(flag 제거)했다. 즉시 발사
+    // 경로는 더 이상 존재하지 않고, dispatchStationPassed는 항상 scheduleDeferredStationPassedFire를
+    // 거친다. 아래 모든 테스트가 setTimeout을 가로채 유예 만료를 수동으로 flush한다(#2927이 쓰던
+    // 패턴을 flag 없이 기본 경로로 승격).
+    describe('#2122/#2940 FG 보조 발사 — 유예 타이머 기본값 (AppState active 한정)', () => {
+      // #2927/#2940 — 15s 실제 대기 없이 유예 타이머를 검증하기 위해 global.setTimeout을 가로챈다.
+      // useStationAlarm.ts 전체에서 setTimeout 호출부는 scheduleDeferredStationPassedFire
+      // 하나뿐이라(grep 확인) 다른 내부 동작과 충돌 없이 안전하게 가로챌 수 있다. jest
+      // fake timer(advanceTimersByTime) 대신 직접 콜백을 캡처하는 방식은 hydration effect의
+      // 비동기 micro-queue와 fake timer 간 상호작용으로 발생하는 "not wrapped in act" 경고를
+      // 피한다(hydration은 fake timer와 무관하게 real microtask로 진행돼야 하므로).
+      let capturedTimer: { cb: () => void; delay: number } | null = null;
+
       function renderStationPassed() {
         mockEvaluateAlarmPhase.mockReturnValue(null);
         mockGetLastNotifiedStationId.mockResolvedValue(null);
@@ -2076,24 +2088,56 @@ describe('useStationAlarm', () => {
         );
       }
 
-      it('FG(active) + lock 활성 + 게이트 통과 → fireFgAuxStationPassedNotification 발사 + logFiredStationPassed(fg) 스탬프', async () => {
+      async function flushDeferredTimer(): Promise<void> {
+        if (!capturedTimer) {
+          throw new Error('#2940 — setTimeout이 등록되지 않음(유예 타이머 미호출)');
+        }
+        await act(async () => {
+          capturedTimer?.cb();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      }
+
+      beforeEach(() => {
+        capturedTimer = null;
+        jest.spyOn(global, 'setTimeout').mockImplementation(((
+          cb: () => void,
+          delay?: number,
+        ) => {
+          capturedTimer = { cb, delay: delay ?? 0 };
+          return 0 as unknown as ReturnType<typeof setTimeout>;
+        }) as typeof setTimeout);
+      });
+
+      afterEach(() => {
+        (global.setTimeout as unknown as jest.Mock).mockRestore();
+      });
+
+      // 거부 케이스 ⓐ(plan #2940) — backend가 끝내 미전달인 트립(마커 계속 false)에서 유예
+      // 만료 후 반드시 대리 발사 1건이 남는다 — "제거"가 아니라 "기본값화"임을 고정.
+      it('FG(active)+lock 활성+게이트 통과 → 즉시 미발사, LOCAL_FIRE_DEFER_GRACE_MS 유예 타이머 등록 후 만료 시 fireFgAuxStationPassedNotification 발사 + device-proxy-fired 기록', async () => {
         setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
 
         renderStationPassed();
 
         await waitFor(() => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
-        await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
-            station.name,
-            1,
-            'destination',
-            destination.name,
-            station.line,
-          );
-        });
-        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg', station.name);
+        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
+        expect(capturedTimer?.delay).toBe(LOCAL_FIRE_DEFER_GRACE_MS);
+
+        await flushDeferredTimer();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+          station.name,
+          1,
+          'destination',
+          destination.name,
+          station.line,
+        );
+        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('device-proxy-fired', station.name);
       });
 
       it('BG(background) → fireFgAuxStationPassedNotification 미호출 (#2064 봉인 유지)', async () => {
@@ -2121,7 +2165,7 @@ describe('useStationAlarm', () => {
         expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
       });
 
-      it('FG(active) + lock 활성이어도 fireFgAuxStationPassedNotification 실패 시 dedup bookkeeping은 유지되고 예외를 던지지 않는다', async () => {
+      it('유예 만료 후 fireFgAuxStationPassedNotification 실패(reject) 시 예외를 던지지 않고 device-proxy-fired도 기록하지 않는다', async () => {
         setAppState('active');
         mockFireFgAuxStationPassedNotification.mockRejectedValueOnce(new Error('schedule 실패'));
 
@@ -2130,22 +2174,62 @@ describe('useStationAlarm', () => {
         await waitFor(() => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
-        await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
-            station.name,
-            1,
-            'destination',
-            destination.name,
-            station.line,
-          );
-        });
+
+        await flushDeferredTimer();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+          station.name,
+          1,
+          'destination',
+          destination.name,
+          station.line,
+        );
         // logFiredStationPassed는 fireFgAuxStationPassedNotification 성공 후에만 호출 — 실패 시 미호출.
         expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
       });
 
-      // #2362 — transfer/multi-transfer route에서 count/target(환승역|도착역) 배선.
-      it('transfer route + 환승 전(candidate.line===fromLine) → targetKind=transfer + stopsToTransfer 전달', async () => {
+      // 거부 케이스 ⓑ(plan #2940) — backend가 유예 중 먼저 표시해 #2903 마커가 재확인 시 true가
+      // 되면(fireFgAuxStationPassedNotification이 내부적으로 false 반환) 대리 발사 0건·오기록 없음.
+      it('유예 만료 시 fireFgAuxStationPassedNotification이 false(스킵: backend 선표시)를 반환하면 device-proxy-fired를 기록하지 않는다', async () => {
         setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockResolvedValue(false);
+
+        renderStationPassed();
+
+        await waitFor(() => {
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
+        });
+
+        await flushDeferredTimer();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalled();
+        expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
+      });
+
+      // ⓔ BG 동작 무변경 — 유예 중 app이 background로 전이되면 만료 시점에도 발사하지 않는다
+      // (#2064 봉인 재확인).
+      it('유예 중 background로 전이되면 만료 시점에 fireFgAuxStationPassedNotification을 호출하지 않는다', async () => {
+        setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
+
+        renderStationPassed();
+
+        await waitFor(() => {
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
+        });
+
+        setAppState('background');
+
+        await flushDeferredTimer();
+
+        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
+        expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
+      });
+
+      // #2362 — transfer/multi-transfer route에서 count/target(환승역|도착역) 배선.
+      it('transfer route + 환승 전(candidate.line===fromLine) → targetKind=transfer + stopsToTransfer 전달 (유예 만료 후)', async () => {
+        setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
         const transferRoute = makeTransferRoute({
           transferName: '시청',
           fromLine: '2',
@@ -2170,18 +2254,22 @@ describe('useStationAlarm', () => {
         );
 
         await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
-            station.name,
-            4,
-            'transfer',
-            '시청',
-            station.line,
-          );
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
+        await flushDeferredTimer();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+          station.name,
+          4,
+          'transfer',
+          '시청',
+          station.line,
+        );
       });
 
-      it('transfer route + 환승 후(candidate.line===toLine) → targetKind=destination + stopsFromTransfer 전달', async () => {
+      it('transfer route + 환승 후(candidate.line===toLine) → targetKind=destination + stopsFromTransfer 전달 (유예 만료 후)', async () => {
         setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
         const transferRoute = makeTransferRoute({
           transferName: '시청',
           fromLine: '1',
@@ -2207,18 +2295,22 @@ describe('useStationAlarm', () => {
         );
 
         await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
-            station.name,
-            6,
-            'destination',
-            destination.name,
-            station.line,
-          );
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
+        await flushDeferredTimer();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+          station.name,
+          6,
+          'destination',
+          destination.name,
+          station.line,
+        );
       });
 
-      it('multi-transfer route + candidate가 첫 leg fromLine과 일치 → 그 leg의 환승역 대상', async () => {
+      it('multi-transfer route + candidate가 첫 leg fromLine과 일치 → 그 leg의 환승역 대상 (유예 만료 후)', async () => {
         setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
         const multiRoute = makeMultiTransferRoute({
           transfers: [
             { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 2 },
@@ -2243,18 +2335,22 @@ describe('useStationAlarm', () => {
         );
 
         await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
-            station.name,
-            2,
-            'transfer',
-            '시청',
-            station.line,
-          );
+          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
+        await flushDeferredTimer();
+
+        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
+          station.name,
+          2,
+          'transfer',
+          '시청',
+          station.line,
+        );
       });
 
-      it('multi-transfer route + candidate가 어느 leg의 fromLine과도 불일치(마지막 환승 이후) → destination 대상 + stopsAfterLastTransfer', async () => {
+      it('multi-transfer route + candidate가 어느 leg의 fromLine과도 불일치(마지막 환승 이후) → destination 대상 + stopsAfterLastTransfer (유예 만료 후)', async () => {
         setAppState('active');
+        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
         const multiRoute = makeMultiTransferRoute({
           transfers: [
             { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: 2 },
@@ -2281,167 +2377,17 @@ describe('useStationAlarm', () => {
         );
 
         await waitFor(() => {
-          expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
-            station.name,
-            3,
-            'destination',
-            destination.name,
-            station.line,
-          );
-        });
-      });
-    });
-
-    // #2927 (ADR-040 2단계) — isLocalFireDeferEnabled() flag로 로컬 FG 보조 발사를 "즉시"에서
-    // "유예 후 재확인"으로 전환한다. OFF(기본)는 위 #2122 describe와 바이트 수준 동일(ⓓ) —
-    // 별도 FakeTimer 없이 즉시 호출됨을 그 describe가 이미 검증한다. 여기서는 flag ON일 때만의
-    // 신규 동작(유예·재확인·BG 안전망·측정 tagging)을 검증한다.
-    describe('#2927 로컬 발사 유예 타이머 (isLocalFireDeferEnabled ON)', () => {
-      const originalEnv = process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER;
-      // #2927 — 15s 실제 대기 없이 유예 타이머를 검증하기 위해 global.setTimeout을 가로챈다.
-      // useStationAlarm.ts 전체에서 setTimeout 호출부는 scheduleDeferredStationPassedFire
-      // 하나뿐이라(grep 확인) 다른 내부 동작과 충돌 없이 안전하게 가로챌 수 있다. jest
-      // fake timer(advanceTimersByTime) 대신 직접 콜백을 캡처하는 방식은 hydration effect의
-      // 비동기 micro-queue와 fake timer 간 상호작용으로 발생하는 "not wrapped in act" 경고를
-      // 피한다(hydration은 fake timer와 무관하게 real microtask로 진행돼야 하므로).
-      let capturedTimer: { cb: () => void; delay: number } | null = null;
-
-      function renderDeferredStationPassed() {
-        mockEvaluateAlarmPhase.mockReturnValue(null);
-        mockGetLastNotifiedStationId.mockResolvedValue(null);
-        mockSetLastNotifiedStationId.mockResolvedValue(undefined);
-        mockResolveNextTarget.mockReturnValue({
-          nextStationName: '강남',
-          stopsToNextStation: 1,
-          isTransfer: false,
-          stopsToDestination: 1,
-        });
-        return renderHook(() =>
-          useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
-        );
-      }
-
-      async function flushDeferredTimer(): Promise<void> {
-        if (!capturedTimer) {
-          throw new Error('#2927 — setTimeout이 등록되지 않음(유예 타이머 미호출)');
-        }
-        await act(async () => {
-          capturedTimer?.cb();
-          await Promise.resolve();
-          await Promise.resolve();
-        });
-      }
-
-      beforeEach(() => {
-        process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER = 'true';
-        capturedTimer = null;
-        jest.spyOn(global, 'setTimeout').mockImplementation(((
-          cb: () => void,
-          delay?: number,
-        ) => {
-          capturedTimer = { cb, delay: delay ?? 0 };
-          return 0 as unknown as ReturnType<typeof setTimeout>;
-        }) as typeof setTimeout);
-      });
-
-      afterEach(() => {
-        (global.setTimeout as unknown as jest.Mock).mockRestore();
-        if (originalEnv === undefined) {
-          delete process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER;
-        } else {
-          process.env.EXPO_PUBLIC_LOCAL_FIRE_DEFER = originalEnv;
-        }
-      });
-
-      // ⓐ miss 0 — backend push가 끝내 오지 않는 트립(마커 계속 false)에서 유예 만료 후
-      // 반드시 발사된다.
-      it('ⓐ 유예 등록 시점에는 fireFgAuxStationPassedNotification이 호출되지 않고, LOCAL_FIRE_DEFER_GRACE_MS로 타이머가 등록된다', async () => {
-        setAppState('active');
-        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
-
-        renderDeferredStationPassed();
-
-        await waitFor(() => {
           expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
         });
-        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
-        expect(capturedTimer?.delay).toBe(LOCAL_FIRE_DEFER_GRACE_MS);
-      });
-
-      it('ⓐ 유예 만료 후 fireFgAuxStationPassedNotification이 발사되고, 발사 성공 시 device-proxy-fired로 기록된다', async () => {
-        setAppState('active');
-        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
-
-        renderDeferredStationPassed();
-
-        await waitFor(() => {
-          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
-        });
-        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
-
         await flushDeferredTimer();
 
         expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalledWith(
           station.name,
-          1,
+          3,
           'destination',
           destination.name,
           station.line,
         );
-        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('device-proxy-fired', station.name);
-      });
-
-      // ⓑ 과발사 0 — fireFgAuxStationPassedNotification이 내부 마커 재확인으로 스킵(false 반환)한
-      // 경우(backend가 유예 중 먼저 표시) device-proxy-fired로 오기록하지 않는다.
-      it('ⓑ 유예 만료 시 fireFgAuxStationPassedNotification이 false(스킵)를 반환하면 device-proxy-fired를 기록하지 않는다', async () => {
-        setAppState('active');
-        mockFireFgAuxStationPassedNotification.mockResolvedValue(false);
-
-        renderDeferredStationPassed();
-
-        await waitFor(() => {
-          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
-        });
-
-        await flushDeferredTimer();
-
-        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalled();
-        expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
-      });
-
-      // ⓔ BG 동작 무변경 — 유예 중 app이 background로 전이되면 만료 시점에도 발사하지 않는다
-      // (#2064 봉인 재확인).
-      it('ⓔ 유예 중 background로 전이되면 만료 시점에 fireFgAuxStationPassedNotification을 호출하지 않는다', async () => {
-        setAppState('active');
-        mockFireFgAuxStationPassedNotification.mockResolvedValue(true);
-
-        renderDeferredStationPassed();
-
-        await waitFor(() => {
-          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
-        });
-
-        setAppState('background');
-
-        await flushDeferredTimer();
-
-        expect(mockFireFgAuxStationPassedNotification).not.toHaveBeenCalled();
-        expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
-      });
-
-      it('유예 발사 실패(reject) 시 예외를 던지지 않고 device-proxy-fired도 기록하지 않는다', async () => {
-        setAppState('active');
-        mockFireFgAuxStationPassedNotification.mockRejectedValueOnce(new Error('schedule 실패'));
-
-        renderDeferredStationPassed();
-
-        await waitFor(() => {
-          expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, station.id);
-        });
-
-        await flushDeferredTimer();
-
-        expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
       });
     });
 
