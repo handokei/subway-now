@@ -152,7 +152,11 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
 
     // 회귀 재구성 pool: 06:42/06:44 — 3056/3058 둘 다 운행중(99), 전부 observed, 임박/approaching 0건.
     // #2801 (3차 reopen) — 3058의 arvlCd를 3(전역출발)에서 99로 정정(위 헤더 주석 근거).
-    let pool: readonly ArrivalEntry[] = [arrival('3056', true, 99), arrival('3058', true, 99)];
+    // #2944 (H-6) — isUp은 위 헤더 주석이 이미 "재구성"으로 명시한 pool의 일부다(arvlCd와
+    // 동일하게 D1 미로깅). 실제 anchor(건대입구)→target(성수)는 inferLegDirection('2','건대입구',
+    // '성수')='down'이므로, decisionPool이 fail-closed된 뒤에는 그 방향과 정합하는 isUp:false로
+    // 교정한다(실측 타임라인/순서 조정 아님 — 헤더가 명시한 "재구성 선택" 범위 내).
+    let pool: readonly ArrivalEntry[] = [arrival('3056', false, 99), arrival('3058', false, 99)];
     const seoul = makeControllableSeoul(() => pool);
     const pushFetch = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
     const deps: ScheduledDeps = { apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: pushFetch, seoul, archFlag: 'off' };
@@ -174,7 +178,7 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
 
     // ── cycle C (06:46:08 상당) — leg-resolve가 관측한 3056 도착(arvlCd=1)이 pool에 등장.
     // 사용자가 실제 열차 도착 시점에 "탑승하셨나요?"를 받는다(사용자-가시 결과).
-    pool = [arrival('3056', true, 1), arrival('3058', true, 3)];
+    pool = [arrival('3056', false, 1), arrival('3058', false, 3)];
     simNow = offsetFromLock(12, 8);
     await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, () => {}, () => 'p-c');
     expect(stats.legBoardingPromptFired).toBe(1);
@@ -185,7 +189,7 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
     // ── cycle D (회귀 안전, 지하 진입 시뮬) — 새 열차(3060) 전부 arvlCd=null(미관측)만 pool에
     // 있어도 fallback-unobservable로 발사돼야 한다(equal-protection, #2801 §2 조항 2 — 지하 miss
     // 재발 방지). MIN_FIRE_INTERVAL_MS(5분) 경과 + 새 trainCode로 dedup 통과시킨다.
-    pool = [arrival('3060', true, null)];
+    pool = [arrival('3060', false, null)];
     simNow = offsetFromLock(18, 8);
     await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, () => {}, () => 'p-d');
     expect(stats.legBoardingPromptFired).toBe(2);
@@ -200,7 +204,8 @@ describe('#2801 replay — 9/30 e25e1158 leg-2 boarding-prompt 조기·반복 �
     const log = vi.fn();
 
     // 도착 임박(arvlCd=1) — repeat gate/fire-once 둘 다 통과해야 발사되는 pool로 고정.
-    const pool: readonly ArrivalEntry[] = [arrival('3056', true, 1)];
+    // #2944 (H-6) — isUp 교정(위 cycle A/B/C/D 블록 주석 참고, 헤더의 "재구성" 범위).
+    const pool: readonly ArrivalEntry[] = [arrival('3056', false, 1)];
     const seoul = makeControllableSeoul(() => pool);
     const pushFetch = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
     const deps: ScheduledDeps = { apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: pushFetch, seoul, archFlag: 'off' };

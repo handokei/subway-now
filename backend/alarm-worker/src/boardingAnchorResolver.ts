@@ -48,7 +48,7 @@
  * 판정 규칙 (resolveTrainCodeFromPositions)
  * =========================================
  * realtimePosition(anchor.line) snapshot에서:
- *   1. `isUp` 이 anchor.direction과 일치 (direction=null이면 양방향 허용)
+ *   1. `isUp` 이 anchor.direction과 일치 (direction=null이면 **fail-closed**, 후보 0건 — #2944 H-6)
  *   2. `stationName` 이 anchor.boardingStation과 정확히 일치
  *   3. `recptnMs` 신선(POSITION_FRESHNESS_MS 이내) — 0(누락)은 신뢰 불가로 제외
  *   4. `trainSttus` ∈ {ARRIVED(1), APPROACHING(0)} — DEPARTED(2)는 제외(이미 그 역을 떠난
@@ -191,6 +191,11 @@ export type BoardingResolveOutcome = 'resolved' | 'none' | 'ambiguous' | 'walk-g
  * - `'leg-transition-not-confirmed'` — `options.legTransition` 경로에서 confirmation이
  *   confirmed가 아님(pending/rejected/none).
  * - `'leg-segment-empty'` — `buildLegSegmentStations` 결과가 빈 배열(route 불일치).
+ * - `'direction-unknown'` — (#2944, H-6) anchor.direction===null이라 `resolveTrainCodeFromPositions`
+ *   가 'none'으로 떨어진 경우. `'position-resolve-none'`과 분리한 이유 — direction=null일 때는
+ *   `freshCandidatesAtAnchor`/`passedAnchorCandidates`가 fail-closed(후보 0건)로 결정적으로
+ *   'none'을 반환하므로(실제로 열차가 없어서가 아니라 방향을 몰라 아예 보지 않아서), D1/stats가
+ *   "방향 때문에 막혔는지 vs 진짜 열차가 없는지"를 구분할 수 있어야 한다(이슈 측정 plan 요구).
  */
 export type BoardingResolveNoneReason =
   | 'info-mode-disabled'
@@ -198,23 +203,29 @@ export type BoardingResolveNoneReason =
   | 'subwayid-mapping-failed'
   | 'position-resolve-none'
   | 'leg-transition-not-confirmed'
-  | 'leg-segment-empty';
+  | 'leg-segment-empty'
+  | 'direction-unknown';
 
 /**
  * anchor(방향/역명) 조건을 만족하고 신선한(POSITION_FRESHNESS_MS 이내) position 항목 전부 —
  * trainSttus 무관(DEPARTED 포함). `resolveTrainCodeFromPositions`(ARRIVED/APPROACHING만
  * 우선순위 채택)와 `evaluateLegBoardingTransition`(#2754, DEPARTED 전이 탐지) 둘 다 이
  * 공통 필터를 재사용한다 — 중복 구현 대신 단일 SSoT.
+ *
+ * #2944 (H-6) — anchor.direction===null이면 **fail-closed**(후보 0건). 구 동작("방향=null이면
+ * 양방향 허용")은 이 함수가 lock 승격(이 모듈의 유일한 목적)을 위해 trainCode를 고르는 바로
+ * 그 지점이었고, 10/9 반대 방향 lock 사고(군자→광화문, 5호선)는 프롬프트가 아니라 **device
+ * sync promotion → `attemptBoardingAnchorResolution`** 경로로 발생했다(이슈 #2944 코멘트,
+ * D1 `boarding-confirm-result{lockState:leg1}` → `sync-received promotedLock`). 즉 프롬프트
+ * 경로만 고쳐서는 이 경로가 열려 있어 사고가 재발한다 — 이 함수가 그 경로의 핵심.
  */
 function freshCandidatesAtAnchor(
   anchor: BoardingAnchor,
   positions: readonly PositionEntry[],
   now: number,
 ): PositionEntry[] {
-  const directional =
-    anchor.direction !== null
-      ? positions.filter((p) => p.isUp === (anchor.direction === 'up'))
-      : positions;
+  if (anchor.direction === null) return [];
+  const directional = positions.filter((p) => p.isUp === (anchor.direction === 'up'));
   const atStation = directional.filter((p) => p.stationName === anchor.boardingStation);
   return atStation.filter((p) => p.recptnMs > 0 && now - p.recptnMs <= POSITION_FRESHNESS_MS);
 }
@@ -651,10 +662,11 @@ export async function attemptBoardingAnchorResolution(
   } else {
     const resolution = resolveTrainCodeFromPositions(resolutionAnchor, positions, now, segmentStations);
     if (resolution.status !== 'resolved') {
-      onOutcome?.(
-        resolution.status,
-        resolution.status === 'none' ? { noneReason: 'position-resolve-none' } : undefined,
-      );
+      // #2944 (H-6) — direction===null이면 fail-closed로 'none'이 결정적이다(실제 열차
+      // 유무와 무관) — 'position-resolve-none'과 구분해 'direction-unknown'으로 기록한다.
+      const noneReason: BoardingResolveNoneReason =
+        resolutionAnchor.direction === null ? 'direction-unknown' : 'position-resolve-none';
+      onOutcome?.(resolution.status, resolution.status === 'none' ? { noneReason } : undefined);
       return null;
     }
     resolvedTrainCode = resolution.trainCode;

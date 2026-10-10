@@ -107,7 +107,10 @@ describe('synthesizeArrivalsFromPositions', () => {
     expect(result[0].trainCode).toBe('6184');
   });
 
-  it('direction=null: 양방향 허용', () => {
+  // #2944 (H-6) — direction=null fail-closed. 구 동작("양방향 허용")은 방향 불명 시 반대
+  // 방향 train까지 합성해 `pickAutoTrainCode`에 넘기는 통로였다 — 10/9 사고 계열. 방향을
+  // 모르면 합성 자체를 하지 않는다(0건).
+  it('direction=null: 후보 없음 (fail-closed, #2944 — 구 "양방향 허용" 회귀 차단)', () => {
     const result = synthesizeArrivalsFromPositions({
       positions: [
         position({ trainCode: '6184', stationName: '합정', isUp: true }),
@@ -118,7 +121,7 @@ describe('synthesizeArrivalsFromPositions', () => {
       segmentStations,
       targetStation,
     });
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(0);
   });
 
   it('segmentStations 밖 train (stationName 매칭 X) 제외', () => {

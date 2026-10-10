@@ -957,6 +957,24 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   legAdvanceAmbiguous: number;
   /**
+   * #2944 (H-6) — `restrictArrivalsByLegDirection`이 direction 추론 불가(앵커/origin 데이터
+   * 부재, 구 client)로 fail-closed(빈 배열)되어 lockless leg 전진(transfer/destination/
+   * intermediate)이 이번 cycle 보류된 횟수. `legAdvanceAmbiguous`와 달리 "후보가 모호해서"가
+   * 아니라 "방향을 몰라 아예 보지 않아서"다 — Seoul arrivals가 실제로 비었던 경우(그냥
+   * `etaMissing`)와 구분하기 위해 arrivals.length>0일 때만 증가한다. 정상 운영(H-1 이후
+   * 대부분 트립에 origin 앵커가 있음)에서는 낮아야 한다 — 높으면 origin 앵커 미설정(구 client)
+   * 비율이 높다는 신호.
+   */
+  legAdvanceDirectionUnknownBlocked: number;
+  /**
+   * #2944 (H-6) — origin(leg-1 GPS-free)/leg(leg-2) boarding-prompt 양쪽에서 candidateTrains가
+   * direction===null의 fail-closed로 0건이 돼(실제 Seoul arrivals는 있었음) 프롬프트 발사가
+   * 억제된 누적 횟수. `originGpsFreeBoardingPromptBlocked`/`legBoardingPromptBlocked`(두루뭉술한
+   * 총합)와 별도로 "방향 때문"만 집계 — 이 값이 유의미하게 높으면 H-1의 방향 판정 커버리지가
+   * 아직 부족하다는 신호(측정 plan).
+   */
+  promptDirectionUnknownBlocked: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -1452,6 +1470,8 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     destinationConfirmTimedOut: 0,
     legAdvanceWindowBlocked: 0,
     legAdvanceAmbiguous: 0,
+    legAdvanceDirectionUnknownBlocked: 0,
+    promptDirectionUnknownBlocked: 0,
     legBoardingPromptFired: 0,
     legBoardingPromptSkippedWalking: 0,
     legBoardingPromptBlocked: 0,
@@ -6548,8 +6568,12 @@ export async function maybeReschedulePush(
  *
  * leg origin은 `trip.currentLegAnchor`(leg 2+, 환승 후 앵커)가 현재 waypoint.line과 일치하면
  * 그 값을, 아니면 `trip.originStationName`(leg 1)을 쓴다. 둘 다 없거나 `inferLegDirection`이
- * 추론 불가(비단조 노선 등)면 null — 기존 양방향 허용 동작 그대로 유지한다(거부 케이스 ⓓ
- * 과차단 금지 — 추론 불가 노선은 지금까지와 동일하게 어느 방향 신호든 받아들인다).
+ * 추론 불가(비단조 노선 등)면 null.
+ *
+ * #2944 (H-6) — direction=null의 하류 처리가 "기존 양방향 허용 동작 유지(거부 케이스 ⓓ
+ * 과차단 금지)"에서 **fail-closed**로 바뀌었다(`restrictArrivalsByLegDirection` 참고) — H-1
+ * (#2945)이 화이트리스트를 제거해 전 노선에서 방향을 반환하므로, 이 함수가 null을 내는
+ * 경우는 이제 "비단조 노선"이 아니라 앵커/origin 데이터 자체가 없는(구 client) 잔여 경로뿐이다.
  */
 function resolveLegDirectionForWaypoint(trip: Trip, waypoint: Waypoint): 'up' | 'down' | null {
   const originStation =
@@ -6562,18 +6586,45 @@ function resolveLegDirectionForWaypoint(trip: Trip, waypoint: Waypoint): 'up' | 
 
 /**
  * #2921 거부 케이스 ⓐ — direction 추론 가능하면 arrivals를 그 방향으로 좁힌다(반대 방향
- * 열차가 advance를 발사하지 못하게 차단). 추론 불가(null)면 전체 arrivals 그대로 반환한다
- * (기존 동작 유지).
+ * 열차가 advance를 발사하지 못하게 차단).
+ *
+ * #2944 (H-6) — 추론 불가(null)면 **fail-closed**(빈 배열). 구 동작("전체 arrivals 그대로
+ * 반환")은 device #2696 정책(양방향 병합 금지) 미반영 상태였다 — 10/9 반대 방향 lock 사고
+ * (군자→광화문, 5호선) 계열의 잔여 null 경로. caller(`runLocklessTransfer`/
+ * `runLocklessDestination`/intermediate 전진)는 후보 0건을 `signal === null`과 동일하게
+ * 처리해(`stats.etaMissing += 1`, `return false`) 이번 cycle만 보류하고 다음 cycle에 재시도
+ * 한다 — 영구 차단이 아니라 일시 유예.
  */
-function restrictArrivalsByLegDirection(
+export function restrictArrivalsByLegDirection(
   trip: Trip,
   waypoint: Waypoint,
   arrivals: readonly ArrivalEntry[],
 ): readonly ArrivalEntry[] {
   const direction = resolveLegDirectionForWaypoint(trip, waypoint);
-  if (direction === null) return arrivals;
+  if (direction === null) return [];
   const wantUp = direction === 'up';
   return arrivals.filter((a) => a.isUp === wantUp);
+}
+
+/**
+ * #2944 (H-6) — `restrictArrivalsByLegDirection`이 fail-closed(빈 배열)로 떨어진 것이 "방향을
+ * 몰라서"인지 "원래 arrivals가 없어서"인지 구분해 `stats.legAdvanceDirectionUnknownBlocked`를
+ * 증가시킨다. caller 3곳(transfer/intermediate/destination lockless 전진)이 공통으로 쓴다.
+ */
+function trackLegAdvanceDirectionUnknown(
+  trip: Trip,
+  waypoint: Waypoint,
+  arrivals: readonly ArrivalEntry[],
+  candidateArrivals: readonly ArrivalEntry[],
+  stats: ScheduledStats,
+): void {
+  if (
+    candidateArrivals.length === 0 &&
+    arrivals.length > 0 &&
+    resolveLegDirectionForWaypoint(trip, waypoint) === null
+  ) {
+    stats.legAdvanceDirectionUnknownBlocked += 1;
+  }
 }
 
 /**
@@ -6666,6 +6717,7 @@ async function runLocklessTransfer(
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
   const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  trackLegAdvanceDirectionUnknown(trip, waypoint, arrivals, candidateArrivals, stats);
   const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
@@ -6908,6 +6960,7 @@ async function runLocklessDestination(
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
   const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  trackLegAdvanceDirectionUnknown(trip, waypoint, arrivals, candidateArrivals, stats);
   const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
@@ -7025,6 +7078,7 @@ export async function runLocklessIntermediate(
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
   const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  trackLegAdvanceDirectionUnknown(trip, waypoint, arrivals, candidateArrivals, stats);
   // #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 차단 (환승 후 stale 신호 방지).
   const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
@@ -7624,8 +7678,24 @@ async function fireBoardingPromptForAnchor(inputs: {
   line: string;
   nextStation: string | null;
   direction: 'up' | 'down' | null;
+  /**
+   * #2944 (H-6) — direction===null일 때 그 null이 "구조적으로 추론 근거 자체가 없었던" 경우
+   * (다음 waypoint 없음/cross-line — ⓖ류)인지 명시한다. true면 decisionPool이 fail-closed
+   * (빈 배열) 대신 displayPool과 동일하게 line-only 전체로 fail-open 유지한다 — "반대 방향"을
+   * 가리키는 어떤 신호도 없는 상태라 10/9류 위험이 원천적으로 없고, 거부하면 트립 꼬리/route
+   * 재계산 경계에서 프롬프트가 영구 미발사되는 과차단(ADR-010)이 되기 때문이다. false(기본,
+   * direction이 non-null이거나 inferLegDirection을 실제로 호출해 null을 받은 경우)만
+   * fail-closed 적용 — 10/9 사고(실제 두 역으로 추론을 시도했는데 틀린 경우)가 바로 이 경로.
+   */
+  directionUnavailable?: boolean;
   logPrefix: string;
-  onEmptyCandidates: () => void;
+  /**
+   * #2944 (H-6) — `reason==='direction-unknown'`이면 candidateTrains가 0건인 원인이 "방향을
+   * 몰라 fail-closed로 결정적으로 비워서"다(실제로 Seoul arrivals가 없어서가 아님).
+   * caller가 `stats.promptDirectionUnknownBlocked`를 별도 증가시켜 D1/stats에서 "방향 때문에
+   * 막혔는지 vs 열차가 없어서인지"를 구분할 수 있게 한다(측정 plan 요구).
+   */
+  onEmptyCandidates: (reason?: 'direction-unknown') => void;
   /**
    * #2801 (REOPENED 2026-09-30 정정 스펙 §3.2) — `decideBoardingPromptFire`가 fire:false를
    * 반환했을 때(전부 관측됐는데 임박 0건) 호출. caller가 stats(`*Blocked`)/D1 라벨을 기록한다.
@@ -7692,6 +7762,7 @@ async function fireBoardingPromptForAnchor(inputs: {
     line,
     nextStation,
     direction,
+    directionUnavailable = false,
     logPrefix,
     onEmptyCandidates,
     onSuppressedNotImminent,
@@ -7702,17 +7773,37 @@ async function fireBoardingPromptForAnchor(inputs: {
 
   let etaSeconds: number | null = null;
   let candidateTrains: BoardingPromptCandidate[] = [];
+  // #2944 (H-6, plan 2026-10-10 §H-6 "pool 분리") — `pool`은 판정용(candidateTrains(payload)/
+  // gate/selectedTrainCode(lock 대상))이다. 표시용(etaSeconds)은 별도 `displayPool`로 분리했다
+  // — 구 단일 `pool`이 세 용도를 동시에 먹여, direction===null일 때 fail-closed로 바꾸면
+  // #1739(ETA 표시)까지 깨지는 문제가 있었다(ⓐ 거부 케이스). 아래에서 `pool = decisionPool`로
+  // 배선해 이 함수 뒤쪽의 모든 `pool` 참조(gate/selectedTrainCode/onFired 등)가 자동으로
+  // fail-closed 판정 풀을 쓴다 — 호출부를 추가로 고칠 필요 없음.
   let pool: readonly ArrivalEntry[] = [];
+  // #2944 (H-6) — candidateTrains가 0건일 때 "방향을 몰라서"(matchingLine은 있었는데
+  // direction===null이라 decisionPool을 fail-closed로 비움)인지 구분하기 위한 플래그.
+  let emptiedByDirectionUnknown = false;
   try {
     const arrivals = await deps.seoul.fetchArrivals(station);
-    const directional = arrivals.filter(
-      (a) =>
-        matchLine(a.subwayNm, line) &&
-        (direction === null || (direction === 'up' ? a.isUp : !a.isUp)),
-    );
-    pool = directional.length > 0 ? directional : arrivals.filter((a) => matchLine(a.subwayNm, line));
-    if (pool.length > 0) {
-      const best = pool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), pool[0]);
+    const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, line));
+    // 판정용 — direction===null이면 fail-closed(빈 배열), 단 directionUnavailable(ⓖ류 구조적
+    // null)이면 예외로 line-only 전체 유지(fail-open). 구 "양방향 허용"(예외 없이 전부)은
+    // 10/9 반대 방향 lock 사고(군자→광화문, 5호선)의 근본 fail-open 지점 중 하나였다 — 그
+    // 사고는 실제 두 역으로 추론을 "시도"했는데 틀린 경우였으므로, 추론을 시도조차 할 근거가
+    // 없었던 ⓖ류는 같은 위험이 없다.
+    const decisionPool =
+      direction !== null
+        ? matchingLine.filter((a) => (direction === 'up' ? a.isUp : !a.isUp))
+        : directionUnavailable
+          ? matchingLine
+          : [];
+    emptiedByDirectionUnknown = direction === null && !directionUnavailable && matchingLine.length > 0;
+    // 표시용(ETA) — 구 pool 폴백과 100% 동일(ⓐ 거부 케이스, #1739 목적 보존): 판정용이
+    // 0건이면(방향 불명 포함) line-only 전체로 되돌아간다.
+    const displayPool = decisionPool.length > 0 ? decisionPool : matchingLine;
+    pool = decisionPool;
+    if (displayPool.length > 0) {
+      const best = displayPool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), displayPool[0]);
       etaSeconds = best.arrivalSeconds;
     }
     candidateTrains = [...pool]
@@ -7729,7 +7820,7 @@ async function fireBoardingPromptForAnchor(inputs: {
   }
 
   if (candidateTrains.length === 0) {
-    onEmptyCandidates();
+    onEmptyCandidates(emptiedByDirectionUnknown ? 'direction-unknown' : undefined);
     return;
   }
 
@@ -8075,10 +8166,18 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   }
 
   const nextWaypoint = trip.waypoints[0];
-  const direction =
-    nextWaypoint && nextWaypoint.line === display.line
-      ? inferLegDirection(display.line, display.originStation, nextWaypoint.stationName)
-      : null;
+  // #2944 (H-6) — direction===null의 두 근원을 구분한다.
+  //   구조적 unavailable(다음 waypoint 자체가 없음/cross-line) — 애초에 추론을 시도할 근거가
+  //   없다(ⓖ류). H-1 이후에도 "트립 꼬리"/route 재계산 경계에서 발생할 수 있는 정상 상태라
+  //   fail-open 유지(캐 candidateTrains가 line-only로 되돌아간다, 구 GPS-free 설계 철학
+  //   "지하여도 fetchArrivals만으로 발사" 보존) — 특정 "반대 방향"을 가리키는 신호가 전혀
+  //   없으므로 10/9류 위험이 원천적으로 없다.
+  //   inferred-null(같은 line인데 inferLegDirection이 null) — 실제 두 역으로 추론을 시도했는데
+  //   실패했다(동일역/매핑 miss). H-1 이후 희귀하지만, 이 경우는 fail-closed(10/9 사고 계열).
+  const directionUnavailable = !nextWaypoint || nextWaypoint.line !== display.line;
+  const direction = directionUnavailable
+    ? null
+    : inferLegDirection(display.line, display.originStation, nextWaypoint.stationName);
 
   // #2851 (진단 계측 only) — 콜백은 동기(`() => void`)라 D1 write를 여기서 바로 할 수 없다 —
   // 결과만 캡처해 `fireBoardingPromptForAnchor` 완료 후 기록한다(leg-2 `promptOutcome`/
@@ -8102,13 +8201,17 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     line: display.line,
     nextStation: trip.waypoints[0]?.stationName ?? null,
     direction,
+    directionUnavailable,
     logPrefix: 'origin-boarding-prompt-gps-free',
-    onEmptyCandidates: () => {
+    onEmptyCandidates: (reason) => {
       stats.originGpsFreeBoardingPromptBlocked += 1;
+      // #2944 (H-6) — reason==='direction-unknown'이면 별도 카운터로도 집계(측정 plan).
+      if (reason === 'direction-unknown') stats.promptDirectionUnknownBlocked += 1;
       log('origin-boarding-prompt-gps-free: skipped empty candidates', {
         token: trip.token.slice(0, 8),
         originStation: display.originStation,
         line: display.line,
+        reason,
       });
       promptOutcome = 'no-candidates';
     },
@@ -8414,10 +8517,12 @@ export async function maybeFireLegBoardingPrompt(
   }
 
   const nextWaypoint = trip.waypoints[0];
-  const direction =
-    nextWaypoint && nextWaypoint.line === currentLegAnchor.line
-      ? inferLegDirection(currentLegAnchor.line, currentLegAnchor.boardingStation, nextWaypoint.stationName)
-      : null;
+  // #2944 (H-6) — leg-1과 동일하게 구조적 unavailable(ⓖ류, fail-open 유지) vs inferred-null
+  // (fail-closed)을 구분한다 — 위 origin 경로 주석 참고.
+  const directionUnavailable = !nextWaypoint || nextWaypoint.line !== currentLegAnchor.line;
+  const direction = directionUnavailable
+    ? null
+    : inferLegDirection(currentLegAnchor.line, currentLegAnchor.boardingStation, nextWaypoint.stationName);
 
   // ADR-037 D2c (#2537, 진단 계측 only) — 콜백은 동기(`() => void`)라 D1 write를 여기서 바로 할 수
   // 없다 — 결과만 캡처해 `fireBoardingPromptForAnchor` 완료 후 기록한다.
@@ -8441,13 +8546,17 @@ export async function maybeFireLegBoardingPrompt(
     line: currentLegAnchor.line,
     nextStation: nextWaypoint?.stationName ?? null,
     direction,
+    directionUnavailable,
     logPrefix: 'leg-boarding-prompt',
-    onEmptyCandidates: () => {
+    onEmptyCandidates: (reason) => {
       stats.legBoardingPromptBlocked += 1;
+      // #2944 (H-6) — reason==='direction-unknown'이면 별도 카운터로도 집계(측정 plan).
+      if (reason === 'direction-unknown') stats.promptDirectionUnknownBlocked += 1;
       log('leg-boarding-prompt: skipped empty candidates', {
         token: trip.token.slice(0, 8),
         station: currentLegAnchor.boardingStation,
         line: currentLegAnchor.line,
+        reason,
       });
       promptOutcome = 'no-candidates';
     },

@@ -9,12 +9,22 @@
  *
  * 본 모듈은 순수 pipeline (KV I/O 없음). 호출자가 결과 BoardingLockMeta를 trip에 stamp + putTrip.
  *
- * 방향 매칭 (#1719):
+ * 방향 매칭 (#1719, #2944 H-6 정정 — 아래 "거짓 근거 제거" 참고):
  *  - `inferLegDirection(line, segmentStations[0], segmentStations[last])` 로 leg 진행 방향 추론.
- *    추론 가능 노선(monotonic + closedLoop hybrid/pure)에서는 wrong-direction trains 가 candidate
- *    pool 에 들어가지 않는다 (2호선 외선/내선 / 6호선 응암 방향 회귀 봉쇄).
- *  - 추론 불가 노선(1/5/gyeongui)에서는 direction=null fallback → stationName + segmentStations
- *    인덱스 필터로 진행 방향 implicit 해소 (기존 동작 유지).
+ *    #2943(H-1) 이후 화이트리스트 없이 전 노선 커버 — wrong-direction trains 가 candidate pool 에
+ *    들어가지 않는다 (2호선 외선/내선 / 6호선 응암 방향 회귀 봉쇄).
+ *  - segmentStations 가 1개뿐(트립 꼬리 — 남은 정류장이 타깃 1개)이면 첫/마지막 비교가 동일
+ *    역이라 추론 불가 — `resolveLegOriginStation`(trip.currentLegAnchor/originStationName)으로
+ *    이 leg의 실제 탑승 앵커 역을 가져와 그 역→타깃으로 추론한다(아래 함수 참고). 앵커조차
+ *    없으면(구 client / 캡처 전) null.
+ *  - **direction=null → fail-closed**(#2944, 10/9 반대 방향 lock 사고 이후 정정 — 구 동작은
+ *    "양방향 허용"이었다). 구 주석("stationName + segmentStations 인덱스 필터로 진행 방향
+ *    implicit 해소")은 **거짓 근거였다** — `arrivalsFromPositions.ts:synthesizeArrivalsFromPositions`
+ *    의 그 인덱스 필터는 "경로상 어느 역에 있는가"만 보고 방향(`isUp`)은 전혀 보지 않는다.
+ *    10/9 실측(군자→광화문, 5호선)에서 반대 방향 열차(5559)가 탑승역 그 자리(segmentStations[0])
+ *    에 있어 인덱스 조건을 그대로 통과했다 — "탑승역에 서 있는 열차"가 가장 중요한 순간에
+ *    바로 이 implicit 해소가 무력했다는 뜻. 상세는 `docs/agents/invariants.md` "거짓 근거"
+ *    항목 참고 — 이 근거로 새 fail-open을 또 남기지 말 것.
  *  - `pickAutoTrainCode` 의 arvlCd 우선순위(2>1>0) + ambiguity null 반환으로 후보 확정.
  */
 
@@ -85,12 +95,26 @@ export interface AttachLockInputs {
  *  - 노선 매칭(matchLine) + arvlCd 우선순위(2 출발 > 1 도착 > 0 진입 > 그 외)
  *  - 같은 우선순위 후보 다수 = ambiguity → null (silent skip, caller가 boarding-prompt fallback)
  *  - direction: #1719 — `inferLegDirection(line, segmentStations[0], segmentStations[last])` 로
- *    leg 의 진행 방향을 추론해 `resolveTrainCodeWithFallback` 에 forward. 실패(비단조 노선 /
- *    단일-station leg / 매핑 실패) 시 null → 기존 양방향 허용 동작 유지. 양방향 train 이 같은
- *    station 에 있는 케이스(2호선 외선/내선, 6호선 응암 방향) 의 wrong-direction lock 회귀 차단.
+ *    leg 의 진행 방향을 추론해 `resolveTrainCodeWithFallback` 에 forward. 단일-station leg는
+ *    `resolveLegOriginStation` fallback으로 보강(아래 함수 참고). 추론 실패(매핑 실패/앵커
+ *    부재) 시 null → **fail-closed**(#2944) — 양방향 train 이 같은 station 에 있는 케이스
+ *    (2호선 외선/내선, 6호선 응암 방향, 10/9 5호선)의 wrong-direction lock을 차단한다.
  *
  * subwayId 매핑 누락 line이면 null — backend는 stations.json 없이 line code만 신뢰.
  */
+/**
+ * #2944 (H-6) — segmentStations가 1개뿐(트립 꼬리)일 때 `inferLegDirection`의 "첫/마지막 비교"가
+ * 동일 역이 되어 방향을 구할 수 없다. 이 leg의 실제 탑승 앵커(환승 후 leg면 `currentLegAnchor`,
+ * leg 1이면 device가 등록 시점에 고정한 `originStationName`)가 있으면 그 역을 "첫 역"으로 써서
+ * 추론한다 — segmentStations.length>=2 경로와 동일하게 "서로 다른 두 역"만 있으면 되므로.
+ * fail-closed(direction=null)로 매 마지막 hop마다 swap이 통째로 막히는 과차단(ADR-010 거부
+ * 케이스 ⓓ)을 줄인다. 앵커도 없으면(구 client/캡처 전 트립) 진짜로 추론 불가 — null 유지.
+ */
+function resolveLegOriginStation(trip: Trip, line: string): string | undefined {
+  return trip.currentLegAnchor?.line === line
+    ? trip.currentLegAnchor.boardingStation
+    : trip.originStationName;
+}
 export async function attachTrainCodeForLeg(
   inputs: AttachLockInputs,
 ): Promise<BoardingLockMeta | null> {
@@ -104,13 +128,17 @@ export async function attachTrainCodeForLeg(
   const segmentStations = buildLegSegmentStations(trip.waypoints, line);
   if (segmentStations.length === 0) return null;
 
-  // #1719 — leg 진행 방향 추론. segmentStations 가 단일 역이거나 비단조 노선이면 null →
-  // 기존 양방향 허용 동작 유지 (현재 코드와 동일 회귀 위험 잔존, 단 회귀 가능 line 은 추론
-  // 가능 노선 밖). 추론 성공 시 양방향 train 동일 station 의 wrong-direction lock 봉쇄.
+  // #1719 — leg 진행 방향 추론. segmentStations 가 2개 이상이면 첫/마지막으로 바로 추론.
+  // #2944 (H-6) — 1개뿐(트립 꼬리)이면 `resolveLegOriginStation` 앵커를 "첫 역"으로 fallback.
+  // 둘 다 실패(매핑 실패/앵커 부재)면 null → fail-closed(아래 `resolveTrainCodeWithFallback`이
+  // 후보 0건으로 수렴, 구 "양방향 허용" 동작 폐기).
+  const legOrigin = resolveLegOriginStation(trip, line);
   const direction =
     segmentStations.length >= 2
       ? inferLegDirection(line, segmentStations[0], segmentStations[segmentStations.length - 1])
-      : null;
+      : legOrigin !== undefined
+        ? inferLegDirection(line, legOrigin, segmentStations[segmentStations.length - 1])
+        : null;
 
   const realArrivals = await seoul.fetchArrivals(targetWaypoint.stationName);
   // #1702 (B2-A) — Seoul OpenAPI 단방향/0건 시 realtimePosition fallback. autoLock 과 동일 패턴.

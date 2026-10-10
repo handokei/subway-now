@@ -3,26 +3,23 @@
  * 타임라인을 **그대로** 재사용하되, 후보 전원의 `isUp`을 전부 반전시킨 **파생** 변형이다
  * (원본 파일/원본 데이터는 무변경 — 이 파일은 별도 파생 fixture).
  *
- * 왜 이 변형이 `selectedTrainCode=null`을 만드는가: `fireBoardingPromptForAnchor`는
- * line+direction directional 필터가 0건이면 line-only fallback pool로 발사 여부(gate)를
- * 판정하지만(§1 fallback, #2532 취지), `pickAutoTrainCode`는 **자신의** direction 필터를
- * 다시 적용한다 — 모든 후보의 `isUp`이 (실제 leg 진행방향과) 반대로 뒤집히면 이 두 번째
- * 필터가 항상 0건이 되어 trainCode 선택이 영구적으로 null이 된다. 즉 "임박 판정은 pool
- * 그대로 통과하는데 trainCode만 특정 불가"인 실경로(#2880 이슈 본문 ①후보 전원 방향 필터
- * 탈락)를 그대로 재현한다.
+ * #2944 (H-6) 이후 — 이 파일이 재현하던 `selectedTrainCode=null` dedup 무력화 버그는 **구조적
+ * 전제 자체가 사라졌다**. 구 아키텍처는 `fireBoardingPromptForAnchor`의 gate-판정 pool과
+ * `pickAutoTrainCode`가 **서로 다른** direction 필터를 각자 적용했다 — gate-pool은
+ * directional 0건이면 line-only로 fallback(§1 fallback, #2532 취지)해 "방향 무관 전체"가
+ * 됐지만, `pickAutoTrainCode`는 그 line-only pool에 **자신의** direction 필터를 다시 걸어
+ * 후보 전원이 틀린 방향이면 trainCode 선택만 null이 되는 불일치가 있었다 — "게이트는 통과,
+ * trainCode만 미특정"인 상태가 가능했던 이유.
  *
- * #2880 결론 — `selectedTrainCode=null`인 동안 `shouldProceedToSend`의 trainCode dedup
- * (`firedTrainCodes.includes(selectedTrainCode)`)이 `selectedTrainCode !== null` 전제로
- * 전혀 작동하지 않아, 5분 repeat gate만 지나면 "같은 상황"(여기서는 동일 gate
- * decision='approaching')에 재발사된다 — index 7(469s, repeat gate는 경과했으나 이 창에선
- * 동일 phase)에서 재발사가 일어나면 fix 전(RED) / 일어나지 않으면 fix 후(GREEN).
+ * H-6의 pool 분리(판정용 `pool`=`decisionPool` 단일 소스를 gate/candidateTrains/
+ * `pickAutoTrainCode` 전부가 공유)가 이 불일치를 원천 제거했다 — 이제 방향이 known인데
+ * 후보 전원이 틀린 방향이면 `decisionPool` 자체가 0건이라 gate 평가 전에 `onEmptyCandidates`
+ * 로 종료된다. 즉 이 파생 fixture가 만들던 "임박 판정은 통과하는데 trainCode만 null" 상태가
+ * 더 이상 존재하지 않는다 — #2880의 dedup 우회 버그 class 자체가 구조적으로 닫혔다(해당
+ * 불일치 경로에 대해서만; ambiguity 등 다른 null-trainCode 원인의 dedup은 별도 유지).
  *
- * 과차단 회귀 가드: index 2(153s)·index 7(469s) 둘 다 동일 phase('approaching', arvlCd
- * 5/3 모두 APPROACHING_BOARDING_ARVLCD)이므로 fallback dedup이 막아야 하지만, 다른
- * leg/station의 정당 발사(이 fixture와 무관한 별도 trip/state)는 이 fix로 전혀 영향받지
- * 않는다 — fallback dedup 키는 이 trip의 `trip.legBoardingPromptState.firedTrainCodes`
- * 배열에만 append되고, 다른 trip 객체와 공유되지 않는 구조적 보장(별도 trip 인스턴스는
- * 별도 state 객체).
+ * 따라서 이 테스트는 "1회 발사 후 재발사 차단"이 아니라 "방향 전원 불일치 → 매 cycle 0건
+ * (gate 자체 미도달)"을 확인하는 것으로 갱신한다 — 이것이 새 아키텍처에서 올바른 동작이다.
  */
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -134,11 +131,11 @@ const CYCLES: ReadonlyArray<{ offsetSec: number; u1ArvlCd: number }> = [
   // trainCode dedup이 무력화돼 재발사 — 이 지점이 RED).
 ];
 
-describe('#2880 (파생 replay) — selectedTrainCode=null dedup fail-open', () => {
+describe('#2880 (파생 replay) — selectedTrainCode=null dedup fail-open (#2944 H-6 이후: 구조적으로 재현 불가 확인)', () => {
   it(
-    '후보 전원의 isUp이 반전돼 selectedTrainCode가 매 cycle null이어도, ' +
-      '동일 phase(approaching) 재발사(index 7, 469s)는 fallback dedup으로 차단되고 ' +
-      '전체 창에서 발사는 정확히 1회만 일어난다',
+    '후보 전원의 isUp이 반전(실제 진행방향과 불일치)되면 decisionPool이 fail-closed로 매 cycle ' +
+      '0건이 돼 gate 자체에 도달하지 못한다 — 구 "게이트 통과 + trainCode만 null" 상태가 더 ' +
+      '이상 발생하지 않음을 확인(발사 0회, blocked 전량)',
     async () => {
       const kv = new InMemoryKV(() => simNow);
       let simNow = offsetFromBase(0);
@@ -159,30 +156,23 @@ describe('#2880 (파생 replay) — selectedTrainCode=null dedup fail-open', () 
       };
 
       let pushId = 0;
-      for (const [index, cycle] of CYCLES.entries()) {
+      for (const cycle of CYCLES) {
         // 파생 — isUp을 전부 `true`로 반전(원본은 `false`). 건대입구→뚝섬 leg의 실제 진행방향은
-        // down이므로, 반전된 isUp=true는 direction 필터에 전부 탈락해 selectedTrainCode가
-        // null이 된다(위 파일 헤더 설명).
+        // down이므로, 반전된 isUp=true는 decisionPool 구성에서 전부 탈락한다(위 파일 헤더 설명,
+        // #2944 H-6 갱신) — line-only fallback이 더 이상 candidateTrains/gate를 먹이지 않는다.
         pool = [arrival('U1', true, cycle.u1ArvlCd), arrival('U2', true, 99)];
         simNow = offsetFromBase(cycle.offsetSec);
         // eslint-disable-next-line no-await-in-loop -- replay는 cron cycle 순서 재현이 핵심이라 순차 await 필수.
         await maybeFireLegBoardingPrompt(trip, env, deps, stats, simNow, log, () => `p-${pushId++}`);
-
-        if (index === 2) {
-          expect(stats.legBoardingPromptFired).toBe(1);
-        }
       }
 
-      // 핵심 assert — index 7(469s)에서 재발사가 일어나면(구현 버그) 2가 되어 FAIL한다.
-      expect(stats.legBoardingPromptFired).toBe(1);
-      expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
-
-      // 발사 2건 모두(최초 1건만 존재해야 하지만) gateDecision이 'approaching'이어야 — "다른
-      // phase라 정당하게 재발사됐다"는 반박을 배제한다(동일 phase 재발사였음을 증명).
+      // 핵심 assert — 전체 8 cycle 동안 단 한 번도 발사되지 않는다(구 버그의 전제인 "게이트는
+      // 통과, trainCode만 미특정" 상태가 decisionPool fail-closed로 원천 제거됐기 때문).
+      expect(stats.legBoardingPromptFired).toBe(0);
+      expect(stats.legBoardingPromptBlocked).toBe(CYCLES.length);
+      expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
       const firedLogs = log.mock.calls.filter(([message]) => String(message).endsWith(': fired'));
-      expect(firedLogs.length).toBe(1);
-      const [, firstFiredMeta] = firedLogs[0];
-      expect((firstFiredMeta as { gateDecision?: string }).gateDecision).toBe('approaching');
+      expect(firedLogs.length).toBe(0);
     },
   );
 });

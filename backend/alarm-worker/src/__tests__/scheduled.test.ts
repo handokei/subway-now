@@ -56,6 +56,7 @@ import {
   resolveWaypointEnvironment,
   advanceBoardingLockWaypoint,
   createEmptyScheduledStats,
+  restrictArrivalsByLegDirection,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -191,7 +192,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legAdvanceDirectionUnknownBlocked: 0, promptDirectionUnknownBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -886,7 +887,12 @@ describe('runScheduled', () => {
     }
 
     function intermediateTrip(overrides: Partial<Trip> = {}): Trip {
+      // #2944 (H-6) — originStationName('시청', line 2에서 강남 방향 추론 시 'up') 기본값.
+      // restrictArrivalsByLegDirection이 fail-closed로 바뀌어 앵커 없으면 후보 0건이 된다 —
+      // 실 프로덕션 트립은 #2280 이후 항상 이 필드를 보내므로 기본으로 채운다(대다수 케이스의
+      // arrival fixture가 isUp=true라 'up'과 정합).
       return makeTrip({
+        originStationName: '시청',
         waypoints: [
           { stationName: '강남', line: '2', kind: 'intermediate' },
           { stationName: '역삼', line: '2', kind: 'destination' },
@@ -1168,7 +1174,9 @@ describe('runScheduled', () => {
     // Epic #1204 그룹 2 D3 (#1273)
     it('lockless intermediate 발사 시 payload.hopIndex가 waypoint.hopIndex로 wire', async () => {
       const { apnsFetch } = await runLocklessCycle({
+        // #2944 (H-6) — originStationName(시청→강남='up', ARVL_ARRIVED.isUp=true와 정합).
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
             { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
@@ -1185,6 +1193,7 @@ describe('runScheduled', () => {
     it('lockless intermediate 발사 시 waypoint.hopIndex 부재면 payload 본문에서도 hopIndex 누락', async () => {
       const { apnsFetch } = await runLocklessCycle({
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName: '강남', line: '2', kind: 'intermediate' },
             { stationName: '역삼', line: '2', kind: 'destination' },
@@ -1210,7 +1219,9 @@ describe('runScheduled', () => {
       ['surface waypoint(성수)', '성수', false],
     ])('lockless intermediate — payload에 subsurface 필드가 없다 (%s, #2644)', async (_label, stationName, tripSubsurface) => {
       const { apnsFetch } = await runLocklessCycle({
+        // #2944 (H-6) — originStationName(시청→강남/성수 모두 'up', ARVL_ARRIVED.isUp=true와 정합).
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName, line: '2', kind: 'intermediate', hopIndex: 3 },
             { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
@@ -1227,7 +1238,9 @@ describe('runScheduled', () => {
 
     it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
       const { kv } = await runLocklessCycle({
+        // #2944 (H-6) — originStationName(시청→강남='up', ARVL_ARRIVED.isUp=true와 정합).
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName: '강남', line: '2', kind: 'intermediate' },
             { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -1248,10 +1261,15 @@ describe('runScheduled', () => {
 
     // #1285 — lockless waypoint shift → progress KV mirror
     it('#1285 — 발사 성공 시 progress KV에 lockless shiftedCount=1 저장', async () => {
+      // #2944 (H-6) — 구 '중곡'은 line 5에 실존하지 않는 역명이라(7호선 전용)
+      // inferLegDirection이 station-lookup 실패로 null을 반환했다 — fail-open 시절엔 무해했지만
+      // fail-closed 전환 후 후보 0건으로 드러났다. 실제 5호선 역('장한평')으로 정정하고
+      // originStationName(천호→장한평='up', ARVL_ARRIVED.isUp=true와 정합)을 채운다.
       const { kv } = await runLocklessCycle({
         trip: makeTrip({
+          originStationName: '천호',
           waypoints: [
-            { stationName: '중곡', line: '5', kind: 'intermediate' },
+            { stationName: '장한평', line: '5', kind: 'intermediate' },
             { stationName: '군자', line: '5', kind: 'destination' },
           ],
           infoModeEnabled: true,
@@ -1274,7 +1292,9 @@ describe('runScheduled', () => {
         'progress:tok',
         JSON.stringify({ lockless: true, shiftedCount: 1 }),
       );
+      // #2944 (H-6) — originStationName(천호→군자='up', ARVL_ARRIVED.isUp=true와 정합).
       const trip = makeTrip({
+        originStationName: '천호',
         waypoints: [
           { stationName: '군자', line: '5', kind: 'intermediate' },
           { stationName: '아차산', line: '5', kind: 'destination' },
@@ -3916,6 +3936,9 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       kv as unknown as KVNamespace,
       makeLockTrip({
         boardingLock: makeLock({ expiresAt: NOW - 1 }),
+        // #2944 (H-6) — originStationName 추가(시청→강남='up', arrivalForLock 기본 isUp=true와
+        // 정합) — lockless destination 경로가 restrictArrivalsByLegDirection을 거친다.
+        originStationName: '시청',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
       }),
     );
@@ -5102,9 +5125,11 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
   describe('#1826 — lockless trip + activityPushToken → LA BG update 발사', () => {
     /** lockless intermediate trip with LA token */
     function makeLocklessLaTrip(overrides: Partial<Trip> = {}): Trip {
+      // #2944 (H-6) — originStationName(시청→강남='up', 아래 arrival isUp=true와 정합).
       return makeTrip({
         token: 'la-lockless',
         route: { type: 'direct', line: '2', stops: 2 },
+        originStationName: '시청',
         waypoints: [
           { stationName: '강남', line: '2', kind: 'intermediate' },
           { stationName: '역삼', line: '2', kind: 'destination' },
@@ -5123,6 +5148,12 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       await putTrip(kv as unknown as KVNamespace, trip);
       // motion=automotive → lockless intermediate advance 허용
       await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+      // #2944 (H-6) — originStationName 추가(위 makeLocklessLaTrip) 이후
+      // `resolveCurrentStationName`(liveActivity.ts:159, #2849)이 SSoT 미정착 시 origin으로
+      // fallback해 LA content-state.stationName이 '시청'(origin)으로 바뀐다 — 이 테스트의
+      // 의도("지금 지나는 역" 표시 검증)를 지키기 위해 실제 운영처럼(self-poll이 advance 전에
+      // SSoT를 먼저 정착) 현재 역(강남)을 SSoT에 seed한다.
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '강남');
       const seoulArrivals: ArrivalEntry[] = [
         {
           destination: '역삼행',
@@ -6606,8 +6637,10 @@ describe('maybeCountDrift (#837 P2-3)', () => {
 // ---------------------------------------------------------------------------
 
 function makeLocklessKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  // #2944 (H-6) — originStationName 기본값(시청→강남='up', 아래 arrival isUp=true와 정합).
   return makeTrip({
     token,
+    originStationName: '시청',
     waypoints: [
       { stationName: '강남', line: '2', kind: 'intermediate' },
       { stationName: '역삼', line: '2', kind: 'destination' },
@@ -7103,9 +7136,15 @@ describe('runScheduled — Seam F 환승 자동 swap (#902) → #1729 paradigm',
 describe('runScheduled — Seam F 사라짐 후 재attach (#902)', () => {
   function makeMissingTrainTrip(missCount: number): Trip {
     // boardingLock.trainCode=7174는 사라짐(arrivals에 부재). same-line(7) 신규 후보로 swap 기대.
+    // #2944 (H-6) — waypoints가 1개뿐(트립 꼬리, segmentStations.length===1)이라 첫/마지막
+    // 비교로 direction을 못 구한다. 실 프로덕션 트립은 이미 탑승(boardingLock 존재)했으므로
+    // device가 등록 시점에 고정한 originStationName이 있다 — `resolveLegOriginStation`
+    // fallback이 그 앵커(어린이대공원, 옛 lock의 segmentStations[0])로 direction을 추론하게
+    // originStationName을 채운다(없으면 fail-closed로 떨어져 swap 자체가 막힌다).
     return makeTrip({
       token: 'miss-tok',
       route: { type: 'direct', line: '7', stops: 2 },
+      originStationName: '어린이대공원',
       waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
       boardingLock: {
         trainCode: '7174',
@@ -7726,7 +7765,11 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     // 즉시 발사된다(거부 케이스 ⓕ, 완결 자체는 A2e류 타임아웃 테스트가 별도로 검증).
     const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('강남', 0, 1),
-      trip: makeTrip(), // boardingLock undefined
+      // #2944 (H-6) — originStationName 추가(시청→강남='up', makeArrivalSeoul 기본 isUp=true와
+      // 정합) — restrictArrivalsByLegDirection(lockless destination 전진)이 fail-closed로
+      // 바뀌어 앵커 없으면 후보 0건이 돼 이 테스트의 lockless destination 경로 진입 자체가
+      // 막힌다.
+      trip: makeTrip({ originStationName: '시청' }), // boardingLock undefined
       pushId: 'p-arvl-nolock',
     });
     expect(stats.arvlCdFireSuccess).toBe(0);
@@ -9346,9 +9389,11 @@ async function runLocklessSsotFireScenario(opts: {
   seedSsotStation?: string;
 }): Promise<{ stored: Trip; locklessBody: Record<string, any> | null }> {
   const kv = new InMemoryKV();
+  // #2944 (H-6) — originStationName(시청→강남='up', LOCKLESS_ARRIVED.isUp=true와 정합).
   const trip = makeTrip({
     token: opts.token,
     route: { type: 'direct', line: '2', stops: 2 },
+    originStationName: '시청',
     waypoints: opts.waypoints,
     infoModeEnabled: true,
   });
@@ -9401,6 +9446,8 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
     const trip = makeTrip({
       token: 'lockless-pass',
       route: { type: 'direct', line: '2', stops: 2 },
+      // #2944 (H-6) — originStationName(시청→강남='up', 아래 arrival isUp=true와 정합).
+      originStationName: '시청',
       waypoints: [
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -9437,6 +9484,7 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
     const trip = makeTrip({
       token: 'lockless-410',
       route: { type: 'direct', line: '2', stops: 2 },
+      originStationName: '시청',
       waypoints: [
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -9475,6 +9523,7 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
     const trip = makeTrip({
       token: 'lockless-503',
       route: { type: 'direct', line: '2', stops: 2 },
+      originStationName: '시청',
       waypoints: [
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -12152,17 +12201,21 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       )) as unknown as typeof fetch;
   }
 
+  // #2944 (H-6) — waypoint/origin을 군자→용마산(direction='up')으로 둔다. 이 describe의
+  // arrival fixture 대다수가 기본 isUp:true(상행)를 쓰므로, decisionPool이 fail-closed로
+  // 전환된 뒤 그 기본값과 정합하는 방향이 필요하다(구 동작은 direction=null 기본값이라
+  // 방향 불일치가 무해했다 — fail-closed 전환으로 드러남).
   function makeTrip(overrides: Partial<Trip> = {}): Trip {
     return {
       token: 'trip-origin-gps-free',
       createdAt: NOW - 5 * 60_000,
-      waypoints: [{ stationName: '군자', line: '7', kind: 'intermediate' }],
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
       apnsEnv: 'production',
       registeredAt: NOW,
       infoModeEnabled: true,
       // #2651 — 이 describe의 게이트는 infoModeEnabled가 아니라 promptOptIn을 본다.
       promptOptIn: true,
-      promptDisplay: { originStation: '용마산', line: '7' },
+      promptDisplay: { originStation: '군자', line: '7' },
       ...overrides,
     } as unknown as Trip;
   }
@@ -12186,7 +12239,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     expect(alertCall).toBeDefined();
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.body.originStation).toBe('용마산');
+    expect(body.body.originStation).toBe('군자');
     expect(body.body.line).toBe('7');
   });
 
@@ -12619,12 +12672,17 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
     // lastFiredAt은 MIN_FIRE_INTERVAL_MS(5분)보다 오래돼 반복 발사 게이트는 통과하지만,
     // 이번 cycle 후보로 뽑힌 trainCode가 firedTrainCodes에 이미 있으면 A4 dedup이 별도 차단한다.
-    // waypoint.line을 다른 line으로 둬 direction=null(방향 미상)로 만들어 pickAutoTrainCode가
-    // 방향 필터로 인해 ambiguous null을 반환하는 경로를 피한다.
+    // #2944 (H-6) — 구 버전은 waypoint.line을 다른 line으로 둬 direction=null로 만들어
+    // pickAutoTrainCode의 구 "양방향 허용" fail-open에 의존해 단일 후보가 무조건 선택되게
+    // 하는 우회였다 — fail-closed 전환 후 그 우회는 selectedTrainCode를 null로 만들어버려
+    // dedup 자체가 성립하지 않는다. promptDisplay.originStation을 '군자'로 둬 waypoint(용마산)
+    // 와의 direction이 'up'으로 정상 추론되게 하고, 후보 isUp=true와 맞춰 실제로 7246이
+    // 선택되는 경로로 dedup을 검증한다(방향 추론을 우회하지 않는 정직한 설정).
     // #2898 — firedTrainCodes 키 형식이 `${trainCode}:${decision}`으로 바뀌었다 — 이번 cycle이
     // 뽑을 decision('imminent', arvlCd=1)과 같은 phase로 이미 발사된 상태여야 진짜 중복이다.
     const trip = makeTrip({
-      waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }],
+      promptDisplay: { originStation: '군자', line: '7' },
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
       boardingPromptState: {
         fired: true,
         lastFiredAt: NOW - 10 * 60_000,
@@ -12949,7 +13007,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(body.aps['content-state']).toMatchObject({
         boardingPhase: 'pre-boarding',
         boardingPromptTripToken: trip.token,
-        boardingPromptOriginStation: '용마산',
+        boardingPromptOriginStation: '군자',
         boardingPromptLine: '7',
         boardingAlertTitle: body.aps.alert?.title,
         boardingAlertBody: body.aps.alert?.body,
@@ -13277,21 +13335,31 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     // 'silenced'(fire-once dedup) D1 행에도 gateDecision이 붙어야 한다. approaching 발사 창이
     // dedup에 삼켜진 횟수를 D1만으로 셀 수 있어야 한다는 Wire §2 목적 완결.
     it('fire-once key로 억제(outcome=silenced) → D1 meta에 gateDecision도 함께 기록', async () => {
-      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 5 }]));
+      // #2944 (H-6) — 구 버전은 이 trip의 waypoint/origin 조합이 "역방향"이 되어(기본값이던
+      // 용마산→군자='down') 유일 후보(isUp=true)가 방향 필터에서 탈락, pickAutoTrainCode가
+      // 방향 불일치로 null을 반환하는 경로였다. decisionPool이 fail-closed로 바뀌면서 그
+      // 경로는 candidateTrains 자체가 0건이 돼 gate 평가 전에 종료되므로 더 이상 성립하지
+      // 않는다 — 대신 같은 "selectedTrainCode=null" 결과를 **ambiguity**(같은 tier 후보 2개)
+      // 경로로 재현한다. 공유 기본값(군자→용마산='up')과 정합하게 둘 다 isUp:true, 둘 다
+      // arvlCd=5(approaching)로 둬 동률 ambiguity를 만든다.
+      const fetchImpl = vi.fn(
+        makeArrivalsResponse([
+          { btrainNo: '7246', isUp: true, arvlCd: 5 },
+          { btrainNo: '7247', isUp: true, arvlCd: 5 },
+        ]),
+      );
       const trip = makeTrip();
       const kv = new InMemoryKV();
-      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '군자', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
       // fire-once key를 미리 stamp — 이번 호출이 gate(approaching)를 통과한 뒤 fire-once
       // 이중 방어에서 즉시 억제되도록(위 cycle A/B 패턴을 단일 호출로 단축).
       // #2898 — key가 station 단독이 아니라 `${station}:${boardingPromptDedupKey(...)}`로
-      // 세분화됐다. 이 trip은 waypoints[0]('군자', line 7)과 originStation('용마산')으로
-      // inferLegDirection이 역방향(down)을 추론해 pool의 유일 후보(isUp=true)가 방향 필터에서
-      // 탈락 — pickAutoTrainCode가 ambiguity 없이도 방향 불일치로 null을 반환한다(#2880 fallback
-      // 경로). 그래서 dedupKey는 trainCode가 아니라 'null-trainCode:approaching'이다.
+      // 세분화됐다. 위 ambiguity(동률 후보 2개)로 pickAutoTrainCode가 null을 반환하므로
+      // dedupKey는 trainCode가 아니라 'null-trainCode:approaching'이다.
       await stampBoardingPromptFireOnce(
         kv as unknown as KVNamespace,
         trip.token,
-        '용마산:null-trainCode:approaching',
+        '군자:null-trainCode:approaching',
         NOW - 60_000,
       );
       const { db, inserts } = makeFireLogDb();
@@ -13342,10 +13410,16 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
           { btrainNo: '7246', isUp: true, arvlCd: 1, trainLineNm: '성수행' },
         ]),
       );
-      // waypoint.line을 display.line('7')과 다르게 둬 direction을 null로 고정한다(inferLegDirection
-      // 미호출) — 이 테스트의 관심사는 실제 노선 방향이 아니라 "선택된 trainCode와 본문 종착역이
-      // 같은 출처"이므로 방향 추론과 무관하게 양쪽 후보가 모두 pickAutoTrainCode 입력에 들어가게 한다.
-      const trip = makeTrip({ waypoints: [{ stationName: '군자', line: 'x', kind: 'intermediate' }] });
+      // #2944 (H-6) — 구 버전은 waypoint.line을 display.line('7')과 다르게 둬 direction을
+      // null로 고정하고(구 pickAutoTrainCode의 "양방향 허용" fail-open에 의존) 두 후보를 모두
+      // 통과시켰다. fail-closed 전환 후 그 우회는 selectedTrainCode=null로 떨어진다 — 이
+      // 테스트의 실제 관심사(선택된 trainCode와 본문 종착역의 출처 일치)를 지키려면 방향을
+      // 정상 추론시키고 두 후보 모두 그 방향(isUp=true='up')과 일치하게 둔다(아래 두 arrival
+      // 모두 isUp:true — 방향 필터를 통과하는 조건은 그대로, 선택은 arvlCd 우선순위가 가른다).
+      const trip = makeTrip({
+        promptDisplay: { originStation: '군자', line: '7' },
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
+      });
       const stats = makeStats();
       await maybeFireOriginBoardingPromptGpsFree(
         trip,
@@ -13795,6 +13869,8 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
   }
 
   function makeTransferTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+    // #2944 (H-6) — originStationName(성수→건대입구='up', arrivalOnLine 기본 isUp=true와
+    // 정합) — 파일 헤더 설명대로 이 describe의 trip은 성수(2호선)에서 출발한다.
     return makeTrip({
       token,
       route: {
@@ -13806,6 +13882,7 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
         stopsFromTransfer: 1,
       },
       destination: '용마산',
+      originStationName: '성수',
       waypoints: [
         { stationName: '건대입구', line: '2', kind: 'transfer' },
         { stationName: '용마산', line: '7', kind: 'destination' },
@@ -15510,6 +15587,55 @@ describe('advanceBoardingLockWaypoint — alarmEvents stamping (#2861 T3)', () =
 
     const after = await readSsot(kv as unknown as KVNamespace, trip.token);
     expect(after?.alarmEvents).toHaveLength(1);
+  });
+});
+
+/**
+ * #2944 (H-6) — restrictArrivalsByLegDirection — lockless leg 전진(#2921) 후보 제한.
+ * direction 추론 불가(resolveLegDirectionForWaypoint null)일 때 기존 "전체 arrivals 그대로
+ * 반환"(fail-open)은 10/9 반대 방향 lock 사고 계열의 잔여 null 경로 중 하나다 — 지금은
+ * fail-closed(빈 배열)로 전환한다.
+ */
+describe('restrictArrivalsByLegDirection (#2944, H-6)', () => {
+  function arrival(overrides: Partial<ArrivalEntry> & { trainCode: string }): ArrivalEntry {
+    return {
+      destination: '',
+      arrivalSeconds: 60,
+      isUp: false,
+      subwayNm: '지하철7호선',
+      arvlCd: 0,
+      ...overrides,
+    };
+  }
+
+  it('direction 추론 가능 — 반대 방향 열차는 제외되고 같은 방향만 남는다 (기존 동작 불변)', () => {
+    // trip.originStationName='어린이대공원' + waypoint='군자'(line 7) → inferLegDirection='up'.
+    const trip = makeTrip({
+      route: { type: 'direct', line: '7', stops: 2 },
+      originStationName: '어린이대공원',
+      waypoints: [{ stationName: '군자', line: '7', kind: 'intermediate' }],
+    });
+    const waypoint: Waypoint = { stationName: '군자', line: '7', kind: 'intermediate' };
+    const arrivals = [
+      arrival({ trainCode: 'UP', isUp: true }),
+      arrival({ trainCode: 'DOWN', isUp: false }),
+    ];
+    const result = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+    expect(result.map((a) => a.trainCode)).toEqual(['UP']);
+  });
+
+  // #2944 — direction 추론 불가(currentLegAnchor/originStationName 둘 다 없음, 구 client)
+  // → fail-closed(빈 배열). 구 동작("전체 arrivals 그대로 반환")은 10/9 사고 계열의 잔여
+  // fail-open 경로였다.
+  it('direction 추론 불가(앵커/origin 둘 다 없음) → 후보 0건 (fail-closed, 구 "전체 반환" 회귀 차단)', () => {
+    const trip = makeTrip({
+      route: { type: 'direct', line: '7', stops: 2 },
+      waypoints: [{ stationName: '군자', line: '7', kind: 'intermediate' }],
+    });
+    const waypoint: Waypoint = { stationName: '군자', line: '7', kind: 'intermediate' };
+    const arrivals = [arrival({ trainCode: 'UP', isUp: true }), arrival({ trainCode: 'DOWN', isUp: false })];
+    const result = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+    expect(result).toEqual([]);
   });
 });
 

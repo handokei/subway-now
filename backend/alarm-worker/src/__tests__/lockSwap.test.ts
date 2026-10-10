@@ -43,7 +43,7 @@ function makeSeoul(arrivals: ArrivalEntry[]): SeoulArrivalClient {
   });
 }
 
-function makeTrip(waypoints: Waypoint[]): Trip {
+function makeTrip(waypoints: Waypoint[], overrides: Partial<Trip> = {}): Trip {
   return {
     token: 'tok',
     route: { type: 'direct', line: '7', stops: 3 },
@@ -52,6 +52,7 @@ function makeTrip(waypoints: Waypoint[]): Trip {
     expiresAt: NOW + 60 * 60_000,
     createdAt: NOW,
     alarmAtEpochMs: NOW + 60_000,
+    ...overrides,
   };
 }
 
@@ -141,10 +142,14 @@ describe('attachTrainCodeForLeg', () => {
     kind: 'destination',
   };
 
-  it('attaches single direction-matched candidate (arvlCd priority 1 ARRIVED)', async () => {
+  // #2944 (H-6) — targetWaypoint 단독(segmentStations.length===1, 트립 꼬리)이라 첫/마지막
+  // 비교로는 방향을 못 구한다. `originStationName`(leg 1 탑승 앵커, 실제 트립엔 항상 있는
+  // device 등록 시점 값)이 있으면 `resolveLegOriginStation` fallback으로 방향을 추론해
+  // fail-closed(후보 0건)로 떨어지지 않는다 — 트립 마지막 hop마다 swap이 막히는 과차단 방지.
+  it('attaches single direction-matched candidate (arvlCd priority 1 ARRIVED) — segmentStations=1, originStationName fallback으로 direction 추론', async () => {
     const seoul = makeSeoul([makeArrival('7246', 1, 60)]);
     const lock = await attachTrainCodeForLeg({
-      trip: makeTrip([targetWaypoint]),
+      trip: makeTrip([targetWaypoint], { originStationName: '중곡' }),
       targetWaypoint,
       seoul,
       now: NOW,
@@ -157,6 +162,37 @@ describe('attachTrainCodeForLeg', () => {
       segmentStations: ['어린이대공원'],
       expiresAt: NOW + SWAP_LOCK_TTL_MS,
     });
+  });
+
+  // #2944 (H-6) — resolveLegOriginStation의 currentLegAnchor 분기(leg 2+). line이 일치하면
+  // originStationName보다 currentLegAnchor를 우선한다 — 일부러 originStationName을 다른(틀린)
+  // 값으로 둬서 currentLegAnchor가 실제로 채택됨을 증명한다.
+  it('segmentStations=1, currentLegAnchor(line 일치)가 originStationName보다 우선 — direction 추론', async () => {
+    const seoul = makeSeoul([makeArrival('7246', 1, 60, '지하철7호선', true)]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip([targetWaypoint], {
+        originStationName: '엉뚱한역',
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      }),
+      targetWaypoint,
+      seoul,
+      now: NOW,
+    });
+    expect(lock?.trainCode).toBe('7246');
+  });
+
+  // #2944 (H-6) — 위 테스트의 대조군: leg 앵커(originStationName/currentLegAnchor)가 전혀 없는
+  // trip(구 client / 캡처 전)은 segmentStations=1에서 진짜로 방향을 추론할 수 없다 — 이 경우만
+  // fail-closed(null)가 남는다(구 "양방향 허용"은 10/9 사고의 근본 원인이라 복원하지 않음).
+  it('segmentStations=1 + leg 앵커 전혀 없음(구 client) → null (fail-closed, 과차단이지만 방향 불명 시 유일하게 안전한 결과)', async () => {
+    const seoul = makeSeoul([makeArrival('7246', 1, 60)]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip([targetWaypoint]),
+      targetWaypoint,
+      seoul,
+      now: NOW,
+    });
+    expect(lock).toBeNull();
   });
 
   it('returns null when arrivals are empty (Seoul API returned nothing)', async () => {
@@ -183,10 +219,11 @@ describe('attachTrainCodeForLeg', () => {
   });
 
   it('returns null on ambiguous candidates (multiple arvlCd=1) — boarding-prompt fallback expected', async () => {
-    // 두 train 모두 ARRIVED → pickAutoTrainCode가 ambiguity로 null
+    // 두 train 모두 ARRIVED → pickAutoTrainCode가 ambiguity로 null. #2944 — originStationName
+    // 앵커를 채워 direction을 해소해(기본 isUp=false='down') ambiguity가 실제 활성 사유가 되게 한다.
     const seoul = makeSeoul([makeArrival('A', 1, 60), makeArrival('B', 1, 90)]);
     const lock = await attachTrainCodeForLeg({
-      trip: makeTrip([targetWaypoint]),
+      trip: makeTrip([targetWaypoint], { originStationName: '중곡' }),
       targetWaypoint,
       seoul,
       now: NOW,
@@ -195,9 +232,12 @@ describe('attachTrainCodeForLeg', () => {
   });
 
   it('picks arvlCd=2 (DEPARTED) over arvlCd=1 (ARRIVED)', async () => {
+    // #2944 — segmentStations=1(트립 꼬리)이라 originStationName 앵커가 있어야 direction이
+    // 추론된다(없으면 fail-closed null) — 이 테스트는 priority 비교 자체를 보는 것이 목적이라
+    // 앵커를 채워 direction이 실제로 'down'(기본 isUp=false)으로 해소되게 한다.
     const seoul = makeSeoul([makeArrival('ARR', 1, 60), makeArrival('DEP', 2, 30)]);
     const lock = await attachTrainCodeForLeg({
-      trip: makeTrip([targetWaypoint]),
+      trip: makeTrip([targetWaypoint], { originStationName: '중곡' }),
       targetWaypoint,
       seoul,
       now: NOW,
@@ -207,9 +247,11 @@ describe('attachTrainCodeForLeg', () => {
 
   it('returns null when no candidate matches the line (different subwayNm)', async () => {
     // arrivals exist but all are for line 2, while target is line 7 → matchLine filters all out.
+    // #2944 — originStationName 앵커를 채워 이 테스트의 실제 목적(line mismatch)이 direction
+    // fail-closed에 가려지지 않게 한다.
     const seoul = makeSeoul([makeArrival('2HOST', 1, 60, '지하철2호선')]);
     const lock = await attachTrainCodeForLeg({
-      trip: makeTrip([targetWaypoint]),
+      trip: makeTrip([targetWaypoint], { originStationName: '중곡' }),
       targetWaypoint,
       seoul,
       now: NOW,
@@ -250,9 +292,14 @@ describe('attachTrainCodeForLeg', () => {
   });
 
   it('allowedLines 안 line → swap 허용 (#1439 §9)', async () => {
-    const seoul = makeSeoul([makeArrival('T1', 1)]);
+    // #2944 — target=중곡 segmentStations=1(트립 꼬리). originStationName 앵커(군자, 중곡보다
+    // id 큰 역)로 direction='up'이 해소되게 하고, 그에 맞춰 arrival도 isUp=true로 맞춘다 —
+    // 이 테스트의 목적(allowedLines 허용)이 direction fail-closed에 가려지지 않게.
+    const seoul = makeSeoul([makeArrival('T1', 1, 60, '지하철7호선', true)]);
     const lock = await attachTrainCodeForLeg({
-      trip: makeTrip([{ stationName: '중곡', line: '7', kind: 'destination' }]),
+      trip: makeTrip([{ stationName: '중곡', line: '7', kind: 'destination' }], {
+        originStationName: '군자',
+      }),
       targetWaypoint: { stationName: '중곡', line: '7', kind: 'intermediate' },
       seoul,
       now: NOW,
@@ -277,10 +324,14 @@ describe('attachTrainCodeForLeg', () => {
     // pickAutoTrainCode 가 matchLine 우회로 cross-line train을 선택했다고 가정한 회귀 시뮬레이션:
     // arrivals 단일 후보로 ambiguity 없이 통과하지만 subwayNm 이 빈 문자열이라 matchLine=false 발동.
     // chosen subwayNm 의 line cross-check 가 lock 합성을 차단해야 한다 (wrong-line trainCode lock
-    // 30분 TTL 지속 회귀 봉쇄).
-    const seoul = makeSeoul([makeArrival('T1', 1, 60, '')]);
+    // 30분 TTL 지속 회귀 봉쇄). #2944 — originStationName 앵커 + isUp=true로 direction을 해소해
+    // 이 테스트가 실제로 cross-check 분기에 도달하게 한다(그렇지 않으면 fail-closed로 null이
+    // 되어 cross-check 자체가 검증되지 않은 채 통과하는 거짓 양성 테스트가 된다).
+    const seoul = makeSeoul([makeArrival('T1', 1, 60, '', true)]);
     const lock = await attachTrainCodeForLeg({
-      trip: makeTrip([{ stationName: '중곡', line: '7', kind: 'destination' }]),
+      trip: makeTrip([{ stationName: '중곡', line: '7', kind: 'destination' }], {
+        originStationName: '군자',
+      }),
       targetWaypoint: { stationName: '중곡', line: '7', kind: 'intermediate' },
       seoul,
       now: NOW,
@@ -292,8 +343,11 @@ describe('attachTrainCodeForLeg', () => {
 /**
  * #1702 (B2-A) — Seoul OpenAPI 단방향/0건 시 realtimePosition fallback.
  *
- * `attachTrainCodeForLeg` 는 direction=null 로 호출 (swap 흐름은 양방향 허용) 이지만
- * segmentStations 기반 필터로 진행 방향 외 train (이미 target 지남) 은 자연 제외된다.
+ * 이 describe의 fixture는 segmentStations=[중곡, 군자, 어린이대공원](3개)라 `attachTrainCodeForLeg`
+ * 가 direction='down'(line=7, 중곡→어린이대공원)을 실제로 추론해 호출한다 — direction=null이
+ * 아니다. #2944 — direction=null(추론 불가/앵커 부재)이면 이제 fail-closed(후보 0건)이므로,
+ * 구 주석("direction=null로 호출, 양방향 허용")은 이 fixture에는 처음부터 해당하지 않았다.
+ * 방향 필터(`isUp`) + segmentStations 위치 필터 둘 다로 진행 방향 외/이미 지난 train을 제외한다.
  * 합성 path 가 transfer-swap + vanish-swap 모두에서 작동하는지 검증.
  *
  * 사용 fixture: line=7, segmentStations=[중곡, 군자, 어린이대공원], target=중곡.
