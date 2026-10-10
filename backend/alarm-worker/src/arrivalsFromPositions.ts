@@ -14,7 +14,9 @@
  * 합성 정책
  * ========
  * 입력 positions 의 각 train 마다:
- *   1. direction 필터 — `direction='up'` → `isUp=true`, `'down'` → `isUp=false`, `null` → 양방향.
+ *   1. direction 필터 — `direction='up'` → `isUp=true`, `'down'` → `isUp=false`, `null` →
+ *      **합성하지 않음**(fail-closed, #2944 H-6 — 구 "양방향 허용"은 10/9 반대 방향 lock
+ *      사고의 fail-open 지점이었다).
  *   2. segmentStations 위치 검증 — train.stationName 이 segmentStations 안에 있고, 그 인덱스가
  *      targetIndex 보다 작거나 같은 경우만 (아직 target 통과 X). 이미 target 지난 train(currentIdx
  *      > targetIdx) 은 제외.
@@ -102,11 +104,12 @@ export function synthesizeArrivalsFromPositions(
   let nearestPassedTie = false;
 
   for (const train of positions) {
-    // direction 필터.
-    if (direction !== null) {
-      const wantUp = direction === 'up';
-      if (train.isUp !== wantUp) continue;
-    }
+    // #2944 (H-6) — direction 필터, fail-closed. direction===null이면 이 train을 합성하지
+    // 않는다(구 동작은 양방향 허용 — 반대 방향 train까지 합성해 `pickAutoTrainCode`에 넘기는
+    // 통로였다. 10/9 반대 방향 lock 사고 계열, device #2696 정책 미반영).
+    if (direction === null) continue;
+    const wantUp = direction === 'up';
+    if (train.isUp !== wantUp) continue;
     // segmentStations 위치 검증.
     const currentIdx = segmentStations.indexOf(train.stationName);
     if (currentIdx < 0) continue;

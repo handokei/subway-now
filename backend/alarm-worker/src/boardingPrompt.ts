@@ -464,10 +464,13 @@ export function pickAutoTrainCode(
 ): string | null {
   const matching = arrivals.filter((a) => matchLine(a.subwayNm, line));
   if (matching.length === 0) return null;
-  // 방향 일치 — direction이 null이면 양방향 허용.
+  // #2944 (H-6, plan 2026-10-10 J5) — 방향 일치. direction이 null이면 fail-closed(후보 0건).
+  // 구 동작("양방향 허용")은 10/9 반대 방향 lock 사고(군자→광화문, 5호선)의 근본 fail-open
+  // 지점이었다 — device #2696 정책("direction===null → 후보 없음, 양방향 병합 금지")을
+  // backend 판정 지점에도 동일 적용한다. 방향을 모르면 어느 방향 열차도 lock 후보로 내지 않는다.
   const directional = direction
     ? matching.filter((a) => (direction === 'up' ? a.isUp : !a.isUp))
-    : matching;
+    : [];
   if (directional.length === 0) return null;
 
   // #2801 (3차 reopen, audit-sides 편측 확정 2026-10-03) — 3(전역출발)/5(전역도착)를 각자
