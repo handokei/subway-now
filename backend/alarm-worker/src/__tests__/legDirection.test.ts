@@ -262,14 +262,18 @@ describe('#2943 J1→J2 — 10/9 실측 R2 fixture 전체 체인 (군자→광�
     expect(selected).toBe('5554');
   });
 
-  it('(회귀 확인용) direction=null을 강제하면 여전히 5559가 선택된다 — pickAutoTrainCode 자체의 fail-open은 H-6 범위(이 PR 밖)', () => {
-    // #2943 H-6 범위 밖임을 명시하는 앵커 — pickAutoTrainCode(direction=null)의 양방향 허용은
-    // 의도적으로 남겨둔 기존 동작이다(boardingPrompt.ts:468, scheduled.ts 등 fail-open 4곳).
+  // #2943이 "H-6 범위(다음 PR)"로 명시적으로 남겨둔 fail-open을 #2944(H-6)가 닫았다 — 이
+  // 테스트는 그 해소를 고정한다. 구 동작(direction=null → pickAutoTrainCode가 양방향 허용,
+  // 5559 선택)은 10/9 반대 방향 lock 사고(군자→광화문, 5호선)의 근본 fail-open 지점이었다.
+  it('(회귀 확인용) direction=null이어도 5559는 더 이상 선택되지 않는다 — #2944(H-6)가 pickAutoTrainCode의 fail-open을 fail-closed로 전환', () => {
     return fetchGunjaArrivals().then((arrivals) => {
       const line5Arrivals = arrivals.filter((a) =>
         ['5554', '5066', '5559', '5055'].includes(a.trainCode),
       );
-      expect(pickAutoTrainCode(line5Arrivals, '5', null)).toBe('5559');
+      // 방향을 모르면 어느 후보도 선택하지 않는다(fail-closed, 후보 0건) — 5559(반대 방향)뿐
+      // 아니라 5554(정방향)도 함께 배제된다. 반대 방향 열차를 절대 lock하지 않는 것이
+      // 목적이므로, 그 대가로 정방향 후보까지 같이 못 쓰는 것은 의도된 trade-off다(ADR-010).
+      expect(pickAutoTrainCode(line5Arrivals, '5', null)).toBeNull();
     });
   });
 });
