@@ -92,8 +92,18 @@ describe('#2888 재생 — 10/7 아침 id154 조기 destination-arrived', () => 
     // D1 실측(id849): 직전 cycle outcome='none'이었으므로 이번 cycle에 넘어오는 pending은
     // undefined — evaluateLegBoardingTransition이 resolved(ARRIVED 유일 후보)를 'pending'으로
     // 승격하며 firstObservedAt=now를 새로 찍는다(이전 pending 없음).
+    //
+    // #2944 (H-6) — anchor.direction은 captured 데이터가 아니라 이 테스트 작성 시점에 수기로
+    // 채운 입력이었다(실측 fixture 불변 규칙은 position/D1 timestamp에만 적용, 이 필드는 아님).
+    // `direction: null`은 당시 `resolveTrainCodeFromPositions`가 fail-open이라 결과에 영향이
+    // 없어 검증 없이 넣은 값이었다 — 실제로는 `inferLegDirection('2', '건대입구', '성수')`가
+    // 'down'을 반환하고(line 2는 closed-loop, H-1 이전에도 이미 커버), 캡처된 2015의
+    // `updnLine:'1'`(하행)·`statnTnm:'성수'`(성수행, 사용자의 실제 목적지 경유역과 일치)가 그
+    // 'down'과 정합한다 — 2015는 실제로 올바른 방향의 열차였다. fail-closed 전환 후
+    // `direction: null`을 그대로 두면 이 올바른 재현이 'none'으로 깨진다(과차단) — 실측과
+    // 다른 입력을 썼던 것이 드러난 것이므로 역사적으로 정확한 값('down')으로 정정한다.
     const confirmation = evaluateLegBoardingTransition(
-      { line: '2', boardingStation: '건대입구', direction: null },
+      { line: '2', boardingStation: '건대입구', direction: 'down' },
       positions,
       RESOLVE_ATTEMPT_MS,
       undefined,

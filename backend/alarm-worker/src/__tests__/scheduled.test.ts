@@ -7103,9 +7103,15 @@ describe('runScheduled — Seam F 환승 자동 swap (#902) → #1729 paradigm',
 describe('runScheduled — Seam F 사라짐 후 재attach (#902)', () => {
   function makeMissingTrainTrip(missCount: number): Trip {
     // boardingLock.trainCode=7174는 사라짐(arrivals에 부재). same-line(7) 신규 후보로 swap 기대.
+    // #2944 (H-6) — waypoints가 1개뿐(트립 꼬리, segmentStations.length===1)이라 첫/마지막
+    // 비교로 direction을 못 구한다. 실 프로덕션 트립은 이미 탑승(boardingLock 존재)했으므로
+    // device가 등록 시점에 고정한 originStationName이 있다 — `resolveLegOriginStation`
+    // fallback이 그 앵커(어린이대공원, 옛 lock의 segmentStations[0])로 direction을 추론하게
+    // originStationName을 채운다(없으면 fail-closed로 떨어져 swap 자체가 막힌다).
     return makeTrip({
       token: 'miss-tok',
       route: { type: 'direct', line: '7', stops: 2 },
+      originStationName: '어린이대공원',
       waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
       boardingLock: {
         trainCode: '7174',
@@ -12619,12 +12625,17 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
     // lastFiredAt은 MIN_FIRE_INTERVAL_MS(5분)보다 오래돼 반복 발사 게이트는 통과하지만,
     // 이번 cycle 후보로 뽑힌 trainCode가 firedTrainCodes에 이미 있으면 A4 dedup이 별도 차단한다.
-    // waypoint.line을 다른 line으로 둬 direction=null(방향 미상)로 만들어 pickAutoTrainCode가
-    // 방향 필터로 인해 ambiguous null을 반환하는 경로를 피한다.
+    // #2944 (H-6) — 구 버전은 waypoint.line을 다른 line으로 둬 direction=null로 만들어
+    // pickAutoTrainCode의 구 "양방향 허용" fail-open에 의존해 단일 후보가 무조건 선택되게
+    // 하는 우회였다 — fail-closed 전환 후 그 우회는 selectedTrainCode를 null로 만들어버려
+    // dedup 자체가 성립하지 않는다. promptDisplay.originStation을 '군자'로 둬 waypoint(용마산)
+    // 와의 direction이 'up'으로 정상 추론되게 하고, 후보 isUp=true와 맞춰 실제로 7246이
+    // 선택되는 경로로 dedup을 검증한다(방향 추론을 우회하지 않는 정직한 설정).
     // #2898 — firedTrainCodes 키 형식이 `${trainCode}:${decision}`으로 바뀌었다 — 이번 cycle이
     // 뽑을 decision('imminent', arvlCd=1)과 같은 phase로 이미 발사된 상태여야 진짜 중복이다.
     const trip = makeTrip({
-      waypoints: [{ stationName: '건대입구', line: '2', kind: 'transfer' }],
+      promptDisplay: { originStation: '군자', line: '7' },
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
       boardingPromptState: {
         fired: true,
         lastFiredAt: NOW - 10 * 60_000,
@@ -13342,10 +13353,16 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
           { btrainNo: '7246', isUp: true, arvlCd: 1, trainLineNm: '성수행' },
         ]),
       );
-      // waypoint.line을 display.line('7')과 다르게 둬 direction을 null로 고정한다(inferLegDirection
-      // 미호출) — 이 테스트의 관심사는 실제 노선 방향이 아니라 "선택된 trainCode와 본문 종착역이
-      // 같은 출처"이므로 방향 추론과 무관하게 양쪽 후보가 모두 pickAutoTrainCode 입력에 들어가게 한다.
-      const trip = makeTrip({ waypoints: [{ stationName: '군자', line: 'x', kind: 'intermediate' }] });
+      // #2944 (H-6) — 구 버전은 waypoint.line을 display.line('7')과 다르게 둬 direction을
+      // null로 고정하고(구 pickAutoTrainCode의 "양방향 허용" fail-open에 의존) 두 후보를 모두
+      // 통과시켰다. fail-closed 전환 후 그 우회는 selectedTrainCode=null로 떨어진다 — 이
+      // 테스트의 실제 관심사(선택된 trainCode와 본문 종착역의 출처 일치)를 지키려면 방향을
+      // 정상 추론시키고 두 후보 모두 그 방향(isUp=true='up')과 일치하게 둔다(아래 두 arrival
+      // 모두 isUp:true — 방향 필터를 통과하는 조건은 그대로, 선택은 arvlCd 우선순위가 가른다).
+      const trip = makeTrip({
+        promptDisplay: { originStation: '군자', line: '7' },
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
+      });
       const stats = makeStats();
       await maybeFireOriginBoardingPromptGpsFree(
         trip,
