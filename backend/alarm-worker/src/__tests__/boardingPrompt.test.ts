@@ -337,9 +337,12 @@ describe('pickAutoTrainCode — arvlCd 우선순위', () => {
     expect(pickAutoTrainCode(arrivals, '2호선', 'up')).toBeNull();
   });
 
-  it('direction null → 양방향 허용', () => {
+  // #2944 (H-6) — direction=null fail-closed. 구 동작("양방향 허용")은 10/9 반대 방향 lock
+  // 사고(군자→광화문, 5호선)의 근본 원인이었다 — device #2696 정책(양방향 병합 금지)을
+  // backend에도 적용한다. 방향을 모르면 lock 대상 후보를 내지 않는다(0건, null).
+  it('direction null → 후보 없음 (fail-closed, #2944 — 구 "양방향 허용" 회귀 차단)', () => {
     const arrivals = [entry({ trainCode: 'T1', arvlCd: 2, isUp: false })];
-    expect(pickAutoTrainCode(arrivals, '2호선', null)).toBe('T1');
+    expect(pickAutoTrainCode(arrivals, '2호선', null)).toBeNull();
   });
 
   it('direction=down → 하행만 매칭', () => {
