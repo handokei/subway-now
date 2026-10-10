@@ -30,3 +30,29 @@ export const PREV_TRAIN_CANDIDATE_BACKSTOP_MS = 30 * 60_000;
 // `etaWithinPollingWindow`)만 deps/hash에 반영한다 — 초 단위 지터는 무시하고, 게이트가 실제로
 // 열려야 할 시점과 정확히 같은 순간에만 재등록을 트리거한다.
 export const ETA_POLLING_WINDOW_SEC = 5 * 60;
+
+// #2951 — 출발역 정차 시간(초). `stationTravelTimes.json`(tier 1, 서울교통공사
+// 열차운행시각표 423,107행에서 "순수 주행시간 = 다음역 도착 − 현재역 출발"로 산출돼
+// 정차 시간이 빠져 있다. 같은 시각표의 "도착간격 = 다음역 도착 − 현재역 도착"과
+// 대조하면 우리 값은 중앙값 −30초(평균 −30.1초) 부족 — 즉 도착간격 기준 hop에는
+// 출발역 정차 30초가 항상 빠져 있다.
+//
+// 근거(시각표 390,902건 실측 정차시간 분포): 중앙값 30초, 평균 31.5초, 전 호선 동일.
+// 20초(21,348건) · 25초(12,608건) · **30초(323,012건, 최다)** · 40초(20,078건) · 60초(10,969건).
+//
+// `getStopSeconds`(`stationRoute.ts`) tier 1 분기에만 가산한다. tier 2(`lineSpeeds.ts`,
+// 거리÷표정속도)는 이미 "정차 시간 포함 평균"이라 가산하면 이중 가산이 되므로 손대지 않는다.
+// tier 3(`STOP_FALLBACK_SECONDS`=120)도 임의 상수이고 이미 순수주행(~100초)+정차(30초)에
+// 가까워 변경하지 않는다. 역별 정차시간(20/25/40/60초) 구분은 후속 작업(N-5) — 본 상수는
+// 30초 일괄 가산.
+//
+// `getStopSeconds`는 경로 총시간 표시뿐 아니라 `hopTime.ts`를 거쳐 BoardingProgress
+// estimator(`stationProgressEstimator.ts`)의 시간 적분에도 쓰인다 — "경로 표시용인데 왜
+// estimator에도 들어가나" 의문이 들면 이 문단을 보라: estimator의 재앵커 기준(③
+// ReanchoredHop의 `lastObserved: { arcIndex, observedAtMs }`, ④ DefaultHop의
+// `lock.boardedAt`)은 둘 다 "그 역에 있었던(도착/탑승) 시각"이다. 앵커가 도착 시각이면
+// 다음 hop의 올바른 정의는 `정차(A) + 주행(A→B) = 도착간격`이고, 정차시간을 뺀 순수주행만
+// 쓰면 매 hop마다 30초씩 빨리 전진한다 — `hopTime.ts:9-11`이 기록한 "현재역이 1~2개역
+// 앞서감"(ADR-008 §②) 증상의 한 축이 바로 이 정차시간 누락이었다. 즉 본 상수는 경로 표시와
+// estimator 양쪽을 "도착간격" 기준으로 정렬시키는 단일 가산점이다.
+export const DWELL_SECONDS = 30;

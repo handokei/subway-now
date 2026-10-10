@@ -3,7 +3,7 @@ import stationTravelTimesJson from '../../data/stationTravelTimes.json';
 import stationDistancesJson from '../../data/stationDistances.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
-import { WALKING_SPEED_M_PER_S, ARRIVAL_FRESHNESS_MS } from '../constants/eta';
+import { WALKING_SPEED_M_PER_S, ARRIVAL_FRESHNESS_MS, DWELL_SECONDS } from '../constants/eta';
 import type { LineNumber } from '../types/station';
 import { applyStationAlias } from '../../data/stationAliases';
 import { createLogger } from './logger';
@@ -25,15 +25,19 @@ const STOP_FALLBACK_SECONDS = 120;
 /**
  * line의 fromId → toId 단일 hop 운행 시간(초). #655.
  * 우선순위:
- *   1) `stationTravelTimes.json` 실측 (서울 열린데이터, 1~8호선)
- *   2) #1472 — `stationDistances.json` 거리 × 노선 평균 속도 (KRRIC + 운영사 표정속도)
- *   3) `STOP_FALLBACK_SECONDS`(=120, 2분) 최종 fallback
+ *   1) `stationTravelTimes.json` 실측(서울 열린데이터, 1~8호선) + `DWELL_SECONDS`(#2951, 출발역 정차 30초)
+ *   2) #1472 — `stationDistances.json` 거리 × 노선 평균 속도 (KRRIC + 운영사 표정속도, 이미 정차 포함 평균 — 가산 X)
+ *   3) `STOP_FALLBACK_SECONDS`(=120, 2분) 최종 fallback (이미 도착간격에 근접 — 가산 X)
+ *
+ * #2951 — tier 1(`stationTravelTimes.json`)은 "순수 주행시간(다음역 도착 − 현재역 출발)"이고
+ * 정차 시간이 빠져 있다(시각표 대조: 도착간격 기준 중앙값 -30초). `hop(A→B) = 주행(A→B) + 정차(A)`
+ * 의미로 `DWELL_SECONDS`를 tier 1에만 가산한다. tier 2/3는 이미 정차 포함 값이라 가산하면 이중 가산.
  * miss는 logger.debug로 노출해 향후 데이터 보강(9호선/공항철도 등) 추적에 사용.
  */
 export function getStopSeconds(line: LineNumber, fromId: string, toId: string): number {
   const key = `${line}|${fromId}|${toId}`;
   const hit = stationTravelTimes[key];
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) return hit + DWELL_SECONDS;
   const distM = stationDistances[key];
   if (distM !== undefined) {
     const seconds = getStopSecondsFromDistance(line, distM);

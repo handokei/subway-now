@@ -1021,27 +1021,31 @@ describe('calculateStaticETA — timetable boardable wait fallback (#1480)', () 
 });
 
 describe('구간별 실측 운행시간 반영 (#655)', () => {
-  // 종로5가(1-030)→종각(1-032): 두 hop 모두 실측 90초 → 2 stops지만 180초.
-  // 균일 fallback(stops*120=240초)보다 1분 짧게 산출되어 실측 데이터 사용을 검증한다.
-  it('findRoute가 만든 direct route는 실측 hop 합을 travelSeconds로 채운다', () => {
+  // 종로5가(1-030)→종각(1-032): 두 hop 모두 실측 주행 90초 + 정차 30초(#2951 DWELL_SECONDS)
+  // = hop당 120초 → 2 stops, 240초. 균일 fallback(stops*120=240초)과 이 경우 공교롭게 같은 값이
+  // 되는데, 이는 1호선 실측 주행(90초)이 노선 평균 fallback(120초)보다 짧고 그 차이(30초)를
+  // 정차시간 가산이 정확히 상쇄하는 우연 — 실측 데이터 자체가 fallback과 달라졌다는 사실은
+  // getStopSeconds 단위 테스트(아래 #2951 describe)가 별도로 고정한다.
+  it('findRoute가 만든 direct route는 실측 hop 합(+정차시간)을 travelSeconds로 채운다', () => {
     const route = findRoute('1-030', '1-032');
     expect(route).not.toBeNull();
     expect(route!.type).toBe('direct');
     const direct = route as DirectRoute;
     expect(direct.stops).toBe(2);
-    expect(direct.travelSeconds).toBe(180);
+    expect(direct.travelSeconds).toBe(240);
   });
 
-  it('실측 hop가 fallback보다 짧으면 calculateStaticETA도 짧아진다', () => {
-    // 3분 대기 + round(180/60) = 3 + 3 = 6분 (fallback이면 3 + round(240/60) = 7분).
-    expect(calculateStaticETA(findRoute('1-030', '1-032'))).toBe(6);
+  it('실측 hop(+정차시간) 기준 calculateStaticETA', () => {
+    // 3분 대기 + round(240/60) = 3 + 4 = 7분.
+    expect(calculateStaticETA(findRoute('1-030', '1-032'))).toBe(7);
   });
 });
 
 describe('getStopSeconds fallback 정밀화 (#1472)', () => {
-  it('실측 travelTimes hit이 1순위 (1호선 1-030↔1-032 두 hop 모두 실측)', () => {
+  it('실측 travelTimes hit이 1순위 (1호선 1-030↔1-032 두 hop 모두 실측 + 정차시간)', () => {
     // 1호선 1-030 → 1-031: 실측 데이터에 있음 → 거리 fallback 안 탐.
-    expect(getStopSeconds('1', '1-030', '1-031')).toBe(90);
+    // #2951: 실측 순수주행 90초 + DWELL_SECONDS(30) = 120초.
+    expect(getStopSeconds('1', '1-030', '1-031')).toBe(120);
   });
 
   it('travelTimes miss + distances hit이면 거리 × 평균속도 fallback', () => {
@@ -1056,6 +1060,38 @@ describe('getStopSeconds fallback 정밀화 (#1472)', () => {
 
   it('travelTimes + distances 둘 다 miss면 120초 고정 fallback', () => {
     expect(getStopSeconds('9', 'NOPE', 'NEITHER')).toBe(120);
+  });
+});
+
+describe('tier 1 hop에 DWELL_SECONDS(30) 가산 (#2951)', () => {
+  // 서울교통공사 열차운행시각표(423,107행) 대조: 우리 tier 1(순수 주행시간)은
+  // "도착간격(=다음역도착−현재역도착)" 기준으로 중앙값 30초 부족했다. hop(A→B) =
+  // 주행(A→B) + 정차(A) — 30초는 출발역(A)의 정차시간이다.
+  it('tier 1 hop = 실측 순수주행값 + 30 (이전엔 순수주행값 그대로라 정차시간 누락)', () => {
+    // 1호선 1-030 → 1-031: stationTravelTimes.json 실측 순수주행 90초. 가산 후 120초여야 한다.
+    expect(getStopSeconds('1', '1-030', '1-031')).toBe(120);
+  });
+
+  it('ⓐ tier 2(거리÷표정속도)는 가산하지 않는다 — lineSpeeds.ts가 이미 정차 포함 평균', () => {
+    // 신분당선 신사(016)↔논현(015): 700m, 50km/h → 700/(50000/3600) ≈ 50.4초.
+    // +30을 더하면 이중 가산이 되어 80.4초가 되므로, 정확히 50.4초 근방에 고정한다.
+    const seconds = getStopSeconds('sinbundang', 'sinbundang-016', 'sinbundang-015');
+    expect(seconds).toBeCloseTo(50.4, 1);
+    expect(seconds).toBeLessThan(60); // 80.4(이중가산)가 아님을 명시 거부
+  });
+
+  it('ⓑ tier 3(데이터 미커버 fallback)은 120초로 불변 — 임의 상수라 가산하지 않는다', () => {
+    expect(getStopSeconds('9', 'NOPE', 'NEITHER')).toBe(120);
+  });
+
+  it('경로 합산: N역 direct route 총 travelSeconds = Σ주행 + (N−1)×30, 마지막 역 정차 미포함', () => {
+    // 1호선 종로5가(1-030)→종각(1-031)→시청(1-032): 2 hop(=3역), 순수주행 90+90=180.
+    // hop 수(N−1=2)만큼만 가산 — 마지막 역(시청)은 하차하므로 정차 미포함.
+    const route = findRoute('1-030', '1-032');
+    expect(route).not.toBeNull();
+    const direct = route as DirectRoute;
+    expect(direct.stops).toBe(2);
+    expect(direct.travelSeconds).toBe(180 + 2 * 30); // = 240
   });
 });
 
