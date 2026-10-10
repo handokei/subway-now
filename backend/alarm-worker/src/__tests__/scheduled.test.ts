@@ -12201,17 +12201,21 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       )) as unknown as typeof fetch;
   }
 
+  // #2944 (H-6) — waypoint/origin을 군자→용마산(direction='up')으로 둔다. 이 describe의
+  // arrival fixture 대다수가 기본 isUp:true(상행)를 쓰므로, decisionPool이 fail-closed로
+  // 전환된 뒤 그 기본값과 정합하는 방향이 필요하다(구 동작은 direction=null 기본값이라
+  // 방향 불일치가 무해했다 — fail-closed 전환으로 드러남).
   function makeTrip(overrides: Partial<Trip> = {}): Trip {
     return {
       token: 'trip-origin-gps-free',
       createdAt: NOW - 5 * 60_000,
-      waypoints: [{ stationName: '군자', line: '7', kind: 'intermediate' }],
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'intermediate' }],
       apnsEnv: 'production',
       registeredAt: NOW,
       infoModeEnabled: true,
       // #2651 — 이 describe의 게이트는 infoModeEnabled가 아니라 promptOptIn을 본다.
       promptOptIn: true,
-      promptDisplay: { originStation: '용마산', line: '7' },
+      promptDisplay: { originStation: '군자', line: '7' },
       ...overrides,
     } as unknown as Trip;
   }
@@ -12235,7 +12239,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     expect(alertCall).toBeDefined();
     const [, init] = alertCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.body.originStation).toBe('용마산');
+    expect(body.body.originStation).toBe('군자');
     expect(body.body.line).toBe('7');
   });
 
@@ -13003,7 +13007,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(body.aps['content-state']).toMatchObject({
         boardingPhase: 'pre-boarding',
         boardingPromptTripToken: trip.token,
-        boardingPromptOriginStation: '용마산',
+        boardingPromptOriginStation: '군자',
         boardingPromptLine: '7',
         boardingAlertTitle: body.aps.alert?.title,
         boardingAlertBody: body.aps.alert?.body,
@@ -13331,21 +13335,31 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     // 'silenced'(fire-once dedup) D1 행에도 gateDecision이 붙어야 한다. approaching 발사 창이
     // dedup에 삼켜진 횟수를 D1만으로 셀 수 있어야 한다는 Wire §2 목적 완결.
     it('fire-once key로 억제(outcome=silenced) → D1 meta에 gateDecision도 함께 기록', async () => {
-      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 5 }]));
+      // #2944 (H-6) — 구 버전은 이 trip의 waypoint/origin 조합이 "역방향"이 되어(기본값이던
+      // 용마산→군자='down') 유일 후보(isUp=true)가 방향 필터에서 탈락, pickAutoTrainCode가
+      // 방향 불일치로 null을 반환하는 경로였다. decisionPool이 fail-closed로 바뀌면서 그
+      // 경로는 candidateTrains 자체가 0건이 돼 gate 평가 전에 종료되므로 더 이상 성립하지
+      // 않는다 — 대신 같은 "selectedTrainCode=null" 결과를 **ambiguity**(같은 tier 후보 2개)
+      // 경로로 재현한다. 공유 기본값(군자→용마산='up')과 정합하게 둘 다 isUp:true, 둘 다
+      // arvlCd=5(approaching)로 둬 동률 ambiguity를 만든다.
+      const fetchImpl = vi.fn(
+        makeArrivalsResponse([
+          { btrainNo: '7246', isUp: true, arvlCd: 5 },
+          { btrainNo: '7247', isUp: true, arvlCd: 5 },
+        ]),
+      );
       const trip = makeTrip();
       const kv = new InMemoryKV();
-      await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '군자', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
       // fire-once key를 미리 stamp — 이번 호출이 gate(approaching)를 통과한 뒤 fire-once
       // 이중 방어에서 즉시 억제되도록(위 cycle A/B 패턴을 단일 호출로 단축).
       // #2898 — key가 station 단독이 아니라 `${station}:${boardingPromptDedupKey(...)}`로
-      // 세분화됐다. 이 trip은 waypoints[0]('군자', line 7)과 originStation('용마산')으로
-      // inferLegDirection이 역방향(down)을 추론해 pool의 유일 후보(isUp=true)가 방향 필터에서
-      // 탈락 — pickAutoTrainCode가 ambiguity 없이도 방향 불일치로 null을 반환한다(#2880 fallback
-      // 경로). 그래서 dedupKey는 trainCode가 아니라 'null-trainCode:approaching'이다.
+      // 세분화됐다. 위 ambiguity(동률 후보 2개)로 pickAutoTrainCode가 null을 반환하므로
+      // dedupKey는 trainCode가 아니라 'null-trainCode:approaching'이다.
       await stampBoardingPromptFireOnce(
         kv as unknown as KVNamespace,
         trip.token,
-        '용마산:null-trainCode:approaching',
+        '군자:null-trainCode:approaching',
         NOW - 60_000,
       );
       const { db, inserts } = makeFireLogDb();
