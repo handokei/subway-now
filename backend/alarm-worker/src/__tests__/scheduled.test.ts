@@ -887,7 +887,12 @@ describe('runScheduled', () => {
     }
 
     function intermediateTrip(overrides: Partial<Trip> = {}): Trip {
+      // #2944 (H-6) — originStationName('시청', line 2에서 강남 방향 추론 시 'up') 기본값.
+      // restrictArrivalsByLegDirection이 fail-closed로 바뀌어 앵커 없으면 후보 0건이 된다 —
+      // 실 프로덕션 트립은 #2280 이후 항상 이 필드를 보내므로 기본으로 채운다(대다수 케이스의
+      // arrival fixture가 isUp=true라 'up'과 정합).
       return makeTrip({
+        originStationName: '시청',
         waypoints: [
           { stationName: '강남', line: '2', kind: 'intermediate' },
           { stationName: '역삼', line: '2', kind: 'destination' },
@@ -1169,7 +1174,9 @@ describe('runScheduled', () => {
     // Epic #1204 그룹 2 D3 (#1273)
     it('lockless intermediate 발사 시 payload.hopIndex가 waypoint.hopIndex로 wire', async () => {
       const { apnsFetch } = await runLocklessCycle({
+        // #2944 (H-6) — originStationName(시청→강남='up', ARVL_ARRIVED.isUp=true와 정합).
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
             { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
@@ -1186,6 +1193,7 @@ describe('runScheduled', () => {
     it('lockless intermediate 발사 시 waypoint.hopIndex 부재면 payload 본문에서도 hopIndex 누락', async () => {
       const { apnsFetch } = await runLocklessCycle({
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName: '강남', line: '2', kind: 'intermediate' },
             { stationName: '역삼', line: '2', kind: 'destination' },
@@ -1211,7 +1219,9 @@ describe('runScheduled', () => {
       ['surface waypoint(성수)', '성수', false],
     ])('lockless intermediate — payload에 subsurface 필드가 없다 (%s, #2644)', async (_label, stationName, tripSubsurface) => {
       const { apnsFetch } = await runLocklessCycle({
+        // #2944 (H-6) — originStationName(시청→강남/성수 모두 'up', ARVL_ARRIVED.isUp=true와 정합).
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName, line: '2', kind: 'intermediate', hopIndex: 3 },
             { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
@@ -1228,7 +1238,9 @@ describe('runScheduled', () => {
 
     it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
       const { kv } = await runLocklessCycle({
+        // #2944 (H-6) — originStationName(시청→강남='up', ARVL_ARRIVED.isUp=true와 정합).
         trip: makeTrip({
+          originStationName: '시청',
           waypoints: [
             { stationName: '강남', line: '2', kind: 'intermediate' },
             { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -1249,10 +1261,15 @@ describe('runScheduled', () => {
 
     // #1285 — lockless waypoint shift → progress KV mirror
     it('#1285 — 발사 성공 시 progress KV에 lockless shiftedCount=1 저장', async () => {
+      // #2944 (H-6) — 구 '중곡'은 line 5에 실존하지 않는 역명이라(7호선 전용)
+      // inferLegDirection이 station-lookup 실패로 null을 반환했다 — fail-open 시절엔 무해했지만
+      // fail-closed 전환 후 후보 0건으로 드러났다. 실제 5호선 역('장한평')으로 정정하고
+      // originStationName(천호→장한평='up', ARVL_ARRIVED.isUp=true와 정합)을 채운다.
       const { kv } = await runLocklessCycle({
         trip: makeTrip({
+          originStationName: '천호',
           waypoints: [
-            { stationName: '중곡', line: '5', kind: 'intermediate' },
+            { stationName: '장한평', line: '5', kind: 'intermediate' },
             { stationName: '군자', line: '5', kind: 'destination' },
           ],
           infoModeEnabled: true,
@@ -1275,7 +1292,9 @@ describe('runScheduled', () => {
         'progress:tok',
         JSON.stringify({ lockless: true, shiftedCount: 1 }),
       );
+      // #2944 (H-6) — originStationName(천호→군자='up', ARVL_ARRIVED.isUp=true와 정합).
       const trip = makeTrip({
+        originStationName: '천호',
         waypoints: [
           { stationName: '군자', line: '5', kind: 'intermediate' },
           { stationName: '아차산', line: '5', kind: 'destination' },
@@ -3917,6 +3936,9 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       kv as unknown as KVNamespace,
       makeLockTrip({
         boardingLock: makeLock({ expiresAt: NOW - 1 }),
+        // #2944 (H-6) — originStationName 추가(시청→강남='up', arrivalForLock 기본 isUp=true와
+        // 정합) — lockless destination 경로가 restrictArrivalsByLegDirection을 거친다.
+        originStationName: '시청',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
       }),
     );
@@ -5103,9 +5125,11 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
   describe('#1826 — lockless trip + activityPushToken → LA BG update 발사', () => {
     /** lockless intermediate trip with LA token */
     function makeLocklessLaTrip(overrides: Partial<Trip> = {}): Trip {
+      // #2944 (H-6) — originStationName(시청→강남='up', 아래 arrival isUp=true와 정합).
       return makeTrip({
         token: 'la-lockless',
         route: { type: 'direct', line: '2', stops: 2 },
+        originStationName: '시청',
         waypoints: [
           { stationName: '강남', line: '2', kind: 'intermediate' },
           { stationName: '역삼', line: '2', kind: 'destination' },
@@ -5124,6 +5148,12 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       await putTrip(kv as unknown as KVNamespace, trip);
       // motion=automotive → lockless intermediate advance 허용
       await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+      // #2944 (H-6) — originStationName 추가(위 makeLocklessLaTrip) 이후
+      // `resolveCurrentStationName`(liveActivity.ts:159, #2849)이 SSoT 미정착 시 origin으로
+      // fallback해 LA content-state.stationName이 '시청'(origin)으로 바뀐다 — 이 테스트의
+      // 의도("지금 지나는 역" 표시 검증)를 지키기 위해 실제 운영처럼(self-poll이 advance 전에
+      // SSoT를 먼저 정착) 현재 역(강남)을 SSoT에 seed한다.
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '강남');
       const seoulArrivals: ArrivalEntry[] = [
         {
           destination: '역삼행',
@@ -6607,8 +6637,10 @@ describe('maybeCountDrift (#837 P2-3)', () => {
 // ---------------------------------------------------------------------------
 
 function makeLocklessKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  // #2944 (H-6) — originStationName 기본값(시청→강남='up', 아래 arrival isUp=true와 정합).
   return makeTrip({
     token,
+    originStationName: '시청',
     waypoints: [
       { stationName: '강남', line: '2', kind: 'intermediate' },
       { stationName: '역삼', line: '2', kind: 'destination' },
@@ -7733,7 +7765,11 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     // 즉시 발사된다(거부 케이스 ⓕ, 완결 자체는 A2e류 타임아웃 테스트가 별도로 검증).
     const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('강남', 0, 1),
-      trip: makeTrip(), // boardingLock undefined
+      // #2944 (H-6) — originStationName 추가(시청→강남='up', makeArrivalSeoul 기본 isUp=true와
+      // 정합) — restrictArrivalsByLegDirection(lockless destination 전진)이 fail-closed로
+      // 바뀌어 앵커 없으면 후보 0건이 돼 이 테스트의 lockless destination 경로 진입 자체가
+      // 막힌다.
+      trip: makeTrip({ originStationName: '시청' }), // boardingLock undefined
       pushId: 'p-arvl-nolock',
     });
     expect(stats.arvlCdFireSuccess).toBe(0);
@@ -9353,9 +9389,11 @@ async function runLocklessSsotFireScenario(opts: {
   seedSsotStation?: string;
 }): Promise<{ stored: Trip; locklessBody: Record<string, any> | null }> {
   const kv = new InMemoryKV();
+  // #2944 (H-6) — originStationName(시청→강남='up', LOCKLESS_ARRIVED.isUp=true와 정합).
   const trip = makeTrip({
     token: opts.token,
     route: { type: 'direct', line: '2', stops: 2 },
+    originStationName: '시청',
     waypoints: opts.waypoints,
     infoModeEnabled: true,
   });
@@ -9408,6 +9446,8 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
     const trip = makeTrip({
       token: 'lockless-pass',
       route: { type: 'direct', line: '2', stops: 2 },
+      // #2944 (H-6) — originStationName(시청→강남='up', 아래 arrival isUp=true와 정합).
+      originStationName: '시청',
       waypoints: [
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -9444,6 +9484,7 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
     const trip = makeTrip({
       token: 'lockless-410',
       route: { type: 'direct', line: '2', stops: 2 },
+      originStationName: '시청',
       waypoints: [
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -9482,6 +9523,7 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
     const trip = makeTrip({
       token: 'lockless-503',
       route: { type: 'direct', line: '2', stops: 2 },
+      originStationName: '시청',
       waypoints: [
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'intermediate' },
@@ -13813,6 +13855,8 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
   }
 
   function makeTransferTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+    // #2944 (H-6) — originStationName(성수→건대입구='up', arrivalOnLine 기본 isUp=true와
+    // 정합) — 파일 헤더 설명대로 이 describe의 trip은 성수(2호선)에서 출발한다.
     return makeTrip({
       token,
       route: {
@@ -13824,6 +13868,7 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
         stopsFromTransfer: 1,
       },
       destination: '용마산',
+      originStationName: '성수',
       waypoints: [
         { stationName: '건대입구', line: '2', kind: 'transfer' },
         { stationName: '용마산', line: '7', kind: 'destination' },

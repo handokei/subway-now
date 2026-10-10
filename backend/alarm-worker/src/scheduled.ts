@@ -957,6 +957,16 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   legAdvanceAmbiguous: number;
   /**
+   * #2944 (H-6) — `restrictArrivalsByLegDirection`이 direction 추론 불가(앵커/origin 데이터
+   * 부재, 구 client)로 fail-closed(빈 배열)되어 lockless leg 전진(transfer/destination/
+   * intermediate)이 이번 cycle 보류된 횟수. `legAdvanceAmbiguous`와 달리 "후보가 모호해서"가
+   * 아니라 "방향을 몰라 아예 보지 않아서"다 — Seoul arrivals가 실제로 비었던 경우(그냥
+   * `etaMissing`)와 구분하기 위해 arrivals.length>0일 때만 증가한다. 정상 운영(H-1 이후
+   * 대부분 트립에 origin 앵커가 있음)에서는 낮아야 한다 — 높으면 origin 앵커 미설정(구 client)
+   * 비율이 높다는 신호.
+   */
+  legAdvanceDirectionUnknownBlocked: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -1452,6 +1462,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     destinationConfirmTimedOut: 0,
     legAdvanceWindowBlocked: 0,
     legAdvanceAmbiguous: 0,
+    legAdvanceDirectionUnknownBlocked: 0,
     legBoardingPromptFired: 0,
     legBoardingPromptSkippedWalking: 0,
     legBoardingPromptBlocked: 0,
@@ -6548,8 +6559,12 @@ export async function maybeReschedulePush(
  *
  * leg origin은 `trip.currentLegAnchor`(leg 2+, 환승 후 앵커)가 현재 waypoint.line과 일치하면
  * 그 값을, 아니면 `trip.originStationName`(leg 1)을 쓴다. 둘 다 없거나 `inferLegDirection`이
- * 추론 불가(비단조 노선 등)면 null — 기존 양방향 허용 동작 그대로 유지한다(거부 케이스 ⓓ
- * 과차단 금지 — 추론 불가 노선은 지금까지와 동일하게 어느 방향 신호든 받아들인다).
+ * 추론 불가(비단조 노선 등)면 null.
+ *
+ * #2944 (H-6) — direction=null의 하류 처리가 "기존 양방향 허용 동작 유지(거부 케이스 ⓓ
+ * 과차단 금지)"에서 **fail-closed**로 바뀌었다(`restrictArrivalsByLegDirection` 참고) — H-1
+ * (#2945)이 화이트리스트를 제거해 전 노선에서 방향을 반환하므로, 이 함수가 null을 내는
+ * 경우는 이제 "비단조 노선"이 아니라 앵커/origin 데이터 자체가 없는(구 client) 잔여 경로뿐이다.
  */
 function resolveLegDirectionForWaypoint(trip: Trip, waypoint: Waypoint): 'up' | 'down' | null {
   const originStation =
@@ -6562,18 +6577,45 @@ function resolveLegDirectionForWaypoint(trip: Trip, waypoint: Waypoint): 'up' | 
 
 /**
  * #2921 거부 케이스 ⓐ — direction 추론 가능하면 arrivals를 그 방향으로 좁힌다(반대 방향
- * 열차가 advance를 발사하지 못하게 차단). 추론 불가(null)면 전체 arrivals 그대로 반환한다
- * (기존 동작 유지).
+ * 열차가 advance를 발사하지 못하게 차단).
+ *
+ * #2944 (H-6) — 추론 불가(null)면 **fail-closed**(빈 배열). 구 동작("전체 arrivals 그대로
+ * 반환")은 device #2696 정책(양방향 병합 금지) 미반영 상태였다 — 10/9 반대 방향 lock 사고
+ * (군자→광화문, 5호선) 계열의 잔여 null 경로. caller(`runLocklessTransfer`/
+ * `runLocklessDestination`/intermediate 전진)는 후보 0건을 `signal === null`과 동일하게
+ * 처리해(`stats.etaMissing += 1`, `return false`) 이번 cycle만 보류하고 다음 cycle에 재시도
+ * 한다 — 영구 차단이 아니라 일시 유예.
  */
-function restrictArrivalsByLegDirection(
+export function restrictArrivalsByLegDirection(
   trip: Trip,
   waypoint: Waypoint,
   arrivals: readonly ArrivalEntry[],
 ): readonly ArrivalEntry[] {
   const direction = resolveLegDirectionForWaypoint(trip, waypoint);
-  if (direction === null) return arrivals;
+  if (direction === null) return [];
   const wantUp = direction === 'up';
   return arrivals.filter((a) => a.isUp === wantUp);
+}
+
+/**
+ * #2944 (H-6) — `restrictArrivalsByLegDirection`이 fail-closed(빈 배열)로 떨어진 것이 "방향을
+ * 몰라서"인지 "원래 arrivals가 없어서"인지 구분해 `stats.legAdvanceDirectionUnknownBlocked`를
+ * 증가시킨다. caller 3곳(transfer/intermediate/destination lockless 전진)이 공통으로 쓴다.
+ */
+function trackLegAdvanceDirectionUnknown(
+  trip: Trip,
+  waypoint: Waypoint,
+  arrivals: readonly ArrivalEntry[],
+  candidateArrivals: readonly ArrivalEntry[],
+  stats: ScheduledStats,
+): void {
+  if (
+    candidateArrivals.length === 0 &&
+    arrivals.length > 0 &&
+    resolveLegDirectionForWaypoint(trip, waypoint) === null
+  ) {
+    stats.legAdvanceDirectionUnknownBlocked += 1;
+  }
 }
 
 /**
@@ -6666,6 +6708,7 @@ async function runLocklessTransfer(
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
   const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  trackLegAdvanceDirectionUnknown(trip, waypoint, arrivals, candidateArrivals, stats);
   const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
@@ -6908,6 +6951,7 @@ async function runLocklessDestination(
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
   const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  trackLegAdvanceDirectionUnknown(trip, waypoint, arrivals, candidateArrivals, stats);
   const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
@@ -7025,6 +7069,7 @@ export async function runLocklessIntermediate(
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   // #2921 거부 케이스 ⓐ — direction 추론 가능하면 반대 방향 열차를 후보 pool에서 제외한다.
   const candidateArrivals = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
+  trackLegAdvanceDirectionUnknown(trip, waypoint, arrivals, candidateArrivals, stats);
   // #2027 (Issue K) — archFlag='on' 시 라인 mismatch fallback 차단 (환승 후 stale 신호 방지).
   const signal = pickBestArrivalSignal(candidateArrivals, waypoint, deps.archFlag);
   if (signal === null || signal.arvlCd === null) {
