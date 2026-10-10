@@ -11978,6 +11978,101 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(stats.legBoardingPromptFired).toBe(1);
     expect(trip.legBoardingPromptState?.fired).toBe(true);
   });
+
+  // #2939 (10/9 실측 — 11:37:24 fired → 11:37:51 lock 5559 부착 → 11:38:24 또 fired) — 해당 leg의
+  // lock이 이미 실 trainCode를 가지면 발사하지 않는다. 판정 기준은 `isLockActiveForLeg`
+  // (W2(E1+C2)와 공유 — plan §4 선행 조건).
+  describe('#2939 — lock 활성 게이트 (해당 leg에 실 trainCode lock이 붙으면 차단)', () => {
+    it('leg lock이 실 trainCode를 가짐(line 일치) → 발사 0, blocked+1, D1 outcome=lock-already-attached', async () => {
+      const kv = new InMemoryKV();
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        boardingLock: {
+          trainCode: '5559',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['건대입구', '용마산'],
+          expiresAt: NOW + 10 * 60_000,
+        },
+      });
+      await seedSsot(kv as unknown as KVNamespace, trip.token, '건대입구', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
+      const { db, inserts } = makeFireLogDb();
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv, undefined, db), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.legBoardingPromptFired).toBe(0);
+      expect(stats.legBoardingPromptBlocked).toBe(1);
+      const outcomeInserts = inserts
+        .filter((args) => args[2] === 'leg-boarding-prompt')
+        .map((args) => JSON.parse(args[5] as string) as { outcome: string });
+      expect(outcomeInserts).toEqual([{ outcome: 'lock-already-attached' }]);
+    });
+
+    // 거부 ⓐ — leg-1 lock만 있고 leg-2(현재 anchor) lock은 없음 → 과차단 금지, 발사된다.
+    // 10/9 실측이 정확히 이 상태였다(lockState=leg1인 채로 leg-2 anchor 평가).
+    it('거부 ⓐ — leg-1 lock(line 다름)만 있고 현재 leg는 lock 없음 → 발사된다(과차단 금지)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        boardingLock: {
+          trainCode: '2371',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW - 10 * 60_000,
+          segmentStations: ['군자', '건대입구'],
+          expiresAt: NOW + 10 * 60_000,
+        },
+      });
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+      expect(fetchImpl).toHaveBeenCalled();
+      expect(stats.legBoardingPromptFired).toBe(1);
+      expect(trip.legBoardingPromptState?.fired).toBe(true);
+    });
+
+    // 거부 ⓒ — trainCode=PENDING sentinel은 특정된 것으로 보지 않는다(ADR-036 보조 항목과 동일
+    // 정책) — 해소 전엔 묻는 게 맞다. line은 현재 leg와 일치시켜 "line만 보고 차단"하는 회귀를
+    // 함께 막는다.
+    it('거부 ⓒ — boardingLock.trainCode=PENDING-TRAIN-CODE(sentinel) → 특정된 것으로 보지 않고 발사된다', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        boardingLock: {
+          trainCode: 'PENDING-TRAIN-CODE',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['건대입구', '용마산'],
+          expiresAt: NOW + 10 * 60_000,
+        },
+      });
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid');
+      expect(fetchImpl).toHaveBeenCalled();
+      expect(stats.legBoardingPromptFired).toBe(1);
+      expect(trip.legBoardingPromptState?.fired).toBe(true);
+    });
+
+    // 거부 ⓑ — lock 없음 + approaching→imminent(같은 열차 재확인)는 #2898이 의도적으로 허용한
+    // 2회 발사를 그대로 유지한다(이 fix가 그 soft-block 경로를 건드리지 않음을 확인).
+    it('거부 ⓑ — lock 없음 + 같은 열차 approaching→imminent → 2회 발사 유지(#2898 보존)', async () => {
+      let simNow = NOW;
+      const kv = new InMemoryKV(() => simNow);
+      const fetchImplApproaching = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 5 }]));
+      const trip = makeTrip({ boardingLock: undefined });
+      const deps1 = makeDeps(fetchImplApproaching);
+      const stats = makeStats();
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv), deps1, stats, simNow, () => {}, () => 'pid-approaching');
+      expect(stats.legBoardingPromptFired).toBe(1);
+
+      // 2분 후(5분 repeat-gate 내) 같은 열차가 임박(arvlCd=1)으로 재관측 — same-train bypass.
+      simNow = NOW + 2 * 60_000;
+      const fetchImplImminent = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
+      const deps2 = makeDeps(fetchImplImminent);
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv), deps2, stats, simNow, () => {}, () => 'pid-imminent');
+      expect(stats.legBoardingPromptFired).toBe(2);
+    });
+  });
 });
 
 /**
