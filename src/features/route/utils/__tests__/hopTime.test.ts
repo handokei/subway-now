@@ -44,6 +44,14 @@ describe('hopTimeMsAt', () => {
     expect(hopTimeMsAt(ARC, ARC.length - 1, '7')).toBe(HOP_TIME_MS);
     expect(mockedGetStopSeconds).not.toHaveBeenCalled();
   });
+
+  // ⓓ (#2951) — HOP_TIME_MS(90초) 경계 폴백은 tier 1 DWELL_SECONDS 가산과 무관하게 불변.
+  // getStopSeconds가 mock이라 이 테스트는 가산 유무와 상관없이 항상 통과하지만, 두 fallback의
+  // 의도적 분리(hopTime.ts:41-44 — 경계 fallback=HOP_TIME_MS vs mid-arc data miss=STOP_FALLBACK_SECONDS)
+  // 가 이번 PR로 손상되지 않았음을 명시적으로 고정한다.
+  it('ⓓ HOP_TIME_MS 상수 자체는 90_000(90초)로 불변', () => {
+    expect(HOP_TIME_MS).toBe(90_000);
+  });
 });
 
 describe('hopsElapsedFrom', () => {

@@ -1059,6 +1059,38 @@ describe('getStopSeconds fallback 정밀화 (#1472)', () => {
   });
 });
 
+describe('tier 1 hop에 DWELL_SECONDS(30) 가산 (#2951)', () => {
+  // 서울교통공사 열차운행시각표(423,107행) 대조: 우리 tier 1(순수 주행시간)은
+  // "도착간격(=다음역도착−현재역도착)" 기준으로 중앙값 30초 부족했다. hop(A→B) =
+  // 주행(A→B) + 정차(A) — 30초는 출발역(A)의 정차시간이다.
+  it('tier 1 hop = 실측 순수주행값 + 30 (이전엔 순수주행값 그대로라 정차시간 누락)', () => {
+    // 1호선 1-030 → 1-031: stationTravelTimes.json 실측 순수주행 90초. 가산 후 120초여야 한다.
+    expect(getStopSeconds('1', '1-030', '1-031')).toBe(120);
+  });
+
+  it('ⓐ tier 2(거리÷표정속도)는 가산하지 않는다 — lineSpeeds.ts가 이미 정차 포함 평균', () => {
+    // 신분당선 신사(016)↔논현(015): 700m, 50km/h → 700/(50000/3600) ≈ 50.4초.
+    // +30을 더하면 이중 가산이 되어 80.4초가 되므로, 정확히 50.4초 근방에 고정한다.
+    const seconds = getStopSeconds('sinbundang', 'sinbundang-016', 'sinbundang-015');
+    expect(seconds).toBeCloseTo(50.4, 1);
+    expect(seconds).toBeLessThan(60); // 80.4(이중가산)가 아님을 명시 거부
+  });
+
+  it('ⓑ tier 3(데이터 미커버 fallback)은 120초로 불변 — 임의 상수라 가산하지 않는다', () => {
+    expect(getStopSeconds('9', 'NOPE', 'NEITHER')).toBe(120);
+  });
+
+  it('경로 합산: N역 direct route 총 travelSeconds = Σ주행 + (N−1)×30, 마지막 역 정차 미포함', () => {
+    // 1호선 종로5가(1-030)→종각(1-031)→시청(1-032): 2 hop(=3역), 순수주행 90+90=180.
+    // hop 수(N−1=2)만큼만 가산 — 마지막 역(시청)은 하차하므로 정차 미포함.
+    const route = findRoute('1-030', '1-032');
+    expect(route).not.toBeNull();
+    const direct = route as DirectRoute;
+    expect(direct.stops).toBe(2);
+    expect(direct.travelSeconds).toBe(180 + 2 * 30); // = 240
+  });
+});
+
 describe('getStopDistanceMeters (#1111)', () => {
   it('실측 트랙 거리(미터)를 양방향으로 반환한다', () => {
     // 1호선 시청(1-033) ↔ 종각(1-032): DIST_KM 1.0 → 1000m. 양방향 동일.
