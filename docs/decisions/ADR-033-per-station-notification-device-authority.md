@@ -4,6 +4,12 @@
 
 Proposed — 2026-08-22. 사용자 결정 세션(취침모드 P1 + 알림 문구 회귀) 결과. ADR-023 2026-07-29 개정을 **매역(intermediate station-passed) 채널에 한해** 부분 supersede. ADR-024 알림 채널 정의를 매역 채널에 대해 재조정. 환승/도착 채널 및 취침 loud-wake-in-suspend 소유권은 본 ADR 범위 밖(후자는 OPEN).
 
+> 🔴 **2026-10-10 — 매역(station-passed) 발사 Owner 축은 ADR-040으로 superseded.**
+> 근거: ①본 계열(033/035/036)의 종착 상태는 **hard gate가 열리지 않아 도달하지 못했다** — Phase 1 D3(실기기 FG·BG·지하 3환경 device 단독 발사 검증)이 수행된 적 없고, device 발사 장치 전체가 `EXPO_PUBLIC_MINIMAL_ALARM`(미설정 → 항상 false) 뒤 dormant다. **misexecute가 아니라 게이트가 설계대로 닫혀 있던 결과.**
+> ②ADR-033 D1 근거 (a)의 전제인 "backend 지연 35~51s"(#2122)가 **2026-10-09 실측 1~2s로 소멸**했다(8역, #2122와 동일 방법·동일 채널; 분산 16.4s→1s로 시계 편차 배제).
+> **유효하게 남는 것**: ADR-033 D1 근거 (b)(c) · D2 문구 표준 · D3 취침/일반 경계 · **ADR-035 첫 줄 원칙(emitter 2개 = 이중발사 물리적 방지 불가)** — ADR-040이 이 논거를 계승한다. Phase 0/1 코드 자산의 처분은 ADR-040 §열려있는 결정 7.
+> 상세: `ADR-040-station-notification-single-fire-convergence.md` §이 ADR이 수정·대체·모순하는 결정
+
 ## 배경
 
 2026-08-21~22 사용자 검증 세션에서 3가지가 확정됐다:
