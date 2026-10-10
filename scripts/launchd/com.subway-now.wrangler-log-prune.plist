@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  #1453. wrangler 로그 일일 prune.
+  설치: cp scripts/launchd/com.subway-now.wrangler-log-prune.plist ~/Library/LaunchAgents/
+        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.subway-now.wrangler-log-prune.plist
+
+  매일 03:00 KST에 scripts/prune-wrangler-logs.sh 실행. 7일 이상 wrangler-*.log 삭제.
+
+  참고: 기존 com.subway-now.scheduled-tail.plist는 존재하지 않는
+  scripts/scheduled-deploy-and-tail.sh를 참조해 매일 08:00에 실패 로그만 남기던 좀비였다 (#1453).
+  unload + 삭제 절차는 docs/agents/wrangler-tail-watchdog.md 참조.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.subway-now.wrangler-log-prune</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>/Users/kimdohan/IdeaProjects/subway-now/scripts/prune-wrangler-logs.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/kimdohan/IdeaProjects/subway-now/tasks/launchd-prune-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kimdohan/IdeaProjects/subway-now/tasks/launchd-prune-stderr.log</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/kimdohan/IdeaProjects/subway-now</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

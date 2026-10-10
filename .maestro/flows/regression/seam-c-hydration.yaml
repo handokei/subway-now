@@ -1,0 +1,180 @@
+appId: com.subwaynow.app
+name: "regression - Seam C (#922 deferred / #1200) — 상태 hydration seam"
+# Epic #896 Seam C(#899) — 상태 hydration seam 회귀 가드.
+# #922에서 transfer-leg/FG-return 이벤트 mock 설계 결함으로 보류했던 시나리오를
+# H5(#1012, hydration state machine) 머지 후 #1200에서 다시 추가한다.
+#
+# Maestro fixture는 silent push(trip-ended) / 환승 waypoint 통과 같은 server-side
+# 이벤트를 직접 발사할 수 없으므로, 본 시나리오는 #899 acceptance 중 client-observable
+# 경로만 회귀 가드한다:
+#   1) 사용자 destination 해제 경로 — destination-clear-button 탭 → chip/banner 즉시 정리
+#   2) FG 복귀 재수화 — stopApp + relaunch(clearState=false) → 재수화 후 정합성 유지
+#      + ghost 알람 발사 0건 (hydration race 회귀 시 alarm flag/lock 잔류 → ghost 표면화)
+#   3) 재수화 후 cleanup — 재수화 상태에서 destination 해제 → stale UI 없음
+#
+# 전제: scripts/maestro-mock-backend.js가 SCENARIO=seam-c-hydration PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+---
+# 강남역 2호선 좌표 — stations.json id "2-022"
+- setLocation:
+    latitude: 37.49799
+    longitude: 127.027912
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 강남 확인 (한/영 둘 다 매칭)
+- assertVisible:
+    text: "강남|Gangnam"
+
+# === Phase 1: trip 형성 ===
+# 목적지: 역삼 (2호선 단순 trip — Seam C 검증은 trip 형성 후 종료 cleanup이 핵심)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "역삼"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-2-021"
+- waitForAnimationToEnd
+
+# 트립 형성 후 짧게 안정화 대기 — arrival 폴링 1 cycle (~30s) 확보.
+- repeat:
+    times: 30
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# === Phase 2: 사용자 destination 해제 경로 ===
+# #899 acceptance: 사용자 destination 해제 시 storage + zustand + UI 모두 즉시 정리.
+# destination chip이 노출되어 있어야 destination-clear-button이 존재한다.
+- assertVisible:
+    id: "destination-clear-button"
+- tapOn:
+    id: "destination-clear-button"
+- waitForAnimationToEnd
+
+# 해제 직후 stale UI 부재 — destination-button(미설정 상태 entry)이 다시 노출되고
+# 알람 overlay/banner 잔류 없음.
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 10000
+- assertNotVisible:
+    id: "destination-clear-button"
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# === Phase 3: 새 trip 형성 + FG 복귀 재수화 ===
+# 다시 trip을 형성한 뒤 stopApp + relaunch(clearState=false)로 BG/FG cycle을 모사한다.
+# H5(#1012) hydration state machine + Seam C(#899) useStateRehydration 회귀 시 재수화 race로
+# ghost 알람이 발사되거나 destination chip 정합성이 깨진다.
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "역삼"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-2-021"
+- waitForAnimationToEnd
+
+# 트립 정착 대기 (~15s).
+- repeat:
+    times: 15
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# BG 전이 모사 — stopApp + relaunch(clearState=false)로 권한/스토리지 보존.
+- stopApp:
+    appId: com.subwaynow.app
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: false
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 재수화 정합성:
+#   - 현재역 강남 정상 노출 (위치 재취득)
+#   - destination clear 가능 entry(=clear-button) 노출 (trip 복원됨)
+- assertVisible:
+    text: "강남|Gangnam"
+- extendedWaitUntil:
+    visible:
+      id: "destination-clear-button"
+    timeout: 15000
+
+# 재수화 직후 알람 race 검증 — 60초 동안 ghost 알람 UI가 표면화되지 않아야 한다.
+# Seam C 또는 H5 회귀 시 hydration 도중 fired ref/lock 상태 불일치로 잘못된 시점에
+# '곧 도착' / '하차 알림' overlay가 떠오른다.
+- repeat:
+    times: 60
+    commands:
+      - evalScript: maestro.wait(1000)
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# === Phase 4: 재수화 후 cleanup ===
+# 재수화된 상태에서 다시 destination 해제 → 모든 UI/chip이 정상 정리되는지 검증.
+# (cleanup 레지스트리가 BG/FG cycle 전후로 동일하게 동작해야 한다 — #899 unification 의 본질)
+- tapOn:
+    id: "destination-clear-button"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 10000
+- assertNotVisible:
+    id: "destination-clear-button"
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"

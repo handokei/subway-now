@@ -1,0 +1,22 @@
+-- #2628 (리뷰 P2-4) — recordTripMetrics의 fired_count 집계(`countSentFireAttempts`,
+-- d1TripMetrics.ts)가 trip 종료마다 `SELECT COUNT(*) FROM trip_events WHERE token_hash = ?
+-- AND kind = 'cron-fire-attempt' AND ts >= ? AND ts <= ? AND json_extract(meta,'$.outcome')
+-- = 'sent'`를 실행한다. 기존 idx_trip_events_token_hash(token_hash, ts)가 이미 대상 trip의
+-- 이벤트 구간으로 스캔 범위를 좁히지만, kind까지 인덱스에 포함하면 SQLite가 kind 필터까지
+-- 인덱스에서 처리해 (token_hash, ts) 범위 안의 다른 kind 이벤트(advance/sync-received 등)를
+-- 스캔하지 않는다 — trip당 이벤트 수가 늘어날수록(진단 계측 kind가 많이 추가됨, #2533/#2535/
+-- #2537 등) 이 좁힘의 효과가 커진다.
+--
+-- #2073(cron이 사용자 0명에도 KV list quota를 매 tick 소진)과 이 쿼리는 다른 클래스다 —
+-- #2073은 "시간(cron tick 주기)에 비례"해 매 분 전수 스캔이 발생했지만, 이 쿼리는
+-- "실제 완료된 trip 수에 비례"해 trip 종료 시 1회만 실행되고 token_hash로 즉시 좁혀진다(D1
+-- read quota는 스캔 row 수 기준 — 인덱스가 있으면 해당 trip의 이벤트 수만큼만 스캔). 그래도
+-- kind를 인덱스에 얹어 스캔 범위를 한 번 더 좁혀 보수적으로 대비한다.
+--
+-- #2628 (리뷰 P2-7) — 이 마이그레이션과 함께 trip_metrics.fired_count의 "의미"가 바뀐다(컬럼
+-- 자체는 스키마 변경 없이 그대로). #2281 이전에는 boarding-prompt/hop-end-prompt 발사 횟수를
+-- 셌고, 이 배포 시점부터는 trip_events(kind='cron-fire-attempt', outcome='sent') 발사 횟수를
+-- 센다 — 두 시기의 값을 같은 컬럼으로 이어서 시계열 비교하면 안 된다. 상세 이력은
+-- src/d1TripMetrics.ts 모듈 헤더 주석 참고.
+CREATE INDEX IF NOT EXISTS idx_trip_events_token_kind_ts
+  ON trip_events(token_hash, kind, ts);
