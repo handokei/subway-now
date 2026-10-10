@@ -96,6 +96,16 @@ cached OAuth로 즉시 가능. tail은 1-2 cron 사이클로 lockMissing/etaMiss
 app.config.js의 ios.infoPlist 변경 시 expo prebuild 안 돌리면 ios/ 캐시 stale, 실기기 splash 후 크래시. 자동 게이트 못 막음.
 - 출처: `memory/lesson_expo_native_config_drift.md`
 
+### L20 — 양방향 감사가 "결정 축"을 안 본다 → 같은 root가 3주 뒤 다른 소비자에서 재발 (2026-10-10 사용자 지적)
+10/9 라이드의 두 결함(얼어붙은 GPS가 LA arbitration 승리 / `boardedAt`=탐지시각)은 **9/18 ADR-039가 이미 다룬 root**였다. `/audit-sides`도 돌렸고 양방향도 매번 요구됐는데 전부 통과했다. 메커니즘 5개:
+1. **`/audit-sides` 축이 전부 코드 경로 축**(경로·방향·레이어·상태·시간)이라 "이 신호를 읽는 **다른 소비자**"를 열거할 칸이 없다 → ADR-039 1단계(15s 신선도)가 `useFusedNearestStation.ts:584`에만 배선되고 `liveActivityGpsWriteArbitration.ts:32`는 누락(편측).
+2. **결정 문서끼리 대조하는 단계가 없다.** 9/3 확정(표시=backend SSoT)과 ADR-039 매트릭스(표시=GPS **권한**, backend=보조)가 정면 충돌. ADR-039는 9/3 결정을 **관련 문서로 링크까지 해놓고** 반대로 배정했다. ADR-014에 "기존 확정 결정과 충돌하는가" 항목이 없다.
+3. **close 조건이 고친 축만 측정 → 자기확인.** ADR-039 close 4개 전부 발사/판정, 표시 조건 0개. 10/9는 ①도착 13건 ④overshoot 0으로 **ADR-039 기준 성공한 라이드**였다(사용자는 불편을 겪었고 측정은 녹색).
+4. **다단계 Proposed ADR에 소유자·close 게이트가 없다.** ADR-039는 3주째 `Proposed`, 커밋 1개(#2712) 이후 무변경, 5단계 중 5단계(`lockActive` 이중 의미)는 ADR이 "구조적으로 불가능하게 만든다"고 선언한 모순이 `fusionDistanceGate.ts`에 그대로.
+5. **동어반복 지표**: `delaySeconds = now - boardedAt`인데 `boardedAt = Date.now()`(탐지 순간) — 재려는 지연을 만든 순간이 기준점이라 영원히 0에 가깝다. 사용자가 눈으로 본 2분을 계측이 **원리적으로** 보고할 수 없다.
+→ **룰**: ①신호의 게이트/권한을 바꾸면 그 신호의 소비자를 **표시/판정/발사 축으로 전수 열거**(`/audit-sides` 축 추가) ②새 ADR에 **"수정·대체·모순하는 기존 결정" 섹션 필수**(없으면 "없음 — 확인한 ADR 목록") ③**건드린 축 전부에 close 조건** — 표시 축을 바꿨는데 표시 acceptance가 없으면 close 불가 ④**지표 기준점 금지** — 재려는 지연을 만든 주체의 시각을 기준점으로 쓰지 않는다 ⑤다단계 계획을 가진 ADR은 **epic으로 승격**(소유자+단계별 게이트).
+- 동류 자기사례: 같은 턴에 쓴 ADR-040이 **UNTRACKED**로 남았다(lessons 미커밋은 #2929로 처리했는데 ADR은 놓쳤다) — 결정이 보이지 않게 되는 경로가 바로 이것.
+
 ### L19 — 검증은 working tree를, 커밋은 index를 본다 — Edit 후 `git add` 누락 (2026-10-08 실사용)
 충돌 해결 중 ①`git add -A`(이 시점 `scheduled.ts`는 **충돌 마커 없이 자동 머지**된 8-arg 버그 상태로 스테이징) → ②`type-check`로 에러 발견 → ③`Edit`으로 수정 → ④**`git add` 없이 `git commit`**. 로컬 `type-check`/vitest 3,803건은 **working tree** 기준이라 green, 커밋·push된 건 **index**의 수정 전 내용. CI(#2919 Backend Validation)만이 `scheduled.ts(6630): TS2554 Expected 9 arguments, but got 8`로 잡았다. 보고는 "전체 통과"였고 **보고와 origin 내용이 달랐다**.
 → **커밋 전 `git diff --cached`로 "스테이징 내용 == 검증한 내용"을 확인**하고, **push 후 `git show origin/<branch>:<파일>`로 실제 올라간 블롭을 재확인**한다. 특히 **머지 커밋 작성 후에도 `type-check`를 한 번 더** 돌린다 — 머지 커밋이 직전 수정을 조용히 덮을 수 있다(충돌 마커가 없어 `tsc`만이 감지).

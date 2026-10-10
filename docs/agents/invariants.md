@@ -97,6 +97,7 @@
 | pickCandidateTrains.ts:138-140 | 불변식 | 방향 모름(-1) 후보 반드시 제외 | 있음 |
 | lookupStationFromSsot.ts / updateWidgetFromSilentPush.ts | 불변식 | SSoT 우선→BG context 폴백 순서 고정, 채택 시 거리=0 | 있음 |
 | approachLine.ts:104 | 함정 | mirror 채택 전 cross-line 가드(#2590) 없으면 엉뚱한 노선 | 부분 |
+| backendSsotRegressionGuard.ts:96-123 | 불변식 | gpsAhead stale 임계=60s(#2841), deviceAhead(지하)는 180s 그대로 — 두 경로 독립, 공통 임계로 재통합 금지(트립 꼬리 미보호 재발) | 있음 |
 | useTransferTrainList.ts:69-105 | 함정 | mirror entry 불변이면 180s 지나도 재평가 안 됨(memo dep에 시간 없음) | 있음 |
 | boardingLock.ts(constants):275-290 | 갭 | App Group은 pull 모델(push 없음) — 신선도 게이트+5s 지연이 주석에만 | **없음** |
 | bgUndergroundArrivalPoll.ts:12 | 불변식 | BG arrival 폴링은 지하+lock 조건부만 — always-on 금지(OS quota) | **없음** |
