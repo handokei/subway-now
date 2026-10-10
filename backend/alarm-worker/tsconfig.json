@@ -28,6 +28,7 @@
     "../../src/data/stationAliases.js",
     "../../src/data/lineTopology.json",
     "../../src/shared/types/station.ts",
+    "../../src/shared/utils/lineLoopPath.ts",
     "../../src/shared/types/pushContract.ts",
     "../../src/shared/types/__fixtures__/boardingPromptTrainCodeWireFixture.ts",
     "../../src/shared/utils/stationLookup.ts",
