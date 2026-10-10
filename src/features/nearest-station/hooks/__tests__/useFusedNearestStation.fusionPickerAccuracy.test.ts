@@ -269,6 +269,7 @@ describe('#1748 candidate-reject 신호로 anchor window 확장', () => {
 
     // window=3일 때: 청담은 범위 밖 → 후보 없음.
     const resultDefault = pickCandidateTrains({
+      direction: undefined,
       positions: [{
         line: '7',
         trains: [{
@@ -295,6 +296,7 @@ describe('#1748 candidate-reject 신호로 anchor window 확장', () => {
     const hopDist = Math.abs(anchorIdx - trainIdx);
     if (hopDist <= CANDIDATE_ANCHOR_WINDOW_EXPANDED) {
       const resultExpanded = pickCandidateTrains({
+        direction: undefined,
         positions: [{
           line: '7',
           trains: [{

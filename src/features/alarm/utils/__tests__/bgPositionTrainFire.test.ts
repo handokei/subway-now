@@ -62,6 +62,13 @@ jest.mock('../../../route/utils/trackTrainProgress', () => ({
   trackTrainProgress: (...args: unknown[]) => mockTrackTrainProgress(...args),
 }));
 
+// #2946 (H-7 결함1) — bgPositionTrainFire가 pickCandidateTrains에 direction을 넘기려면
+// lock leg 방향을 resolveTripDirection으로 계산해야 한다.
+const mockResolveTripDirection = jest.fn();
+jest.mock('../../../route/utils/tripDirection', () => ({
+  resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
+}));
+
 const mockSaveStationToWidget = jest.fn();
 jest.mock('../../../widget/api/widgetStorage', () => ({
   saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
@@ -132,6 +139,8 @@ describe('evaluatePositionTrainFire', () => {
     });
     mockGetStationById.mockReturnValue(ORIGIN);
     mockComputeRouteArc.mockReturnValue({ stations: ARC_STATIONS, arcM: [0, 100], totalLengthM: 100 });
+    // #2946 (H-7 결함1) — 기본값은 'up'(updnLine=0). 개별 테스트가 필요 시 override.
+    mockResolveTripDirection.mockReturnValue('up');
     mockPollTrainPositionsIfDue.mockResolvedValue(LINE_POSITIONS);
     mockPickCandidateTrains.mockReturnValue([
       { trainNo: 'T1', line: '2', direction: 0, currentStationName: '다음역', trainStatus: 1, receivedAtMs: 1 },
@@ -374,6 +383,43 @@ describe('evaluatePositionTrainFire', () => {
       anchorStationName: ORIGIN.name,
       candidatesCount: 1,
     });
+  });
+
+  // #2946 (H-7 결함1) — 이전엔 pickCandidateTrains에 direction/lockedTrainCode를 전혀 전달하지
+  // 않아 enumeration 단계가 반대 방향 열차도 조용히 섞었다(fail-open). resolveTripDirection으로
+  // 계산한 방향 + lock.trainCode를 넘겨 enumeration 단계에서부터 반대 방향을 걸러내되, 실측
+  // lock.trainCode 신호는 방향이 어긋나도 거부되지 않게(#2728 bypass와 동일 계약) 한다.
+  it('#2946 (H-7 결함1) — resolveTripDirection(route, destination.name, lock.boardingStationId)으로 ' +
+    "방향을 계산해 pickCandidateTrains에 direction(up=0)과 lockedTrainCode를 전달한다", async () => {
+    mockResolveTripDirection.mockReturnValue('up');
+
+    await evaluatePositionTrainFire();
+
+    expect(mockResolveTripDirection).toHaveBeenCalledWith(ROUTE, DESTINATION.name, LOCK.boardingStationId);
+    expect(mockPickCandidateTrains).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 0, lockedTrainCode: LOCK.trainCode }),
+    );
+  });
+
+  it('#2946 (H-7 결함1) — resolveTripDirection이 down이면 direction=1을 전달한다', async () => {
+    mockResolveTripDirection.mockReturnValue('down');
+
+    await evaluatePositionTrainFire();
+
+    expect(mockPickCandidateTrains).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 1, lockedTrainCode: LOCK.trainCode }),
+    );
+  });
+
+  it('#2946 (H-7 결함1) — resolveTripDirection이 null(방향 미해결)이면 direction=undefined를 ' +
+    '전달한다 — lockedTrainCode bypass가 실측 신호를 여전히 보존한다', async () => {
+    mockResolveTripDirection.mockReturnValue(null);
+
+    await evaluatePositionTrainFire();
+
+    expect(mockPickCandidateTrains).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: undefined, lockedTrainCode: LOCK.trainCode }),
+    );
   });
 
   it('userLocation 없이(GPS-free) lock.boardingLine으로 폴링하고 pickCandidateTrains/trackTrainProgress/lock 게이트를 순서대로 호출해 station 채택 시 true를 반환한다', async () => {

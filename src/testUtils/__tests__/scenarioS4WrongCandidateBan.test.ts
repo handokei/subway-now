@@ -453,7 +453,7 @@ describe('S4 P4 — pickCandidateTrains (position-train enumeration)', () => {
       '그대로 merge한다. 실제 호출부(useFusedNearestStation.ts:870-909)가 direction을 전달하지 않아 ' +
       '이 merge가 그대로 일어난다 — file:line은 PR 본문 판정표 참고',
     () => {
-      const picked = pickCandidateTrains({ positions, line: '2' });
+      const picked = pickCandidateTrains({ positions, line: '2', direction: undefined });
       // 과차단 회귀 가드(거부 케이스, 스펙4) — 3169는 반드시 남아야 한다.
       expect(picked.some((c) => c.trainNo === '3169')).toBe(true);
       // 스펙1 위반 증거 — direction 미지정 시 3174(반대 방향)도 같이 섞여 나온다.

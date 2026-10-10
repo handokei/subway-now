@@ -141,6 +141,35 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptGeoContext.direction).toBe('down');
     });
 
+    it(
+      '#2946 (거부 케이스 ⓑ 회귀 가드) — 시청→충정로(2호선 seam)는 down 그대로 ' +
+        '(directionOnLine으로 교체 시도했으나 wraparound seam에서 반대 방향을 내는 ' +
+        '별도 결함을 발견해 되돌렸다 — PR 본문 참고. 이 값이 up으로 바뀌면 2호선 회귀)',
+      () => {
+        const ctx = buildBoardingPromptContext({
+          route: makeDirectRoute(20, '2'),
+          currentStation: st('2-001'), // 시청
+          destination: st('2-043'), // 충정로(경기대입구)
+        });
+        expect(ctx).not.toBeNull();
+        expect(ctx?.promptGeoContext.direction).toBe('down');
+      },
+    );
+
+    it(
+      '#2946 (거부 케이스 ⓑ 회귀 가드) — 시청→교대(법원.검찰청)도 down 그대로 ' +
+        '(시청→충정로와 동일 seam 성격)',
+      () => {
+        const ctx = buildBoardingPromptContext({
+          route: makeDirectRoute(22, '2'),
+          currentStation: st('2-001'), // 시청
+          destination: st('2-023'), // 교대(법원.검찰청)
+        });
+        expect(ctx).not.toBeNull();
+        expect(ctx?.promptGeoContext.direction).toBe('down');
+      },
+    );
+
     it('비단조/closedLoops 미포함 line(1호선) — direction null fallback', () => {
       // 1호선은 단조 화이트리스트 + closedLoops 둘 다 없음 → 양쪽 모두 null → 양방향 허용.
       const current = st('1-001');

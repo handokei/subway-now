@@ -43,6 +43,21 @@ import { inferLoopDirection } from '../../route/utils/loopDirection';
 import { findLocklessActiveLegWaypoint } from '../../route/utils/findActiveTransferContext';
 import { findSegmentEndStationName } from './buildBoardingLockMeta';
 
+/**
+ * #2946 (H-7 결함2, 2026-10-10 코디네이터 리뷰로 범위 축소) — 처음엔 `resolveTravelDirection ??
+ * inferLoopDirection` 조합을 `directionOnLine`(#2455 단일 알고리즘)으로 교체하려 했으나,
+ * `directionOnLine.ts:49`의 `firstStepIdx > fromIdx ? 'up' : 'down'` 비교가 **wraparound
+ * seam(시청 idx0 ↔ 충정로 idx42)에서 틀린 답을 낸다** — 실측: 시청→충정로 최단경로는
+ * 외선 1-hop wrap(`shortestLinePathIndices` path=[0,42])인데 idx가 숫자상 증가(0→42)했다는
+ * 이유만으로 'up'(내선)을 반환한다. #2867 ground truth(실측 52쌍, "idx 증가 arc=내선=up")
+ * 기준 정답은 'down'(외선) — `inferLoopDirection`의 forward/backward 호 길이 비교(42 vs 1,
+ * backward 승) 쪽이 맞다. 즉 **이 교체는 2호선 방향을 반대로 뒤집는 회귀**였다(거부 케이스 ⓑ
+ * 위반) — 되돌리고 기존 `resolveTravelDirection ?? inferLoopDirection` 조합을 유지한다.
+ * `directionOnLine`의 seam 버그 자체는 다른 기존 소비자(`detectMisBoarding.ts`/
+ * `findActiveTransferContext.ts`/`stationProgressEstimator.ts`)에도 영향 있는 별도
+ * 프로덕션 결함이라 별도 이슈로 보고한다(본 PR 범위 밖, PR 본문 참고).
+ */
+
 /** #2130 (B-2) — 등록 시점 GPS fix. 근접 스탬프 입력. */
 export interface GpsFix {
   lat: number;
@@ -144,8 +159,14 @@ export function buildBoardingPromptContext({
   if (!nextStation) return null;
 
   // 단조 노선은 resolveTravelDirection이, 순환/하이브리드 노선(2호선/6호선)은 inferLoopDirection
-  // 이 fallback으로 방향을 채운다(#1703). 둘 다 null이면 양방향 후보 허용 — backend
-  // `pickAutoTrainCode`는 stationName 필터로 implicit 방향 해소(허용 가능한 false negative).
+  // 이 fallback으로 방향을 채운다(#1703). 둘 다 null이면 양방향 후보 허용.
+  //
+  // #2946 (H-7 결함2 (b)) — 바로 위 분기까지의 "backend `pickAutoTrainCode`는 stationName
+  // 필터로 implicit 방향 해소(허용 가능한 false negative)"라는 과거 주석은 거짓이었다.
+  // backend(`arrivalsFromPositions.ts:111-129`)의 실체는 "경로상 어느 역에 있는가"
+  // (segmentStations.indexOf)만 본다 — 10/9 5559가 군자(segmentStations[0])에 있어 idx=0으로
+  // 통과한 사례가 보여주듯 탑승역 그 자리의 열차 방향은 원리적으로 구분 불가하다. 교차 링크:
+  // #2944(H-6, backend 대응) / docs/agents/invariants.md(#2944가 소유 — 본 PR은 미기록).
   const direction =
     resolveTravelDirection(leg.line, currentStation.name, leg.endName)?.direction ??
     inferLoopDirection(leg.line, currentStation.name, leg.endName);

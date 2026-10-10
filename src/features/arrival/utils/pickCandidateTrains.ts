@@ -12,7 +12,15 @@ export type { CandidateTrain };
 export interface PickCandidateTrainsInput {
   positions: LinePositions[];
   line: LineNumber;
-  direction?: 0 | 1;
+  /**
+   * #2946 (H-7 결함1) — 이전엔 옵셔널(`direction?: 0 | 1`)이라 호출자가 키 자체를 생략하면
+   * 컴파일러가 아무 경고 없이 "방향 필터 미적용"으로 조용히 넘어갔다(`bgPositionTrainFire.ts`가
+   * 실사례 — 방향을 알아낼 수 있는 재료(route+destination+boardingStationId)를 다 갖고도
+   * 전혀 계산하지 않고 호출). 필수 키로 바꿔 모든 호출자가 "방향을 안다(0|1)"/"모른다(명시적
+   * undefined)"를 컴파일 타임에 선언하게 강제한다 — 런타임 필터 동작(undefined=필터 미적용)
+   * 자체는 바꾸지 않는다(기존 lockless/방향 미해결 호출자 보존).
+   */
+  direction: 0 | 1 | undefined;
   anchorStationName?: string;
   windowStations?: number;
   /**

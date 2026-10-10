@@ -29,6 +29,7 @@ function makeLine(trains: TrainPosition[], line: LineNumber = LINE): LinePositio
 describe('pickCandidateTrains', () => {
   it('returns [] when no positions match the requested line', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [makeLine([makeTrain({})], '1')],
       line: LINE,
     });
@@ -36,11 +37,12 @@ describe('pickCandidateTrains', () => {
   });
 
   it('returns [] for empty positions', () => {
-    expect(pickCandidateTrains({ positions: [], line: LINE })).toEqual([]);
+    expect(pickCandidateTrains({ direction: undefined, positions: [], line: LINE })).toEqual([]);
   });
 
   it('rejects trains with unknown updnLine sentinel (-1 or other non-{0,1})', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'A', updnLine: -1 }),
@@ -55,6 +57,7 @@ describe('pickCandidateTrains', () => {
 
   it('rejects stale trains (receivedAtMs <= 0)', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'A', receivedAtMs: 0 }),
@@ -84,6 +87,7 @@ describe('pickCandidateTrains', () => {
 
   it('passes both directions through when direction is undefined', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'UP', updnLine: 0, statnNm: '시청' }),
@@ -98,6 +102,7 @@ describe('pickCandidateTrains', () => {
   it('keeps only trains within ±windowStations of anchor', () => {
     // anchor=신당(idx 5), window=2 → idx 3..7
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'IN', statnNm: '동대문역사문화공원' }), // idx 4
@@ -114,6 +119,7 @@ describe('pickCandidateTrains', () => {
 
   it('skips window filter when anchor station is not on the line', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'A', statnNm: '시청' }),
@@ -129,6 +135,7 @@ describe('pickCandidateTrains', () => {
 
   it('excludes trains whose statnNm is not on the line', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'GOOD', statnNm: '시청' }),
@@ -143,6 +150,7 @@ describe('pickCandidateTrains', () => {
   it('sorts by |Δindex| from anchor with trainNo tie-break', () => {
     // anchor=왕십리(idx 7)
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: '003', statnNm: '한양대' }), // |Δ|=1
@@ -159,6 +167,7 @@ describe('pickCandidateTrains', () => {
 
   it('sorts by trainNo only when anchor is undefined', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'C', statnNm: '시청' }),
@@ -173,6 +182,7 @@ describe('pickCandidateTrains', () => {
 
   it('windowStations: 0 keeps only trains at the anchor station', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'AT', statnNm: '신당' }),
@@ -188,6 +198,7 @@ describe('pickCandidateTrains', () => {
 
   it('clamps negative windowStations to 0', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({ trainNo: 'AT', statnNm: '신당' }),
@@ -225,6 +236,7 @@ describe('pickCandidateTrains', () => {
       },
     ): ReturnType<typeof pickCandidateTrains> {
       return pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine(trains.map((t) => makeTrain(t)))],
         line: LINE,
         userLocation: opts.userLocation,
@@ -295,6 +307,7 @@ describe('pickCandidateTrains', () => {
 
     it('reject works when onCandidateDistanceReject is undefined — no throw, candidate still removed', () => {
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([
           makeTrain({ trainNo: 'NEAR', statnNm: '시청' }),
           makeTrain({ trainNo: 'FAR', statnNm: '강변(동서울터미널)' }),
@@ -312,6 +325,7 @@ describe('pickCandidateTrains', () => {
       // 그러나 GPS 거리 11.2km > 3km → distance gate가 reject.
       const onReject = jest.fn();
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([
           makeTrain({ trainNo: 'NEAR', statnNm: '시청' }),
           makeTrain({ trainNo: 'FAR', statnNm: '강변(동서울터미널)' }),
@@ -347,6 +361,7 @@ describe('pickCandidateTrains', () => {
     it('RED 재현 — lockedTrainCode 미전달이면 trainCode 일치해도 기존 거리 게이트로 거부된다', () => {
       const onReject = jest.fn();
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
         line: LINE,
         userLocation: SICHEONG,
@@ -362,6 +377,7 @@ describe('pickCandidateTrains', () => {
     it('GREEN — lockedTrainCode 일치 + arc 정합성 통과 시 GPS 거리(11.2km) 무관 채택된다', () => {
       const onReject = jest.fn();
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
         line: LINE,
         userLocation: SICHEONG,
@@ -378,6 +394,7 @@ describe('pickCandidateTrains', () => {
     it('lockedTrainCode 일치하지만 arc 밖(candidate-arc)이면 거부된다 (#444 목적 승계)', () => {
       const onReject = jest.fn();
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
         line: LINE,
         userLocation: SICHEONG,
@@ -396,6 +413,7 @@ describe('pickCandidateTrains', () => {
     it('trainCode 불일치 후보는 arcStations가 있어도 기존 거리 검사가 그대로 적용된다 (#444 회귀 보존)', () => {
       const onReject = jest.fn();
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([makeTrain({ trainNo: 'OTHER', statnNm: gangbyeon.name })])],
         line: LINE,
         userLocation: SICHEONG,
@@ -413,6 +431,7 @@ describe('pickCandidateTrains', () => {
     it('arcStations가 빈 배열이면 free-trip 취급으로 GPS 거리 무관 통과한다', () => {
       const onReject = jest.fn();
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
         line: LINE,
         userLocation: SICHEONG,
@@ -429,6 +448,7 @@ describe('pickCandidateTrains', () => {
     it('boardingStationId가 arcStations에 없으면(데이터 불일치) 통과한다', () => {
       const onReject = jest.fn();
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [makeLine([makeTrain({ trainNo: 'LOCKED', statnNm: gangbyeon.name })])],
         line: LINE,
         userLocation: SICHEONG,
@@ -454,6 +474,7 @@ describe('pickCandidateTrains', () => {
 
     it('keeps wraparound-near train within window (직선 Math.abs로는 reject)', () => {
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [
           {
             line: LINE2,
@@ -471,6 +492,7 @@ describe('pickCandidateTrains', () => {
       // 시청 idx 0, 사당(2-026) idx 25 — wraparound도 18 hop. window=10이면 양쪽 다 X.
       const sadangName = line2.find((s) => s.id === '2-026')!.name;
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [
           {
             line: LINE2,
@@ -488,6 +510,7 @@ describe('pickCandidateTrains', () => {
       // anchor=시청. 합정(wraparound 6 hop)이 을지로입구(직선 1 hop)보다 멀어야 정상.
       const euljiroName = line2.find((s) => s.id === '2-002')!.name;
       const result = pickCandidateTrains({
+        direction: undefined,
         positions: [
           {
             line: LINE2,
@@ -507,6 +530,7 @@ describe('pickCandidateTrains', () => {
 
   it('maps fields correctly (trainNo/line/direction/currentStationName/trainStatus/receivedAtMs/terminalStationName)', () => {
     const result = pickCandidateTrains({
+      direction: undefined,
       positions: [
         makeLine([
           makeTrain({
