@@ -6,6 +6,12 @@
 - **범위**: **도착알람 도메인만** (station-passed / transfer / destination visible 발사). boardingPrompt·취침알람·trip-end·train-reconfirm은 별도 도메인 — 본 ADR 밖.
 - **근거**: 2026-08-27 fire-chain 3방향 전수 audit (device fire 경로 / backend fire 경로 / flag·arbitration)
 
+> 🔴 **2026-10-10 — 매역(station-passed) 발사 Owner 축은 ADR-040으로 superseded.**
+> 근거: ①본 계열(033/035/036)의 종착 상태는 **hard gate가 열리지 않아 도달하지 못했다** — Phase 1 D3(실기기 FG·BG·지하 3환경 device 단독 발사 검증)이 수행된 적 없고, device 발사 장치 전체가 `EXPO_PUBLIC_MINIMAL_ALARM`(미설정 → 항상 false) 뒤 dormant다. **misexecute가 아니라 게이트가 설계대로 닫혀 있던 결과.**
+> ②ADR-033 D1 근거 (a)의 전제인 "backend 지연 35~51s"(#2122)가 **2026-10-09 실측 1~2s로 소멸**했다(8역, #2122와 동일 방법·동일 채널; 분산 16.4s→1s로 시계 편차 배제).
+> **유효하게 남는 것**: ADR-033 D1 근거 (b)(c) · D2 문구 표준 · D3 취침/일반 경계 · **ADR-035 첫 줄 원칙(emitter 2개 = 이중발사 물리적 방지 불가)** — ADR-040이 이 논거를 계승한다. Phase 0/1 코드 자산의 처분은 ADR-040 §열려있는 결정 7.
+> 상세: `ADR-040-station-notification-single-fire-convergence.md` §이 ADR이 수정·대체·모순하는 결정
+
 ---
 
 ## 첫 줄 원칙
