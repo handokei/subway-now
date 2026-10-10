@@ -142,9 +142,9 @@ describe('buildBoardingPromptContext', () => {
     });
 
     it(
-      '#2946 (H-7 결함2) — 시청→충정로(2호선 seam) directionOnLine 단일 알고리즘으로 up ' +
-        '(옛 resolveTravelDirection??inferLoopDirection 조합은 down을 냈다 — #2455가 경고한 ' +
-        '두 유틸 불일치의 실측 사례, PR 본문 before/after 표 참고)',
+      '#2946 (거부 케이스 ⓑ 회귀 가드) — 시청→충정로(2호선 seam)는 down 그대로 ' +
+        '(directionOnLine으로 교체 시도했으나 wraparound seam에서 반대 방향을 내는 ' +
+        '별도 결함을 발견해 되돌렸다 — PR 본문 참고. 이 값이 up으로 바뀌면 2호선 회귀)',
       () => {
         const ctx = buildBoardingPromptContext({
           route: makeDirectRoute(20, '2'),
@@ -152,13 +152,13 @@ describe('buildBoardingPromptContext', () => {
           destination: st('2-043'), // 충정로(경기대입구)
         });
         expect(ctx).not.toBeNull();
-        expect(ctx?.promptGeoContext.direction).toBe('up');
+        expect(ctx?.promptGeoContext.direction).toBe('down');
       },
     );
 
     it(
-      '#2946 (H-7 결함2) — 시청→교대(법원.검찰청)도 up (시청→충정로와 동일 seam 성격, ' +
-        '옛 조합은 down)',
+      '#2946 (거부 케이스 ⓑ 회귀 가드) — 시청→교대(법원.검찰청)도 down 그대로 ' +
+        '(시청→충정로와 동일 seam 성격)',
       () => {
         const ctx = buildBoardingPromptContext({
           route: makeDirectRoute(22, '2'),
@@ -166,7 +166,7 @@ describe('buildBoardingPromptContext', () => {
           destination: st('2-023'), // 교대(법원.검찰청)
         });
         expect(ctx).not.toBeNull();
-        expect(ctx?.promptGeoContext.direction).toBe('up');
+        expect(ctx?.promptGeoContext.direction).toBe('down');
       },
     );
 
