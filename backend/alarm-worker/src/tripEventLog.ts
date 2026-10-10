@@ -241,7 +241,14 @@ export type LegBoardingPromptOutcome =
    * #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2)/approaching(3/5, 3차
    * reopen) 모두 0건 → 조기 발사 억제.
    */
-  | 'suppressed-not-imminent';
+  | 'suppressed-not-imminent'
+  /**
+   * #2939 (10/9 실측 — lock 부착 후에도 재발사) — 해당 leg의 lock이 이미 실 trainCode를 가지면
+   * 차단(`isLockActiveForLeg`). 전역 lock 유무가 아니라 **현재 leg/line에 해당하는** lock만
+   * 본다 — leg-1 lock이 leg-2 프롬프트를 막는 과차단(10/9 `lockState=leg1` 상태)을 방지한다.
+   * `PENDING` sentinel trainCode는 특정된 것으로 보지 않는다(ADR-036 보조 항목과 동일 정책).
+   */
+  | 'lock-already-attached';
 
 /**
  * ADR-037 D2c (#2537) — `maybeFireHopEndPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).
