@@ -216,6 +216,28 @@ describe('#2943 거부 케이스 ⓒⓓ — 지선 교차 (과차단 방어, sho
   });
 });
 
+describe('#2954 K-2 — 2호선 순환선 seam id 배치 의존 계약 (id 배치 우연/의존 고정)', () => {
+  // 위 ⓓ(1호선 구로↔가산디지털단지)는 forward slice 경로 자체가 틀렸는데 부호만 우연히
+  // 맞는 케이스였다. 2호선 시청(2-001)↔충정로(2-043)는 다르다 — 둘 다 closed-loop 본선
+  // range(`lineLoopPath.ts:CLOSED_LOOP_MAIN_ID_RANGES`, 2-001~2-043) 양 끝이라
+  // `shortestLinePathIndices`가 wraparound를 명시 처리해 경로 자체는 **정확**하다(순환선
+  // 설계 의도). 다만 그 정확성은 "시청/충정로가 range의 양 끝"이라는 **현재 배치**에 의존한다
+  // — 역 추가로 range 경계나 내부 상대 순서가 바뀌면 wraparound hop 계산이 달라질 수 있다.
+  // 본 테스트는 device `directionOnLine`/`resolveTripDirection`과 **같은 반환값**을 고정한다
+  // (device-side 계약은 `src/features/route/utils/__tests__/idAdjacencyContract.test.ts`,
+  // 데이터 배치 자체는 `src/data/__tests__/stationIdAdjacency.contract.test.ts`).
+  // 이 테스트가 깨지면 기대값을 바꾸지 말고 CLOSED_LOOP_MAIN_ID_RANGES 경계값이 새 배치와
+  // 맞는지부터 재검증한다. 2호선 seam 공유 버그(wraparound 분기 자체의 결함)는 **#2949**가
+  // 담당 — 본 테스트는 그 이슈를 침범하지 않고 "지금 반환값"만 고정한다.
+  it('2호선 시청(2-001) → 충정로(2-043) → up (idx 증가, wraparound 명시 처리)', () => {
+    expect(inferLegDirection('2', '시청', '충정로')).toBe('up');
+  });
+
+  it('2호선 충정로(2-043) → 시청(2-001) → down (idx 감소)', () => {
+    expect(inferLegDirection('2', '충정로', '시청')).toBe('down');
+  });
+});
+
 describe('#2943 J1→J2 — 10/9 실측 R2 fixture 전체 체인 (군자→광화문, 5호선)', () => {
   // AC1(오수용 차단) — 사용자는 군자(5-035)→광화문(5-024)으로 id 감소 = 상행으로 이동 중이었다.
   // R2 cycle(11:37:26, 1791513504415.json)의 5호선 후보 4건:
