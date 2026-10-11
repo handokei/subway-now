@@ -110,6 +110,7 @@ import {
 } from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import {
+  computeRouteSignature,
   dedupeTripsByDeviceToken,
   listTrips,
   putTrip,
@@ -8639,6 +8640,17 @@ export async function maybeFireLegBoardingPrompt(
         trip.legBoardingPromptState,
         boardingPromptDedupKey(selectedTrainCode, decision),
       );
+      // #2957 (W2, C2) — boarding-confirm 응답 측 release→재생성 판정용 stamp. legBoardingPromptState
+      // (dedup 전용)와 분리된 인접 필드(types.ts doc 참고) — 이 발사가 지칭한 leg·열차·route를
+      // 기록해, 나중에 사용자가 탭했을 때 그 탭이 "지금도 유효한 leg-2 발사에 대한 응답"인지
+      // (leg 동일성 + routeSignature 일치) 판정할 수 있게 한다.
+      trip.legBoardingFireStamp = {
+        boardingStation: currentLegAnchor.boardingStation,
+        line: currentLegAnchor.line,
+        ...(selectedTrainCode !== null ? { trainCode: selectedTrainCode } : {}),
+        routeSignature: computeRouteSignature(trip),
+        firedAt: now,
+      };
       promptOutcome = 'fired';
       candidateArvlCds = pool.map((entry) => entry.arvlCd);
       candidateEtaSeconds = pool.map((entry) => entry.arrivalSeconds);
