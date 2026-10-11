@@ -348,6 +348,39 @@ export interface Trip {
    */
   legBoardingPromptState?: BoardingPromptState;
   /**
+   * #2957 (W2) — `maybeFireLegBoardingPrompt`(scheduled.ts)가 leg-2 "탑승하셨나요?" 프롬프트를
+   * 실제로 발사(`onFired`)할 때 stamp하는 "그 발사가 지칭한 leg·열차" 기록. `legBoardingPromptState`
+   * (dedup/fire-count 전용, #819 게이트 #9)와 **의도적으로 분리된 인접 필드**다 — 같은
+   * `BoardingPromptState` 타입은 `boardingPromptState`/`hopEndPromptState`도 공유하므로 거기에
+   * 필드를 얹으면 그 소비자들까지 영향권에 든다. 이 필드는 오직 `POST
+   * /trips/:token/boarding-confirm`의 release→재생성 판정(`decideLegLockReleaseForBoardedTap`,
+   * index.ts) 전용이다.
+   *
+   * 10/9 실측 회귀(leg-1 lock 5559 잔존이 leg-2 응답을 봉쇄) — boarding-confirm이 active
+   * lock(leg-1)을 먼저 release해도 되는지 판단하려면 "지금 leg-2 anchor로 프롬프트가 실제
+   * 발사됐다"는 증거가 필요하다. `currentLegAnchor`만으로는 부족하다 — 그 자체는 환승 advance
+   * 시점에 stamp되고 프롬프트 발사와 무관하게 존재할 수 있기 때문.
+   *
+   * 필드:
+   *   - `boardingStation`/`line` — 발사 시점 `trip.currentLegAnchor`(leg 동일성 비교용, W-4).
+   *   - `trainCode` — `pickAutoTrainCode`가 반환한 열차(없으면 undefined, ambiguous 발사).
+   *   - `routeSignature` — 발사 시점 `computeRouteSignature(trip)`(`trips.ts`). boarding-confirm이
+   *     release 직전 현재 signature와 비교해 **불일치하면 거부**한다(W-6 — 10/9
+   *     `route-signature-mismatch` ~30회 실측, stale stamp로 엉뚱한 leg에 lock 방지가 최우선).
+   *   - `firedAt` — 발사 시각(epoch ms, 진단용).
+   *
+   * `currentLegAnchor`가 재stamp될 때마다(새 환승) 리셋되지 않는다 — 다음 leg의 발사가 이
+   * 필드를 그대로 덮어쓰므로 별도 리셋 불필요(stale leg는 `boardingStation`/`line` 불일치로
+   * 자연스럽게 거부된다, W-4).
+   */
+  legBoardingFireStamp?: {
+    boardingStation: string;
+    line: string;
+    trainCode?: string;
+    routeSignature: string;
+    firedAt: number;
+  };
+  /**
    * #2539 — leg 2 cron 자동 resolve의 미확정 후보(pending candidate) 저장소. register-time(탭)은
    * 사용자 확인이 있어 1회 resolved로 lock을 승격하지만, cron은 탭 없이 매 cycle 배경 폴링만으로
    * leg 2 승격을 시도하므로 추가 확증이 필요하다.

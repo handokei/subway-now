@@ -72,7 +72,7 @@ import {
   markTripRegistered,
 } from '../activeTripsGate';
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
-import { putTrip } from '../trips';
+import { computeRouteSignature, putTrip } from '../trips';
 import { pendingKey, putPending } from '../pendingPushes';
 import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Route, Trip, Waypoint } from '../types';
@@ -11866,6 +11866,25 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
     expect(body.body.originStation).toBe('건대입구');
     expect(body.body.line).toBe('7');
     expect(body.body.hopEndKind).toBeUndefined();
+  });
+
+  // #2957 (W2, C2) — red: 발사 성공 시 boarding-confirm 응답 release 판정용 stamp
+  // (`legBoardingFireStamp`)가 아직 존재하지 않는다(fix 전). stamp가 leg 동일성(§W-4)·
+  // routeSignature(§W-6)·trainCode를 모두 실어야 release→재생성 판정이 가능하다.
+  it('#2957 (red) — 발사 성공 시 legBoardingFireStamp에 leg/trainCode/routeSignature/firedAt을 stamp한다', async () => {
+    const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+    const trip = makeTrip();
+    const stats = makeStats();
+    const expectedRouteSignature = computeRouteSignature(trip);
+    await maybeFireLegBoardingPrompt(trip, makeEnv(new InMemoryKV()), makeDeps(fetchImpl), stats, NOW, () => {}, () => 'pid-leg2-stamp');
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect(trip.legBoardingFireStamp).toEqual({
+      boardingStation: '건대입구',
+      line: '7',
+      trainCode: '7246',
+      routeSignature: expectedRouteSignature,
+      firedAt: NOW,
+    });
   });
 
   // #2854 — audit-sides: leg-1과 동일한 공유 발사 본체(fireBoardingPromptForAnchor)를 거치므로
