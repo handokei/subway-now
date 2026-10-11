@@ -3311,15 +3311,15 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
     // W-1 — walk-gate 미개방(now < legBoardingEligibleAt) 상태에서도 stamp가 유효하면 leg-1
     // lock을 release하고 leg-2 lock을 새로 생성한다. 10/9의 정확한 재현(지각 탭이 환승 advance
     // 이후 walk-gate 창 안에서 왔다).
-    it('W-1 — walk-gate 미개방 + 유효한 stamp → leg-1 lock release 후 leg-2 lock 생성, LA 게이트는 리셋되지 않음(§4-2)', async () => {
-      fetchSpy.mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '0', trainNo: '7246' })],
-          }),
-          { status: 200 },
-        ),
-      );
+    //
+    // #2957 (E1 완결, 코디네이터 2차 지시) — 이 테스트의 기대값이 이번 라운드에서 바뀌었다.
+    // 직전 라운드(이 PR의 이전 커밋)는 release 후 live Seoul 재조회(POSITIONS)로 트레인코드를
+    // 재해소했고, 그 결과(mock이 반환한 '7246')가 lock에 쓰였다 — stamp의 trainCode('9000')는
+    // release 여부 판정에만 쓰이고 무시됐다. `promoteStampedTrainCode` 추가로 그 동작이
+    // 의도적으로 바뀌었다: stamp가 trainCode를 담고 있으면 **live 재조회 자체를 하지 않고**
+    // 그 trainCode를 바로 쓴다(10/9 실측이 보여준 "다시 물으면 실패한다"는 문제의 직접 해법).
+    // 그래서 fetchSpy는 더 이상 호출되지 않고, lock은 stamp의 trainCode('9000')를 그대로 쓴다.
+    it('W-1 — walk-gate 미개방 + 유효한 stamp → leg-1 lock release 후 stamp trainCode로 즉시 leg-2 lock 생성(live 재조회 없음), LA 게이트는 리셋되지 않음(§4-2)', async () => {
       const env = makeKvEnv();
       const body = leg2TripBodyWithStaleLock({ legBoardingEligibleAt: CREATED + 60_000 });
       await env.TRIPS.put(
@@ -3330,11 +3330,13 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
-      expect(fetchSpy).toHaveBeenCalled();
+      // 핵심 — stamp가 trainCode를 담고 있으므로 live Seoul 재조회 자체가 일어나지 않는다.
+      expect(fetchSpy).not.toHaveBeenCalled();
 
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
-      // §4-4 — 새 lock의 trainCode가 release된 leg-1 lock(5559)과 다르다(device가 교체로 인식).
-      expect(stored.boardingLock?.trainCode).toBe('7246');
+      // §4-4 — 새 lock의 trainCode(stamp의 '9000')가 release된 leg-1 lock(5559)과 다르다
+      // (device가 교체로 인식).
+      expect(stored.boardingLock?.trainCode).toBe('9000');
       expect(stored.boardingLock?.trainCode).not.toBe('5559');
       // §4-2 — tapAdvance 없이(currentLegAnchor가 이미 있었음) release→재생성됐으므로 waypoint
       // 전진이 없다 — LA push 게이트는 리셋되지 않는다(원 값 보존).
