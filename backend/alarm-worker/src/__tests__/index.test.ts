@@ -18,7 +18,7 @@ import {
   validateTrip,
   verifyBoardingLockPersisted,
 } from '../index';
-import { computeRouteSignature, waypointSignatureKey } from '../trips';
+import { waypointSignatureKey } from '../trips';
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import { TripDO } from '../tripDO';
 import { TRIP_DO_FLAG_KV_KEY } from '../tripDoFlag';
@@ -3338,11 +3338,13 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
     }
 
     function validStamp(trip: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
+      const tripWaypoints = (trip.waypoints as Trip['waypoints'] | undefined) ?? [];
       return {
         boardingStation: '건대입구',
         line: '7',
         trainCode: '9000',
-        routeSignature: computeRouteSignature(trip as unknown as Trip),
+        destination: trip.destination,
+        waypointKeys: tripWaypoints.map(waypointSignatureKey),
         firedAt: CREATED - 1000,
         ...overrides,
       };
@@ -3384,17 +3386,53 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.lastLaPushAt).toBe(CREATED - 30_000);
     });
 
-    // W-6 (최대 리스크) — stamp의 routeSignature가 현재 route와 다르면 release하지 않는다 —
-    // leg-1 lock(5559)이 그대로 유지돼야 한다(stale stamp로 엉뚱한 leg에 lock이 걸리는 것보다
-    // 안전한 실패 모드).
-    it('W-6 — stamp routeSignature 불일치 → release 안 함, leg-1 lock(5559) 유지, Seoul API 호출 없음', async () => {
+    // #2957 W-6 스펙 정정(코디네이터, 2026-10-12) — E2E도 단위 테스트와 동일하게 W-6a(진행만
+    // 됨 → 교체 성공)/W-6b(진짜 route 변경 → 거부 유지) 둘로 쪼갠다.
+
+    // W-6a (신규 거동, 사용자 가치의 핵심) — stamp 시점엔 waypoints가 [군자, 어린이대공원] 2개
+    // (건대입구에서 환승해 아직 군자를 지나지 않은 상태)였는데, 그 사이 cron이 군자를 지나
+    // 현재는 [어린이대공원] 1개로 전진했다 — destination 동일, suffix 관계이므로 release하고
+    // **5559(반대 방향)가 실제로 교체돼야 한다**(10/9가 못 했던 바로 그것).
+    it('W-6a — waypoints가 stamp보다 전진만 함 → release 성공, 5559가 stamp trainCode로 교체된다', async () => {
+      const env = makeKvEnv();
+      const body = leg2TripBodyWithStaleLock({ legBoardingEligibleAt: CREATED + 60_000 });
+      const stampTimeWaypoints: Trip['waypoints'] = [
+        { stationName: '군자', line: '7', kind: 'intermediate' },
+        { stationName: '어린이대공원', line: '7', kind: 'destination' },
+      ];
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify({
+          ...body,
+          legBoardingFireStamp: validStamp(body, {
+            waypointKeys: stampTimeWaypoints.map(waypointSignatureKey),
+          }),
+        }),
+      );
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      // 핵심 — 10/9엔 이 상태(탭이 조금 늦어 waypoint가 전진)에서 5559가 그대로 남았다. 이제는
+      // stamp trainCode('9000')로 교체된다.
+      expect(stored.boardingLock?.trainCode).toBe('9000');
+      expect(stored.boardingLock?.trainCode).not.toBe('5559');
+    });
+
+    // W-6b (기존 거동 유지, 최대 리스크) — destination 자체가 다르면(진짜 route 변경) release하지
+    // 않는다 — leg-1 lock(5559)이 그대로 유지돼야 한다(stale stamp로 엉뚱한 leg에 lock이 걸리는
+    // 것보다 안전한 실패 모드).
+    it('W-6b — destination이 다름(진짜 route 변경) → release 안 함, leg-1 lock(5559) 유지, Seoul API 호출 없음', async () => {
       const env = makeKvEnv();
       const body = leg2TripBodyWithStaleLock({ legBoardingEligibleAt: CREATED + 60_000 });
       await env.TRIPS.put(
         `trip:tok-bc`,
         JSON.stringify({
           ...body,
-          legBoardingFireStamp: validStamp(body, { routeSignature: 'stale-불일치-signature' }),
+          legBoardingFireStamp: validStamp(body, { destination: '전혀다른목적지' }),
         }),
       );
 
@@ -3537,7 +3575,8 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
             boardingStation: '군자(능동)',
             line: '5',
             trainCode: '5554',
-            routeSignature: computeRouteSignature(body as unknown as Trip),
+            destination: (body as unknown as Trip).destination,
+            waypointKeys: (body as unknown as Trip).waypoints.map(waypointSignatureKey),
             firedAt: CREATED - 15_000,
           },
         }),
@@ -3578,7 +3617,8 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
             boardingStation: '군자(능동)',
             line: '5',
             trainCode: derived,
-            routeSignature: computeRouteSignature(body as unknown as Trip),
+            destination: (body as unknown as Trip).destination,
+            waypointKeys: (body as unknown as Trip).waypoints.map(waypointSignatureKey),
             firedAt: CREATED - 15_000,
           },
         }),
@@ -3606,7 +3646,8 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
             boardingStation: '군자(능동)',
             line: '5',
             // trainCode 필드 자체가 없음 — pickAutoTrainCode가 ambiguity로 null을 반환했던 발사.
-            routeSignature: computeRouteSignature(body as unknown as Trip),
+            destination: (body as unknown as Trip).destination,
+            waypointKeys: (body as unknown as Trip).waypoints.map(waypointSignatureKey),
             firedAt: CREATED - 15_000,
           },
         }),

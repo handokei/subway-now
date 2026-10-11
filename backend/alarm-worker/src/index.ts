@@ -175,12 +175,13 @@ import {
   readBoardingPromptCounters,
 } from './boardingPromptCounterAccumulator';
 import {
-  computeRouteSignature,
   getDeviceTripIndex,
   getTrip,
+  isRouteProgressRelation,
   putDeviceTripIndex,
   putTrip,
   resetTripStateForNewRoute,
+  waypointSignatureKey,
   withTripRegisterLock,
 } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
@@ -2542,12 +2543,21 @@ function isLegTwoActive(trip: Trip, now: number): boolean {
  *   - W-5 (stamp 없음 — 프롬프트 미발사 상태의 탭) → `'no-stamp-trust-anchor'`, release:true.
  *     stamp가 없어도 `currentLegAnchor` 자체는 backend가 이미 확정한 SSoT이므로 그대로 신뢰한다
  *     — "stamp 부재가 실패가 되면 안 된다".
- *   - W-6 (routeSignature 불일치, 최대 리스크 — 10/9 `route-signature-mismatch` ~30회) →
- *     `'route-signature-mismatch'`, release:false. leg 동일성 비교보다 먼저 검사한다 — route 자체가
- *     달라졌다면 leg 비교는 의미가 없다.
- *   - W-4 (routeSignature는 일치하나 stamp의 leg ≠ 현재 `currentLegAnchor` — 그 사이 환승이 한 번
+ *   - W-6 (진짜 route 변경, 최대 리스크) → `'route-changed'`, release:false. leg 동일성 비교보다
+ *     먼저 검사한다 — route 자체가 달라졌다면 leg 비교는 의미가 없다. **W-6 스펙 정정(코디네이터,
+ *     2026-10-12)** — 최초 설계는 `computeRouteSignature` 문자열 엄격 동등이었으나,
+ *     `scheduled.ts`의 backend 자기 진행(`waypoints.shift()`, kill switch와 무관하게 항상
+ *     실행, `scheduled.ts:680`)만으로도 해시가 바뀌어 탭이 한 waypoint만 늦어도 거부되는
+ *     오판이었다(10/9 회귀 재발 경로, 사용자가 "빨리 안 누르면 못 쓴다"로 명시 지적). 지금은
+ *     `isRouteProgressRelation`(`trips.ts`, #2723이 `resetTripStateForNewRoute`를 위해 만든
+ *     동일 primitive — 사본 금지)로 "stamp 시점 route"와 "현재 route"가 **진행 관계**(한쪽이
+ *     다른 쪽의 suffix-정렬 부분열)인지만 본다 — destination이 다르거나 진행 관계가 아닐 때만
+ *     거부한다.
+ *   - W-4 (route는 진행 관계이나 stamp의 leg ≠ 현재 `currentLegAnchor` — 그 사이 환승이 한 번
  *     더 진행된 지연 응답) → `'stale-leg-stamp'`, release:false. "신선도"는 시간 임계값이 아니라
- *     leg 식별자 자체를 쓴다 — leg가 이미 넘어갔다면 그 자체가 stamp 무효화 신호다.
+ *     leg 식별자 자체를 쓴다 — leg가 이미 넘어갔다면 그 자체가 stamp 무효화 신호다(임의의 분
+ *     단위 타이머를 새로 만들지 않는다 — 코디네이터 지시, "빨리 눌러야 한다"를 다시 만들지
+ *     않기 위함).
  *   - W-1 (walk-gate 미개방 상태의 지각 탭) → `'stamp-valid'`, release:true. 이 함수는
  *     `legBoardingEligibleAt`을 전혀 평가하지 않는다(P2-b 해소) — walk-gate는 호출부가
  *     `attemptBoardingAnchorResolution`에 `bypassWalkGate: true`를 넘길지 여부로만 다뤄진다.
@@ -2567,8 +2577,18 @@ export function decideLegLockReleaseForBoardedTap(
   if (stamp === undefined) {
     return { release: true, reason: 'no-stamp-trust-anchor' };
   }
-  if (stamp.routeSignature !== computeRouteSignature(trip)) {
-    return { release: false, reason: 'route-signature-mismatch' };
+  // #2957 (W-6 스펙 정정, 코디네이터) — 엄격 동등(해시 비교) 대신 `isRouteProgressRelation`
+  // (trips.ts, #2723 공유 primitive)로 "stamp 시점 route"와 "현재 route"가 진행 관계인지
+  // 본다. backend 자기 진행(waypoints.shift(), scheduled.ts:680 "kill switch와 무관하게 항상
+  // 실행")만으로는 거부되지 않고, destination이 다르거나 진행 관계가 아닌 시퀀스일 때만
+  // 진짜 route 변경으로 거부한다 — 탭이 한두 waypoint 늦어도 더 이상 막히지 않는다.
+  if (
+    !isRouteProgressRelation(
+      { destination: stamp.destination, waypointKeys: stamp.waypointKeys },
+      { destination: trip.destination, waypointKeys: trip.waypoints.map(waypointSignatureKey) },
+    )
+  ) {
+    return { release: false, reason: 'route-changed' };
   }
   if (stamp.boardingStation !== currentLegAnchor.boardingStation || stamp.line !== currentLegAnchor.line) {
     return { release: false, reason: 'stale-leg-stamp' };
@@ -2580,7 +2600,7 @@ type LegLockReleaseReason =
   | 'no-anchor'
   | 'already-correct-leg'
   | 'no-stamp-trust-anchor'
-  | 'route-signature-mismatch'
+  | 'route-changed'
   | 'stale-leg-stamp'
   | 'stamp-valid';
 
