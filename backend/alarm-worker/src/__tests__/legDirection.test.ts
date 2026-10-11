@@ -216,24 +216,24 @@ describe('#2943 거부 케이스 ⓒⓓ — 지선 교차 (과차단 방어, sho
   });
 });
 
-describe('#2954 K-2 — 2호선 순환선 seam id 배치 의존 계약 (id 배치 우연/의존 고정)', () => {
+describe('#2954 K-2 — 2호선 순환선 seam id 배치 의존 계약 (알려진 오답을 현재 거동으로 고정, #2949 추적)', () => {
   // 위 ⓓ(1호선 구로↔가산디지털단지)는 forward slice 경로 자체가 틀렸는데 부호만 우연히
-  // 맞는 케이스였다. 2호선 시청(2-001)↔충정로(2-043)는 다르다 — 둘 다 closed-loop 본선
-  // range(`lineLoopPath.ts:CLOSED_LOOP_MAIN_ID_RANGES`, 2-001~2-043) 양 끝이라
-  // `shortestLinePathIndices`가 wraparound를 명시 처리해 경로 자체는 **정확**하다(순환선
-  // 설계 의도). 다만 그 정확성은 "시청/충정로가 range의 양 끝"이라는 **현재 배치**에 의존한다
-  // — 역 추가로 range 경계나 내부 상대 순서가 바뀌면 wraparound hop 계산이 달라질 수 있다.
-  // 본 테스트는 device `directionOnLine`/`resolveTripDirection`과 **같은 반환값**을 고정한다
-  // (device-side 계약은 `src/features/route/utils/__tests__/idAdjacencyContract.test.ts`,
-  // 데이터 배치 자체는 `src/data/__tests__/stationIdAdjacency.contract.test.ts`).
-  // 이 테스트가 깨지면 기대값을 바꾸지 말고 CLOSED_LOOP_MAIN_ID_RANGES 경계값이 새 배치와
-  // 맞는지부터 재검증한다. 2호선 seam 공유 버그(wraparound 분기 자체의 결함)는 **#2949**가
-  // 담당 — 본 테스트는 그 이슈를 침범하지 않고 "지금 반환값"만 고정한다.
-  it('2호선 시청(2-001) → 충정로(2-043) → up (idx 증가, wraparound 명시 처리)', () => {
+  // 맞는 케이스였다. 2호선 시청(2-001)↔충정로(2-043)는 그와 다르다 — **이 값은 오답이다.**
+  // wraparound seam에서 `firstStepIdx > fromIdx` 부호 비교가 wrap을 "idx 증가"로 오해해
+  // 방향이 뒤집힌다(device `directionOnLine`/`resolveTripDirection`과 공유하는 결함,
+  // **#2949** OPEN — "2호선 seam wraparound 방향 오판"). #2949 본문 실측: 시청→충정로는
+  // 물리적으로 **외선**인데 정답은 `down`이고, 지금은 `up`을 반환한다(반대). 2호선은
+  // `up`=내선/`down`=외선(`seoul.ts:18` `UP_DIRECTION_VALUES=['상행','내선']`).
+  // 본 테스트는 device 계약(`src/features/route/utils/__tests__/idAdjacencyContract.test.ts`)
+  // 과 **같은 오답**을 고정한다(데이터 배치 자체는 `src/data/__tests__/stationIdAdjacency.contract.test.ts`).
+  // **#2949가 알고리즘을 고치면 이 테스트가 깨진다 — 그때 기대값을 정답(`down`/`up`)으로
+  // 바꿔라. 구현(그 fix)을 되돌리지 마라.** 역 추가/재번호로 id 배치가 먼저 바뀌어도 이
+  // 테스트가 깨질 수 있다 — 그 경우는 CLOSED_LOOP_MAIN_ID_RANGES 경계값을 재검증한다.
+  it('2호선 시청(2-001) → 충정로(2-043) → 현재 up [오답, 정답 down(외선) — #2949 추적]', () => {
     expect(inferLegDirection('2', '시청', '충정로')).toBe('up');
   });
 
-  it('2호선 충정로(2-043) → 시청(2-001) → down (idx 감소)', () => {
+  it('2호선 충정로(2-043) → 시청(2-001) → 현재 down [오답, 정답 up(내선) — #2949 추적]', () => {
     expect(inferLegDirection('2', '충정로', '시청')).toBe('down');
   });
 });

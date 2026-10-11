@@ -18,15 +18,19 @@
  *   기대값을 바꾸지 말고 **방향 판정 알고리즘(분기 인식)을 고쳐야 한다.**
  *
  * 쌍 2 — 2호선 시청(2-001) ↔ 충정로(2-043), 공식 인접(순환선 seam, idx 차 42):
- *   두 역 모두 closed-loop 본선 range(`lineLoopPath.ts:CLOSED_LOOP_MAIN_ID_RANGES`) 양 끝이라
- *   `shortestLinePathIndices`가 wraparound를 명시 처리한다 — 쌍 1과 달리 경로 자체는
- *   **정확**하다(순환선 설계 의도). 다만 이 정확성은 "시청/충정로가 range의 양 끝"이라는
- *   **현재 배치**에 의존한다 — 역 추가로 range 경계 또는 내부 상대 순서가 바뀌면 wraparound
- *   hop 계산이 달라질 수 있다. 역 추가/재번호 후 이 테스트가 깨지면, `CLOSED_LOOP_MAIN_ID_RANGES`
- *   경계값이 새 배치와 맞는지부터 재검증한다.
+ *   **이 값은 오답이다 — "정확하다"가 아니다.** wraparound seam에서 `firstStepIdx > fromIdx`
+ *   부호 비교가 wrap을 "idx 증가"로 오해해 방향이 뒤집힌다(`directionOnLine`/`resolveTripDirection`
+ *   공유 결함, **#2949** OPEN — "2호선 seam wraparound 방향 오판"). #2949 본문 실측:
+ *   시청→충정로는 물리적으로 **외선**인데 `down`이 정답이고, 지금은 `up`을 반환한다(반대).
+ *   2호선 `up`=내선/`down`=외선(`seoul.ts:18` `UP_DIRECTION_VALUES=['상행','내선']`).
+ *   본 테스트는 **그 오답을 현재 거동으로 고정**한다 — 목적은 두 가지: ①역 추가/재번호로
+ *   id 배치가 바뀌면 감지, ②#2949가 알고리즘을 고치면 감지. **#2949가 고쳐서 이 테스트가
+ *   깨지면, 그때는 기대값을 정답(`down`/`up`)으로 바꿔라 — #2949의 fix를 "회귀"로 보고
+ *   되돌리지 마라.** (lessons L18 — 알려진 결함은 공개 green + 결함 명시로 두고, "정확하다"는
+ *   서술로 가리지 않는다.)
  *
- * 2호선 seam 공유 버그(wraparound 분기 자체의 결함)는 **#2949**가 담당 — 본 PR은 그 이슈를
- * 침범하지 않고 "지금 반환값"만 고정한다.
+ * 2호선 seam 공유 버그(wraparound 분기 자체의 결함) fix는 **#2949**가 담당 — 본 PR은 그
+ * 이슈를 침범하지 않고 "지금(오답) 반환값"만 고정한다.
  */
 
 import { directionOnLine } from '../directionOnLine';
@@ -43,11 +47,11 @@ describe('directionOnLine — id 배치 우연/배치 의존 계약 (#2954 K-2)'
     expect(directionOnLine('1', '1-100', '1-042')).toBe('up');
   });
 
-  it('2호선 시청(2-001) → 충정로(2-043) → up (wraparound 명시 처리, 배치 의존이지만 경로는 정확)', () => {
+  it('2호선 시청(2-001) → 충정로(2-043) → 현재 up [오답, 정답 down(외선) — #2949 추적]', () => {
     expect(directionOnLine('2', '2-001', '2-043')).toBe('up');
   });
 
-  it('2호선 충정로(2-043) → 시청(2-001) → down', () => {
+  it('2호선 충정로(2-043) → 시청(2-001) → 현재 down [오답, 정답 up(내선) — #2949 추적]', () => {
     expect(directionOnLine('2', '2-043', '2-001')).toBe('down');
   });
 });
@@ -63,12 +67,12 @@ describe('resolveTripDirection — 동일 쌍, Route 경유 호출 계약 (#2954
     expect(resolveTripDirection(route, canonicalStationName('구로', '1'), '1-100')).toBe('up');
   });
 
-  it('2호선 시청 → 충정로 direct route → up', () => {
+  it('2호선 시청 → 충정로 direct route → 현재 up [오답, 정답 down(외선) — #2949 추적]', () => {
     const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0 };
     expect(resolveTripDirection(route, canonicalStationName('충정로(경기대입구)', '2'), '2-001')).toBe('up');
   });
 
-  it('2호선 충정로 → 시청 direct route → down', () => {
+  it('2호선 충정로 → 시청 direct route → 현재 down [오답, 정답 up(내선) — #2949 추적]', () => {
     const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0 };
     expect(resolveTripDirection(route, canonicalStationName('시청', '2'), '2-043')).toBe('down');
   });
