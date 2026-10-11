@@ -3260,6 +3260,131 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
     });
   });
 
+  // #2957 (W2, E2E) — 10/9 실측 회귀(leg-1 lock 5559 잔존이 leg-2 응답을 봉쇄) 재현 + 수리를
+  // HTTP 왕복으로 end-to-end 고정. 단위 테스트(`decideLegLockReleaseForBoardedTap` describe)는
+  // 판정 함수만 검증하고, 여기는 release→재생성 wiring(§4-2 LA 게이트 skip 포함) 전체를 검증한다.
+  describe('leg-2 lock 교체 — leg-1 lock 잔존 봉쇄 해소 (#2957 W2, E2E)', () => {
+    function leg1Lock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        trainCode: '5559',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: CREATED - 10 * 60_000,
+        segmentStations: ['중곡', '어린이대공원'],
+        expiresAt: CREATED + 60 * 60_000,
+        ...overrides,
+      };
+    }
+
+    function leg2TripBodyWithStaleLock(
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> {
+      return tripBody({
+        promptDisplay: { originStation: '중곡', line: '7' },
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+        infoModeEnabled: true,
+        boardingLock: leg1Lock(),
+        lastLaPushEpoch: CREATED - 30_000,
+        lastLaPushAt: CREATED - 30_000,
+        ...overrides,
+      });
+    }
+
+    function validStamp(trip: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
+      return {
+        boardingStation: '건대입구',
+        line: '7',
+        trainCode: '9000',
+        routeSignature: computeRouteSignature(trip as unknown as Trip),
+        firedAt: CREATED - 1000,
+        ...overrides,
+      };
+    }
+
+    // W-1 — walk-gate 미개방(now < legBoardingEligibleAt) 상태에서도 stamp가 유효하면 leg-1
+    // lock을 release하고 leg-2 lock을 새로 생성한다. 10/9의 정확한 재현(지각 탭이 환승 advance
+    // 이후 walk-gate 창 안에서 왔다).
+    it('W-1 — walk-gate 미개방 + 유효한 stamp → leg-1 lock release 후 leg-2 lock 생성, LA 게이트는 리셋되지 않음(§4-2)', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '0', trainNo: '7246' })],
+          }),
+          { status: 200 },
+        ),
+      );
+      const env = makeKvEnv();
+      const body = leg2TripBodyWithStaleLock({ legBoardingEligibleAt: CREATED + 60_000 });
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body) }),
+      );
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+      expect(fetchSpy).toHaveBeenCalled();
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      // §4-4 — 새 lock의 trainCode가 release된 leg-1 lock(5559)과 다르다(device가 교체로 인식).
+      expect(stored.boardingLock?.trainCode).toBe('7246');
+      expect(stored.boardingLock?.trainCode).not.toBe('5559');
+      // §4-2 — tapAdvance 없이(currentLegAnchor가 이미 있었음) release→재생성됐으므로 waypoint
+      // 전진이 없다 — LA push 게이트는 리셋되지 않는다(원 값 보존).
+      expect(stored.lastLaPushEpoch).toBe(CREATED - 30_000);
+      expect(stored.lastLaPushAt).toBe(CREATED - 30_000);
+    });
+
+    // W-6 (최대 리스크) — stamp의 routeSignature가 현재 route와 다르면 release하지 않는다 —
+    // leg-1 lock(5559)이 그대로 유지돼야 한다(stale stamp로 엉뚱한 leg에 lock이 걸리는 것보다
+    // 안전한 실패 모드).
+    it('W-6 — stamp routeSignature 불일치 → release 안 함, leg-1 lock(5559) 유지, Seoul API 호출 없음', async () => {
+      const env = makeKvEnv();
+      const body = leg2TripBodyWithStaleLock({ legBoardingEligibleAt: CREATED + 60_000 });
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify({
+          ...body,
+          legBoardingFireStamp: validStamp(body, { routeSignature: 'stale-불일치-signature' }),
+        }),
+      );
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('5559');
+    });
+
+    // §4-1 — lock이 이미 현재 leg(건대입구/7)에 정확히 부착돼 있으면 stamp와 무관하게 no-op.
+    // release했다면 호출됐을 Seoul API(fetchSpy)가 호출되지 않아야 한다 — 그게 release 생략의
+    // 직접 증거(LA 게이트도 당연히 건드리지 않는다).
+    it('§4-1 — lock이 이미 현재 leg에 부착됨 → no-op(Seoul API 미호출), LA 게이트 불변', async () => {
+      const env = makeKvEnv();
+      const body = leg2TripBodyWithStaleLock({
+        legBoardingEligibleAt: CREATED,
+        boardingLock: leg1Lock({ trainCode: '7246', segmentStations: ['건대입구', '어린이대공원'] }),
+      });
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '7246' }) }),
+      );
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7246');
+      expect(stored.lastLaPushEpoch).toBe(CREATED - 30_000);
+      expect(stored.lastLaPushAt).toBe(CREATED - 30_000);
+    });
+  });
+
   describe('disembarked', () => {
     it('boardingLock 있으면 해제 + lockState released', async () => {
       const env = makeKvEnv();

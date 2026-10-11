@@ -2327,7 +2327,15 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
               legResolveStreak: undefined,
             };
           }
-          const isLeg2 = isLegTwoActive(working, now);
+          // #2957 — `isLegTwoActive`(walk-gate 포함 판정)를 그대로 쓰면 W-1(walk-gate 미개방 +
+          // 유효한 stamp로 release된 경우) 새로 부착한 leg-2 lock이 'leg1'로 오표기된다 —
+          // `legBoardingEligibleAt`이 아직 미래라 walk-gate 통과 여부가 false이기 때문이다.
+          // `anchorLock`이 존재하는 이 분기에 도달했다는 것 자체가(기존 3개 호출 경로 포함)
+          // "currentLegAnchor가 있으면 이미 walk-gate를 통과했거나(release 없이 도달) 방금
+          // tapAdvance로 stamp됐거나(legBoardingEligibleAt=now로 직전에 set) bypass됐다"는
+          // 뜻이므로, `working.currentLegAnchor` 존재 여부만으로 leg2/leg1을 판정해도 기존 3개
+          // 호출 경로와 100% 동일한 결과를 내면서 W-1 오표기를 바로잡는다.
+          const isLeg2 = working.currentLegAnchor !== undefined;
           // #2957 (§4-2) — LA push 게이트(`lastLaPushEpoch`/`lastLaPushAt`) 리셋은 waypoint가
           // 실제로 전진했을 때만 정당하다(기존: lock undefined→생성에 묶여 tapAdvance를 항상
           // 동반했음). `releasedForLegSwitch`로 lock이 release된 경우, `currentLegAnchor`가 이미
