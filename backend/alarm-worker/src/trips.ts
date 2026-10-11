@@ -288,8 +288,48 @@ export function computeRouteSignature(trip: Trip): string {
   return `${trip.destination}::${waypointSig}`;
 }
 
-function waypointSignatureKey(w: Trip['waypoints'][number]): string {
+/**
+ * waypoint 1건의 content-key(`stationName|line|kind|occurrenceIdx`). `computeRouteSignature`와
+ * `isRouteProgressRelation`(아래) 둘 다 이 key로 waypoint 배열을 비교한다 — 사본 금지(lessons
+ * L21). #2957 (W-6 스펙 정정) — boarding-confirm의 stamp(`legBoardingFireStamp.waypointKeys`,
+ * `index.ts`)도 발사 시점에 이 함수로 키 배열을 만들어 stamp한다. export해 caller(scheduled.ts
+ * onFired, index.ts 판정, 테스트)가 직접 재사용할 수 있게 한다 — 수작업 문자열 사본 금지.
+ */
+export function waypointSignatureKey(w: Trip['waypoints'][number]): string {
   return `${w.stationName}|${w.line}|${w.kind}|${w.occurrenceIdx ?? 0}`;
+}
+
+/** `isRouteProgressRelation`이 비교하는 route 신원 — Trip 전체가 아니라 destination + waypoint
+ * key 배열만 필요하다(`legBoardingFireStamp`처럼 Trip이 아닌 stamp에도 적용 가능하게 하기 위함). */
+export interface RouteIdentity {
+  destination: string;
+  waypointKeys: readonly string[];
+}
+
+/**
+ * #2957 (W-6 스펙 정정, 코디네이터 지시) — `isRouteProgressOnly`(아래)의 핵심 비교를 Trip
+ * 객체에 종속되지 않는 순수 함수로 추출한 **공유 primitive**. "두 waypoint 키 시퀀스 중 한쪽이
+ * 다른 쪽의 suffix-정렬 부분열이면(offset 비교) 같은 route를 진행 중"이라는 #2723 판정을
+ * `(destination, waypointKeys)` 식별자 쌍에 적용한다 — Trip 두 개를 비교하는
+ * `isRouteProgressOnly`와, Trip 하나 vs stamp(`legBoardingFireStamp`) 하나를 비교하는
+ * `decideLegLockReleaseForBoardedTap`(`index.ts`)이 **이 함수 하나를 공유**한다(사본 금지,
+ * lessons L21 — 이 레포에서 방향 판정 함수 6개가 사본으로 갈라진 전례가 있다).
+ *
+ * `destination`이 다르면 즉시 false(진짜 다른 route). 같으면 waypoint key 배열의 suffix 관계만
+ * 본다 — 어느 쪽이 더 긴지(=더 진행 전인지)는 무관하게 대칭 판정.
+ */
+export function isRouteProgressRelation(a: RouteIdentity, b: RouteIdentity): boolean {
+  if (a.destination !== b.destination) return false;
+  const [shorter, longer] =
+    a.waypointKeys.length <= b.waypointKeys.length
+      ? [a.waypointKeys, b.waypointKeys]
+      : [b.waypointKeys, a.waypointKeys];
+  if (shorter.length === 0) return false;
+  const offset = longer.length - shorter.length;
+  for (let i = 0; i < shorter.length; i += 1) {
+    if (shorter[i] !== longer[offset + i]) return false;
+  }
+  return true;
 }
 
 /**
@@ -315,16 +355,12 @@ function waypointSignatureKey(w: Trip['waypoints'][number]): string {
  * 요구사항 3에 따라 항상 진짜 route 변경으로 취급돼야 한다.
  */
 export function isRouteProgressOnly(a: Trip, b: Trip): boolean {
-  if (a.destination !== b.destination) return false;
-  const aKeys = a.waypoints.map(waypointSignatureKey);
-  const bKeys = b.waypoints.map(waypointSignatureKey);
-  const [shorter, longer] = aKeys.length <= bKeys.length ? [aKeys, bKeys] : [bKeys, aKeys];
-  if (shorter.length === 0) return false;
-  const offset = longer.length - shorter.length;
-  for (let i = 0; i < shorter.length; i += 1) {
-    if (shorter[i] !== longer[offset + i]) return false;
-  }
-  return true;
+  // #2957 (W-6 스펙 정정) — 구현을 `isRouteProgressRelation`(위, 공유 primitive)에 위임한다.
+  // Trip → RouteIdentity 변환만 이 함수의 책임 — 비교 로직 사본 없음(lessons L21).
+  return isRouteProgressRelation(
+    { destination: a.destination, waypointKeys: a.waypoints.map(waypointSignatureKey) },
+    { destination: b.destination, waypointKeys: b.waypoints.map(waypointSignatureKey) },
+  );
 }
 
 /**

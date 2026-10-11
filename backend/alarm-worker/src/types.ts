@@ -364,10 +364,22 @@ export interface Trip {
    * 필드:
    *   - `boardingStation`/`line` — 발사 시점 `trip.currentLegAnchor`(leg 동일성 비교용, W-4).
    *   - `trainCode` — `pickAutoTrainCode`가 반환한 열차(없으면 undefined, ambiguous 발사).
-   *   - `routeSignature` — 발사 시점 `computeRouteSignature(trip)`(`trips.ts`). boarding-confirm이
-   *     release 직전 현재 signature와 비교해 **불일치하면 거부**한다(W-6 — 10/9
-   *     `route-signature-mismatch` ~30회 실측, stale stamp로 엉뚱한 leg에 lock 방지가 최우선).
-   *   - `firedAt` — 발사 시각(epoch ms, 진단용).
+   *   - `destination`/`waypointKeys` — 발사 시점 route 신원(**해시 1개가 아니라 비교 가능한
+   *     waypoint key 배열**, `trips.ts` `waypointSignatureKey`로 생성). boarding-confirm이
+   *     release 직전 `isRouteProgressRelation(trips.ts)`로 "현재 trip과 진행 관계인가"를 판정해
+   *     **진짜 route 변경(진행 관계 아님)일 때만 거부**한다(W-6).
+   *
+   *     #2957 W-6 스펙 정정(코디네이터, 2026-10-12) — 최초 설계는 `computeRouteSignature`
+   *     문자열의 **엄격 동등**(exact string equality)으로 비교했다. 그런데 `computeRouteSignature`
+   *     는 `trip.waypoints` 전체를 해시하고, 발사~탭 사이에 `scheduled.ts`의 waypoint 진행
+   *     (`waypoints.shift()`, kill switch와 무관하게 항상 실행 — `scheduled.ts:680`)이 끼면
+   *     해시가 바뀐다 — 즉 탭이 조금만 늦어도(다음 waypoint로 전진) stamp가 거부돼 leg-1 lock이
+   *     release되지 않고 10/9 회귀가 재발한다("빨리 안 누르면 못 쓴다", 사용자가 명시적으로
+   *     문제라고 지적한 그 패턴). `#2723`이 이미 "backend 자기 진행 vs 진짜 route 변경"을
+   *     구분하는 정확한 primitive(`isRouteProgressOnly`/`isRouteProgressRelation`,
+   *     `resetTripStateForNewRoute`가 쓰는 것과 동일)를 갖고 있었다 — W-6도 신선도 타이머가
+   *     아니라 이 primitive를 그대로 재사용한다(leg 신원 자체가 신선도 경계, W-4 참고).
+   *   - `firedAt` — 발사 시각(epoch ms, 진단용. release 판정에는 쓰이지 않는다).
    *
    * `currentLegAnchor`가 재stamp될 때마다(새 환승) 리셋되지 않는다 — 다음 leg의 발사가 이
    * 필드를 그대로 덮어쓰므로 별도 리셋 불필요(stale leg는 `boardingStation`/`line` 불일치로
@@ -377,7 +389,8 @@ export interface Trip {
     boardingStation: string;
     line: string;
     trainCode?: string;
-    routeSignature: string;
+    destination: string;
+    waypointKeys: string[];
     firedAt: number;
   };
   /**

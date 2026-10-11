@@ -18,7 +18,7 @@ import {
   validateTrip,
   verifyBoardingLockPersisted,
 } from '../index';
-import { computeRouteSignature } from '../trips';
+import { computeRouteSignature, waypointSignatureKey } from '../trips';
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import { TripDO } from '../tripDO';
 import { TRIP_DO_FLAG_KV_KEY } from '../tripDoFlag';
@@ -2957,7 +2957,8 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
           boardingStation: '건대입구',
           line: '7',
           trainCode: '7256',
-          routeSignature: 'anything',
+          destination: '아무거나',
+          waypointKeys: ['아무거나'],
           firedAt: NOW - 1000,
         },
       });
@@ -2979,40 +2980,79 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       });
     });
 
-    // W-6 (최대 리스크, 10/9 route-signature-mismatch ~30회) — stamp의 routeSignature가 현재
-    // computeRouteSignature(trip)과 다르면 leg 동일성 확인 전에 즉시 거부.
-    it('W-6 — stamp의 routeSignature ≠ 현재 computeRouteSignature(trip) → release:false(route-signature-mismatch)', () => {
+    // #2957 W-6 스펙 정정(코디네이터, 2026-10-12) — 최초 설계(엄격 동등, computeRouteSignature
+    // 문자열 비교)는 "backend 자기 진행(waypoints.shift())"과 "진짜 route 변경"을 구분하지
+    // 못해, 발사~탭 사이에 1개 waypoint라도 전진하면 stamp를 거부했다(= 10/9 회귀 재발, 사용자가
+    // 명시 지적한 "빨리 안 누르면 못 쓴다" 패턴). `isRouteProgressRelation`(trips.ts, #2723
+    // primitive 재사용)으로 교체 — W-6a(진행만 됨 → 수용)/W-6b(진짜 다른 route → 거부) 둘로
+    // 쪼갠다.
+
+    // W-6a (신규 거동, 사용자 가치의 핵심) — stamp 시점엔 waypoints가 [어린이대공원, 용마산]
+    // 2개였는데, 그 사이 환승/매역 advance로 현재는 [용마산] 1개로 전진했다(destination 동일,
+    // suffix 관계) → 진짜 route 변경이 아니므로 release한다.
+    it('W-6a — waypoints가 진행만 됨(stamp보다 전진) → release:true(stamp-valid), 거부하지 않는다', () => {
       const trip = leg2TripBase({
         currentLegAnchor: { boardingStation: '건대입구', line: '7' },
-        legBoardingFireStamp: {
-          boardingStation: '건대입구',
-          line: '7',
-          trainCode: '7256',
-          routeSignature: 'stale-signature-불일치',
-          firedAt: NOW - 1000,
-        },
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
       });
-      expect(computeRouteSignature(trip)).not.toBe('stale-signature-불일치');
-      expect(decideLegLockReleaseForBoardedTap(trip, NOW)).toEqual({
-        release: false,
-        reason: 'route-signature-mismatch',
-      });
-    });
-
-    // W-4 — routeSignature는 일치하지만 stamp의 leg(건대입구/7)가 현재 currentLegAnchor와 다름
-    // (환승이 한 번 더 진행돼 leg가 넘어간 뒤에 도착한 지연 응답) → 거부.
-    it('W-4 — routeSignature 일치하나 stamp의 leg ≠ 현재 currentLegAnchor → release:false(stale-leg-stamp)', () => {
-      const trip = leg2TripBase({
-        currentLegAnchor: { boardingStation: '어린이대공원', line: '7' },
-      });
-      const routeSignature = computeRouteSignature(trip);
+      const stampTimeWaypoints: Trip['waypoints'] = [
+        { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ];
       const withStamp = {
         ...trip,
         legBoardingFireStamp: {
           boardingStation: '건대입구',
           line: '7',
           trainCode: '7256',
-          routeSignature,
+          destination: trip.destination,
+          waypointKeys: stampTimeWaypoints.map(waypointSignatureKey),
+          firedAt: NOW - 1000,
+        },
+      } as Trip;
+      expect(decideLegLockReleaseForBoardedTap(withStamp, NOW)).toEqual({
+        release: true,
+        reason: 'stamp-valid',
+      });
+    });
+
+    // W-6b (기존 거동 유지, 최대 리스크) — destination 자체가 다르다 → 진짜 다른 route이므로
+    // leg 동일성 확인 전에 즉시 거부.
+    it('W-6b — destination이 다름(진짜 route 변경) → release:false(route-changed)', () => {
+      const trip = leg2TripBase({
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      });
+      const withStamp = {
+        ...trip,
+        legBoardingFireStamp: {
+          boardingStation: '건대입구',
+          line: '7',
+          trainCode: '7256',
+          destination: '전혀다른목적지',
+          waypointKeys: trip.waypoints.map(waypointSignatureKey),
+          firedAt: NOW - 1000,
+        },
+      } as Trip;
+      expect(decideLegLockReleaseForBoardedTap(withStamp, NOW)).toEqual({
+        release: false,
+        reason: 'route-changed',
+      });
+    });
+
+    // W-4 — route는 진행 관계(동일)이지만 stamp의 leg(건대입구/7)가 현재 currentLegAnchor와
+    // 다름(환승이 한 번 더 진행돼 leg가 넘어간 뒤에 도착한 지연 응답) → 거부.
+    it('W-4 — route는 진행 관계이나 stamp의 leg ≠ 현재 currentLegAnchor → release:false(stale-leg-stamp)', () => {
+      const trip = leg2TripBase({
+        currentLegAnchor: { boardingStation: '어린이대공원', line: '7' },
+      });
+      const withStamp = {
+        ...trip,
+        legBoardingFireStamp: {
+          boardingStation: '건대입구',
+          line: '7',
+          trainCode: '7256',
+          destination: trip.destination,
+          waypointKeys: trip.waypoints.map(waypointSignatureKey),
           firedAt: NOW - 1000,
         },
       } as Trip;
@@ -3023,21 +3063,21 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
     });
 
     // W-1 — 환승 advance 완료 + walk-gate 미개방(now < legBoardingEligibleAt) 상태에서도 stamp가
-    // leg·routeSignature 모두 유효하면 release한다 — walk-gate는 이 판정에 전혀 관여하지 않는다
+    // leg·route(진행 관계) 모두 유효하면 release한다 — walk-gate는 이 판정에 전혀 관여하지 않는다
     // (P2-b 해소 — 응답 측이 더 이상 도보 게이트에 묶이지 않음을 증명).
     it('W-1 — walk-gate 미개방(now < legBoardingEligibleAt)이어도 stamp 유효하면 release:true(stamp-valid)', () => {
       const trip = leg2TripBase({
         currentLegAnchor: { boardingStation: '건대입구', line: '7' },
         legBoardingEligibleAt: NOW + 5 * 60_000, // 아직 안 열림
       });
-      const routeSignature = computeRouteSignature(trip);
       const withStamp = {
         ...trip,
         legBoardingFireStamp: {
           boardingStation: '건대입구',
           line: '7',
           trainCode: '7256',
-          routeSignature,
+          destination: trip.destination,
+          waypointKeys: trip.waypoints.map(waypointSignatureKey),
           firedAt: NOW - 1000,
         },
       } as Trip;
