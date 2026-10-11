@@ -272,32 +272,45 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
     subwayId,
     arvlCd: parseArvlCd(item.arvlCd),
     trainType: parseTrainType(item.btrainSttus),
-    terminus: parseTerminusStationName(trainLineNm),
+    terminus: parseTerminusFromBstatnNm(item.bstatnNm),
   };
 }
 
 /**
- * #2328 — Seoul API `trainLineNm`(행선지 텍스트, 예: "성수행"/"내선순환"/"장암방면")에서 순수
- * 종착역명을 추출한다. 순환선(내선/외선순환)은 이산 종점이 없어 null. 인식 못하는 포맷도 null
- * (보수적 — 정보 부재를 오판단하지 않도록 미상 처리. 원래 소비자였던 `legCandidateFilters.ts`
- * 지선 필터는 #2765/#2766에서 제거됐다 — 이 함수는 여전히 값을 산출하지만 현재 소비자 없음).
+ * #2953 — Seoul API `realtimeStationArrival`의 `bstatnNm`(종착역명, 이미 순수 역명)에서
+ * terminus를 가져온다. 구 `parseTerminusStationName`은 `trainLineNm`(행선지 텍스트)을
+ * `"X행"`/`"Y방면"` 단독 포맷으로 가정했으나, 실 API는 `"{종착}행 - {다음정차역}방면 [(급행)]"`
+ * 복합 포맷으로 응답한다(실측 R2 캡처 1,252건/100% 복합, 이슈 #2953 본문) — 그 가정이 깨져
+ * ①`trainLineNm`을 그대로 노출하거나 ②다음정차역을 종착으로 오인하거나 ③급행 접미사가 붙으면
+ * null로 식별 정보가 통째로 소실되는 3중 버그를 냈다. `bstatnNm`은 같은 응답의 옆 필드에서
+ * 복합 포맷 영향 없이 순수 종착역명을 준다(실측 R2 캡처 1,252건 중 빈 값 0건, distinct 17종
+ * 전수 순수 역명, 급행 포함).
  *
- * frontend `src/features/route/utils/trainLineDirection.ts:parseTrainLineDirection`과 동일
- * 포맷 인식이지만 i18n/표시명 조회 없이 원본 역명만 반환한다 — `legDirection.ts`(#1719)와 동일
- * backend-local 정책(frontend hook/i18n 의존 그래프를 끌어오지 않음).
+ * - `fromSeoulStationName`으로 역명 경계 번역을 적용한다(#2868 정책 — "번역은 이 seoul.ts
+ *   경계에서만"). 예: `'뚝섬유원지'` → `'자양(뚝섬한강공원)'`.
+ * - `bstatnNm` 부재/빈 문자열은 null.
+ *
+ * 역명 존재 판정은 **`stations.json` 조회로 하지 않는다** (초안에서 시도했다가 폐기 —
+ * `stations.json`이 최근 연장 종점 61역을 반영하지 않은 stale 데이터셋이라는 전수 census가
+ * 같은 날 확정됐다(#2954). `stations.json`에 없는 역명을 null로 떨어뜨리면 석남/불암산/
+ * 하남검단산 같은 **실존** 종착역까지 오탈락한다 — 이슈 #2953 본문이 애초에 제시했던 판정
+ * 기준이었으나 이 모순으로 폐기됐다. 이 함수의 표시 목적은 공식 종착역명의 passthrough이며,
+ * 역이 우리 데이터에 없어도 라벨 자체는 정확하고 유용하다. **역 보강은 좌표 데이터 부재로
+ * 별도 차단 중(#2954)** — 그 작업과 독립적이어야 하므로 여기서 재도입하지 말 것).
+ *
+ * 대신 `seoul.ts:281`에 이미 문서화된 불변식("순환선은 이산 종점이 없어 null")을 일반화한다 —
+ * 실 데이터에 `"내선순환"`/`"외선순환"` 외 제3의 형태가 있다: `bstatnNm='응암순환(상선)'`
+ * (실 API 직접 확인, trainLineNm='응암순환(상선)행 - 대흥(서강대앞)방면'). 종착역명에 `순환`이
+ * 포함되면 이산 종점이 아니므로 null — 리터럴 화이트리스트가 아니라 도메인 불변식이라 "하드코딩
+ * 금지/데이터 주도" 원칙 위배가 아니다. 안전성: `stations.json`에 `순환`/`상선`/`하선` 포함
+ * 역명 0건(실존 역 오탐 불가), 실캡처 `bstatnNm` 중 `순환` 포함은 `응암순환(상선)` 10건(0.8%)이
+ * 전부이고 나머지 distinct 16종은 전부 순수 역명.
  */
-export function parseTerminusStationName(trainLineNm: string): string | null {
-  const trimmed = trainLineNm.trim();
-  if (trimmed === '내선순환' || trimmed === '외선순환') return null;
-  if (trimmed.endsWith('행')) {
-    const name = trimmed.slice(0, -1).trim();
-    return name.length > 0 ? name : null;
-  }
-  if (trimmed.endsWith('방면')) {
-    const name = trimmed.slice(0, -2).trim();
-    return name.length > 0 ? name : null;
-  }
-  return null;
+function parseTerminusFromBstatnNm(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.includes('순환')) return null;
+  return fromSeoulStationName(trimmed);
 }
 
 function parsePositionEntry(

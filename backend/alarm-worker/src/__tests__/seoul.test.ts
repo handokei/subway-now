@@ -217,7 +217,11 @@ describe('SeoulArrivalClient', () => {
       expect(arrivals[0].terminus).toBe('성수');
       expect(arrivals[1].terminus).toBe('석남');
       expect(arrivals[1].terminus).not.toBe('뚝섬유원지');
-      expect(arrivals[2].terminus).toBe('청량리');
+      // #2953 정정 — '청량리'는 #2868 35역 drift map 대상(SEOUL_STATION_QUERY_NAME
+      // '청량리(서울시립대입구)': '청량리')이라 fromSeoulStationName 경계 번역이 그대로
+      // 적용되면 stations.json 괄호 부기명으로 번역된다(⑥ '뚝섬유원지'→'자양(뚝섬한강공원)'과
+      // 동일 메커니즘). 원 이슈 TDD 표는 이 drift를 반영하지 않은 '청량리' 리터럴이었다.
+      expect(arrivals[2].terminus).toBe('청량리(서울시립대입구)');
     });
 
     it('④ 역명이 아닌 운행구간 레이블(응암순환(상선))은 null로 떨어진다', async () => {
