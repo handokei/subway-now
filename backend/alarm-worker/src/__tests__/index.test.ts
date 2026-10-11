@@ -28,6 +28,12 @@ import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
 import type { AnalyticsEngineWriter, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 import { makeEmptyFakeR2 } from './helpers/r2Fixtures';
+// #2957 (E1 완결) — 10/9 11:37 군자(능동) 실측, R2 `seoul-capture/2026-10-09/1791513504415.json`
+// 원본 그대로(legDirection.test.ts가 이미 같은 파일을 쓴다). 조정 금지 — 실측 불변 fixture.
+import gunjaArrivals1009 from './fixtures/gunja_20261009_1137_arrivals.json';
+import { SeoulArrivalClient } from '../seoul';
+import { inferLegDirection } from '../legDirection';
+import { pickAutoTrainCode } from '../boardingPrompt';
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -3382,6 +3388,201 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.boardingLock?.trainCode).toBe('7246');
       expect(stored.lastLaPushEpoch).toBe(CREATED - 30_000);
       expect(stored.lastLaPushAt).toBe(CREATED - 30_000);
+    });
+  });
+
+  // #2957 (E1 완결, 코디네이터 지시) — stamp가 trainCode를 담고 있으면 live Seoul 재조회
+  // (POSITIONS) 없이 그 trainCode로 직접 lock을 합성한다. 10/9 11:37 군자 실측
+  // (`gunjaArrivals1009`, **불변·조정 금지**)이 보여주는 정확한 실패 지점: 탭 시점(11:37:39)에
+  // 상행(정방향) 열차 2건(5554/5066)은 모두 `arvlCd=99`라 positions 재조회로는 "지금 군자에
+  // 있음"을 확인할 수 없다(`freshCandidatesAtAnchor`가 0건, `boardingAnchorResolver.ts:222-231`)
+  // — 오직 반대 방향 5559만 positions상 "지금 여기 있음"으로 보인다(arvlCd=1). 그래서 stamp 없이
+  // live 재해소에만 의존하면(이 PR의 이전 버전) release는 성공해도 재생성이 none으로 끝난다 —
+  // PR 본문 §(f)가 실측으로 확인한 그 갭. 이 describe는 stamp의 trainCode를 직접 승격해 그
+  // 실패를 우회하는 경로를 고정한다.
+  describe('stamp trainCode 직접 승격 — 10/9 실측 gunja fixture (#2957 E1 완결)', () => {
+    // 실측 fixture에서 pickAutoTrainCode(direction='up')가 고르는 실제 값 — legDirection.test.ts
+    // "#2943 J1→J2"가 이미 5554로 고정했다(5559는 반대 방향이라 배제). 여기서 같은 production
+    // 함수로 재도출해 하드코딩 drift를 막는다.
+    async function deriveRealUpDirectionTrainCode(): Promise<string | null> {
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ realtimeArrivalList: gunjaArrivals1009 }), {
+          status: 200,
+        })) as unknown as typeof fetch;
+      const client = new SeoulArrivalClient({ host: 'seoul.api', apiKey: 'KEY', fetchImpl, now: () => Date.now() });
+      const arrivals = await client.fetchArrivals('군자(능동)');
+      const line5 = arrivals.filter((a) =>
+        ['5554', '5066', '5559', '5055'].includes(a.trainCode),
+      );
+      const direction = inferLegDirection('5', '군자', '광화문');
+      return pickAutoTrainCode(line5, '5', direction);
+    }
+
+    function gunjaTripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return tripBody({
+        route: {
+          type: 'transfer',
+          transferName: '군자',
+          fromLine: '7',
+          toLine: '5',
+          stopsToTransfer: 1,
+          stopsFromTransfer: 2,
+        },
+        destination: '광화문',
+        waypoints: [
+          { stationName: '동대문역사문화공원', line: '5', kind: 'intermediate' },
+          { stationName: '광화문', line: '5', kind: 'destination' },
+        ],
+        infoModeEnabled: true,
+        // 10/9 실제로 걸렸던 잔존 leg-1 lock(반대 방향 5559, line=7 환승 전 leg) — release 대상.
+        boardingLock: {
+          trainCode: '5559',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: CREATED - 10 * 60_000,
+          segmentStations: ['중곡', '군자(능동)'],
+          expiresAt: CREATED + 60 * 60_000,
+        },
+        currentLegAnchor: { boardingStation: '군자(능동)', line: '5' },
+        // W-1(walk-gate 미개방) 상황과 동일 — 10/9 실측은 환승 advance 완료 후 도보창이 아직
+        // 안 열린 상태에서 탭됐다.
+        legBoardingEligibleAt: CREATED + 60_000,
+        ...overrides,
+      });
+    }
+
+    // positions 응답 — 10/9 11:37:39 탭 시점의 물리적 실제 상태를 realtimePosition 엔드포인트
+    // 관점으로 재구성한 것(arrivals fixture의 사실을 그대로 반영 — barvlDt 180s/600s 떨어진
+    // 상행 2건은 아직 군자에 있지 않고, arvlCd=1인 5559만 지금 군자에 있다). 이 자체가
+    // "실측 수치"는 아니지만(엔드포인트가 다르므로 별도 캡처 없음), arrivals fixture가 실제로
+    // 기록한 "누가 어디 있는지"는 그대로 옮긴 것이다 — 승격 경로가 이 상태에서도(live 재조회
+    // 없이) 성공해야 한다는 것이 이 테스트의 핵심.
+    function noUpTrainAtAnchorPositions(): Record<string, unknown> {
+      return {
+        realtimePositionList: [
+          {
+            trainNo: '5559',
+            statnNm: '군자(능동)',
+            trainSttus: 1, // ARRIVED — 반대 방향, positions상 지금 여기 있음.
+            updnLine: '1', // 하행
+            recptnDt: '2026-10-09 11:37:26',
+            lastRecptnDt: '20261009',
+          },
+          // 5554/5066(상행, 정방향)은 아직 군자가 아닌 다른 역에 있다 — freshCandidatesAtAnchor가
+          // station 비교로 걸러낸다. 아예 포함하지 않아도 같은 결과지만, "존재는 하되 다른 역"임을
+          // 명시하기 위해 남긴다.
+          {
+            trainNo: '5554',
+            statnNm: '광나루(장신대)',
+            trainSttus: 1,
+            updnLine: '0', // 상행
+            recptnDt: '2026-10-09 11:37:36',
+            lastRecptnDt: '20261009',
+          },
+        ],
+      };
+    }
+
+    it('① stamp trainCode(5554) → live 재조회 없이 그 열차로 leg-2 lock 생성(positions가 none을 반환해도)', async () => {
+      fetchSpy.mockResolvedValue(new Response(JSON.stringify(noUpTrainAtAnchorPositions()), { status: 200 }));
+      const env = makeKvEnv();
+      const body = gunjaTripBody();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify({
+          ...body,
+          legBoardingFireStamp: {
+            boardingStation: '군자(능동)',
+            line: '5',
+            trainCode: '5554',
+            routeSignature: computeRouteSignature(body as unknown as Trip),
+            firedAt: CREATED - 15_000,
+          },
+        }),
+      );
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '군자(능동)', line: '5' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+      // 핵심 — live Seoul 재조회(POSITIONS) 자체를 타지 않는다. 호출됐다면 이 테스트가 재현한
+      // 물리 상태(상행 후보 0건)에서 none이 나와야 정상이므로, trainCode가 일치한다는 것 자체가
+      // 이 fetch 호출 여부와 독립적임을 보장하기 위해 미호출까지 함께 확인한다.
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('5554');
+      expect(stored.boardingLock?.line).toBe('5');
+    });
+
+    it('② 5559(10/9에 실제로 걸렸던 반대 방향 열차)는 stamp 경로에서도 direction 필터를 거친 실측 데이터에선 결코 stamp되지 않는다', async () => {
+      const derived = await deriveRealUpDirectionTrainCode();
+      expect(derived).not.toBe('5559');
+      expect(derived).toBe('5554');
+
+      // stamp 경로 자체가 derived(실측 direction-filtered 값)를 받으면 그 값으로 승격되고,
+      // 5559로는 결코 승격되지 않는다(위 ①과 동일 메커니즘, derived 값으로 재확인).
+      fetchSpy.mockResolvedValue(new Response(JSON.stringify(noUpTrainAtAnchorPositions()), { status: 200 }));
+      const env = makeKvEnv();
+      const body = gunjaTripBody();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify({
+          ...body,
+          legBoardingFireStamp: {
+            boardingStation: '군자(능동)',
+            line: '5',
+            trainCode: derived,
+            routeSignature: computeRouteSignature(body as unknown as Trip),
+            firedAt: CREATED - 15_000,
+          },
+        }),
+      );
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '군자(능동)', line: '5' }),
+        env,
+      );
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).not.toBe('5559');
+      expect(stored.boardingLock?.trainCode).toBe('5554');
+    });
+
+    it('③ stamp에 trainCode 없음(ambiguity 발사) → 현행 live 재해소 경로로 떨어지고, 그 결과가 none이어도 release는 유지된다(trip이 막히지 않음)', async () => {
+      fetchSpy.mockResolvedValue(new Response(JSON.stringify(noUpTrainAtAnchorPositions()), { status: 200 }));
+      const env = makeKvEnv();
+      const body = gunjaTripBody();
+      await env.TRIPS.put(
+        `trip:tok-bc`,
+        JSON.stringify({
+          ...body,
+          legBoardingFireStamp: {
+            boardingStation: '군자(능동)',
+            line: '5',
+            // trainCode 필드 자체가 없음 — pickAutoTrainCode가 ambiguity로 null을 반환했던 발사.
+            routeSignature: computeRouteSignature(body as unknown as Trip),
+            firedAt: CREATED - 15_000,
+          },
+        }),
+      );
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ station: '군자(능동)', line: '5' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      // 승격도 live 재해소도 모두 실패 — lockState는 none.
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      // 핵심 — release는 되돌려지지 않는다. 잔존하던 반대 방향 leg-1 lock(5559)으로 복귀하지
+      // 않고 undefined로 남아, 다음 cron cycle이 leg-2를 교정할 수 있는 상태를 유지한다.
+      expect(stored.boardingLock).toBeUndefined();
     });
   });
 
