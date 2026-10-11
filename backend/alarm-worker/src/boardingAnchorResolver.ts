@@ -453,7 +453,8 @@ export interface LegOriginResolutionOptions {
    *
    * 근거: leg 2는 환승 후 도보 이동 창(#2511이 놓친 위험)이 있어, walk-gate(`legBoardingEligibleAt`)
    * 없이 평가하면 "아직 플랫폼에 도착하지 않았는데 서 있는 열차와 우연히 매칭"될 위험이 크다.
-   * walk-gate는 `allowLegTransfer` 값과 무관하게 항상 강제된다(우회 불가).
+   * walk-gate는 `allowLegTransfer` 값과 무관하게 항상 강제된다 — **단 하나의 명시적 예외는
+   * 아래 `bypassWalkGate`**(#2957).
    *
    * #2539 갱신 — cron(`scheduled.ts`)도 이제 `{ allowLegTransfer: true }`를 전달해 leg 2를
    * 평가한다(구 정책: cron은 leg 2를 절대 평가하지 않음 — #2539가 supersede). register-time(탭,
@@ -482,6 +483,22 @@ export interface LegOriginResolutionOptions {
    * 기존과 동일하게 1회 resolved 즉시 승격을 유지한다(무변경).
    */
   legTransition?: { pending?: LegPendingCandidate };
+  /**
+   * #2957 (W2, P2-b 해소) — true면 `currentLegAnchor` 분기에서 `legBoardingEligibleAt` 도보시간
+   * 게이트를 평가하지 않는다(`eligibleAt`이 아예 undefined인 비정상 상태는 여전히 null — anchor
+   * 자체가 미완성이면 bypass 대상이 아니다).
+   *
+   * **이 플래그의 유일한 caller는 `index.ts` boarding-confirm 핸들러**(`decideLegLockReleaseForBoardedTap`
+   * 가 release:true를 반환했을 때만) — register-time(`resolveBoardingAnchorAtRegister`)과 cron
+   * (`scheduled.ts`) 호출자는 전달하지 않아(미지정 시 `undefined` → falsy) 100% 무변경이다.
+   *
+   * 근거(10/9 실측, 이슈 #2957 P2-b): "탑승하셨나요?" 프롬프트는 회고형이라 발사 자체가 이미
+   * walk-gate와 분리됐다(#2801) — 그런데 그 프롬프트에 대한 **응답**(이 탭)은 여전히 walk-gate에
+   * 막혀 leg1 lock이 이미 있으면 교체되지 못했다("발사는 분리됐는데 응답은 안 됐다 — 편측").
+   * 사용자가 명시적으로 [탑승함]을 탭한 시점은 ADR-010 기준 가장 강한 의향 신호이므로, walk-gate가
+   * 보호하려는 대상(수동/배경 폴링의 오매칭)과 무관하다 — 그래서 이 탭에 한해 게이트를 생략한다.
+   */
+  bypassWalkGate?: boolean;
 }
 
 /**
@@ -519,7 +536,10 @@ export function resolveActiveLegOrigin(
   if (trip.currentLegAnchor) {
     if (options?.allowLegTransfer !== true) return null;
     const eligibleAt = trip.legBoardingEligibleAt;
-    if (eligibleAt === undefined || now < eligibleAt) return null;
+    if (eligibleAt === undefined) return null;
+    // #2957 — bypassWalkGate(boarding-confirm 탭 전용)는 타이밍 체크만 생략한다. eligibleAt 자체가
+    // 없는(anchor 미완성) 상태는 여전히 null — 위에서 이미 처리.
+    if (options?.bypassWalkGate !== true && now < eligibleAt) return null;
     return { originStation: trip.currentLegAnchor.boardingStation, line: trip.currentLegAnchor.line };
   }
   if (trip.promptDisplay) {
@@ -585,6 +605,7 @@ export async function attemptBoardingAnchorResolution(
     const walkGated =
       trip.currentLegAnchor !== undefined &&
       options?.allowLegTransfer === true &&
+      options?.bypassWalkGate !== true &&
       (trip.legBoardingEligibleAt === undefined || now < trip.legBoardingEligibleAt);
     if (walkGated) {
       onOutcome?.('walk-gated');
