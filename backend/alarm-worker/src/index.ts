@@ -2238,7 +2238,30 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     if (working.infoModeEnabled !== true) {
       working = { ...working, infoModeEnabled: true };
     }
-    // #1729 — 이미 active lock이 있으면 재평가하지 않는다(register-time과 동일 가드).
+    // #2957 (W2) — leg-1 lock 잔존이 leg-2 응답을 봉쇄하던 회귀(10/9 실측) 수리. active lock이
+    // 있어도 `decideLegLockReleaseForBoardedTap`이 release:true면 먼저 release(undefined)한다 —
+    // 아래 `#1729` 가드(`working.boardingLock === undefined`)는 삭제하지 않고 그대로 둔 채, 그
+    // 가드를 자연히 통과시켜 기존 생성 경로를 재사용한다(사전조사 선례 4개와 동일 release→
+    // 재생성 패턴, 신규 "직접 attach" 경로 없음).
+    let releasedForLegSwitch = false;
+    if (working.boardingLock !== undefined) {
+      const releaseDecision = decideLegLockReleaseForBoardedTap(working, now);
+      // V/X — wrangler tail에서 release 판정 사유를 바로 확인(Wire-completion #2 요구사항).
+      console.log(
+        JSON.stringify({
+          msg: 'boarding-confirm: leg-lock release decision',
+          release: releaseDecision.release,
+          reason: releaseDecision.reason,
+        }),
+      );
+      if (releaseDecision.release) {
+        working = { ...working, boardingLock: undefined };
+        releasedForLegSwitch = true;
+      }
+    }
+    // #1729 — 이미 active lock이 있으면 재평가하지 않는다(register-time과 동일 가드). #2957이
+    // 바로 위에서 release한 경우에만 이 가드를 통과한다 — register-time 경로(:5088 테스트)는
+    // 이 release 로직을 전혀 거치지 않으므로 무변경.
     if (working.boardingLock === undefined) {
       try {
         const seoul = new SeoulArrivalClient({
@@ -2248,8 +2271,16 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         // #2739 — 기존 backend anchor(currentLegAnchor 게이트 통과 / promptDisplay)가 있는지
         // 미리 확인해 anchorSource를 정한다. activeOrigin이 있으면 탭 fallback 분기 자체에
         // 진입하지 않으므로(resolver 내부 동일 판정) 회귀 없음 — 요구사항 2.
-        const activeOrigin = resolveActiveLegOrigin(working, now, { allowLegTransfer: true });
+        // #2957 — releasedForLegSwitch(release가 유효한 stamp/anchor 근거로 일어났을 때만
+        // true)면 bypassWalkGate를 전달해 W-1(walk-gate 미개방 지각 탭)을 해소한다. 원래부터
+        // boardingLock이 undefined였던 기존 3개 호출 패턴(이 분기 자체 포함, register-time/cron)
+        // 은 bypassWalkGate 미전달과 동일하게 동작 — release가 일어나지 않았으면 false.
+        const activeOrigin = resolveActiveLegOrigin(working, now, {
+          allowLegTransfer: true,
+          bypassWalkGate: releasedForLegSwitch,
+        });
         const isWalkGated =
+          !releasedForLegSwitch &&
           working.currentLegAnchor !== undefined &&
           (working.legBoardingEligibleAt === undefined || now < working.legBoardingEligibleAt);
         if (activeOrigin) {
@@ -2263,7 +2294,11 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           working,
           seoul,
           now,
-          { allowLegTransfer: true, tapAnchor: { boardingStation: payload.station, line: payload.line } },
+          {
+            allowLegTransfer: true,
+            tapAnchor: { boardingStation: payload.station, line: payload.line },
+            bypassWalkGate: releasedForLegSwitch,
+          },
           // ADR-037 D2b (#2535, 진단 계측 only) — resolve outcome 관측. lock 판정/생성 자체는
           // anchorLock 반환값 그대로 사용 — 이 콜백은 D1 append 용 부가 관측이다.
           // #2893 — outcome==='none'일 때만 detail.noneReason이 채워진다(세부 사유 D1 관측).
@@ -2293,13 +2328,19 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
             };
           }
           const isLeg2 = isLegTwoActive(working, now);
+          // #2957 (§4-2) — LA push 게이트(`lastLaPushEpoch`/`lastLaPushAt`) 리셋은 waypoint가
+          // 실제로 전진했을 때만 정당하다(기존: lock undefined→생성에 묶여 tapAdvance를 항상
+          // 동반했음). `releasedForLegSwitch`로 lock이 release된 경우, `currentLegAnchor`가 이미
+          // 있어 activeOrigin이 그대로 resolve되므로 tapAdvance가 발생하지 않는다 — 이때는
+          // waypoint 전진이 없으므로 리셋을 건너뛴다(안 하면 LA 재push가 생긴다). 원래부터
+          // lock이 undefined였던 경로(releasedForLegSwitch=false)는 기존처럼 항상 리셋 — 무변경.
+          const skipLaPushReset = releasedForLegSwitch && !tapAdvance;
           working = {
             ...working,
             boardingLock: anchorLock,
             consecutiveEtaMissing: 0,
             lastTrackedArrivalEpoch: undefined,
-            lastLaPushEpoch: undefined,
-            lastLaPushAt: undefined,
+            ...(skipLaPushReset ? {} : { lastLaPushEpoch: undefined, lastLaPushAt: undefined }),
             ...(isLeg2
               ? { legBoardingPromptState: markPromptFired(now, working.legBoardingPromptState, anchorLock.trainCode) }
               : { boardingPromptState: markPromptFired(now, working.boardingPromptState, anchorLock.trainCode) }),

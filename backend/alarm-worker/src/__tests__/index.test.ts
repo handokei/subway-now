@@ -2861,7 +2861,14 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
     });
 
-    it('이미 boardingLock 있는 trip → 재평가 안 함(fetch 미호출), 기존 상태 그대로 leg1 보고', async () => {
+    // #2957 — 이 테스트가 지키던 가정("boarding-confirm에서 active lock이면 항상 재평가 안
+    // 함")을 본 이슈가 의도적으로 폐기했다. 지금은 `currentLegAnchor`가 없는(=leg-1 주행 중,
+    // 이 테스트의 fixture가 정확히 그 상태) 경우에만 재평가를 생략한다 —
+    // `decideLegLockReleaseForBoardedTap`의 'no-anchor' 분기(W-2/W-3). `currentLegAnchor`가
+    // 있는 leg-2 trip은 더 이상 이 가드로 무조건 막히지 않는다(아래 "leg-2 lock 교체 (#2957
+    // W2)" describe). register-time 경로(:5088)는 이 release 로직을 전혀 타지 않으므로 그대로
+    // 유효하다.
+    it('이미 boardingLock 있는 trip(currentLegAnchor 없음=leg-1) → 재평가 안 함(fetch 미호출), 기존 상태 그대로 leg1 보고', async () => {
       const env = makeKvEnv();
       await env.TRIPS.put(
         `trip:tok-bc`,
