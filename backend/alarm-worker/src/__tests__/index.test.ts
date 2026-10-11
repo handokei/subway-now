@@ -5,6 +5,7 @@ import {
   applyProgress,
   buildBoardingConfirmEventMeta,
   computeLockSyncAdvance,
+  decideLegLockReleaseForBoardedTap,
   dualWriteTripDo,
   isPromotionCorroborated,
   isSsotSyncAdvanceMonotonic,
@@ -17,6 +18,7 @@ import {
   validateTrip,
   verifyBoardingLockPersisted,
 } from '../index';
+import { computeRouteSignature } from '../trips';
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import { TripDO } from '../tripDO';
 import { TRIP_DO_FLAG_KV_KEY } from '../tripDoFlag';
@@ -2881,6 +2883,155 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, lockState: 'leg1' });
       expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2957 (W2) — 10/9 실측 회귀(leg-1 lock 5559 잔존이 leg-2 응답을 봉쇄) 수리의 핵심 판정
+  // 함수. 거부 케이스 9종 표(이슈 본문) 중 release 여부를 가르는 7종(W-1~W-6, §4-1)을 직접
+  // 단위 테스트한다 — HTTP 왕복 없이 순수 함수 단위로 전부 고정.
+  describe('decideLegLockReleaseForBoardedTap (#2957, W2 — release→재생성 판정)', () => {
+    const NOW = 1_710_000_000_000;
+
+    function leg1Lock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        trainCode: '5559',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW - 10 * 60_000,
+        segmentStations: ['중곡', '어린이대공원'],
+        expiresAt: NOW + 60 * 60_000,
+        ...overrides,
+      };
+    }
+
+    function leg2TripBase(overrides: Partial<Trip> = {}): Trip {
+      return {
+        token: 'tok-release',
+        route: { type: 'transfer', transferName: '건대입구', fromLine: '2', toLine: '7', stopsToTransfer: 2, stopsFromTransfer: 2 },
+        destination: '용마산',
+        waypoints: [
+          { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+          { stationName: '용마산', line: '7', kind: 'destination' },
+        ],
+        createdAt: NOW - 20 * 60_000,
+        expiresAt: NOW + 60 * 60_000,
+        alarmAtEpochMs: NOW + 30 * 60_000,
+        boardingLock: leg1Lock() as unknown as Trip['boardingLock'],
+        ...overrides,
+      } as unknown as Trip;
+    }
+
+    // W-2/W-3 — currentLegAnchor 없음(leg-1 주행 중/anchor 부재) → 교체 금지, 오배치 금지.
+    it('W-2/W-3 — currentLegAnchor 없음 → release:false(no-anchor), leg-1 lock 유지', () => {
+      const trip = leg2TripBase({ currentLegAnchor: undefined });
+      expect(decideLegLockReleaseForBoardedTap(trip, NOW)).toEqual({
+        release: false,
+        reason: 'no-anchor',
+      });
+    });
+
+    // §4-1 — lock이 이미 현재 leg(건대입구/7)에 정확히 붙어있으면 stamp와 무관하게 no-op.
+    // (release하면 §4-2 LA 재push + §4-4 device immutable-skip 발산이 일어난다 — 코디네이터
+    // 정정 근거, boardedAt 아님.)
+    it('§4-1 — lock이 이미 현재 leg에 부착됨 → release:false(already-correct-leg), stamp 무관', () => {
+      const trip = leg2TripBase({
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        boardingLock: leg1Lock({
+          trainCode: '7256',
+          segmentStations: ['건대입구', '어린이대공원', '용마산'],
+        }) as unknown as Trip['boardingLock'],
+        legBoardingFireStamp: {
+          boardingStation: '건대입구',
+          line: '7',
+          trainCode: '7256',
+          routeSignature: 'anything',
+          firedAt: NOW - 1000,
+        },
+      });
+      expect(decideLegLockReleaseForBoardedTap(trip, NOW)).toEqual({
+        release: false,
+        reason: 'already-correct-leg',
+      });
+    });
+
+    // W-5 — stamp 없음(프롬프트 미발사) → stamp 검증 없이 currentLegAnchor를 그대로 신뢰해 release.
+    it('W-5 — stamp 없음(legBoardingFireStamp undefined) → release:true(no-stamp-trust-anchor)', () => {
+      const trip = leg2TripBase({
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingFireStamp: undefined,
+      });
+      expect(decideLegLockReleaseForBoardedTap(trip, NOW)).toEqual({
+        release: true,
+        reason: 'no-stamp-trust-anchor',
+      });
+    });
+
+    // W-6 (최대 리스크, 10/9 route-signature-mismatch ~30회) — stamp의 routeSignature가 현재
+    // computeRouteSignature(trip)과 다르면 leg 동일성 확인 전에 즉시 거부.
+    it('W-6 — stamp의 routeSignature ≠ 현재 computeRouteSignature(trip) → release:false(route-signature-mismatch)', () => {
+      const trip = leg2TripBase({
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingFireStamp: {
+          boardingStation: '건대입구',
+          line: '7',
+          trainCode: '7256',
+          routeSignature: 'stale-signature-불일치',
+          firedAt: NOW - 1000,
+        },
+      });
+      expect(computeRouteSignature(trip)).not.toBe('stale-signature-불일치');
+      expect(decideLegLockReleaseForBoardedTap(trip, NOW)).toEqual({
+        release: false,
+        reason: 'route-signature-mismatch',
+      });
+    });
+
+    // W-4 — routeSignature는 일치하지만 stamp의 leg(건대입구/7)가 현재 currentLegAnchor와 다름
+    // (환승이 한 번 더 진행돼 leg가 넘어간 뒤에 도착한 지연 응답) → 거부.
+    it('W-4 — routeSignature 일치하나 stamp의 leg ≠ 현재 currentLegAnchor → release:false(stale-leg-stamp)', () => {
+      const trip = leg2TripBase({
+        currentLegAnchor: { boardingStation: '어린이대공원', line: '7' },
+      });
+      const routeSignature = computeRouteSignature(trip);
+      const withStamp = {
+        ...trip,
+        legBoardingFireStamp: {
+          boardingStation: '건대입구',
+          line: '7',
+          trainCode: '7256',
+          routeSignature,
+          firedAt: NOW - 1000,
+        },
+      } as Trip;
+      expect(decideLegLockReleaseForBoardedTap(withStamp, NOW)).toEqual({
+        release: false,
+        reason: 'stale-leg-stamp',
+      });
+    });
+
+    // W-1 — 환승 advance 완료 + walk-gate 미개방(now < legBoardingEligibleAt) 상태에서도 stamp가
+    // leg·routeSignature 모두 유효하면 release한다 — walk-gate는 이 판정에 전혀 관여하지 않는다
+    // (P2-b 해소 — 응답 측이 더 이상 도보 게이트에 묶이지 않음을 증명).
+    it('W-1 — walk-gate 미개방(now < legBoardingEligibleAt)이어도 stamp 유효하면 release:true(stamp-valid)', () => {
+      const trip = leg2TripBase({
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: NOW + 5 * 60_000, // 아직 안 열림
+      });
+      const routeSignature = computeRouteSignature(trip);
+      const withStamp = {
+        ...trip,
+        legBoardingFireStamp: {
+          boardingStation: '건대입구',
+          line: '7',
+          trainCode: '7256',
+          routeSignature,
+          firedAt: NOW - 1000,
+        },
+      } as Trip;
+      expect(decideLegLockReleaseForBoardedTap(withStamp, NOW)).toEqual({
+        release: true,
+        reason: 'stamp-valid',
+      });
     });
   });
 
