@@ -308,8 +308,22 @@ export async function handleResponse(
     // 완전 침묵한다(#2852 root). fire-and-forget — `postBoardingConfirm`은 내부에서 실패를
     // swallow하므로 이 await가 critical path를 막거나 throw하지 않는다. try/catch는 이중
     // 방어(#819 invariants "api 절대 throw 금지" 패턴 — 호출부도 독립적으로 안전해야 한다).
+    //
+    // #2961 — payload.trainCode(#2819 push payload embed 값, backend가 발사 시점 단일 확정한
+    // 열차)가 있으면 그대로 forward한다. 2회 발사(27분차·30분차) 시 backend의 마지막 stamp가
+    // 아니라 **사용자가 실제로 탭한 알림의 열차**로 lock해야 하므로(이슈 본문 핵심 시나리오).
     try {
-      await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
+      if (payload.trainCode !== undefined) {
+        await postBoardingConfirm(
+          payload.tripToken,
+          'boarded',
+          payload.originStation,
+          payload.line,
+          payload.trainCode,
+        );
+      } else {
+        await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
+      }
     } catch (err) {
       log.warn('boarding-confirm forward failed — non-critical', err as Error);
     }
