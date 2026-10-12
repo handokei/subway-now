@@ -116,6 +116,20 @@ export interface LiveActivityDeps {
  * origin)을 전달해야 한다 — `waypoint`(이 함수의 다른 인자들이 의미하는 "추적 중인 다음
  * 대상")를 그대로 stationName에 쓰면 device가 아직 도착하지 않은 역을 현재역처럼 보여주는
  * 회귀가 된다(#2849 — 10/1 실측, 9/7·9/16 재발).
+ *
+ * `trainCodeOverride` (#2962) — content-state의 optional `trainCode` 필드. 사용자가 LA의
+ * [탑승] 버튼을 탭하면 `BoardingIntents.swift`가 이 값을 body에 실어 backend
+ * `/boarding-confirm`에 보낸다(#2961/#2963이 수용). 미전달 시 `trip.boardingLock?.trainCode`로
+ * 폴백한다 — lock이 걸린 뒤의 일반 추적 update(`scheduled.ts`의 waypoint advance /
+ * `maybeFireLiveActivityUpdate`)는 "지금 추적 중인 그 열차"를 그대로 반영하면 되므로 별도 전달
+ * 없이 자동으로 채워진다. **lock이 아직 없는 pre-boarding 단계**(boardingPrompt alert, 27분차·
+ * 30분차처럼 같은 trip에 여러 열차가 후보로 발사되는 시점)는 boardingLock이 없어 폴백이
+ * undefined이므로, 그 특정 발사의 열차(`selectedTrainCode`)를 호출자가 명시적으로 override해야
+ * 한다 — 이것이 본 이슈가 해결하는 시나리오(27분차 알림의 LA 버튼을 눌러도 30분차가 lock되던
+ * 회귀, stamp 폴백에만 의존하던 구조의 근본 수정).
+ *
+ * trip도 override도 없으면(legacy 호출) 필드 자체를 emit하지 않는다 — byte-level 하위호환
+ * (R-1/R-3, 구 backend/구 위젯 양방향 회귀 0).
  */
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
@@ -123,6 +137,7 @@ export function buildLiveActivityContentState(
   stopsRemaining: number,
   trip?: Trip,
   currentStationName?: string,
+  trainCodeOverride?: string,
 ): LiveActivityContentState {
   // #1654 / #1658 — 환승 waypoint 추적 중에는 다음 leg의 line을 lineName/lineColorHex에 반영한다.
   // waypoint.kind==='transfer' + trip.waypoints[1]이 존재하면 새 leg의 line을 우선 사용.
@@ -142,11 +157,16 @@ export function buildLiveActivityContentState(
     stopsRemaining,
     etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
   };
-  if (!trip) return base;
+  // #2962 — override 우선, 없으면 trip.boardingLock.trainCode로 폴백. 둘 다 없으면 필드 자체를
+  // emit하지 않는다(아래 spread) — 기존 MultiHopContext 선택 필드 관례와 동일.
+  const resolvedTrainCode = trainCodeOverride ?? trip?.boardingLock?.trainCode;
+  const withTrainCode =
+    resolvedTrainCode !== undefined ? { trainCode: resolvedTrainCode } : {};
+  if (!trip) return { ...base, ...withTrainCode };
   // multi-hop optional 필드는 존재하는 것만 spread — undefined assignment를 피해 기존 5 필드
   // toEqual 단언과 ActivityKit content-state diff 모두 깔끔.
   const multiHop = computeMultiHopContext(trip);
-  return { ...base, ...multiHop };
+  return { ...base, ...multiHop, ...withTrainCode };
 }
 
 /**
