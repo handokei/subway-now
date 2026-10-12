@@ -528,4 +528,84 @@ describe('buildBoardingPromptContext', () => {
       expect(ctx?.promptDisplay.originStation).toBe(current.name);
     });
   });
+
+  // #2959 — 지하 출발(currentStation=null)에서 GPS 무관 origin fallback(customOrigin /
+  // boardingLockStation / persisted tripOrigin)이 없으면 promptDisplay가 영구 미송신된다.
+  // 실측: 중곡(7)→군자 환승→광화문(5) 경로에서 10개 역 매역/준비 알림 전부 불가.
+  describe('#2959 — GPS 무관 origin fallback (gpsFreeOriginCandidates)', () => {
+    const jungok = st('7-016'); // 중곡
+    const gwanghwamun = st('5-024'); // 광화문(세종문화회관)
+    const transferRoute = () =>
+      makeTransferRoute({
+        transferName: '군자',
+        fromLine: '7',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 11,
+      });
+
+    // C — 측정 재현: currentStation=null + fallback 후보 없음 → null (현재 코드 결함 고정).
+    it('C: currentStation=null + 후보 없음 → null (현행 결함 재현)', () => {
+      const ctx = buildBoardingPromptContext({
+        route: transferRoute(),
+        currentStation: null,
+        destination: gwanghwamun,
+      });
+      expect(ctx).toBeNull();
+    });
+
+    // C-fix — fallback 후보(persisted tripOrigin 등)가 있으면 그 역 기준으로 context가 빌드된다.
+    it('C-fix: currentStation=null + gpsFreeOriginCandidates에 유효 역 → non-null, 해당 역 기준 stamp', () => {
+      const ctx = buildBoardingPromptContext({
+        route: transferRoute(),
+        currentStation: null,
+        destination: gwanghwamun,
+        gpsFreeOriginCandidates: [null, undefined, jungok],
+      });
+      expect(ctx).not.toBeNull();
+      expect(ctx?.promptDisplay.originStation).toBe(jungok.name);
+      expect(ctx?.promptDisplay.line).toBe('7');
+    });
+
+    // A — 회귀 가드: currentStation이 있으면 후보 유무와 무관하게 동일한 context(R-2, 현행 불변).
+    it('A: currentStation 있음 → gpsFreeOriginCandidates 무시, 기존 동작과 동일', () => {
+      const withCandidates = buildBoardingPromptContext({
+        route: transferRoute(),
+        currentStation: jungok,
+        destination: gwanghwamun,
+        gpsFreeOriginCandidates: [st('3-001')],
+      });
+      const withoutCandidates = buildBoardingPromptContext({
+        route: transferRoute(),
+        currentStation: jungok,
+        destination: gwanghwamun,
+      });
+      expect(withCandidates).toEqual(withoutCandidates);
+      expect(withCandidates?.promptDisplay.originStation).toBe(jungok.name);
+    });
+
+    // R-1 — 후보가 전부 null/undefined → 현행 sparse(null) 유지, 억지 추측 금지.
+    it('R-1: currentStation=null + 후보 전부 null → null 유지', () => {
+      const ctx = buildBoardingPromptContext({
+        route: transferRoute(),
+        currentStation: null,
+        destination: gwanghwamun,
+        gpsFreeOriginCandidates: [null, undefined, null],
+      });
+      expect(ctx).toBeNull();
+    });
+
+    // R-3 — fallback 후보가 route 상에 없는 역(다른 노선)이면 전개를 포기하고 null 유지.
+    // 엉뚱한 waypoint/context를 만들지 않는다.
+    it('R-3: fallback 후보가 route와 무관한 노선의 역 → null 유지 (엉뚱한 context 생성 금지)', () => {
+      const offRouteStation = st('3-001'); // 3호선 — route(7↔5)와 무관
+      const ctx = buildBoardingPromptContext({
+        route: transferRoute(),
+        currentStation: null,
+        destination: gwanghwamun,
+        gpsFreeOriginCandidates: [offRouteStation],
+      });
+      expect(ctx).toBeNull();
+    });
+  });
 });
