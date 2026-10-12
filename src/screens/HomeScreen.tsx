@@ -1253,6 +1253,13 @@ export default function HomeScreen() {
     // 있었다 — tripOrigin을 명시 송신해 backend가 우선 채택하도록 한다. 캡처 전(cold-start)이면
     // undefined로 생략(graceful) — backend는 기존 passedStations fallback으로 동작.
     originStationName: tripOrigin?.name,
+    // #2959 — GPS 무관 origin fallback 후보(우선순위 순). currentStation(result?.station)이
+    // GPS dead zone(지하 등)으로 null일 때 waypoint 전개 + boarding-prompt context 빌드에
+    // 사용된다. result?.station/lastFusedStationRef는 GPS 파생이라 의도적으로 제외
+    // (routeOriginStation=effectiveOrigin과 달리 이 후보들은 순수 GPS 무관 소스만 담는다).
+    customOrigin,
+    boardingLockStation,
+    tripOriginStation: tripOrigin,
   });
 
   // #2422 (방향 A) — boarding prompt device FG 로컬 단일권위. backend remote alert push(주 채널)
