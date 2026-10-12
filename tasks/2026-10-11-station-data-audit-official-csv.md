@@ -71,7 +71,49 @@ stations.json:  … 한성백제 → 둔촌오륜 → 중앙보훈병원 → 올
 
 `buildRouteGraph.ts:108`이 엣지를 **`stationDistances.json` 키에서만** 만든다(폴백 없음 — import는 `stations` / `stationDistances` / `transferTimes` 뿐).
 
-### 2-1. 실행 결과 (`findRoutes`)
+### 2-1. 🔴 정정 (2026-10-12) — 아래 표는 **미배선 함수**로 측정한 것이다
+
+**원 측정이 무효다.** `findRoutes`가 두 곳에 있고, 측정에 쓴 쪽은 프로덕션에 배선되지 않았다:
+
+```
+src/shared/utils/stationRoute.ts::findRoutes    import 95건, HomeScreen.tsx:614 호출   ← 배선됨
+src/shared/utils/dijkstraRoute.ts::findRoutes   import 0건                            ← 미배선 (측정 대상)
+```
+
+`stationRoute.findRoutes`는 같은 노선 직통을 **`getStationsOnLine(line)` 배열 인덱스**로 계산하며 `stationDistances.json` 엣지를 **쓰지 않는다**. 그래서 거리 키가 0개여도 경로가 정상 산출된다. `dijkstraRoute`는 `#1499`가 *"stationRoute / DebugModal에서 cross-check 가능하게"* 도입한 **교차검증용**이다.
+
+배선된 함수로 재측정한 값:
+
+| 경로 | 원 보고(미배선) | **실제(배선됨)** |
+| --- | --- | --- |
+| 9호선 개화 → 중앙보훈병원 | 경로 없음(`null`) | **`direct`, 36정거장, 환승 0 — 정상** |
+| 9호선 노량진 → 여의도 | 19.7분·환승 3·도보 13.5분 | **4분·환승 0 — 정상** |
+| 2호선 시청 → 충정로 | 22.6분·환승 2 | 같은 이유로 **무효**(재측정 필요) |
+
+### 진짜 영향 — 성격이 "경로 불능"에서 "ETA 부정확"으로 내려간다
+
+거리 키 결손의 실제 소비 체인:
+```
+stationDistances 9호선 0개
+  → getStopSeconds tier 3 = STOP_FALLBACK_SECONDS(120초) 균일 폴백
+  → hopTime.ts:26 (estimator) · calculateStaticETA
+  → 사용자에게 부정확한 ETA
+```
+`hopTime.ts:13-14` 주석이 이미 자백한다: *"데이터 미커버 노선(9호선/공항철도/경의중앙선 등)은 `getStopSeconds` 내부에서 120s fallback"*.
+
+→ **치명(경로 불능) → 중(ETA 부정확).** 고칠 가치는 유지되나 **우선순위와 acceptance가 달라진다**(#2967 재작성).
+
+### §2-2·§1은 유효하다
+
+거리 키 결손 수치(**73/520 연속쌍**, 9호선 37·공항철도 12 등)와 §1 역 집합 대조(**역 부재 61·노선 소속 10·역명 변경 2·표기 1·순서 오류 1**)는 **데이터 파일 직접 집계**라 이 정정과 무관하게 유효하다.
+
+### 재발 방지
+
+측정 대상 함수를 고르기 전 **프로덕션 호출 여부를 import 수로 확인**한다. 이 레포는 동명 export가 쌍으로 존재한다(`findRoutes`·`dijkstraRoute`·`fromSeoulStationName`·`pickAutoTrainCode` — device/backend 또는 주/보조). **파일 경로까지 명시**할 것. 출처: `memory/lesson_measured_unwired_function_route_audit.md`
+
+---
+
+### 2-1(원문, 무효 — 이력 보존) 실행 결과 (`findRoutes`)
 
 | 경로 | 실제 소요 | 앱 산출 |
 | --- | --- | --- |
