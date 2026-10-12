@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SeoulArrivalClient, parseRecptnDt, parseTerminusStationName } from '../seoul';
+import { SeoulArrivalClient, parseRecptnDt } from '../seoul';
 import { matchLine } from '../lineAlias';
 import { estimateArrivalFromPosition } from '../scheduled';
 import type { BoardingLockMeta } from '../types';
@@ -191,14 +191,19 @@ describe('SeoulArrivalClient', () => {
       expect(arrivals[3].trainType).toBe('normal');
     });
 
-    it('parses trainLineNm into terminus station name', async () => {
+    // #2953 — trainLineNm은 실 API에서 "{종착}행 - {다음정차역}방면 [(급행)]" 복합 포맷으로
+    // 온다("성수행" 같은 단독 포맷은 실측 0건, #2953 이슈 본문). 순수 종착역명은 같은 응답의
+    // bstatnNm 필드에서 가져온다 — trainLineNm을 파싱하지 않는다.
+    it('①②③ bstatnNm에서 순수 종착역명을 가져온다 — 복합 trainLineNm/급행 접미사 무관', async () => {
       const fetchImpl = vi.fn(async () =>
         makeResponse({
           realtimeArrivalList: [
-            makeItem({ trainLineNm: '성수행' }),
-            makeItem({ trainLineNm: '내선순환' }),
-            makeItem({ trainLineNm: '외선순환' }),
-            makeItem({ trainLineNm: '장암방면' }),
+            // ① 단일 분기 복합 포맷
+            makeItem({ trainLineNm: '성수행 - 성수방면', bstatnNm: '성수' }),
+            // ② 지선 분기 — bstatnNm이 다음정차역(뚝섬유원지)이 아니라 종착(석남)이어야 한다
+            makeItem({ trainLineNm: '석남행 - 뚝섬유원지방면', bstatnNm: '석남' }),
+            // ③ 급행 접미사 — 구 파서는 두 분기 모두 실패해 null로 떨어졌다
+            makeItem({ trainLineNm: '청량리행 - 종로3가방면 (급행)', bstatnNm: '청량리' }),
           ],
         }),
       );
@@ -210,28 +215,83 @@ describe('SeoulArrivalClient', () => {
       });
       const arrivals = await client.fetchArrivals('서울역');
       expect(arrivals[0].terminus).toBe('성수');
-      expect(arrivals[1].terminus).toBeNull();
-      expect(arrivals[2].terminus).toBeNull();
-      expect(arrivals[3].terminus).toBe('장암');
+      expect(arrivals[1].terminus).toBe('석남');
+      expect(arrivals[1].terminus).not.toBe('뚝섬유원지');
+      // #2953 정정 — '청량리'는 #2868 35역 drift map 대상(SEOUL_STATION_QUERY_NAME
+      // '청량리(서울시립대입구)': '청량리')이라 fromSeoulStationName 경계 번역이 그대로
+      // 적용되면 stations.json 괄호 부기명으로 번역된다(⑥ '뚝섬유원지'→'자양(뚝섬한강공원)'과
+      // 동일 메커니즘). 원 이슈 TDD 표는 이 drift를 반영하지 않은 '청량리' 리터럴이었다.
+      expect(arrivals[2].terminus).toBe('청량리(서울시립대입구)');
     });
-  });
 
-  describe('parseTerminusStationName', () => {
-    it('strips 행 suffix', () => {
-      expect(parseTerminusStationName('성수행')).toBe('성수');
+    it('④ 역명이 아닌 운행구간 레이블(응암순환(상선))은 null로 떨어진다', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimeArrivalList: [makeItem({ bstatnNm: '응암순환(상선)' })],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const arrivals = await client.fetchArrivals('서울역');
+      expect(arrivals[0].terminus).toBeNull();
     });
-    it('strips 방면 suffix', () => {
-      expect(parseTerminusStationName('장암방면')).toBe('장암');
+
+    it('⑤ bstatnNm 부재/빈 문자열은 null', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimeArrivalList: [
+            makeItem({ bstatnNm: undefined }),
+            makeItem({ bstatnNm: '' }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const arrivals = await client.fetchArrivals('서울역');
+      expect(arrivals[0].terminus).toBeNull();
+      expect(arrivals[1].terminus).toBeNull();
     });
-    it('returns null for loop-line direction tokens', () => {
-      expect(parseTerminusStationName('내선순환')).toBeNull();
-      expect(parseTerminusStationName('외선순환')).toBeNull();
+
+    it('⑥ bstatnNm에 seoul.ts 역명 경계 번역(fromSeoulStationName)이 적용된다', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimeArrivalList: [makeItem({ bstatnNm: '뚝섬유원지' })],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const arrivals = await client.fetchArrivals('서울역');
+      expect(arrivals[0].terminus).toBe('자양(뚝섬한강공원)');
     });
-    it('returns null for unrecognized formats', () => {
-      expect(parseTerminusStationName('')).toBeNull();
-      expect(parseTerminusStationName('알수없음')).toBeNull();
-      expect(parseTerminusStationName('행')).toBeNull();
-      expect(parseTerminusStationName('방면')).toBeNull();
+
+    it('⑦ 거부 케이스 — bstatnNm 없는 순환선(내선순환)은 null, #1740 omit 거동 불변', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimeArrivalList: [
+            makeItem({ trainLineNm: '내선순환', bstatnNm: undefined }),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const arrivals = await client.fetchArrivals('서울역');
+      expect(arrivals[0].terminus).toBeNull();
     });
   });
 

@@ -13382,7 +13382,13 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
 
   describe('#2904 — 본문 종착역과 payload trainCode 동일 출처', () => {
     function makeMultiTrainArrivalsResponse(
-      rows: Array<{ btrainNo: string; isUp: boolean; arvlCd: number; trainLineNm: string }>,
+      rows: Array<{
+        btrainNo: string;
+        isUp: boolean;
+        arvlCd: number;
+        trainLineNm: string;
+        bstatnNm: string;
+      }>,
     ): typeof fetch {
       return (async () =>
         new Response(
@@ -13395,6 +13401,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
               btrainNo: r.btrainNo,
               subwayNm: '지하철7호선',
               arvlCd: r.arvlCd,
+              bstatnNm: r.bstatnNm,
             })),
           }),
           { status: 200 },
@@ -13404,10 +13411,12 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     it('후보 중 선택된 trainCode의 종착역만 본문에 실린다 — 다른 후보 종착역은 섞이지 않는다', async () => {
       // 선택 우선순위(pickAutoTrainCode: 2>1>0)상 arvlCd=1(ARRIVED) 단일 후보가 최종 선택된다.
       // 선택되지 않는 쪽(arvlCd=0, "신도림행")의 종착역이 본문에 등장하면 "다른 출처" 혼입 회귀다.
+      // #2953 — terminus는 이제 trainLineNm이 아니라 bstatnNm(종착역명, 실 API 동일 응답의
+      // 옆 필드)에서 온다. 실 API 포맷과 맞춰 bstatnNm을 함께 채운다.
       const fetchImpl = vi.fn(
         makeMultiTrainArrivalsResponse([
-          { btrainNo: '7001', isUp: true, arvlCd: 0, trainLineNm: '신도림행' },
-          { btrainNo: '7246', isUp: true, arvlCd: 1, trainLineNm: '성수행' },
+          { btrainNo: '7001', isUp: true, arvlCd: 0, trainLineNm: '신도림행', bstatnNm: '신도림' },
+          { btrainNo: '7246', isUp: true, arvlCd: 1, trainLineNm: '성수행', bstatnNm: '성수' },
         ]),
       );
       // #2944 (H-6) — 구 버전은 waypoint.line을 display.line('7')과 다르게 둬 direction을

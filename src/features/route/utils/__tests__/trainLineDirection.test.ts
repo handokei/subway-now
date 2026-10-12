@@ -28,6 +28,9 @@ describe('parseTrainLineDirection', () => {
     ['ko', '급행임시', '급행임시'],
     ['en', '', ''],
     ['en', '행', '행'],
+    // #2953 ⑧ 거부 케이스 — 실 API 복합 포맷("X행 - Y방면")은 '행'으로 끝나지 않아
+    // fallback으로 원본을 그대로 반환한다. 이 함수의 거동은 본 PR이 바꾸지 않음을 고정.
+    ['ko', '석남행 - 뚝섬유원지방면', '석남행 - 뚝섬유원지방면'],
   ])('lang=%s, input=%s → %s', async (lang, input, expected) => {
     await i18next.changeLanguage(lang);
     expect(parseTrainLineDirection(input, stations)).toBe(expected);
