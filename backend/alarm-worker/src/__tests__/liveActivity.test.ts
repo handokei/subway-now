@@ -179,6 +179,53 @@ describe('buildLiveActivityContentState (#613)', () => {
       expect(cs.stationName).toBe('합정');
     });
   });
+
+  // #2962 — LA 버튼이 backend에 보낼 "어느 열차" 신원. content-state에 trainCode optional 필드 추가.
+  describe('trainCode (#2962)', () => {
+    it('red — trip.boardingLock.trainCode가 있으면 content-state에 trainCode를 채운다', () => {
+      const trip = makeTrip({
+        boardingLock: {
+          trainCode: '7246',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['강남'],
+          expiresAt: NOW + 3_600_000,
+        },
+      });
+      const cs = buildLiveActivityContentState(WAYPOINT, 60, 2, trip);
+      expect(cs.trainCode).toBe('7246');
+    });
+
+    it('red — trip이 없거나 boardingLock이 없으면 trainCode 필드 자체가 없다 (R-1/R-3 회귀 0)', () => {
+      const csNoTrip = buildLiveActivityContentState(WAYPOINT, 60, 2);
+      expect(csNoTrip).not.toHaveProperty('trainCode');
+
+      const tripNoLock = makeTrip();
+      const csNoLock = buildLiveActivityContentState(WAYPOINT, 60, 2, tripNoLock);
+      expect(csNoLock).not.toHaveProperty('trainCode');
+    });
+
+    it('red — 6번째 인자(trainCode override)가 trip.boardingLock보다 우선한다 (pre-boarding 프롬프트별 발사 열차)', () => {
+      const trip = makeTrip({
+        boardingLock: {
+          trainCode: '3001',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['강남'],
+          expiresAt: NOW + 3_600_000,
+        },
+      });
+      const cs = buildLiveActivityContentState(WAYPOINT, 60, 2, trip, undefined, '2701');
+      expect(cs.trainCode).toBe('2701');
+    });
+
+    it('red — trip 없이도 6번째 인자(override)만으로 trainCode를 채운다 (pre-lock 프롬프트 alert)', () => {
+      const cs = buildLiveActivityContentState(WAYPOINT, 60, 2, undefined, undefined, '2701');
+      expect(cs.trainCode).toBe('2701');
+    });
+  });
 });
 
 describe('resolveCurrentStationName (#2849)', () => {
