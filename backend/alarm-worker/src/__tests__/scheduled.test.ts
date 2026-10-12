@@ -43,6 +43,7 @@ import {
   hopEndPromptFiredKey,
   maybeFireHopEndPrompt,
   maybeFireLegBoardingPrompt,
+  maybeFireLiveActivityUpdate,
   maybeFireOriginBoardingPromptGpsFree,
   runScheduled,
   tripLifecyclePhase,
@@ -4428,6 +4429,156 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(contentState.alarmType).toBeUndefined();
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
+  });
+
+  // #2962 follow-up (코디네이터 정정, 2026-10-12) — content-state.trainCode 기본값이 단순히
+  // trip.boardingLock?.trainCode면, leg-2 프롬프트 발사 뒤 매 cron heartbeat(이 테스트가 직접
+  // 호출하는 `maybeFireLiveActivityUpdate`)가 그 stale leg-1 lock으로 올바른 stamp를
+  // 덮어쓴다(10/9 시나리오 재현). 기본값은 stamp(현재 leg와 일치할 때)를 boardingLock보다
+  // 우선해야 한다. Seoul API 매칭/estimate 분기 전체를 거치지 않고 `maybeFireLiveActivityUpdate`를
+  // 직접 호출해 content-state 산출 로직만 결정적으로 검증한다(코디네이터 지시 그대로).
+  describe('#2962 follow-up — content-state.trainCode 기본값(stamp 우선, 코디네이터 결함 지적)', () => {
+    const LEG2_ANCHOR = { boardingStation: '건대입구', line: '7' };
+
+    function makeStaleLockLeg2PromptTrip(overrides: Partial<Trip> = {}): Trip {
+      return makeLockedLaTrip({
+        // stale leg-1 lock — #2957이 고친 바로 그 상태(leg-2 프롬프트가 떠 있는 동안
+        // boardingLock은 아직 leg-1을 가리킨다).
+        boardingLock: {
+          trainCode: '5559',
+          line: '5',
+          subwayId: '1005',
+          selectedDepartureTime: NOW,
+          segmentStations: ['마천', '군자'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        currentLegAnchor: LEG2_ANCHOR,
+        legBoardingFireStamp: {
+          boardingStation: LEG2_ANCHOR.boardingStation,
+          line: LEG2_ANCHOR.line,
+          trainCode: '2701',
+          destination: 'dst',
+          waypointKeys: ['강남|2|destination|0'],
+          firedAt: NOW,
+        },
+        ...overrides,
+      });
+    }
+
+    function makeHeartbeatDeps(fetchImpl: ReturnType<typeof vi.fn>): ScheduledDeps {
+      return {
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        seoul: new SeoulArrivalClient({ host: 'h', apiKey: 'K', fetchImpl: fetchImpl as unknown as typeof fetch }),
+      };
+    }
+
+    // ① — fix 전 반드시 실패해야 한다(코디네이터 지시). heartbeat(maybeFireLiveActivityUpdate)가
+    // stamp(2701, 현재 leg)를 두고 stale boardingLock(5559)으로 content-state를 덮어쓰면 안 된다.
+    it('① leg-2 stamp(2701) + stale boardingLock(5559) → heartbeat의 trainCode는 2701(stamp), 5559(stale lock) 아님', async () => {
+      const trip = makeStaleLockLeg2PromptTrip();
+      const fetchImpl = makeOkFetch();
+      const stats = createEmptyScheduledStats(NOW);
+      await maybeFireLiveActivityUpdate(
+        trip,
+        trip.waypoints[0],
+        NOW + 120_000,
+        makeHeartbeatDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+      );
+      expect(stats.laPushSent).toBe(1);
+      const laCalls = getLaCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
+      expect(contentState.trainCode).toBe('2701');
+      expect(contentState.trainCode).not.toBe('5559');
+    });
+
+    // ② 회귀 가드 — stamp 없음 + lock 활성 → 기존 동작(boardingLock.trainCode) 유지.
+    it('② stamp 없음(legBoardingFireStamp undefined) + lock 활성 → boardingLock.trainCode(T) 유지', async () => {
+      const trip = makeLockedLaTrip({ legBoardingFireStamp: undefined });
+      const fetchImpl = makeOkFetch();
+      const stats = createEmptyScheduledStats(NOW);
+      await maybeFireLiveActivityUpdate(
+        trip,
+        trip.waypoints[0],
+        NOW + 120_000,
+        makeHeartbeatDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+      );
+      expect(stats.laPushSent).toBe(1);
+      const contentState = parseLaBody(getLaCalls(fetchImpl)[0]).aps['content-state'] as Record<
+        string,
+        unknown
+      >;
+      expect(contentState.trainCode).toBe('T');
+    });
+
+    // ③ — stamp가 다른 leg(이전 leg)를 가리키면 쓰지 않고 boardingLock.trainCode로 폴백.
+    it('③ stamp가 다른 leg(합정/9호선)를 가리키면 쓰지 않고 boardingLock.trainCode(5559) 유지', async () => {
+      const trip = makeStaleLockLeg2PromptTrip({
+        legBoardingFireStamp: {
+          boardingStation: '합정',
+          line: '9',
+          trainCode: '2701',
+          destination: 'dst',
+          waypointKeys: ['강남|2|destination|0'],
+          firedAt: NOW,
+        },
+      });
+      const fetchImpl = makeOkFetch();
+      const stats = createEmptyScheduledStats(NOW);
+      await maybeFireLiveActivityUpdate(
+        trip,
+        trip.waypoints[0],
+        NOW + 120_000,
+        makeHeartbeatDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+      );
+      expect(stats.laPushSent).toBe(1);
+      const contentState = parseLaBody(getLaCalls(fetchImpl)[0]).aps['content-state'] as Record<
+        string,
+        unknown
+      >;
+      expect(contentState.trainCode).toBe('5559');
+    });
+
+    // ④ — stamp가 현재 leg와 일치하지만 trainCode가 없음(ambiguity 발사) → boardingLock.trainCode로 폴백.
+    it('④ stamp가 현재 leg와 일치하지만 trainCode 없음(ambiguity) → boardingLock.trainCode(5559) 유지', async () => {
+      const trip = makeStaleLockLeg2PromptTrip({
+        legBoardingFireStamp: {
+          boardingStation: LEG2_ANCHOR.boardingStation,
+          line: LEG2_ANCHOR.line,
+          destination: 'dst',
+          waypointKeys: ['강남|2|destination|0'],
+          firedAt: NOW,
+        },
+      });
+      const fetchImpl = makeOkFetch();
+      const stats = createEmptyScheduledStats(NOW);
+      await maybeFireLiveActivityUpdate(
+        trip,
+        trip.waypoints[0],
+        NOW + 120_000,
+        makeHeartbeatDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+      );
+      expect(stats.laPushSent).toBe(1);
+      const contentState = parseLaBody(getLaCalls(fetchImpl)[0]).aps['content-state'] as Record<
+        string,
+        unknown
+      >;
+      expect(contentState.trainCode).toBe('5559');
+    });
   });
 
   // #2849 (TDD red-first) — 정지 상태 실측 시나리오: 사용자는 용마산에 정차 중(SSoT 확정)인데
@@ -13038,6 +13189,70 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(body.aps['content-state'].stationName).toBeTruthy();
       expect(body.aps['content-state'].lineName).toBeTruthy();
       expect(body.aps['content-state'].lineColorHex).toBeTruthy();
+    });
+
+    // #2962 — LA [탑승] 버튼이 backend에 "어느 열차"를 보낼 수 있으려면, 이 프롬프트가 실제로
+    // 선택한 열차(selectedTrainCode, 단일 후보라 ambiguity 없음)가 content-state.trainCode에
+    // 실려야 한다. ambiguity 발사(R-1, 후보 2개 이상 동률)는 selectedTrainCode=null이라 별도
+    // 테스트로 trainCode 필드 부재를 고정(아래 'ambiguity 발사' 테스트).
+    it('#2962 — 단일 후보 발사 시 content-state.trainCode에 selectedTrainCode(7246)가 실린다', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        activityPushToken: 'la-activity-token',
+        activityState: 'live',
+        originStationName: '용마산',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      const laCalls = findLaAlertCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const [, init] = laCalls[0];
+      const body = JSON.parse(init.body as string) as {
+        aps: { 'content-state': Record<string, unknown> };
+      };
+      expect(body.aps['content-state'].trainCode).toBe('7246');
+    });
+
+    // #2962 R-1 — ambiguity 발사(동일 우선순위 후보 2개 이상 → pickAutoTrainCode가 null)는
+    // boardingLock도 없고 selectedTrainCode도 없으므로 content-state에 trainCode 필드 자체가
+    // 없어야 한다 — LA 버튼은 기존 body 그대로(stamp 폴백)로 동작, 회귀 0.
+    it('#2962 R-1 — ambiguity 발사(동률 2후보) 시 content-state에 trainCode 필드가 없다', async () => {
+      const fetchImpl = vi.fn(
+        makeArrivalsResponse([
+          { btrainNo: '7246', isUp: true, arvlCd: 1 },
+          { btrainNo: '7247', isUp: true, arvlCd: 1 },
+        ]),
+      );
+      const trip = makeTrip({
+        activityPushToken: 'la-activity-token',
+        activityState: 'live',
+        originStationName: '용마산',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      const laCalls = findLaAlertCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const [, init] = laCalls[0];
+      const body = JSON.parse(init.body as string) as {
+        aps: { 'content-state': Record<string, unknown> };
+      };
+      expect(body.aps['content-state']).not.toHaveProperty('trainCode');
     });
 
     it('activityPushToken 없음 → LA alert push 미발사(notification만, 기존과 동일)', async () => {

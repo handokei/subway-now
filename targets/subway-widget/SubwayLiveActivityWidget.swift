@@ -280,7 +280,8 @@ private struct BoardingPromptButton: View {
             Button(intent: NotBoardedIntent(
                 tripToken: state.boardingPromptTripToken ?? "",
                 originStation: state.boardingPromptOriginStation ?? "",
-                line: state.boardingPromptLine ?? ""
+                line: state.boardingPromptLine ?? "",
+                trainCode: state.trainCode
             )) {
                 Text(NSLocalizedString("widget.boardingPrompt.boarded.notBoarded.button", comment: "Not boarded button label"))
                     .font(.subheadline)
@@ -288,10 +289,13 @@ private struct BoardingPromptButton: View {
             .tint(.secondary)
         } else if phase == "pre-boarding" {
             VStack(spacing: 6) {
+                // #2962 — state.trainCode(LA가 지금 들고 있는 값, 이 특정 프롬프트 발사의
+                // trainCode)를 그대로 캡처해 탭 시점에 backend로 forward한다.
                 Button(intent: BoardingConfirmIntent(
                     tripToken: state.boardingPromptTripToken ?? "",
                     originStation: state.boardingPromptOriginStation ?? "",
-                    line: state.boardingPromptLine ?? ""
+                    line: state.boardingPromptLine ?? "",
+                    trainCode: state.trainCode
                 )) {
                     Text(NSLocalizedString("widget.boardingPrompt.boarded.button", comment: "Confirm boarding button label"))
                         .font(.subheadline)
@@ -302,7 +306,8 @@ private struct BoardingPromptButton: View {
                 Button(intent: NotBoardedIntent(
                     tripToken: state.boardingPromptTripToken ?? "",
                     originStation: state.boardingPromptOriginStation ?? "",
-                    line: state.boardingPromptLine ?? ""
+                    line: state.boardingPromptLine ?? "",
+                    trainCode: state.trainCode
                 )) {
                     Text(NSLocalizedString("widget.boardingPrompt.boarded.notBoarded.button", comment: "Not boarded button label"))
                         .font(.subheadline)
@@ -314,7 +319,8 @@ private struct BoardingPromptButton: View {
                 Button(intent: DisembarkConfirmIntent(
                     tripToken: state.boardingPromptTripToken ?? "",
                     originStation: state.boardingPromptOriginStation ?? "",
-                    line: state.boardingPromptLine ?? ""
+                    line: state.boardingPromptLine ?? "",
+                    trainCode: state.trainCode
                 )) {
                     Text(NSLocalizedString("widget.boardingPrompt.disembark.button", comment: "Confirm disembark button label"))
                         .font(.subheadline)
@@ -325,7 +331,8 @@ private struct BoardingPromptButton: View {
                 Button(intent: DisembarkNotYetIntent(
                     tripToken: state.boardingPromptTripToken ?? "",
                     originStation: state.boardingPromptOriginStation ?? "",
-                    line: state.boardingPromptLine ?? ""
+                    line: state.boardingPromptLine ?? "",
+                    trainCode: state.trainCode
                 )) {
                     Text(NSLocalizedString("widget.boardingPrompt.disembark.notYet.button", comment: "Not yet disembark button label"))
                         .font(.subheadline)

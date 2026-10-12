@@ -7950,12 +7950,17 @@ async function fireBoardingPromptForAnchor(inputs: {
         const anchorWaypoint: Waypoint =
           trip.waypoints[0] ?? { stationName: station, line, kind: 'intermediate' };
         const laContentState: LiveActivityContentState = {
+          // #2962 — 6번째 인자로 이 발사의 selectedTrainCode를 override. pre-boarding 단계는
+          // trip.boardingLock이 아직 없어(사용자가 아직 탑승 확인 전) 기본 폴백이 undefined가
+          // 되므로, 이 특정 alert가 어느 열차를 가리키는지(27분차/30분차 등)를 명시해야
+          // LA [탑승] 버튼이 올바른 trainCode를 backend로 forward할 수 있다.
           ...buildLiveActivityContentState(
             anchorWaypoint,
             etaSeconds ?? 0,
             trip.waypoints.length,
             trip,
             currentStationName,
+            selectedTrainCode ?? undefined,
           ),
           // #2434 — BoardingPromptView/BoardingIntents(→boarding-confirm)가 렌더/처리하는
           // 버튼 컨텍스트. Swift ContentState 필드명과 정확히 일치해야 decode된다.

@@ -177,6 +177,7 @@ import {
 import {
   getDeviceTripIndex,
   getTrip,
+  isLegAnchorMatch,
   isRouteProgressRelation,
   putDeviceTripIndex,
   putTrip,
@@ -2632,7 +2633,8 @@ export function decideLegLockReleaseForBoardedTap(
   ) {
     return { release: false, reason: 'route-changed' };
   }
-  if (stamp.boardingStation !== currentLegAnchor.boardingStation || stamp.line !== currentLegAnchor.line) {
+  // #2962 follow-up — isLegAnchorMatch(trips.ts)로 추출된 공유 primitive. 사본 금지(L21).
+  if (!isLegAnchorMatch(stamp, currentLegAnchor)) {
     return { release: false, reason: 'stale-leg-stamp' };
   }
   return { release: true, reason: 'stamp-valid' };
