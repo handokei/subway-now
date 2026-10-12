@@ -13040,6 +13040,70 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(body.aps['content-state'].lineColorHex).toBeTruthy();
     });
 
+    // #2962 — LA [탑승] 버튼이 backend에 "어느 열차"를 보낼 수 있으려면, 이 프롬프트가 실제로
+    // 선택한 열차(selectedTrainCode, 단일 후보라 ambiguity 없음)가 content-state.trainCode에
+    // 실려야 한다. ambiguity 발사(R-1, 후보 2개 이상 동률)는 selectedTrainCode=null이라 별도
+    // 테스트로 trainCode 필드 부재를 고정(아래 'ambiguity 발사' 테스트).
+    it('#2962 — 단일 후보 발사 시 content-state.trainCode에 selectedTrainCode(7246)가 실린다', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        activityPushToken: 'la-activity-token',
+        activityState: 'live',
+        originStationName: '용마산',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      const laCalls = findLaAlertCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const [, init] = laCalls[0];
+      const body = JSON.parse(init.body as string) as {
+        aps: { 'content-state': Record<string, unknown> };
+      };
+      expect(body.aps['content-state'].trainCode).toBe('7246');
+    });
+
+    // #2962 R-1 — ambiguity 발사(동일 우선순위 후보 2개 이상 → pickAutoTrainCode가 null)는
+    // boardingLock도 없고 selectedTrainCode도 없으므로 content-state에 trainCode 필드 자체가
+    // 없어야 한다 — LA 버튼은 기존 body 그대로(stamp 폴백)로 동작, 회귀 0.
+    it('#2962 R-1 — ambiguity 발사(동률 2후보) 시 content-state에 trainCode 필드가 없다', async () => {
+      const fetchImpl = vi.fn(
+        makeArrivalsResponse([
+          { btrainNo: '7246', isUp: true, arvlCd: 1 },
+          { btrainNo: '7247', isUp: true, arvlCd: 1 },
+        ]),
+      );
+      const trip = makeTrip({
+        activityPushToken: 'la-activity-token',
+        activityState: 'live',
+        originStationName: '용마산',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      const laCalls = findLaAlertCalls(fetchImpl);
+      expect(laCalls).toHaveLength(1);
+      const [, init] = laCalls[0];
+      const body = JSON.parse(init.body as string) as {
+        aps: { 'content-state': Record<string, unknown> };
+      };
+      expect(body.aps['content-state']).not.toHaveProperty('trainCode');
+    });
+
     it('activityPushToken 없음 → LA alert push 미발사(notification만, 기존과 동일)', async () => {
       const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
       const trip = makeTrip();
