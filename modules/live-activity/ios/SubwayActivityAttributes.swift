@@ -50,6 +50,12 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var boardingAlertBody: String?
         // leg-1 자동락 상태의 pre-boarding 배너 — "탑승하셨나요?" 대신 "추적중" 안내 표시.
         var boardingAutoLocked: Bool?
+        // #2962 — LA가 추적/프롬프트 중인 열차(Seoul API btrainNo). backend가 trip.boardingLock
+        // (lock 활성 중) 또는 이 특정 프롬프트 발사가 고른 열차(pre-boarding, lock 없음)로 채운다.
+        // LA [탑승] 버튼(BoardingIntents.swift)이 이 값을 그대로 /boarding-confirm body에
+        // forward해 backend가 "어느 열차인지" 알 수 있게 한다. optional — 구 backend/값 없음
+        // 모두 nil로 안전 decode(기존 LA 세션 호환).
+        var trainCode: String?
     }
 }
 
