@@ -3469,6 +3469,167 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.lastLaPushEpoch).toBe(CREATED - 30_000);
       expect(stored.lastLaPushAt).toBe(CREATED - 30_000);
     });
+
+    // #2961 — body trainCode(device가 탭한 알림의 trainCode, #2819 embed 값)가 stamp보다
+    // 우선이다. 27분차(2701)·30분차(3001) 2회 발사 시 stamp는 마지막 발사(3001)만 남지만,
+    // 사용자가 27분차 알림을 탭했으면(body trainCode: '2701') backend는 27분차로 lock해야 한다
+    // (10/9 실측 — 사용자가 늦게 안 누른 게 아니라 backend가 "어느 알림이었는지" 몰랐다).
+    describe('body trainCode 우선 사용 (#2961)', () => {
+      // 로컬 전용 helper(다른 describe의 동명 함수와 scope 충돌 방지) — D1 'D1 boarding-confirm-result
+      // 계측' describe(아래, line ~4037)의 동일 패턴 재사용.
+      function captureEventInserts(): { db: Env['DB']; inserts: unknown[][] } {
+        const inserts: unknown[][] = [];
+        const run = vi.fn().mockResolvedValue({ success: true });
+        const prepare = vi.fn().mockImplementation((sql: string) => ({
+          bind: (...args: unknown[]) => {
+            if (sql.includes('trip_events')) inserts.push(args);
+            return { run };
+          },
+        }));
+        return { db: { prepare } as unknown as Env['DB'], inserts };
+      }
+
+      function corroboratedTripBody(
+        overrides: Record<string, unknown> = {},
+      ): Record<string, unknown> {
+        return leg2TripBodyWithStaleLock({
+          legBoardingEligibleAt: CREATED,
+          // 2회 발사 이력 — 27분차(2701)·30분차(3001) 둘 다 backend가 제시한 적 있는 후보.
+          recentPromptCandidates: { trainCodes: ['2701', '3001'], firedAt: CREATED - 1000 },
+          ...overrides,
+        });
+      }
+
+      // TDD ① (이슈 본문 필수 red) — fix 전엔 stamp('3001')가 그대로 lock된다.
+      it('① 27분차·30분차 2회 발사 + stamp=3001, body trainCode=2701로 탭 → 2701이 lock된다(stamp 아님)', async () => {
+        const env = makeKvEnv();
+        const body = corroboratedTripBody();
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        const res = await post(
+          '/trips/tok-bc/boarding-confirm',
+          confirmBody({ station: '건대입구', line: '7', trainCode: '2701' }),
+          env,
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+        expect(fetchSpy).not.toHaveBeenCalled();
+
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+        expect(stored.boardingLock?.trainCode).toBe('2701');
+        expect(stored.boardingLock?.trainCode).not.toBe('3001');
+      });
+
+      // R-1 (회귀 가드, 하위호환) — trainCode 미전송이면 기존 stamp 경로 그대로.
+      it('② R-1 — trainCode 미전송 → stamp(3001) 경로 그대로(회귀 없음)', async () => {
+        const env = makeKvEnv();
+        const body = corroboratedTripBody();
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        const res = await post(
+          '/trips/tok-bc/boarding-confirm',
+          confirmBody({ station: '건대입구' }),
+          env,
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+        expect(fetchSpy).not.toHaveBeenCalled();
+
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+        expect(stored.boardingLock?.trainCode).toBe('3001');
+      });
+
+      // R-2 (거부) — 보내온 열차가 발사 이력에 없음(외래 값) → 거부, stamp 폴백.
+      it('③ R-2 — body trainCode가 발사 이력에 없음(9999) → 거부, stamp(3001) 폴백', async () => {
+        const env = makeKvEnv();
+        const body = corroboratedTripBody();
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        const res = await post(
+          '/trips/tok-bc/boarding-confirm',
+          confirmBody({ station: '건대입구', line: '7', trainCode: '9999' }),
+          env,
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+        expect(fetchSpy).not.toHaveBeenCalled();
+
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+        expect(stored.boardingLock?.trainCode).toBe('3001');
+      });
+
+      // R-4 (거부) — body trainCode는 corroborate되지만 보내온 (station, line)이 현재 leg
+      // (건대입구/7)와 다름 → 거부, stamp 폴백. 기존 stale-leg-stamp(W-4) 기준과 동일.
+      it('④ R-4 — body trainCode는 corroborate됐지만 다른 leg(line 2) → 거부, stamp(3001) 폴백', async () => {
+        const env = makeKvEnv();
+        const body = corroboratedTripBody();
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        const res = await post(
+          '/trips/tok-bc/boarding-confirm',
+          confirmBody({ station: '건대입구', line: '2', trainCode: '2701' }),
+          env,
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+        expect(fetchSpy).not.toHaveBeenCalled();
+
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+        expect(stored.boardingLock?.trainCode).toBe('3001');
+      });
+
+      // Wire-completion #2 (V/X dashboard) — D1 meta에 trainCodeSource='body' 기록.
+      it('⑤ D1 boarding-confirm-result meta에 trainCodeSource="body" 기록(body 승격 시)', async () => {
+        const { db, inserts } = captureEventInserts();
+        const env = makeKvEnv();
+        env.DB = db;
+        const body = corroboratedTripBody();
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        await post(
+          '/trips/tok-bc/boarding-confirm',
+          confirmBody({ station: '건대입구', line: '7', trainCode: '2701' }),
+          env,
+        );
+
+        const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0][5] as string)).toMatchObject({ trainCodeSource: 'body' });
+      });
+
+      // Wire-completion #2 — stamp 경로로 fallback됐을 때는 trainCodeSource='stamp'.
+      it('⑥ D1 boarding-confirm-result meta에 trainCodeSource="stamp" 기록(stamp 폴백 시, R-1)', async () => {
+        const { db, inserts } = captureEventInserts();
+        const env = makeKvEnv();
+        env.DB = db;
+        const body = corroboratedTripBody();
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
+
+        const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0][5] as string)).toMatchObject({ trainCodeSource: 'stamp' });
+      });
+    });
   });
 
   // #2957 (E1 완결, 코디네이터 지시) — stamp가 trainCode를 담고 있으면 live Seoul 재조회
