@@ -20,7 +20,7 @@
  * 이 테스트는 실제 production 데이터(stations.json / stationDistances.json)를
  * 직접 검증한다 — unit 레벨 mock이 아니라 생성 스크립트 실행 결과물 자체가 대상.
  */
-import { getStationsOnLine, getStopSeconds } from '../stationRoute';
+import { getStationsOnLine, getStopSeconds, findStationByNameAndLine } from '../stationRoute';
 import { getStopSecondsFromDistance } from '../lineSpeeds';
 import { haversine } from '../haversine';
 import { hopTimeMsForSegment } from '../../../features/route/utils/hopTime';
@@ -40,19 +40,23 @@ function line9AdjacentPairs(): Array<{ fromId: string; toId: string }> {
 }
 
 describe('#2967 9호선 ETA (getStopSeconds / hopTime)', () => {
-  it('①′(red) fix 전: 9호선 인접 37쌍 전부가 getStopSeconds === 120(tier 3 균일 폴백)이다', () => {
+  // ①′ — fix 전 premise 검증: 9호선 인접 37쌍 전부가 getStopSeconds === 120(tier 3 균일
+  // 폴백)이었다(확인 완료, 구현 커밋 기록 참고). fix 후에는 거리 기반 값으로 갈라져야 하므로
+  // 이 테스트는 "120이 전부는 아니다"를 assert한다 — fix 전에는 전부 120이라 반드시 실패하고,
+  // fix 후에는 통과한다.
+  it('①′(green) fix 후: 9호선 인접 37쌍이 더 이상 전부 120(tier 3 균일 폴백)이 아니다', () => {
     const pairs = line9AdjacentPairs();
     expect(pairs).toHaveLength(LINE_9_PAIR_COUNT);
-    for (const { fromId, toId } of pairs) {
-      expect(getStopSeconds('9', fromId, toId)).toBe(STOP_FALLBACK_SECONDS);
-    }
+    const seconds = pairs.map(({ fromId, toId }) => getStopSeconds('9', fromId, toId));
+    expect(seconds.every((s) => s === STOP_FALLBACK_SECONDS)).toBe(false);
   });
 
-  it('②′(red) fix 전: hopTimeMsForSegment가 9호선 구간에서 120_000ms로 균일하다', () => {
+  // ②′ — 같은 premise의 hopTime 소비 경로(estimator가 실제로 호출하는 함수). fix 전에는
+  // getStopSeconds가 전부 120이므로 hopTimeMsForSegment도 전부 120_000ms로 균일했다.
+  it('②′(green) fix 후: hopTimeMsForSegment가 9호선 구간에서 더 이상 120_000ms로 균일하지 않다', () => {
     const pairs = line9AdjacentPairs();
-    for (const { fromId, toId } of pairs) {
-      expect(hopTimeMsForSegment('9', fromId, toId)).toBe(STOP_FALLBACK_SECONDS * 1000);
-    }
+    const ms = pairs.map(({ fromId, toId }) => hopTimeMsForSegment('9', fromId, toId));
+    expect(ms.every((m) => m === STOP_FALLBACK_SECONDS * 1000)).toBe(false);
   });
 
   it('③′(green) fix 후: 9호선 hop 초가 tier 2(거리÷속도)로 산출되고 pair별로 달라진다', () => {

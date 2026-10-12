@@ -82,9 +82,11 @@ describe('dijkstraRoute (#1499)', () => {
   });
 
   it('returns null when destination is unreachable (no connecting edges)', () => {
-    // 9호선/airport는 stationDistances에 없어 unreachable
-    // 9-001(개화) → 2-001 라인 외 연결 없음
-    const r = findRouteByType('9-001', '2-001', 'min-time');
+    // #2967 — 9호선은 stationDistances 보강(37쌍) 이후 연결됨. airport는 여전히
+    // stationDistances에 없어 line edge가 0개이고, 운서는 다른 노선과 역명이
+    // 중복되지 않아(dupCount=1) transfer edge도 없다 — 완전 isolated node.
+    // airport-010(운서) → 2-001 라인·환승 양쪽 모두 연결 없음.
+    const r = findRouteByType('airport-010', '2-001', 'min-time');
     expect(r).toBeNull();
   });
 

@@ -3821,7 +3821,7 @@
     "environment": "underground"
   },
   {
-    "id": "9-036",
+    "id": "9-037",
     "name": "둔촌오륜",
     "line": "9",
     "lineColor": "#BDB092",
@@ -3833,7 +3833,7 @@
     "environment": "underground"
   },
   {
-    "id": "9-037",
+    "id": "9-038",
     "name": "중앙보훈병원",
     "line": "9",
     "lineColor": "#BDB092",
@@ -3844,7 +3844,7 @@
     "environment": "underground"
   },
   {
-    "id": "9-038",
+    "id": "9-036",
     "name": "올림픽공원(한국체대)",
     "line": "9",
     "lineColor": "#BDB092",
