@@ -435,10 +435,16 @@ export async function persistFromPositionResponse(
  * 모드에서 완전 침묵), backend anchor resolver(9/28 확정, ~90% 배선)가 boarded 신호만 있으면
  * 서버측 열차 해결이 가능한데 그 신호 자체가 안 왔다.
  *
- * body 계약은 Swift 호출자와 완전히 동일 — `{ action, station, line }`(#2527 참조,
- * `BoardingIntents.swift:77`). action은 backend `validateBoardingConfirmPayload`가 받는
- * `'boarded' | 'disembarked' | 'not-boarded'` 중 caller가 지정 — 이 fix는 'boarded'만 호출한다
- * (하차/미탑승은 각각 기존 releaseLock 로컬 경로와 `dismissBoardingPrompt`가 담당, 무변경).
+ * body 계약은 Swift 호출자와 거의 동일 — `{ action, station, line }`(#2527 참조,
+ * `BoardingIntents.swift:77`) + optional `trainCode`(#2961). action은 backend
+ * `validateBoardingConfirmPayload`가 받는 `'boarded' | 'disembarked' | 'not-boarded'` 중
+ * caller가 지정 — 이 fix는 'boarded'만 호출한다(하차/미탑승은 각각 기존 releaseLock 로컬 경로와
+ * `dismissBoardingPrompt`가 담당, 무변경).
+ *
+ * #2961 — `trainCode`(device가 **탭한 알림**의 trainCode, #2819 push payload embed 값)를 보내면
+ * backend가 마지막 stamp(`legBoardingFireStamp`, 2회 발사 시 마지막 값만 남음)보다 그 값을
+ * 우선 신뢰한다(`isPromotionCorroborated` 검증 통과 시). 미전달이면 body에 키 자체를 넣지
+ * 않아 backend의 기존 stamp 경로가 그대로 유지된다(하위호환 — LA 버튼/구 클라와 동일 body).
  *
  * fire-and-forget — `dismissBoardingPrompt`와 동형으로 실패를 절대 throw하지 않는다(caller의
  * tryAutoLock/UX critical path에 영향 없음). 이미 lock이 활성인 트립에 중복 호출돼도 backend가
@@ -449,6 +455,7 @@ export async function postBoardingConfirm(
   action: 'boarded' | 'disembarked' | 'not-boarded',
   station: string,
   line: string,
+  trainCode?: string,
 ): Promise<PositionUploadResult> {
   const base = getBackendUrl();
   if (!base) {
@@ -462,7 +469,12 @@ export async function postBoardingConfirm(
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action, station, line }),
+        body: JSON.stringify({
+          action,
+          station,
+          line,
+          ...(trainCode !== undefined ? { trainCode } : {}),
+        }),
       },
     );
     if (!res.ok) {

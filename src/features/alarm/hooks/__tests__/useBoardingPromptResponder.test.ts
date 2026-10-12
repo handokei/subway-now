@@ -425,6 +425,23 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
   });
 
+  // #2961 — payload.trainCode(#2819 push payload embed 값, 발사 시점 backend가 단일 확정한
+  // 열차)가 있으면 postBoardingConfirm의 5번째 인자로 그대로 forward한다. backend가 "어느
+  // 알림을 탭했는지" 알아야 2회 발사 시 올바른 열차를 lock한다(이슈 본문 핵심 시나리오).
+  it('#2961 — payload.trainCode 있으면 postBoardingConfirm 5번째 인자로 forward', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const deps = makeDeps();
+    const payload = { ...PAYLOAD, trainCode: '2701' };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+      'tok',
+      'boarded',
+      '강남',
+      '2',
+      '2701',
+    );
+  });
+
   // #2696 — route/destination widget context가 존재할 때 "다음 목표역" 계산 경로
   // (getNextStationName 호출)도 정상 동작해 조기종착이 아닌 경우 lock이 그대로 성공해야 한다.
   it('#2696 — route/destination widget context 존재 시 다음 목표역 계산 경로도 정상 동작(조기종착 아니면 lock 성공)', async () => {
@@ -1099,6 +1116,34 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         expect.anything(),
       );
       expectAutoLockLogged('autolock-success');
+    });
+
+    // #2961 (요구사항 G) — 10/9 실측과 정확히 같은 모양(fresh 재조회가 ambiguity로 실패해
+    // embed fallback을 쓰는 경우): device 로컬 lock(createLock)과 backend로 forward되는
+    // trainCode(postBoardingConfirm 5번째 인자)가 **같은 값**(payload.trainCode)이 된다 —
+    // 두 레이어가 분기하지 않는다. (fresh pick이 성공해 payload.trainCode와 다른 값을 고르는
+    // 경우는 범위 밖 — 로컬 lock이 chosen을 쓰고 forward는 여전히 payload.trainCode를 쓰므로
+    // 분기 가능성이 남는다. PR 본문 "G" 판정표 참고.)
+    it('#2961 — ambiguity + embed fallback 시 로컬 lock과 backend forward trainCode가 동일(G, 10/9 시나리오 재현)', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({
+        fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+      });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
+      // 로컬 lock.
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'EMB1' }),
+        true,
+        'boarding-prompt-response',
+      );
+      // backend forward — 동일 trainCode.
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+        'tok',
+        'boarded',
+        '강남',
+        '2',
+        'EMB1',
+      );
     });
 
     it('ambiguity + payload.trainCode 없음(구 backend) → 기존 PENDING fallback 유지(회귀 없음)', async () => {

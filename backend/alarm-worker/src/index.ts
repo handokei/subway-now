@@ -2231,6 +2231,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // 있으면 그 출처, 없고 walk-gate도 아니면 탭이 시도된 것 — resolve 성공 여부와 무관하게
   // "무엇을 근거로 시도했는지"를 남긴다(invalid-route 거부도 anchorSource:'tap'으로 남는다).
   let anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined;
+  // #2961 — Wire-completion #2(V/X dashboard) 요구사항: stamp 직접 승격 시 그 trainCode의 출처가
+  // body(device가 탭한 알림)인지 stamp(backend 마지막 발사 기록)인지 D1 meta에 남긴다. 둘 다
+  // 일어나지 않은 경로(live 재해소/이미 active lock/disembarked 등)는 undefined로 생략.
+  let trainCodeSource: 'body' | 'stamp' | undefined;
   let working: Trip = existing;
   // #2920 — destinationConfirmPendingSince 유예 trip의 즉시 종료 분기(아래 'disembarked')가
   // completeWaypointAdvance로 trip을 이미 KV에서 삭제했을 때 true. 공통 경로의 putTrip이
@@ -2275,13 +2279,23 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       // `promoteStampedTrainCode` doc 참고). `releasedForLegSwitch`가 false면(원래부터
       // boardingLock이 undefined였던 기존 3개 호출 경로) 이 분기에 진입하지 않는다 — 그 경로는
       // stamp 유무와 무관하게 100% 무변경.
-      const stampedLock = releasedForLegSwitch ? promoteStampedTrainCode(working, now) : null;
+      // #2961 — body의 trainCode(device가 탭한 알림, #2819 embed 값)가 stamp보다 우선이다.
+      // `resolveBodyTrainCodeLock`이 검증까지 전부 수행 — 통과하면 stamp는 전혀 평가되지 않는다
+      // (R-5). 거부(null)면 releasedForLegSwitch 게이트 그대로 stamp 경로로 fallback(R-1~R-4).
+      const bodyTrainCodeLock =
+        releasedForLegSwitch && payload.trainCode !== undefined
+          ? resolveBodyTrainCodeLock(working, payload.trainCode, payload.line, payload.station, now)
+          : null;
+      const stampedLock =
+        bodyTrainCodeLock ?? (releasedForLegSwitch ? promoteStampedTrainCode(working, now) : null);
       if (stampedLock) {
-        // V/X — wrangler tail에서 stamp 직접 승격 여부를 바로 확인(Wire-completion #2).
+        trainCodeSource = bodyTrainCodeLock ? 'body' : 'stamp';
+        // V/X — wrangler tail에서 stamp/body 직접 승격 여부와 출처를 바로 확인(Wire-completion #2).
         console.log(
           JSON.stringify({
             msg: 'boarding-confirm: stamp trainCode promoted directly (no live resolve)',
             trainCode: stampedLock.trainCode,
+            trainCodeSource,
           }),
         );
         anchorSource = 'currentLegAnchor';
@@ -2447,7 +2461,13 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(token),
     kind: 'boarding-confirm-result',
-    meta: buildBoardingConfirmEventMeta(lockState, resolveOutcome, anchorSource, resolveNoneReason),
+    meta: buildBoardingConfirmEventMeta(
+      lockState,
+      resolveOutcome,
+      anchorSource,
+      resolveNoneReason,
+      trainCodeSource,
+    ),
   });
   return c.json({ ok: true, lockState });
 });
@@ -2464,23 +2484,31 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
  * #2893 — `noneReason`은 `resolveOutcome==='none'`일 때만 meta에 싣는다(다른 outcome에 섞여
  * 들어오면 무시 — 호출자 실수 방어). outcome:'none'의 3개 독립 원인(후보0/subwayId 매핑 실패/
  * legSegment 산출 실패)을 D1만으로 구분하기 위한 계측 전용 필드.
+ *
+ * #2961 (측정 plan) — `trainCodeSource`(`'body' | 'stamp'`)는 stamp 직접 승격이 실제로 일어났을
+ * 때만 채워진다(live 재해소/이미 active lock 등은 undefined로 생략). 배포 후 D1에서
+ * `trainCodeSource='body'` 비율 > 0을 확인해 device→backend 열차 식별 신호가 실제로 쓰이는지
+ * 검증한다.
  */
 export function buildBoardingConfirmEventMeta(
   lockState: 'leg1' | 'leg2' | 'released' | 'none',
   resolveOutcome: BoardingResolveOutcome | undefined,
   anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined,
   noneReason?: BoardingResolveNoneReason,
+  trainCodeSource?: 'body' | 'stamp',
 ): {
   lockState: 'leg1' | 'leg2' | 'released' | 'none';
   outcome?: BoardingResolveOutcome;
   anchorSource?: 'tap' | 'currentLegAnchor' | 'promptDisplay';
   noneReason?: BoardingResolveNoneReason;
+  trainCodeSource?: 'body' | 'stamp';
 } {
   return {
     lockState,
     ...(resolveOutcome !== undefined ? { outcome: resolveOutcome } : {}),
     ...(resolveOutcome === 'none' && noneReason !== undefined ? { noneReason } : {}),
     ...(anchorSource !== undefined ? { anchorSource } : {}),
+    ...(trainCodeSource !== undefined ? { trainCodeSource } : {}),
   };
 }
 
@@ -2488,6 +2516,13 @@ interface BoardingConfirmPayload {
   action: 'boarded' | 'disembarked' | 'not-boarded';
   station: string;
   line: string;
+  /**
+   * #2961 — device가 **탭한 알림의 trainCode**(#2819 push payload embed 값). 2회 발사(27분차·
+   * 30분차) 시 backend는 마지막 stamp(`legBoardingFireStamp`)만 신뢰해 사용자가 먼저 발사된
+   * 알림을 탭해도 다른 열차가 lock됐다(10/9 실측, #2696 계보). optional — 미전송이면 기존 stamp
+   * 경로 그대로(R-1 하위호환, LA 버튼/구 클라는 이 필드를 보내지 않는다).
+   */
+  trainCode?: string;
 }
 
 export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmPayload | null {
@@ -2502,7 +2537,14 @@ export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmP
   }
   if (typeof obj.station !== 'string' || obj.station.length === 0) return null;
   if (typeof obj.line !== 'string' || obj.line.length === 0) return null;
-  return { action: obj.action, station: obj.station, line: obj.line };
+  // #2961 — trainCode는 optional이지만 전송됐다면 타입이 맞아야 한다(빈 문자열은 미지정과 동일
+  // 취급 — #2819 device 파서 `extractBoardingPromptPayload`와 동일 규약).
+  let trainCode: string | undefined;
+  if (obj.trainCode !== undefined) {
+    if (typeof obj.trainCode !== 'string' || obj.trainCode.length === 0) return null;
+    trainCode = obj.trainCode;
+  }
+  return { action: obj.action, station: obj.station, line: obj.line, trainCode };
 }
 
 /**
@@ -2659,6 +2701,54 @@ function promoteStampedTrainCode(trip: Trip, now: number): BoardingLockMeta | nu
     segmentStations,
     expiresAt: now + SWAP_LOCK_TTL_MS,
   };
+}
+
+/**
+ * #2961 — device가 **탭한 알림의 trainCode**(body `trainCode`, #2819 push payload embed 값)를
+ * stamp(`legBoardingFireStamp`)보다 **우선** 사용한다.
+ *
+ * 왜 필요한가: `legBoardingFireStamp`는 단일 객체라 2회 발사(27분차→30분차) 시 마지막 값만
+ * 남는다(`#2957`이 이 stamp 직접 승격 자체는 고쳤지만 "어느 알림이었는지"는 몰랐다). 사용자가
+ * 먼저 발사된 알림(27분차)을 늦게 탭해도 stamp는 이미 30분차로 덮여 있어 backend가 틀린 열차를
+ * lock한다(10/9 실측 `boarding-confirm-result` 2건, #2696 계보).
+ *
+ * 왜 새 검증 로직을 만들지 않는가: `/boarding-lock/sync`(#2824, `:3133` 부근)가 device가 보낸
+ * trainCode를 신뢰하기 전 거치는 검증 3종을 **그대로** 재사용한다 — 사본을 늘리면 같은 버그가
+ * 복제된다(lessons L21):
+ *   - `isPromotionCorroborated`(`:3345`) — backend가 발사 시점 제시(`recentPromptCandidates`,
+ *     15분 창)했거나 cron이 관측(`legResolveStreak`)한 적 있는 열차인지. 둘 다 부재(한 번도
+ *     stamp 안 됨)면 backward-safe `true`.
+ *   - `buildLockFromKnownTrainCode`(`boardingAnchorResolver.ts`) — subwayId 매핑 + leg segment
+ *     합성.
+ *   - `isBoardingLockConsistentWithWaypoints` — lock.line이 waypoints 어딘가에 등장하는지.
+ *
+ * 추가 게이트(confirm 경로 고유, sync엔 없음) — R-4: `currentLegAnchor`가 있으면(leg-2 진행 중)
+ * 보내온 (station, line)이 **그 leg와 정확히 일치**해야 한다. `decideLegLockReleaseForBoardedTap`
+ * 의 'stale-leg-stamp' 판정(`:2593-2595`)과 동일 기준 — 다른 leg의 trainCode가 corroborate돼도
+ * 거부한다(leg 오배치 방지).
+ *
+ * null 반환(거부, 전부 R-2/R-3/R-4 커버) — 호출부가 기존 stamp 경로(`promoteStampedTrainCode`)로
+ * fallback한다.
+ */
+function resolveBodyTrainCodeLock(
+  trip: Trip,
+  trainCode: string,
+  boardingLine: string,
+  boardingStation: string,
+  now: number,
+): BoardingLockMeta | null {
+  if (!isPromotionCorroborated(trainCode, trip, now)) return null;
+  const { currentLegAnchor } = trip;
+  if (
+    currentLegAnchor !== undefined &&
+    (currentLegAnchor.boardingStation !== boardingStation || currentLegAnchor.line !== boardingLine)
+  ) {
+    return null;
+  }
+  const lock = buildLockFromKnownTrainCode(trip.waypoints, trainCode, boardingLine, boardingStation, now);
+  if (!lock) return null;
+  if (!isBoardingLockConsistentWithWaypoints(lock, trip.waypoints)) return null;
+  return lock;
 }
 
 /**
