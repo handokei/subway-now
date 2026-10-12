@@ -1,4 +1,4 @@
-import { hopsOnLine, isClosedLoopMainStation, shortestLinePathIndices } from '../lineLoopPath';
+import { hopsOnLine, isClosedLoopMainStation, shortestLinePathIndices, travelDirectionSign } from '../lineLoopPath';
 import { getStationsOnLine } from '../stationRoute';
 import type { LineNumber } from '../../types/station';
 
@@ -163,5 +163,58 @@ describe('hopsOnLine (#1722)', () => {
   it('같은 idx면 hop=0', () => {
     const line1 = getStationsOnLine('1');
     expect(hopsOnLine(line1, 3, 3, '1')).toBe(0);
+  });
+});
+
+describe('travelDirectionSign (#2949 — 단일 primitive)', () => {
+  it('같은 idx면 null (판정 불가)', () => {
+    const line2 = getStationsOnLine('2');
+    expect(travelDirectionSign(line2, 5, 5, '2')).toBeNull();
+  });
+
+  it('fromIdx가 범위 밖(유효하지 않은 idx)이면 null', () => {
+    const line2 = getStationsOnLine('2');
+    expect(travelDirectionSign(line2, -1, 5, '2')).toBeNull();
+  });
+
+  it('toIdx가 범위 밖(유효하지 않은 idx)이면 null', () => {
+    const line2 = getStationsOnLine('2');
+    expect(travelDirectionSign(line2, 5, line2.length, '2')).toBeNull();
+  });
+
+  it('단조 노선(지선 포함, closed loop 아님) — idx 증가면 1', () => {
+    const line1 = getStationsOnLine('1');
+    expect(travelDirectionSign(line1, 0, 5, '1')).toBe(1);
+  });
+
+  it('단조 노선 — idx 감소면 -1', () => {
+    const line1 = getStationsOnLine('1');
+    expect(travelDirectionSign(line1, 5, 0, '1')).toBe(-1);
+  });
+
+  it('2호선 본선 closed loop seam — 시청(idx0) → 교대: -1 (#2949 본문 실측, 정답 down)', () => {
+    const line2 = getStationsOnLine('2');
+    const from = line2.findIndex((s) => s.id === '2-001');
+    const to = line2.findIndex((s) => s.id === '2-023'); // 교대
+    expect(travelDirectionSign(line2, from, to, '2')).toBe(-1);
+  });
+
+  it('2호선 본선 closed loop seam — 충정로(idx42) → 삼성: 1 (#2949 본문 실측, 정답 up)', () => {
+    const line2 = getStationsOnLine('2');
+    const from = line2.findIndex((s) => s.id === '2-043'); // 충정로
+    const to = line2.findIndex((s) => s.id === '2-019'); // 삼성
+    expect(travelDirectionSign(line2, from, to, '2')).toBe(1);
+  });
+
+  it('shortestLinePathIndices와 같은 부호를 공유한다 (사본 아님, 자가 일관성) — 성수→합정 16 hop wrap', () => {
+    const line2 = getStationsOnLine('2');
+    const from = line2.findIndex((s) => s.id === '2-011'); // 성수
+    const to = line2.findIndex((s) => s.id === '2-038'); // 합정
+    const path = shortestLinePathIndices(line2, from, to, '2');
+    const sign = travelDirectionSign(line2, from, to, '2');
+    // path[0]→path[1]의 실제 idx 증감이 sign과 반드시 같은 방향이어야 한다
+    // (seam 아닌 지점의 첫 step이라 wrap 없이 바로 비교 가능).
+    expect(path.length).toBe(17); // 16 hop
+    expect(Math.sign(path[1] - path[0])).toBe(sign);
   });
 });

@@ -268,12 +268,23 @@ describe('detectMisBoarding — wrong-direction (#2455)', () => {
     });
   });
 
-  // 2호선 순환선 seam(시청↔충정로) — resolveTripDirection의 wraparound 판정이 반대편
-  // 알고리즘(inferLoopDirection)과 어긋나는 경계 지점(#2455 설계 노트). 기대/실제 방향 모두
-  // resolveTripDirection 자신으로 계산해 self-consistent하게 만들었으므로, 이 seam 근방에서는
-  // 최악의 경우 미탐(false negative)만 발생하고 오탐(false positive)은 절대 나지 않아야 한다 —
-  // 이 안전 속성을 회귀 테스트로 고정한다.
-  describe('2호선 순환선 seam(시청↔충정로) — 오탐 금지 회귀 고정', () => {
+  // 2호선 순환선 seam(시청↔충정로) — #2949 전에는 `resolveTripDirection`/`directionOnLine`이
+  // seam(시청 idx=0, 충정로 idx=42)에서 `firstStepIdx > idx` 재계산으로 방향을 오판했고,
+  // 그 오판이 두 함수에 **일관되게** 퍼져 있어 "최악의 경우 미탐만 발생하고 오탐은 절대
+  // 나지 않는다"는 self-consistency 우회책이 성립했다(#2455 설계 노트) — 즉 이 블록은 버그의
+  // 부수효과를 "안전 속성"으로 잘못 명명해 고정한 것이었다.
+  //
+  // #2949가 두 함수를 `travelDirectionSign`(단일 primitive) 기반으로 교정하면서 그 우회책의
+  // 전제(일관된 오류)가 사라졌다. 이제 이 블록이 고정하는 것은 다르다 — `detectMisBoarding`
+  // docstring의 술어는 "목적지에 도착하는가"(reachability)가 아니라 "**반대편 승강장에서
+  // 탔는가**"다. seam에서도 그 술어가 정확히 판정된다:
+  //   - 방향이 맞을 때(을지로입구, wrap-forward) → 오탐 없음, 'present' 유지.
+  //   - 반대편 승강장(아현, 외선)을 탔을 때 → 이제 'wrong-direction'을 **정탐**한다. 충정로→
+  //     시청은 1 hop 내선이 유일한 직행 경로이고, 아현행은 그 반대 방향 승강장이다.
+  // docstring의 "판정 불가 시 오탐 금지"(`isWrongDirection`이 null을 'present'로 폴백하는 것)
+  // 원칙 자체는 유효하며 이번 변경과 무관하다 — 이 seam 쌍은 판정이 **가능**하고 실제로
+  // 반대 방향이었을 뿐이다.
+  describe('2호선 순환선 seam(시청↔충정로) — seam에서도 방향 판정 정확 (#2949)', () => {
     const chungjeongno = findStationByNameAndLine(canonicalStationName('충정로', '2'), '2')!;
     const seamRoute: Route = { type: 'direct', stops: 1, line: '2', travelSeconds: 60 };
     const seamLock: BoardingLock = {
@@ -296,14 +307,14 @@ describe('detectMisBoarding — wrong-direction (#2455)', () => {
       expect(result).not.toBe('wrong-direction');
     });
 
-    it('시청 반대편(아현 방향, wrap 없는 backward) 관측 → 오탐 없음(present)', () => {
+    it('시청 반대편(아현 방향) 관측 → 정탐(wrong-direction, #2949 fix 후)', () => {
       const result = detectMisBoarding(
         seamLock,
         positions({ trains: [train({ trainNo: 'T-LOCK', statnNm: '아현' })] }),
         seamRoute,
         sicheongName,
       );
-      expect(result).not.toBe('wrong-direction');
+      expect(result).toBe('wrong-direction');
     });
   });
 });
