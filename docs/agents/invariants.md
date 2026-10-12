@@ -108,6 +108,7 @@
 | useTransferAutoDetect.ts:14 | 불변식 | 사용자 직접 선택 시에만 onAutoLock — 자동 승격 금지 | 있음(추정) |
 | loopDirection.ts:7 / journeyAdapter.ts:58 | 불변식 | 순환선 토폴로지·역↔노선 정합 SSOT 단일 출처(재구현 금지, ADR-038) | 없음/부분 |
 | useNavigationStore.ts:5 | 불변식 | WhileInUse 사용자도 BG GPS+자동 lock chain 대상(권한 분기 누락 주의) | 부분 |
+| stationRoute.ts:94 (`getLineStationsCached`) | 함정 | `sort((a,b)=>a.id.localeCompare(b.id))`가 "id 순서=노선 물리 순서"를 암묵 전제 — 1호선 구로(1-042)↔가산디지털단지(1-100, 공식 인접 idx차 21, forward slice 경로 자체가 틀린데 부호만 "분기 양쪽 모두 fromIdx보다 id가 큼" 우연으로 맞음)와 2호선 시청(2-001)↔충정로(2-043, 공식 인접 idx차 42, closed-loop wraparound seam)가 이미 깨져 있다. **2호선 쌍은 현재 반환값 자체가 오답**(`up`/`down`이 실제론 반대 — wraparound seam에서 `firstStepIdx > fromIdx` 부호 비교가 wrap을 idx 증가로 오해, fix는 **#2949 OPEN**). 61역 추가 예정(#2954 PR)이 이 배치를 조용히 깨뜨릴 수 있음 | 테스트(`src/data/__tests__/stationIdAdjacency.contract.test.ts`, `src/features/route/utils/__tests__/idAdjacencyContract.test.ts`, backend `legDirection.test.ts` "#2954 K-2" 블록 — 2호선 쌍은 **오답을 현재 거동으로 고정**, #2949가 고치면 기대값을 정답으로 갱신할 것) |
 
 ---
 

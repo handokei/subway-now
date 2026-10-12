@@ -216,6 +216,28 @@ describe('#2943 거부 케이스 ⓒⓓ — 지선 교차 (과차단 방어, sho
   });
 });
 
+describe('#2954 K-2 — 2호선 순환선 seam id 배치 의존 계약 (알려진 오답을 현재 거동으로 고정, #2949 추적)', () => {
+  // 위 ⓓ(1호선 구로↔가산디지털단지)는 forward slice 경로 자체가 틀렸는데 부호만 우연히
+  // 맞는 케이스였다. 2호선 시청(2-001)↔충정로(2-043)는 그와 다르다 — **이 값은 오답이다.**
+  // wraparound seam에서 `firstStepIdx > fromIdx` 부호 비교가 wrap을 "idx 증가"로 오해해
+  // 방향이 뒤집힌다(device `directionOnLine`/`resolveTripDirection`과 공유하는 결함,
+  // **#2949** OPEN — "2호선 seam wraparound 방향 오판"). #2949 본문 실측: 시청→충정로는
+  // 물리적으로 **외선**인데 정답은 `down`이고, 지금은 `up`을 반환한다(반대). 2호선은
+  // `up`=내선/`down`=외선(`seoul.ts:18` `UP_DIRECTION_VALUES=['상행','내선']`).
+  // 본 테스트는 device 계약(`src/features/route/utils/__tests__/idAdjacencyContract.test.ts`)
+  // 과 **같은 오답**을 고정한다(데이터 배치 자체는 `src/data/__tests__/stationIdAdjacency.contract.test.ts`).
+  // **#2949가 알고리즘을 고치면 이 테스트가 깨진다 — 그때 기대값을 정답(`down`/`up`)으로
+  // 바꿔라. 구현(그 fix)을 되돌리지 마라.** 역 추가/재번호로 id 배치가 먼저 바뀌어도 이
+  // 테스트가 깨질 수 있다 — 그 경우는 CLOSED_LOOP_MAIN_ID_RANGES 경계값을 재검증한다.
+  it('2호선 시청(2-001) → 충정로(2-043) → 현재 up [오답, 정답 down(외선) — #2949 추적]', () => {
+    expect(inferLegDirection('2', '시청', '충정로')).toBe('up');
+  });
+
+  it('2호선 충정로(2-043) → 시청(2-001) → 현재 down [오답, 정답 up(내선) — #2949 추적]', () => {
+    expect(inferLegDirection('2', '충정로', '시청')).toBe('down');
+  });
+});
+
 describe('#2943 J1→J2 — 10/9 실측 R2 fixture 전체 체인 (군자→광화문, 5호선)', () => {
   // AC1(오수용 차단) — 사용자는 군자(5-035)→광화문(5-024)으로 id 감소 = 상행으로 이동 중이었다.
   // R2 cycle(11:37:26, 1791513504415.json)의 5호선 후보 4건:
