@@ -10,6 +10,7 @@ import {
   isPromotionCorroborated,
   isSsotSyncAdvanceMonotonic,
   LOCK_TTL_REFRESH_MS,
+  RECENT_PROMPT_CANDIDATES_TTL_MS,
   resolveProgressWaypoints,
   SESSION_DRIFT_WINDOW_MS,
   validateBoardingLockSync,
@@ -3565,6 +3566,38 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
         const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
         expect(stored.boardingLock?.trainCode).toBe('3001');
+        expect(stored.boardingLock?.trainCode).not.toBe('9999');
+      });
+
+      // R-3 (거부) — body trainCode는 candidate 목록엔 있지만 발사 시점(firedAt)이
+      // RECENT_PROMPT_CANDIDATES_TTL_MS(15분) 창을 넘김 → isPromotionCorroborated가
+      // withinCandidateWindow를 false로 판정(legResolveStreak도 없으므로 전체 거부) → stamp 폴백.
+      it('③-2 R-3 — body trainCode는 후보 목록에 있지만 15분 TTL 초과 → 거부, stamp(3001) 폴백', async () => {
+        const env = makeKvEnv();
+        const body = corroboratedTripBody({
+          recentPromptCandidates: {
+            trainCodes: ['2701', '3001'],
+            firedAt: CREATED - RECENT_PROMPT_CANDIDATES_TTL_MS - 1,
+          },
+        });
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        const res = await post(
+          '/trips/tok-bc/boarding-confirm',
+          confirmBody({ station: '건대입구', line: '7', trainCode: '2701' }),
+          env,
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2' });
+        expect(fetchSpy).not.toHaveBeenCalled();
+
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+        // 핵심 — TTL 초과로 거부됐으므로 stamp(3001)가 그대로 lock된다(body의 2701이 아님).
+        expect(stored.boardingLock?.trainCode).toBe('3001');
+        expect(stored.boardingLock?.trainCode).not.toBe('2701');
       });
 
       // R-4 (거부) — body trainCode는 corroborate되지만 보내온 (station, line)이 현재 leg
@@ -3588,6 +3621,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
         const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
         expect(stored.boardingLock?.trainCode).toBe('3001');
+        expect(stored.boardingLock?.trainCode).not.toBe('2701');
       });
 
       // Wire-completion #2 (V/X dashboard) — D1 meta에 trainCodeSource='body' 기록.

@@ -1118,6 +1118,34 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       expectAutoLockLogged('autolock-success');
     });
 
+    // #2961 (요구사항 G) — 10/9 실측과 정확히 같은 모양(fresh 재조회가 ambiguity로 실패해
+    // embed fallback을 쓰는 경우): device 로컬 lock(createLock)과 backend로 forward되는
+    // trainCode(postBoardingConfirm 5번째 인자)가 **같은 값**(payload.trainCode)이 된다 —
+    // 두 레이어가 분기하지 않는다. (fresh pick이 성공해 payload.trainCode와 다른 값을 고르는
+    // 경우는 범위 밖 — 로컬 lock이 chosen을 쓰고 forward는 여전히 payload.trainCode를 쓰므로
+    // 분기 가능성이 남는다. PR 본문 "G" 판정표 참고.)
+    it('#2961 — ambiguity + embed fallback 시 로컬 lock과 backend forward trainCode가 동일(G, 10/9 시나리오 재현)', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({
+        fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+      });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, EMBEDDED_PAYLOAD, deps);
+      // 로컬 lock.
+      expect(createLockMock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'EMB1' }),
+        true,
+        'boarding-prompt-response',
+      );
+      // backend forward — 동일 trainCode.
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+        'tok',
+        'boarded',
+        '강남',
+        '2',
+        'EMB1',
+      );
+    });
+
     it('ambiguity + payload.trainCode 없음(구 backend) → 기존 PENDING fallback 유지(회귀 없음)', async () => {
       (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
       const deps = makeDeps({
