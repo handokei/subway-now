@@ -348,6 +348,52 @@ export interface Trip {
    */
   legBoardingPromptState?: BoardingPromptState;
   /**
+   * #2957 (W2) — `maybeFireLegBoardingPrompt`(scheduled.ts)가 leg-2 "탑승하셨나요?" 프롬프트를
+   * 실제로 발사(`onFired`)할 때 stamp하는 "그 발사가 지칭한 leg·열차" 기록. `legBoardingPromptState`
+   * (dedup/fire-count 전용, #819 게이트 #9)와 **의도적으로 분리된 인접 필드**다 — 같은
+   * `BoardingPromptState` 타입은 `boardingPromptState`/`hopEndPromptState`도 공유하므로 거기에
+   * 필드를 얹으면 그 소비자들까지 영향권에 든다. 이 필드는 오직 `POST
+   * /trips/:token/boarding-confirm`의 release→재생성 판정(`decideLegLockReleaseForBoardedTap`,
+   * index.ts) 전용이다.
+   *
+   * 10/9 실측 회귀(leg-1 lock 5559 잔존이 leg-2 응답을 봉쇄) — boarding-confirm이 active
+   * lock(leg-1)을 먼저 release해도 되는지 판단하려면 "지금 leg-2 anchor로 프롬프트가 실제
+   * 발사됐다"는 증거가 필요하다. `currentLegAnchor`만으로는 부족하다 — 그 자체는 환승 advance
+   * 시점에 stamp되고 프롬프트 발사와 무관하게 존재할 수 있기 때문.
+   *
+   * 필드:
+   *   - `boardingStation`/`line` — 발사 시점 `trip.currentLegAnchor`(leg 동일성 비교용, W-4).
+   *   - `trainCode` — `pickAutoTrainCode`가 반환한 열차(없으면 undefined, ambiguous 발사).
+   *   - `destination`/`waypointKeys` — 발사 시점 route 신원(**해시 1개가 아니라 비교 가능한
+   *     waypoint key 배열**, `trips.ts` `waypointSignatureKey`로 생성). boarding-confirm이
+   *     release 직전 `isRouteProgressRelation(trips.ts)`로 "현재 trip과 진행 관계인가"를 판정해
+   *     **진짜 route 변경(진행 관계 아님)일 때만 거부**한다(W-6).
+   *
+   *     #2957 W-6 스펙 정정(코디네이터, 2026-10-12) — 최초 설계는 `computeRouteSignature`
+   *     문자열의 **엄격 동등**(exact string equality)으로 비교했다. 그런데 `computeRouteSignature`
+   *     는 `trip.waypoints` 전체를 해시하고, 발사~탭 사이에 `scheduled.ts`의 waypoint 진행
+   *     (`waypoints.shift()`, kill switch와 무관하게 항상 실행 — `scheduled.ts:680`)이 끼면
+   *     해시가 바뀐다 — 즉 탭이 조금만 늦어도(다음 waypoint로 전진) stamp가 거부돼 leg-1 lock이
+   *     release되지 않고 10/9 회귀가 재발한다("빨리 안 누르면 못 쓴다", 사용자가 명시적으로
+   *     문제라고 지적한 그 패턴). `#2723`이 이미 "backend 자기 진행 vs 진짜 route 변경"을
+   *     구분하는 정확한 primitive(`isRouteProgressOnly`/`isRouteProgressRelation`,
+   *     `resetTripStateForNewRoute`가 쓰는 것과 동일)를 갖고 있었다 — W-6도 신선도 타이머가
+   *     아니라 이 primitive를 그대로 재사용한다(leg 신원 자체가 신선도 경계, W-4 참고).
+   *   - `firedAt` — 발사 시각(epoch ms, 진단용. release 판정에는 쓰이지 않는다).
+   *
+   * `currentLegAnchor`가 재stamp될 때마다(새 환승) 리셋되지 않는다 — 다음 leg의 발사가 이
+   * 필드를 그대로 덮어쓰므로 별도 리셋 불필요(stale leg는 `boardingStation`/`line` 불일치로
+   * 자연스럽게 거부된다, W-4).
+   */
+  legBoardingFireStamp?: {
+    boardingStation: string;
+    line: string;
+    trainCode?: string;
+    destination: string;
+    waypointKeys: string[];
+    firedAt: number;
+  };
+  /**
    * #2539 — leg 2 cron 자동 resolve의 미확정 후보(pending candidate) 저장소. register-time(탭)은
    * 사용자 확인이 있어 1회 resolved로 lock을 승격하지만, cron은 탭 없이 매 cycle 배경 폴링만으로
    * leg 2 승격을 시도하므로 추가 확증이 필요하다.

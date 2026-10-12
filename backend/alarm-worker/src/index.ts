@@ -91,6 +91,7 @@ import {
   createEmptyScheduledStats,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
+  isLockActiveForLeg,
   maybeFireHopEndPrompt,
   runMidCycleFireOnly,
   runScheduled,
@@ -176,9 +177,11 @@ import {
 import {
   getDeviceTripIndex,
   getTrip,
+  isRouteProgressRelation,
   putDeviceTripIndex,
   putTrip,
   resetTripStateForNewRoute,
+  waypointSignatureKey,
   withTripRegisterLock,
 } from './trips';
 import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
@@ -189,6 +192,8 @@ import {
   deleteTripEndedStatus,
 } from './tripStatus';
 import { tryConsumeCooldownBypass } from './cooldownBypass';
+import { subwayIdForLine } from './lineAlias';
+import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import type {
   AccelSummary,
   BoardingLockMeta,
@@ -2236,8 +2241,56 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     if (working.infoModeEnabled !== true) {
       working = { ...working, infoModeEnabled: true };
     }
-    // #1729 — 이미 active lock이 있으면 재평가하지 않는다(register-time과 동일 가드).
+    // #2957 (W2) — leg-1 lock 잔존이 leg-2 응답을 봉쇄하던 회귀(10/9 실측) 수리. active lock이
+    // 있어도 `decideLegLockReleaseForBoardedTap`이 release:true면 먼저 release(undefined)한다 —
+    // 아래 `#1729` 가드(`working.boardingLock === undefined`)는 삭제하지 않고 그대로 둔 채, 그
+    // 가드를 자연히 통과시켜 기존 생성 경로를 재사용한다(사전조사 선례 4개와 동일 release→
+    // 재생성 패턴, 신규 "직접 attach" 경로 없음).
+    let releasedForLegSwitch = false;
+    if (working.boardingLock !== undefined) {
+      const releaseDecision = decideLegLockReleaseForBoardedTap(working, now);
+      // V/X — wrangler tail에서 release 판정 사유를 바로 확인(Wire-completion #2 요구사항).
+      console.log(
+        JSON.stringify({
+          msg: 'boarding-confirm: leg-lock release decision',
+          release: releaseDecision.release,
+          reason: releaseDecision.reason,
+        }),
+      );
+      if (releaseDecision.release) {
+        working = { ...working, boardingLock: undefined };
+        releasedForLegSwitch = true;
+      }
+    }
+    // #1729 — 이미 active lock이 있으면 재평가하지 않는다(register-time과 동일 가드). #2957이
+    // 바로 위에서 release한 경우에만 이 가드를 통과한다 — register-time 경로(:5088 테스트)는
+    // 이 release 로직을 전혀 거치지 않으므로 무변경.
     if (working.boardingLock === undefined) {
+      // #2957 (plan E1 완결, 코디네이터 지시) — release가 유효한 stamp 때문이었고(stamp-valid)
+      // 그 stamp가 trainCode를 담고 있으면, 아래 live Seoul 재조회(attemptBoardingAnchorResolution,
+      // POSITIONS 엔드포인트) 없이 그 trainCode로 즉시 lock을 합성한다. 10/9 실측
+      // (gunja_20261009_1137_arrivals.json)이 보여준 정확한 실패 지점: 탭 시점에 정방향 열차가
+      // 아직 앵커 역에 물리적으로 도착하지 않아(positions `freshCandidatesAtAnchor` 0건) live
+      // 재해소가 none으로 끝난다 — "다시 묻는 것"이 실패 지점이므로 stamp를 신뢰한다(근거는
+      // `promoteStampedTrainCode` doc 참고). `releasedForLegSwitch`가 false면(원래부터
+      // boardingLock이 undefined였던 기존 3개 호출 경로) 이 분기에 진입하지 않는다 — 그 경로는
+      // stamp 유무와 무관하게 100% 무변경.
+      const stampedLock = releasedForLegSwitch ? promoteStampedTrainCode(working, now) : null;
+      if (stampedLock) {
+        // V/X — wrangler tail에서 stamp 직접 승격 여부를 바로 확인(Wire-completion #2).
+        console.log(
+          JSON.stringify({
+            msg: 'boarding-confirm: stamp trainCode promoted directly (no live resolve)',
+            trainCode: stampedLock.trainCode,
+          }),
+        );
+        anchorSource = 'currentLegAnchor';
+        // release→즉시 재생성(waypoint 전진 없음, tapAdvance 자체가 없음)이므로 LA push 게이트
+        // 리셋은 항상 skip — §4-2와 동일 근거.
+        const attached = attachBoardedLock(working, stampedLock, now, true);
+        working = attached.working;
+        lockState = attached.lockState;
+      } else {
       try {
         const seoul = new SeoulArrivalClient({
           apiKey: c.env.SEOUL_API_KEY,
@@ -2246,8 +2299,16 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         // #2739 — 기존 backend anchor(currentLegAnchor 게이트 통과 / promptDisplay)가 있는지
         // 미리 확인해 anchorSource를 정한다. activeOrigin이 있으면 탭 fallback 분기 자체에
         // 진입하지 않으므로(resolver 내부 동일 판정) 회귀 없음 — 요구사항 2.
-        const activeOrigin = resolveActiveLegOrigin(working, now, { allowLegTransfer: true });
+        // #2957 — releasedForLegSwitch(release가 유효한 stamp/anchor 근거로 일어났을 때만
+        // true)면 bypassWalkGate를 전달해 W-1(walk-gate 미개방 지각 탭)을 해소한다. 원래부터
+        // boardingLock이 undefined였던 기존 3개 호출 패턴(이 분기 자체 포함, register-time/cron)
+        // 은 bypassWalkGate 미전달과 동일하게 동작 — release가 일어나지 않았으면 false.
+        const activeOrigin = resolveActiveLegOrigin(working, now, {
+          allowLegTransfer: true,
+          bypassWalkGate: releasedForLegSwitch,
+        });
         const isWalkGated =
+          !releasedForLegSwitch &&
           working.currentLegAnchor !== undefined &&
           (working.legBoardingEligibleAt === undefined || now < working.legBoardingEligibleAt);
         if (activeOrigin) {
@@ -2261,7 +2322,11 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           working,
           seoul,
           now,
-          { allowLegTransfer: true, tapAnchor: { boardingStation: payload.station, line: payload.line } },
+          {
+            allowLegTransfer: true,
+            tapAnchor: { boardingStation: payload.station, line: payload.line },
+            bypassWalkGate: releasedForLegSwitch,
+          },
           // ADR-037 D2b (#2535, 진단 계측 only) — resolve outcome 관측. lock 판정/생성 자체는
           // anchorLock 반환값 그대로 사용 — 이 콜백은 D1 append 용 부가 관측이다.
           // #2893 — outcome==='none'일 때만 detail.noneReason이 채워진다(세부 사유 D1 관측).
@@ -2290,25 +2355,28 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
               legResolveStreak: undefined,
             };
           }
-          const isLeg2 = isLegTwoActive(working, now);
-          working = {
-            ...working,
-            boardingLock: anchorLock,
-            consecutiveEtaMissing: 0,
-            lastTrackedArrivalEpoch: undefined,
-            lastLaPushEpoch: undefined,
-            lastLaPushAt: undefined,
-            ...(isLeg2
-              ? { legBoardingPromptState: markPromptFired(now, working.legBoardingPromptState, anchorLock.trainCode) }
-              : { boardingPromptState: markPromptFired(now, working.boardingPromptState, anchorLock.trainCode) }),
-          };
-          lockState = isLeg2 ? 'leg2' : 'leg1';
+          // #2957 — `isLegTwoActive`(walk-gate 포함 판정)를 그대로 쓰면 W-1(walk-gate 미개방 +
+          // 유효한 stamp로 release된 경우) 새로 부착한 leg-2 lock이 'leg1'로 오표기된다 —
+          // `legBoardingEligibleAt`이 아직 미래라 walk-gate 통과 여부가 false이기 때문이다.
+          // `anchorLock`이 존재하는 이 분기에 도달했다는 것 자체가(기존 3개 호출 경로 포함)
+          // "currentLegAnchor가 있으면 이미 walk-gate를 통과했거나(release 없이 도달) 방금
+          // tapAdvance로 stamp됐거나(legBoardingEligibleAt=now로 직전에 set) bypass됐다"는
+          // 뜻이므로, `working.currentLegAnchor` 존재 여부만으로 leg2/leg1을 판정해도 기존 3개
+          // 호출 경로와 100% 동일한 결과를 내면서 W-1 오표기를 바로잡는다.
+          // #2957 — 생략 없음(`working.currentLegAnchor !== undefined`만으로 leg2/leg1 판정) —
+          // `attachBoardedLock`이 이 판정과 §4-2 LA 게이트 skip 조건(waypoint 전진 없음)을
+          // stamp 직접 승격 분기와 동일하게 적용한다(DRY, 위 stampedLock 분기와 정합 보장).
+          const skipLaPushReset = releasedForLegSwitch && !tapAdvance;
+          const attached = attachBoardedLock(working, anchorLock, now, skipLaPushReset);
+          working = attached.working;
+          lockState = attached.lockState;
         }
       } catch {
         // SonarCloud S5145 — tokenPrefix(token)도 token(URL param)이 user-controlled라
         // 신규코드 게이트에서 taint로 잡힌다. 정적 msg만 남기고 error 내용도 로깅하지 않는다
         // (Error 메시지에 요청 파생 문자열이 섞일 수 있어 안전하지 않음).
         console.log(JSON.stringify({ msg: 'boarding-confirm: boarded resolution error' }));
+      }
       }
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
@@ -2448,6 +2516,175 @@ function isLegTwoActive(trip: Trip, now: number): boolean {
     trip.legBoardingEligibleAt !== undefined &&
     now >= trip.legBoardingEligibleAt
   );
+}
+
+/**
+ * #2957 (W2) — leg-1 lock 잔존이 leg-2 boarding-confirm 응답을 봉쇄하는 회귀(10/9 실측) 수리.
+ *
+ * `boarding-confirm`의 'boarded' 분기가 `working.boardingLock !== undefined`(active lock 존재)일
+ * 때 이 함수로 "먼저 release해도 되는가"를 판정한다. **가드(`:2240` `if
+ * (working.boardingLock === undefined)`)는 삭제하지 않는다** — release:true면 호출부가
+ * `boardingLock = undefined`로 release한 뒤 그 가드를 자연히 통과시켜 **기존 생성 경로를 그대로
+ * 재사용**한다(사전조사 선례 4개와 동일 패턴: `advanceBoardingLockWaypoint`/`/boarding-lock/sync`
+ * 승격/`lockSwap.ts`/device `createTransferLock`). 신규 "직접 attach" 경로를 만들지 않는다.
+ *
+ * 거부 케이스 9종 표(이슈 본문)와의 매핑:
+ *   - W-2/W-3 (anchor 없음=leg-1 주행 중 또는 anchor 부재) → `'no-anchor'`, release:false.
+ *     `currentLegAnchor`가 없으면 애초에 leg-2 컨텍스트가 아니므로 기존 leg-1 lock을 건드릴
+ *     이유가 없다 — 오배치 금지.
+ *   - §4-1 (lock이 이미 **현재** leg에 정확히 부착됨, `isLockActiveForLeg` 재사용 — #2939와 동일
+ *     leg-scoped 판정) → `'already-correct-leg'`, release:false. stamp 유무/일치와 무관하게
+ *     no-op — release하면 LA push 게이트(§4-2, `index.ts:2298-2300`)가 불필요하게 리셋되고
+ *     device는 `lock-create-skip-immutable`로 무시해 backend/device 상태가 갈린다(코디네이터
+ *     정정 — `boardedAt`은 backend에 존재하지 않는 필드라 그 근거는 적용되지 않는다). 발사 게이트
+ *     (`isLockActiveForLeg`가 `maybeFireLegBoardingPrompt`의 'lock-already-attached' 차단과 동일)
+ *     상 이 leg의 stamp가 다른 trainCode로 덮어써질 수 없으므로 "leg 일치 ⇒ trainCode도 일치"가
+ *     생성 시점부터 보장된다.
+ *   - W-5 (stamp 없음 — 프롬프트 미발사 상태의 탭) → `'no-stamp-trust-anchor'`, release:true.
+ *     stamp가 없어도 `currentLegAnchor` 자체는 backend가 이미 확정한 SSoT이므로 그대로 신뢰한다
+ *     — "stamp 부재가 실패가 되면 안 된다".
+ *   - W-6 (진짜 route 변경, 최대 리스크) → `'route-changed'`, release:false. leg 동일성 비교보다
+ *     먼저 검사한다 — route 자체가 달라졌다면 leg 비교는 의미가 없다. **W-6 스펙 정정(코디네이터,
+ *     2026-10-12)** — 최초 설계는 `computeRouteSignature` 문자열 엄격 동등이었으나,
+ *     `scheduled.ts`의 backend 자기 진행(`waypoints.shift()`, kill switch와 무관하게 항상
+ *     실행, `scheduled.ts:680`)만으로도 해시가 바뀌어 탭이 한 waypoint만 늦어도 거부되는
+ *     오판이었다(10/9 회귀 재발 경로, 사용자가 "빨리 안 누르면 못 쓴다"로 명시 지적). 지금은
+ *     `isRouteProgressRelation`(`trips.ts`, #2723이 `resetTripStateForNewRoute`를 위해 만든
+ *     동일 primitive — 사본 금지)로 "stamp 시점 route"와 "현재 route"가 **진행 관계**(한쪽이
+ *     다른 쪽의 suffix-정렬 부분열)인지만 본다 — destination이 다르거나 진행 관계가 아닐 때만
+ *     거부한다.
+ *   - W-4 (route는 진행 관계이나 stamp의 leg ≠ 현재 `currentLegAnchor` — 그 사이 환승이 한 번
+ *     더 진행된 지연 응답) → `'stale-leg-stamp'`, release:false. "신선도"는 시간 임계값이 아니라
+ *     leg 식별자 자체를 쓴다 — leg가 이미 넘어갔다면 그 자체가 stamp 무효화 신호다(임의의 분
+ *     단위 타이머를 새로 만들지 않는다 — 코디네이터 지시, "빨리 눌러야 한다"를 다시 만들지
+ *     않기 위함).
+ *   - W-1 (walk-gate 미개방 상태의 지각 탭) → `'stamp-valid'`, release:true. 이 함수는
+ *     `legBoardingEligibleAt`을 전혀 평가하지 않는다(P2-b 해소) — walk-gate는 호출부가
+ *     `attemptBoardingAnchorResolution`에 `bypassWalkGate: true`를 넘길지 여부로만 다뤄진다.
+ */
+export function decideLegLockReleaseForBoardedTap(
+  trip: Trip,
+  now: number,
+): { release: boolean; reason: LegLockReleaseReason } {
+  const { currentLegAnchor } = trip;
+  if (currentLegAnchor === undefined) {
+    return { release: false, reason: 'no-anchor' };
+  }
+  if (isLockActiveForLeg(trip, currentLegAnchor.line, currentLegAnchor.boardingStation, now)) {
+    return { release: false, reason: 'already-correct-leg' };
+  }
+  const stamp = trip.legBoardingFireStamp;
+  if (stamp === undefined) {
+    return { release: true, reason: 'no-stamp-trust-anchor' };
+  }
+  // #2957 (W-6 스펙 정정, 코디네이터) — 엄격 동등(해시 비교) 대신 `isRouteProgressRelation`
+  // (trips.ts, #2723 공유 primitive)로 "stamp 시점 route"와 "현재 route"가 진행 관계인지
+  // 본다. backend 자기 진행(waypoints.shift(), scheduled.ts:680 "kill switch와 무관하게 항상
+  // 실행")만으로는 거부되지 않고, destination이 다르거나 진행 관계가 아닌 시퀀스일 때만
+  // 진짜 route 변경으로 거부한다 — 탭이 한두 waypoint 늦어도 더 이상 막히지 않는다.
+  if (
+    !isRouteProgressRelation(
+      { destination: stamp.destination, waypointKeys: stamp.waypointKeys },
+      { destination: trip.destination, waypointKeys: trip.waypoints.map(waypointSignatureKey) },
+    )
+  ) {
+    return { release: false, reason: 'route-changed' };
+  }
+  if (stamp.boardingStation !== currentLegAnchor.boardingStation || stamp.line !== currentLegAnchor.line) {
+    return { release: false, reason: 'stale-leg-stamp' };
+  }
+  return { release: true, reason: 'stamp-valid' };
+}
+
+type LegLockReleaseReason =
+  | 'no-anchor'
+  | 'already-correct-leg'
+  | 'no-stamp-trust-anchor'
+  | 'route-changed'
+  | 'stale-leg-stamp'
+  | 'stamp-valid';
+
+/**
+ * #2957 (plan E1 완결, 코디네이터 지시) — stamp(`legBoardingFireStamp`)가 trainCode를 담고
+ * 있으면 live Seoul 재조회(`attemptBoardingAnchorResolution`, POSITIONS 엔드포인트) 없이 그
+ * trainCode로 직접 `BoardingLockMeta`를 합성한다.
+ *
+ * **왜 안전한가**: stamp의 trainCode는 발사 시점에 `pickAutoTrainCode`
+ * (`boardingPrompt.ts:460`)가 방향 필터를 통과시켜 고른 단일 열차다. `pickAutoTrainCode`는
+ * `direction`이 null(추론 불가)이면 후보를 전혀 내지 않고(#2944 H-6, fail-closed), ambiguity
+ * (같은 우선순위 후보 2개+)면 null을 반환한다 — 즉 stamp에 `trainCode`가 **존재한다는 사실
+ * 자체**가 "방향 검증을 통과했고 단일하게 특정된 열차"라는 보장이다. 탭 시점에 Seoul을 다시
+ * 묻는 것은 오히려 위험하다 — 10/9 실측(`gunja_20261009_1137_arrivals.json`, 군자→광화문
+ * 5호선)에서 정방향 열차 2건(5554/5066)이 탭 시점(11:37:39)엔 아직 앵커 역(군자)에 물리적으로
+ * 도착하지 않아(barvlDt 180s/600s) positions `freshCandidatesAtAnchor`(`boardingAnchorResolver.ts:
+ * 222-231`, station 정확 일치 요구)가 0건을 반환해 재해소가 none으로 끝난다 — "다시 묻는 것"
+ * 자체가 10/9의 실패 지점이었다(PR #2958 §(f) 실측 확인).
+ *
+ * **왜 `attachTrainCodeForLeg`(lockSwap.ts)를 재사용하지 않는가**: 그 함수는 trainCode를
+ * **받는** 함수가 아니라 `resolveTrainCodeWithFallback`으로 **재해소**하는 함수다(지금 실패하는
+ * 그 경로와 동일 성격 — Seoul arrivals/positions를 다시 묻는다). 대신 그 함수가 쓰는 선례
+ * 라인만 가져온다:
+ *   - `subwayIdForLine(line)` — `lockSwap.ts:123`.
+ *   - `buildLegSegmentStations(waypoints, line)` + 빈 배열이면 승격 포기 — `lockSwap.ts:54,128-129`.
+ *   - `expiresAt: now + SWAP_LOCK_TTL_MS` 컨벤션 — `lockSwap.ts:171`.
+ *
+ * **`selectedDepartureTime` 선택 근거(확인 완료)**: 레포 전체에서 이 필드를 **읽는** 소비처는
+ * 0건이다(`grep -rn '\.selectedDepartureTime' src/*.ts` — `index.ts`의 파서(`parseBoardingLock`
+ * 부근)가 device가 보낸 값을 echo만 하고 계산엔 전혀 쓰지 않는다). 기존 lock 생성 3개 call site
+ * (`boardingAnchorResolver.ts:681,701`, `lockSwap.ts:169`) 전부 `now`(합성 시각)를 쓰는
+ * 컨벤션이므로, 소비처가 없어 `stamp.firedAt` 근사의 이점(오염 방지)이 성립하지 않는 이 상황에선
+ * 그 기존 컨벤션을 그대로 따른다 — 새 임계값/근사를 만들지 않는다.
+ *
+ * null 반환(승격 포기, 호출부가 기존 live 재해소 경로로 fallback) — **거부 케이스 "stamp
+ * trainCode 없음"**:
+ *   - `stamp === undefined` 또는 `stamp.trainCode === undefined`(ambiguity 발사, 또는 아직
+ *     한 번도 발사되지 않은 trip) — release 판정 자체는 trainCode를 안 읽으므로(§4-1/W-1/W-5
+ *     전부 leg/routeSignature만 본다) release는 유지된 채 fallback만 일어난다. live 재해소가
+ *     또 none으로 끝나도 release가 되돌려지지 않는다(거부 케이스 ③, trip이 막히지 않는다).
+ *   - `subwayIdForLine` 매핑 실패(미지원 line).
+ *   - `buildLegSegmentStations` 빈 배열(`trip.waypoints`가 이미 이 line을 벗어남 — route 불일치).
+ */
+function promoteStampedTrainCode(trip: Trip, now: number): BoardingLockMeta | null {
+  const stamp = trip.legBoardingFireStamp;
+  if (!stamp || stamp.trainCode === undefined) return null;
+  const subwayId = subwayIdForLine(stamp.line);
+  if (!subwayId) return null;
+  const segmentStations = buildLegSegmentStations(trip.waypoints, stamp.line);
+  if (segmentStations.length === 0) return null;
+  return {
+    trainCode: stamp.trainCode,
+    line: stamp.line,
+    subwayId,
+    selectedDepartureTime: now,
+    segmentStations,
+    expiresAt: now + SWAP_LOCK_TTL_MS,
+  };
+}
+
+/**
+ * #2957 — boarding-confirm 'boarded' 분기의 lock 부착 공통 경로(DRY). stamp 직접 승격
+ * (`promoteStampedTrainCode`)과 live 재해소(`attemptBoardingAnchorResolution`) 둘 다 이 함수로
+ * 귀결시켜 leg2/leg1 판정(`currentLegAnchor` 존재 기준, W-1 오표기 수정분)과 §4-2 LA push
+ * 게이트 skip 조건을 한 곳에서만 유지한다.
+ */
+function attachBoardedLock(
+  working: Trip,
+  lock: BoardingLockMeta,
+  now: number,
+  skipLaPushReset: boolean,
+): { working: Trip; lockState: 'leg1' | 'leg2' } {
+  const isLeg2 = working.currentLegAnchor !== undefined;
+  const nextWorking: Trip = {
+    ...working,
+    boardingLock: lock,
+    consecutiveEtaMissing: 0,
+    lastTrackedArrivalEpoch: undefined,
+    ...(skipLaPushReset ? {} : { lastLaPushEpoch: undefined, lastLaPushAt: undefined }),
+    ...(isLeg2
+      ? { legBoardingPromptState: markPromptFired(now, working.legBoardingPromptState, lock.trainCode) }
+      : { boardingPromptState: markPromptFired(now, working.boardingPromptState, lock.trainCode) }),
+  };
+  return { working: nextWorking, lockState: isLeg2 ? 'leg2' : 'leg1' };
 }
 
 /**

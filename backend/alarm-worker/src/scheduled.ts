@@ -115,6 +115,7 @@ import {
   putTrip,
   resolveTripDeviceToken,
   tripHasDeclaredIntent,
+  waypointSignatureKey,
 } from './trips';
 import {
   buildTransferGateBlockMeta,
@@ -8639,6 +8640,22 @@ export async function maybeFireLegBoardingPrompt(
         trip.legBoardingPromptState,
         boardingPromptDedupKey(selectedTrainCode, decision),
       );
+      // #2957 (W2, C2) — boarding-confirm 응답 측 release→재생성 판정용 stamp. legBoardingPromptState
+      // (dedup 전용)와 분리된 인접 필드(types.ts doc 참고) — 이 발사가 지칭한 leg·열차·route를
+      // 기록해, 나중에 사용자가 탭했을 때 그 탭이 "지금도 유효한 leg-2 발사에 대한 응답"인지
+      // (leg 동일성 + route **진행 관계**) 판정할 수 있게 한다. #2957 W-6 스펙 정정(코디네이터,
+      // 2026-10-12) — route 신원은 해시 1개(`computeRouteSignature`)가 아니라 `destination` +
+      // `waypointKeys`(`waypointSignatureKey`로 생성, `trips.ts`)로 stamp한다 — `index.ts`의
+      // `isRouteProgressRelation`이 이 둘을 비교해 "진행만 됐는지/진짜 route가 바뀌었는지"를
+      // 판정하려면 비교 가능한 waypoint key 배열이 필요하다(해시 1개로는 그 구분이 불가능하다).
+      trip.legBoardingFireStamp = {
+        boardingStation: currentLegAnchor.boardingStation,
+        line: currentLegAnchor.line,
+        ...(selectedTrainCode !== null ? { trainCode: selectedTrainCode } : {}),
+        destination: trip.destination,
+        waypointKeys: trip.waypoints.map(waypointSignatureKey),
+        firedAt: now,
+      };
       promptOutcome = 'fired';
       candidateArvlCds = pool.map((entry) => entry.arvlCd);
       candidateEtaSeconds = pool.map((entry) => entry.arrivalSeconds);
