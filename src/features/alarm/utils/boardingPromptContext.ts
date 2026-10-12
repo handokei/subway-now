@@ -42,6 +42,7 @@ import { resolveTravelDirection } from '../../route/utils/travelDirection';
 import { inferLoopDirection } from '../../route/utils/loopDirection';
 import { findLocklessActiveLegWaypoint } from '../../route/utils/findActiveTransferContext';
 import { findSegmentEndStationName } from './buildBoardingLockMeta';
+import { resolveGpsFreeOrigin } from './gpsFreeOrigin';
 
 /**
  * #2946 (H-7 결함2, 2026-10-10 코디네이터 리뷰로 범위 축소) — 처음엔 `resolveTravelDirection ??
@@ -106,6 +107,13 @@ interface BuildInputs {
    * 동봉한다. 미제공(undefined/null)이면 필드 자체를 생략(GPS fix 없음 — 지하/권한거절 graceful).
    */
   gpsFix?: GpsFix | null;
+  /**
+   * #2959 — `currentStation`이 GPS dead zone(지하 등)으로 null일 때 사용할 GPS 무관 origin
+   * fallback 후보(우선순위 순 — customOrigin / boardingLockStation / persisted tripOrigin).
+   * `resolveGpsFreeOrigin`으로 해석하며, `currentStation`이 있으면 완전히 무시한다(R-2, 현행
+   * 동작 100% 불변). 미지정이면 빈 배열과 동일(기존 동작 그대로 — currentStation=null이면 null).
+   */
+  gpsFreeOriginCandidates?: ReadonlyArray<Station | null | undefined>;
 }
 
 /** #2130 (B-2) — GPS fix가 있을 때만 origin 근접 스탬프 필드를 만든다. */
@@ -120,11 +128,15 @@ function buildOriginGpsStamp(
 
 export function buildBoardingPromptContext({
   route,
-  currentStation,
+  currentStation: rawCurrentStation,
   destination,
   lock,
   gpsFix,
+  gpsFreeOriginCandidates = [],
 }: BuildInputs): BoardingPromptContext | null {
+  // #2959 — currentStation이 GPS dead zone으로 null이면 GPS 무관 origin fallback 후보를 채택.
+  // currentStation이 있으면 resolveGpsFreeOrigin이 후보를 보지 않고 그대로 반환(R-2 불변).
+  const currentStation = resolveGpsFreeOrigin(rawCurrentStation, gpsFreeOriginCandidates, route);
   if (!route || !currentStation || !destination) return null;
 
   // #1921 — lock 활성 분기. route 원본 line이 lock leg와 어긋난 cross-trip 자동 전환에서

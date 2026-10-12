@@ -83,7 +83,11 @@ import {
 } from '../../../../shared/constants/boardingLock';
 import { SUBSURFACE_FLAP_QUARANTINE_MS } from '../../../../shared/constants/barometer';
 import { ETA_POLLING_WINDOW_SEC } from '../../../../shared/constants/eta';
-import { makeDirectRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import { getStationById } from '../../../../shared/utils/stationRoute';
 
@@ -4251,6 +4255,177 @@ describe('useApnsTripRegistration', () => {
         promptDisplay?: { originStation: string; line: string };
       };
       expect(refreshedArgs.promptDisplay).toEqual({ originStation: '서초', line: '2' });
+    });
+  });
+
+  // #2959 — 지하 출발(currentStation=null)에서 waypoint가 sparse(transfer+destination만)로
+  // 등록돼 '1정거장 전' 준비 알림·매역 알림이 구조적으로 침묵한다. 실측 경로(중곡(7)→
+  // 군자 환승→광화문(5))를 그대로 재현 — intermediate 10개 역.
+  describe('#2959 — GPS 무관 origin fallback으로 sparse waypoint 해소', () => {
+    const jungok = st('7-016'); // 중곡
+    const gwanghwamun = st('5-024'); // 광화문(세종문화회관)
+    const transferRoute: Route = makeTransferRoute({
+      transferName: '군자',
+      fromLine: '7',
+      toLine: '5',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 11,
+    });
+
+    function intermediateCount(waypoints: Array<{ kind: string }>): number {
+      return waypoints.filter((wp) => wp.kind === 'intermediate').length;
+    }
+
+    // A — 회귀 가드: currentStation이 있으면 fallback 후보 유무와 무관하게 100% 불변.
+    it('A: currentStation 있음 → intermediate=10 불변 (fallback 후보 무시)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: jungok,
+          tripOriginStation: st('3-001'), // 무관 노선 후보가 있어도 무시돼야 함
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as {
+        waypoints: Array<{ kind: string }>;
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(intermediateCount(payload.waypoints)).toBe(10);
+      expect(payload.promptDisplay).toEqual({ originStation: jungok.name, line: '7' });
+    });
+
+    // B — 측정 재현: currentStation=null + fallback 후보 없음 → intermediate=0 (현행 결함).
+    it('B: currentStation=null + fallback 후보 없음 → intermediate=0 (현행 결함 재현)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as { waypoints: Array<{ kind: string }> };
+      expect(intermediateCount(payload.waypoints)).toBe(0);
+    });
+
+    // C — 측정 재현: currentStation=null + fallback 후보 없음 → promptDisplay 미전송.
+    it('C: currentStation=null + fallback 후보 없음 → promptDisplay 미전송 (현행 결함 재현)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as { promptDisplay?: unknown };
+      expect(payload.promptDisplay).toBeUndefined();
+    });
+
+    // D — fix 검증: currentStation=null + persisted tripOrigin fallback → intermediate=10 +
+    // promptDisplay 전송. customOrigin/boardingLockStation도 같은 해석기를 통해 동일하게 동작.
+    it('D (fix): currentStation=null + tripOriginStation(persisted) fallback → intermediate=10 + promptDisplay 전송', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+          tripOriginStation: jungok,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as {
+        waypoints: Array<{ kind: string }>;
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(intermediateCount(payload.waypoints)).toBe(10);
+      expect(payload.promptDisplay).toEqual({ originStation: jungok.name, line: '7' });
+    });
+
+    it('D (fix): customOrigin 후보로도 동일하게 전개된다 (우선순위 1위)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+          customOrigin: jungok,
+          tripOriginStation: st('3-001'), // 우선순위 하위 후보 — 무시돼야 함(무관 노선이라 전개돼도 결과가 달라지면 바로 드러남)
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as {
+        waypoints: Array<{ kind: string }>;
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(intermediateCount(payload.waypoints)).toBe(10);
+      expect(payload.promptDisplay?.originStation).toBe(jungok.name);
+    });
+
+    it('D (fix): boardingLockStation 후보로도 동일하게 전개된다 (customOrigin 없을 때 2순위)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+          boardingLockStation: jungok,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as {
+        waypoints: Array<{ kind: string }>;
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(intermediateCount(payload.waypoints)).toBe(10);
+      expect(payload.promptDisplay?.originStation).toBe(jungok.name);
+    });
+
+    // R-1 — fallback 후보가 전부 null → 현행 sparse 유지, 억지 추측 금지.
+    it('R-1: fallback 후보 전부 null → sparse 유지 (customOrigin/boardingLockStation/tripOriginStation 모두 null)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+          customOrigin: null,
+          boardingLockStation: null,
+          tripOriginStation: null,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as {
+        waypoints: Array<{ kind: string }>;
+        promptDisplay?: unknown;
+      };
+      expect(intermediateCount(payload.waypoints)).toBe(0);
+      expect(payload.promptDisplay).toBeUndefined();
+    });
+
+    // R-3 — fallback 후보가 route 상에 없는 역(무관 노선)이면 전개를 포기 — sparse 유지.
+    it('R-3: fallback 후보가 route와 무관한 노선의 역 → sparse 유지 (엉뚱한 waypoint 생성 금지)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: transferRoute,
+          destination: gwanghwamun,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+          tripOriginStation: st('3-001'), // 3호선 — route(7↔5)와 무관
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const payload = mockRegister.mock.calls[0][0] as {
+        waypoints: Array<{ kind: string }>;
+        promptDisplay?: unknown;
+      };
+      expect(intermediateCount(payload.waypoints)).toBe(0);
+      expect(payload.promptDisplay).toBeUndefined();
     });
   });
 });

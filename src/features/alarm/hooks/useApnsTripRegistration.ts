@@ -34,6 +34,7 @@ import {
   type BoardingPromptContext,
   type GpsFix,
 } from '../utils/boardingPromptContext';
+import { resolveGpsFreeOrigin } from '../utils/gpsFreeOrigin';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY, DESTINATION_KEY } from '../../../shared/constants/storageKeys';
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
@@ -161,6 +162,26 @@ export interface UseApnsTripRegistrationInputs {
    * passedStations fallback으로 동작.
    */
   originStationName?: string;
+  /**
+   * #2959 — GPS 무관 origin fallback 후보 1순위: 사용자가 직접 선택한 출발역
+   * (`useDestinationStore.customOrigin`). `currentStation`이 GPS dead zone으로 null일 때만
+   * 사용 — currentStation이 있으면 완전히 무시(R-2). `resolveGpsFreeOrigin`
+   * (`../utils/gpsFreeOrigin`)으로 해석하며, waypoint 전개(`routeToWaypoints`)와
+   * boarding-prompt 컨텍스트(`buildBoardingPromptContext`) 양쪽이 같은 해석 결과를 쓴다 —
+   * 한쪽만 적용하면 backend 재합성 fallback이 계속 막혀 cold-start 변종에서 재발한다.
+   */
+  customOrigin?: Station | null;
+  /**
+   * #2959 — GPS 무관 origin fallback 후보 2순위: 활성 BoardingLock의 탑승역
+   * (`getStationById(boardingLock.boardingStationId)`). customOrigin이 없을 때만 채택.
+   */
+  boardingLockStation?: Station | null;
+  /**
+   * #2959 — GPS 무관 origin fallback 후보 3순위: persist된 trip 출발역
+   * (`useDestinationStore.tripOrigin`, #700 hydration). 앞선 두 후보가 모두 없을 때만 채택.
+   * 전부 null이면(완전 cold-start) fallback 없음 — 현행 sparse 유지(R-1).
+   */
+  tripOriginStation?: Station | null;
 }
 
 /**
@@ -224,6 +245,8 @@ interface RegisterCallInputs {
   gpsFix?: GpsFix | null;
   /** #2280 — trip 등록 시점에 고정된 SSOT 출발역명. 미제공(undefined)이면 필드 송신 자체 생략. */
   originStationName?: string;
+  /** #2959 — GPS 무관 origin fallback 후보(우선순위 순). `resolveGpsFreeOrigin`이 해석. */
+  gpsFreeOriginCandidates: ReadonlyArray<Station | null | undefined>;
 }
 
 /**
@@ -271,6 +294,9 @@ async function callRegister(
       destination: input.destination,
       lock: input.boardingLock,
       gpsFix: input.gpsFix,
+      // #2959 — currentStation이 GPS dead zone으로 null이면 GPS 무관 origin fallback 후보로
+      // promptDisplay/promptGeoContext를 채운다. currentStation이 있으면 무시(R-2).
+      gpsFreeOriginCandidates: input.gpsFreeOriginCandidates,
     });
     promptContext = freshContext ?? input.cachedPromptContext;
   }
@@ -287,7 +313,15 @@ async function callRegister(
     token: input.token,
     route: input.route,
     destination: input.destination.id,
-    waypoints: routeToWaypoints(input.route, input.destination.name, input.currentStation),
+    // #2959 — currentStation이 GPS dead zone(지하 등)으로 null이면 GPS 무관 origin fallback
+    // 후보(customOrigin/boardingLockStation/persisted tripOrigin)로 waypoint를 펼친다. 둘 다
+    // null이면(R-1) resolveGpsFreeOrigin이 null을 반환해 현행 sparse(transfer+destination만)
+    // 동작이 그대로 유지된다.
+    waypoints: routeToWaypoints(
+      input.route,
+      input.destination.name,
+      resolveGpsFreeOrigin(input.currentStation, input.gpsFreeOriginCandidates, input.route),
+    ),
     alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
     // #2699 (리뷰 지적, PR #2789 4라운드 — 항목 2) — hook이 계산한 단일 소스 값을 그대로
     // 전달. buildRegisterHash가 alarmAtEpochMs로 재계산하지 않는다(RegisterCallInputs 주석).
@@ -340,6 +374,9 @@ export function useApnsTripRegistration({
   gpsFix = null,
   routeOriginStation = null,
   originStationName,
+  customOrigin = null,
+  boardingLockStation = null,
+  tripOriginStation = null,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
@@ -549,6 +586,9 @@ export function useApnsTripRegistration({
     gpsFix,
     routeOriginStation,
     originStationName,
+    customOrigin,
+    boardingLockStation,
+    tripOriginStation,
   });
   useEffect(() => {
     latestInputsRef.current = {
@@ -568,6 +608,9 @@ export function useApnsTripRegistration({
       gpsFix,
       routeOriginStation,
       originStationName,
+      customOrigin,
+      boardingLockStation,
+      tripOriginStation,
     };
   });
 
@@ -720,6 +763,9 @@ export function useApnsTripRegistration({
       sleepMode: sm,
       gpsFix: gf,
       originStationName: osn,
+      customOrigin: co,
+      boardingLockStation: bls,
+      tripOriginStation: tos,
     } = latestInputsRef.current;
     if (!r || !d) return null;
     const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -769,6 +815,8 @@ export function useApnsTripRegistration({
       promptContextOverride: options?.promptContextOverride,
       gpsFix: gf,
       originStationName: osn,
+      // #2959 — GPS 무관 origin fallback 후보(우선순위 순). resolveGpsFreeOrigin이 해석.
+      gpsFreeOriginCandidates: [co, bls, tos],
     });
     // #2197 — 429(rate_limited) 응답이면 서버가 지시한 시간까지 이후 register/heal 호출을
     // 억제한다. backend가 매 429 응답에 최신 window를 다시 계산해 내려주므로 항상 최신값으로
