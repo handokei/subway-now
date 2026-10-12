@@ -225,6 +225,47 @@ describe('ingestCsv', () => {
     // 신사→? skip된 후, ?→신논현 시작이 prev=null이라 hop 0건.
     expect(stats.added).toBe(0);
   });
+
+  // #2967: 9호선 CSV는 서울교통공사 CSV와 반대로 `역간거리`가 '다음역까지' 거리를 쓴다.
+  // mergeLineHops는 (이전역, 현재역) edge에 거리를 붙이므로, 이런 CSV는
+  // '이전역으로부터' 의미의 상보 컬럼(예: `후행역간거리`)을 distKeys로 override해야 한다.
+  it('spec.distKeys가 있으면 해당 컬럼만 읽는다 (9호선 후행역간거리 override)', () => {
+    const line9Stations = [
+      { id: '9-001', name: '개화', line: '9' },
+      { id: '9-002', name: '김포공항', line: '9' },
+    ];
+    const csv =
+      '철도운영기관명,선명,역명,역간거리,후행역간거리\n' +
+      '국가철도공단,9호선,개화,3.6,\n' +
+      '국가철도공단,9호선,김포공항,0.0,3.6';
+    const buf = iconv.encode(csv, 'cp949');
+    const distances = {};
+    const stats = emptyStats();
+    const line9Spec = {
+      filename: 'line9.csv',
+      encoding: 'cp949',
+      lineMap: { '9호선': '9' },
+      distKeys: ['후행역간거리'],
+    };
+    ingestCsv(line9Spec, buf, line9Stations, distances, stats);
+    // 역간거리(0.0)가 아니라 후행역간거리(3.6)를 읽어 3600m이 기록돼야 한다.
+    expect(distances['9|9-001|9-002']).toBe(3600);
+    expect(stats.added).toBe(1);
+  });
+
+  it('spec.distKeys가 없으면 기본 DIST_KEYS(역간거리)를 그대로 쓴다', () => {
+    const line9Stations = [
+      { id: '9-001', name: '개화', line: '9' },
+      { id: '9-002', name: '김포공항', line: '9' },
+    ];
+    const csv = '철도운영기관명,선명,역명,역간거리\n' + '국가철도공단,9호선,개화,0\n' + '국가철도공단,9호선,김포공항,3.6';
+    const buf = iconv.encode(csv, 'cp949');
+    const distances = {};
+    const stats = emptyStats();
+    const line9Spec = { filename: 'line9.csv', encoding: 'cp949', lineMap: { '9호선': '9' } };
+    ingestCsv(line9Spec, buf, line9Stations, distances, stats);
+    expect(distances['9|9-001|9-002']).toBe(3600);
+  });
 });
 
 describe('CSV_FILES', () => {
@@ -256,6 +297,17 @@ describe('CSV_FILES', () => {
     expect(korail.lineMap['4호선']).toBe('4');
     expect(korail.lineMap.수인분당).toBe('bundang');
     expect(korail.lineMap.경의중앙).toBe('gyeongui');
+  });
+
+  // #2967: 9호선 CSV는 서울교통공사 규약과 반대로 `역간거리`='다음역까지'를 쓰므로
+  // 상보 컬럼 `후행역간거리`('이전역으로부터')를 distKeys로 override해야 한다.
+  // (haversine 교차검증: 중앙값 1.04 — getStopDistanceMeters 문서의 1.04x와 일치,
+  //  역간거리로 읽으면 라벨이 한 칸 밀려 0.79/2.33으로 벗어난다.)
+  it('9호선 spec 포함 + 후행역간거리 override', () => {
+    const line9 = CSV_FILES.find((s) => s.filename === 'krric-line9-distance-20250630.csv');
+    expect(line9).toBeDefined();
+    expect(line9.lineMap['9호선']).toBe('9');
+    expect(line9.distKeys).toEqual(['후행역간거리']);
   });
 });
 

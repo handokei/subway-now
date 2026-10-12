@@ -55,6 +55,21 @@ const CSV_FILES = [
     legacyEncoding: 'cp949',
     lineMap: { '4호선': '4' },
   },
+  // 신규(#2967): 9호선 — 서울교통공사/코레일 CSV와 **반대 의미**로 `역간거리`를 쓴다.
+  // 다른 모든 CSV의 `역간거리`는 '이전역으로부터'(서울교통공사 규약: 청량리=0)인데,
+  // 9호선 CSV는 '다음역까지'(개화=3.6, 첫 역부터 값이 있고 마지막 역이 빈 값)다.
+  // mergeLineHops는 (이전역, 현재역) edge에 거리를 붙이므로 그대로 읽으면 전 구간이
+  // 한 칸 밀린다 — 상보 컬럼 `후행역간거리`('이전역으로부터' 의미)를 distKeys로 override.
+  // haversine 교차검증(실측/직선, 37쌍): 후행역간거리 중앙값 1.04(getStopDistanceMeters
+  // 문서의 "haversine은 평균 1.04x 짧다"와 일치) vs 역간거리(밀린 라벨) 1.82 — 범위 이탈.
+  {
+    filename: 'krric-line9-distance-20250630.csv',
+    legacyFilename: '국가철도공단_수도권9호선_역간거리_20250630.csv',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
+    lineMap: { '9호선': '9' },
+    distKeys: ['후행역간거리'],
+  },
   {
     filename: 'krric-sinbundang-distance-20250630.csv',
     legacyFilename: '국가철도공단_신분당선_역간거리_20250630.csv',
@@ -211,7 +226,8 @@ function recordHop(distances, stats, stationsLine, prevId, stationId, km) {
 }
 
 // 한 노선 분의 row들을 순회하며 인접 hop을 distances에 머지.
-function mergeLineHops(stationsLine, lineRows, byLine, idxMap, distances, stats) {
+// distKeys: CSV가 기본 DIST_KEYS와 다른 의미의 컬럼을 써야 할 때 override (#2967 9호선).
+function mergeLineHops(stationsLine, lineRows, byLine, idxMap, distances, stats, distKeys = DIST_KEYS) {
   let prevId = null;
   for (const row of lineRows) {
     const rawName = pickField(row, NAME_KEYS);
@@ -220,7 +236,7 @@ function mergeLineHops(stationsLine, lineRows, byLine, idxMap, distances, stats)
       continue;
     }
     const stationId = lookupStationId(byLine, stationsLine, rawName);
-    const km = parseDistKm(pickField(row, DIST_KEYS));
+    const km = parseDistKm(pickField(row, distKeys));
 
     if (prevId !== null && stationId !== null && km !== null) {
       if (isAdjacentHop(idxMap, prevId, stationId)) {
@@ -254,7 +270,7 @@ function ingestCsv(csvSpec, rawBuf, stations, distances, stats) {
       stats.skippedLines.add(`${csvSpec.filename}:${stationsLine}`);
       continue;
     }
-    mergeLineHops(stationsLine, lineRows, byLine, idxMap, distances, stats);
+    mergeLineHops(stationsLine, lineRows, byLine, idxMap, distances, stats, csvSpec.distKeys);
   }
 }
 

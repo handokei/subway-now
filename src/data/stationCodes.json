@@ -1552,16 +1552,16 @@
     "frCode": "935"
   },
   "9-036": {
+    "stationCd": "4136",
+    "frCode": "936"
+  },
+  "9-037": {
     "stationCd": "4137",
     "frCode": "937"
   },
-  "9-037": {
+  "9-038": {
     "stationCd": "4138",
     "frCode": "938"
-  },
-  "9-038": {
-    "stationCd": "4136",
-    "frCode": "936"
   },
   "airport-001": {
     "stationCd": "4201",
