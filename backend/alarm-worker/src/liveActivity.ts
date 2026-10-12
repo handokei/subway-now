@@ -38,6 +38,7 @@ import {
   cleanupPendingPushesForToken,
   deleteDeviceTripIndexIfCurrent,
   deleteTrip,
+  isLegAnchorMatch,
   resolveTripDeviceToken,
 } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, TripEndPath, Waypoint } from './types';
@@ -119,18 +120,44 @@ export interface LiveActivityDeps {
  *
  * `trainCodeOverride` (#2962) — content-state의 optional `trainCode` 필드. 사용자가 LA의
  * [탑승] 버튼을 탭하면 `BoardingIntents.swift`가 이 값을 body에 실어 backend
- * `/boarding-confirm`에 보낸다(#2961/#2963이 수용). 미전달 시 `trip.boardingLock?.trainCode`로
- * 폴백한다 — lock이 걸린 뒤의 일반 추적 update(`scheduled.ts`의 waypoint advance /
- * `maybeFireLiveActivityUpdate`)는 "지금 추적 중인 그 열차"를 그대로 반영하면 되므로 별도 전달
- * 없이 자동으로 채워진다. **lock이 아직 없는 pre-boarding 단계**(boardingPrompt alert, 27분차·
- * 30분차처럼 같은 trip에 여러 열차가 후보로 발사되는 시점)는 boardingLock이 없어 폴백이
- * undefined이므로, 그 특정 발사의 열차(`selectedTrainCode`)를 호출자가 명시적으로 override해야
- * 한다 — 이것이 본 이슈가 해결하는 시나리오(27분차 알림의 LA 버튼을 눌러도 30분차가 lock되던
- * 회귀, stamp 폴백에만 의존하던 구조의 근본 수정).
+ * `/boarding-confirm`에 보낸다(#2961/#2963이 수용). pre-boarding 프롬프트 alert
+ * (`fireBoardingPromptForAnchor`)만 이 인자를 명시 전달한다 — 그 발사의 `selectedTrainCode`가
+ * 가장 정확한 값이고, 아직 `boardingLock`/`legBoardingFireStamp`가 이 발사를 반영하기 전이기
+ * 때문이다.
  *
- * trip도 override도 없으면(legacy 호출) 필드 자체를 emit하지 않는다 — byte-level 하위호환
- * (R-1/R-3, 구 backend/구 위젯 양방향 회귀 0).
+ * **미전달 시 기본값 resolution(#2962 follow-up, 코디네이터 정정 2026-10-12)** — 단순히
+ * `trip.boardingLock?.trainCode`로 폴백하면 안 된다. leg-2 프롬프트가 떠 있는 동안
+ * `boardingLock`은 아직 **이전 leg**(stale)일 수 있고, 그 사이 돌아가는 LA heartbeat
+ * (`maybeFireLiveActivityUpdate`, 30s~90s 주기)가 override 없이 호출되면 그 stale 값으로
+ * content-state를 **덮어써** pre-boarding alert가 심어둔 올바른 trainCode를 지운다(10/9
+ * 시나리오 재현). 그래서 기본값은:
+ *   1. `trip.legBoardingFireStamp`가 **현재 leg**(`trip.currentLegAnchor`와
+ *      `isLegAnchorMatch`, trips.ts — #2957 W-4 'stale-leg-stamp'와 동일 비교, 사본 금지 L21)를
+ *      가리키고 `trainCode`를 담고 있으면 → 그 stamp의 trainCode("이 버튼을 누르면 확정될
+ *      열차" — 아직 lock되지 않았을 수도 있는, 프롬프트가 제시한 값).
+ *   2. 그 외(stamp 없음/다른 leg/ambiguity로 trainCode 없음) → `trip.boardingLock?.trainCode`
+ *      (이미 확정된 열차).
+ * `maybeFireLiveActivityUpdate`/waypoint-advance LA update 둘 다 이 기본값 경로를 그대로
+ * 상속한다 — 별도 override 불필요.
+ *
+ * trip도 override도 기본값도 없으면(legacy 호출) 필드 자체를 emit하지 않는다 — byte-level
+ * 하위호환(R-1/R-3, 구 backend/구 위젯 양방향 회귀 0).
  */
+/**
+ * #2962 follow-up — `trainCodeOverride` 미전달 시 content-state.trainCode 기본값. 위
+ * `buildLiveActivityContentState` 독스트링 "미전달 시 기본값 resolution" 참고.
+ *
+ * stamp가 현재 leg를 가리키고 trainCode를 담고 있으면 stamp 우선(프롬프트가 제시한, 아직
+ * lock되지 않았을 수 있는 열차) — 아니면 `boardingLock`(이미 확정된 열차)로 폴백.
+ */
+function resolveDefaultTrainCode(trip: Trip): string | undefined {
+  const stamp = trip.legBoardingFireStamp;
+  if (stamp?.trainCode !== undefined && isLegAnchorMatch(stamp, trip.currentLegAnchor)) {
+    return stamp.trainCode;
+  }
+  return trip.boardingLock?.trainCode;
+}
+
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
   etaSeconds: number,
@@ -157,9 +184,10 @@ export function buildLiveActivityContentState(
     stopsRemaining,
     etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
   };
-  // #2962 — override 우선, 없으면 trip.boardingLock.trainCode로 폴백. 둘 다 없으면 필드 자체를
-  // emit하지 않는다(아래 spread) — 기존 MultiHopContext 선택 필드 관례와 동일.
-  const resolvedTrainCode = trainCodeOverride ?? trip?.boardingLock?.trainCode;
+  // #2962 — override 우선, 없으면 resolveDefaultTrainCode(stamp-먼저, 아래)로 폴백. 둘 다
+  // 없으면 필드 자체를 emit하지 않는다(아래 spread) — 기존 MultiHopContext 선택 필드 관례와 동일.
+  const resolvedTrainCode =
+    trainCodeOverride ?? (trip ? resolveDefaultTrainCode(trip) : undefined);
   const withTrainCode =
     resolvedTrainCode !== undefined ? { trainCode: resolvedTrainCode } : {};
   if (!trip) return { ...base, ...withTrainCode };

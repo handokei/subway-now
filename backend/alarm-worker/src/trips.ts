@@ -299,6 +299,35 @@ export function waypointSignatureKey(w: Trip['waypoints'][number]): string {
   return `${w.stationName}|${w.line}|${w.kind}|${w.occurrenceIdx ?? 0}`;
 }
 
+/** leg 신원(`boardingStation` + `line`)만 갖는 최소 shape. `Trip.currentLegAnchor`와
+ * `Trip.legBoardingFireStamp`가 공유하는 필드 쌍 — `isLegAnchorMatch`(아래)가 이 shape으로
+ * 둘을 직접 비교한다. */
+export interface LegAnchorIdentity {
+  boardingStation: string;
+  line: string;
+}
+
+/**
+ * #2957 W-4('stale-leg-stamp') 판정의 핵심 비교를 공유 primitive로 추출 (#2962 follow-up,
+ * 코디네이터 지시 — 사본 금지, lessons L21). `legBoardingFireStamp`(boardingStation/line)가
+ * `trip.currentLegAnchor`와 같은 leg를 가리키는지만 본다 — route 진행 관계(`isRouteProgressRelation`)
+ * 와는 별개 축이다.
+ *
+ * `decideLegLockReleaseForBoardedTap`(index.ts, W-4)와 LA content-state의 trainCode 기본값
+ * 해석(`liveActivity.ts`, #2962) 둘 다 이 함수 하나를 공유한다 — 어느 한쪽이라도 손으로
+ * 다시 구현하면 leg 판정 primitive가 또 사본으로 갈라진다(이 레포 전례, 방향 판정 함수 6개).
+ *
+ * 둘 중 하나라도 없으면(예: leg-1처럼 `currentLegAnchor` 자체가 없는 trip) false — "모르면
+ * 일치로 간주하지 않는다"가 안전한 기본값이다.
+ */
+export function isLegAnchorMatch(
+  a: LegAnchorIdentity | undefined,
+  b: LegAnchorIdentity | undefined,
+): boolean {
+  if (!a || !b) return false;
+  return a.boardingStation === b.boardingStation && a.line === b.line;
+}
+
 /** `isRouteProgressRelation`이 비교하는 route 신원 — Trip 전체가 아니라 destination + waypoint
  * key 배열만 필요하다(`legBoardingFireStamp`처럼 Trip이 아닌 stamp에도 적용 가능하게 하기 위함). */
 export interface RouteIdentity {
