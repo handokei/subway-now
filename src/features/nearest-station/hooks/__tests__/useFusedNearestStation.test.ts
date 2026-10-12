@@ -1077,9 +1077,12 @@ describe('useFusedNearestStation', () => {
       // 시간 적분 strategy(default-hop / lockless-route-hop / reanchored-hop)의 fire 권한 박탈.
       // estimator override가 result/source를 덮어쓰지 않는다 — GPS가 fire path SSOT.
       // UI 추적용 displayOnlyEstimate는 estimator 결과를 그대로 노출 (DebugModal에서 strategy 라벨 추적).
+      // #2951: 용마산(7-015)→중곡(7-016) 실측 주행 80초 + DWELL_SECONDS(30) = 110초가 "1 hop".
+      // 과거 90초는 정차시간 누락 상태의 순수주행(80초)에 여유를 더한 근사치였다 — 정차시간을
+      // 가산한 지금은 90초 시점엔 아직 1 hop이 끝나지 않는다(정확한 교정, "앞서감" 축소).
       jest.useFakeTimers();
       try {
-        jest.setSystemTime(T0 + 90_000);
+        jest.setSystemTime(T0 + 110_000);
         setupGpsAt(yongmasan);
         const { result } = renderHook(() =>
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
@@ -1334,7 +1337,8 @@ describe('useFusedNearestStation', () => {
         expect(result.current.result?.station.id).toBe(yongmasan.id);
         expect(result.current.displayOnlyEstimate?.station.id).toBe(yongmasan.id);
 
-        jest.setSystemTime(T0 + 90_000);
+        // #2951: 용마산→중곡 hop = 실측 주행 80초 + DWELL_SECONDS(30) = 110초.
+        jest.setSystemTime(T0 + 110_000);
         rerender(undefined);
         // fire path: GPS(용마산) 유지
         expect(result.current.source).not.toBe('boarding-lock-interp');
@@ -1375,9 +1379,10 @@ describe('useFusedNearestStation', () => {
     it('#1437 userLocation null + GPS result null → fire path result도 null (estimator override 박탈)', () => {
       // 정책 박탈 후: GPS가 없으면 fire path도 그대로 비어 있다. estimator가 채워주지 않는다.
       // displayOnlyEstimate만 estimator 결과를 노출.
+      // #2951: 용마산→중곡 hop = 실측 주행 80초 + DWELL_SECONDS(30) = 110초.
       jest.useFakeTimers();
       try {
-        jest.setSystemTime(T0 + 90_000);
+        jest.setSystemTime(T0 + 110_000);
         mockUseNearest.mockReturnValue(
           gpsBase({ userLocation: null, result: null }),
         );
