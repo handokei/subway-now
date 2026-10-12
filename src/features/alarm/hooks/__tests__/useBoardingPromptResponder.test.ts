@@ -425,6 +425,23 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
   });
 
+  // #2961 — payload.trainCode(#2819 push payload embed 값, 발사 시점 backend가 단일 확정한
+  // 열차)가 있으면 postBoardingConfirm의 5번째 인자로 그대로 forward한다. backend가 "어느
+  // 알림을 탭했는지" 알아야 2회 발사 시 올바른 열차를 lock한다(이슈 본문 핵심 시나리오).
+  it('#2961 — payload.trainCode 있으면 postBoardingConfirm 5번째 인자로 forward', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const deps = makeDeps();
+    const payload = { ...PAYLOAD, trainCode: '2701' };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, payload, deps);
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+      'tok',
+      'boarded',
+      '강남',
+      '2',
+      '2701',
+    );
+  });
+
   // #2696 — route/destination widget context가 존재할 때 "다음 목표역" 계산 경로
   // (getNextStationName 호출)도 정상 동작해 조기종착이 아닌 경우 lock이 그대로 성공해야 한다.
   it('#2696 — route/destination widget context 존재 시 다음 목표역 계산 경로도 정상 동작(조기종착 아니면 lock 성공)', async () => {

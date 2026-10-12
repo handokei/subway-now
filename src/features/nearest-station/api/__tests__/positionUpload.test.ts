@@ -626,6 +626,32 @@ describe('postBoardingConfirm (#2852)', () => {
     const r = await postBoardingConfirm('tok', 'boarded', '강남', '2');
     expect(r).toEqual({ ok: false });
   });
+
+  // #2961 — device가 탭한 알림의 trainCode(#2819 임베드 값)를 body에 실어 backend가 stamp보다
+  // 우선 신뢰하게 한다. optional 5번째 인자 — 미전달이면 기존 계약(위 테스트들) 그대로.
+  it('trainCode 전달 시 body에 포함(#2961)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    await postBoardingConfirm('tok', 'boarded', '강남', '2', '2701');
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      action: 'boarded',
+      station: '강남',
+      line: '2',
+      trainCode: '2701',
+    });
+  });
+
+  // #2961 — 5번째 인자 미전달 시(undefined) body에 trainCode 키 자체가 없다(기존 계약 불변 —
+  // backend validateBoardingConfirmPayload가 obj.trainCode!==undefined만 optional 분기로 받는다).
+  it('trainCode 미전달 → body에 trainCode 키 없음(회귀 가드, #2961)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    await postBoardingConfirm('tok', 'boarded', '강남', '2');
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ action: 'boarded', station: '강남', line: '2' });
+    expect(JSON.parse(init.body)).not.toHaveProperty('trainCode');
+  });
 });
 
 const RESPONSE_EMBED_SUGGESTION: LockSuggestionMirror = {
