@@ -11,6 +11,7 @@ import { useStateRehydration } from '../useStateRehydration';
 import { useDestinationStore } from '../../../features/route/store/useDestinationStore';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
 import { useLegAdvanceStore } from '../../../features/alarm/store/useLegAdvanceStore';
+import { useLaunchReconciliationStore } from '../../../features/alarm/store/useLaunchReconciliationStore';
 import { PAUSE_AUTO_END_MS } from '../../constants/realtime';
 
 const mockGetSentinel = jest.fn();
@@ -168,6 +169,43 @@ describe('useStateRehydration', () => {
     renderHook(() => useStateRehydration());
     await waitFor(() => {
       expect(mockLoadLegAdvance).toHaveBeenCalled();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // #2972 — 유령 트립 재등록 차단의 생산 경로 절반. 게이트는 `useApnsTripRegistration`의
+  // chokepoint에 있지만, 그 게이트가 열리고 닫히는 것은 **이 훅**이 책임진다. 여기가 끊기면
+  // 게이트 테스트는 green인데 실제로는 아무것도 막지 않는다("부품 green, 전체 inert").
+  describe('launch reconciliation 플래그 (#2972)', () => {
+    it('재수화가 끝나면 settled=true가 된다 (그때까지 register 억제)', async () => {
+      mockGetSentinel.mockResolvedValue(null);
+      // 콜드 스타트 재현 — store는 모듈 스코프라 같은 파일의 앞선 테스트가 settled를 남긴다.
+      // (초기값 자체는 store 전용 테스트가 고정한다.)
+      useLaunchReconciliationStore.setState({ pending: 0, settled: false });
+      expect(useLaunchReconciliationStore.getState().settled).toBe(false);
+
+      mockAppState();
+      renderHook(() => useStateRehydration());
+
+      await waitFor(() => {
+        expect(useLaunchReconciliationStore.getState().settled).toBe(true);
+      });
+      expect(useLaunchReconciliationStore.getState().pending).toBe(0);
+    });
+
+    // 실패 안전 — 누락되면 register가 **영구 억제**돼 트립이 아예 등록되지 않는 전면 침묵이
+    // 된다. `useUserIntentStore.ts:183`이 같은 이유로 catch에서도 flag를 stamp한다.
+    it('재수화 도중 throw해도 settled=true로 해제된다 (영구 억제 금지)', async () => {
+      mockGetSentinel.mockRejectedValue(new Error('storage down'));
+      useLaunchReconciliationStore.setState({ pending: 0, settled: false });
+
+      mockAppState();
+      renderHook(() => useStateRehydration());
+
+      await waitFor(() => {
+        expect(useLaunchReconciliationStore.getState().settled).toBe(true);
+      });
+      expect(useLaunchReconciliationStore.getState().pending).toBe(0);
     });
   });
 

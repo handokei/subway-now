@@ -387,7 +387,10 @@ describe('useApnsTripRegistration', () => {
       });
     };
 
-    it('[red] force-end 대상(14h 경과) trip의 route/destination이 복원돼도 register가 나가지 않는다', async () => {
+    // 실제 사고 상태(14h 경과 trip이 storage에 남아 복원 가능) + 앱 실행 창(재수화 판정
+    // 진행 중). 생산 경로에서는 `useLaunchReconciliationStore.settled`가 초기값 false이므로
+    // 앱이 뜬 직후가 정확히 이 상태다.
+    it('[red] 앱 실행 창에서 force-end 대상(14h 경과) trip이 복원돼도 register가 나가지 않는다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
         if (key === APNS_TOKEN_KEY) return 'token-abc';
         if (key === ACTIVE_TRIP_KEY) return 'token-abc';
@@ -397,13 +400,15 @@ describe('useApnsTripRegistration', () => {
         return null;
       });
 
-      renderHook(() => useApnsTripRegistration(launchInputs()));
+      renderHook(() =>
+        useApnsTripRegistration({ ...launchInputs(), launchReconciliationSettled: false }),
+      );
       await flush();
 
       expect(mockRegister).not.toHaveBeenCalled();
     });
 
-    it('[red] stale trip 상태에서 push token이 갱신돼도(별 트리거) register가 나가지 않는다', async () => {
+    it('[red] 같은 창에서 push token이 갱신돼도(별 트리거) register가 나가지 않는다 — chokepoint 커버리지', async () => {
       (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
         if (key === APNS_TOKEN_KEY) return 'token-abc';
         if (key === DESTINATION_KEY) return JSON.stringify(station);
@@ -411,7 +416,9 @@ describe('useApnsTripRegistration', () => {
         return null;
       });
 
-      renderHook(() => useApnsTripRegistration(launchInputs()));
+      renderHook(() =>
+        useApnsTripRegistration({ ...launchInputs(), launchReconciliationSettled: false }),
+      );
       await flush();
       // main effect 분을 제외하고 pushTokenListener 트리거만 격리해서 본다.
       mockRegister.mockClear();

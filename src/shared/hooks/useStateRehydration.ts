@@ -10,6 +10,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { useDestinationStore } from '../../features/route/store/useDestinationStore';
 import { useBoardingLockStore } from '../../features/alarm/store/useBoardingLockStore';
 import { useLegAdvanceStore } from '../../features/alarm/store/useLegAdvanceStore';
+import { useLaunchReconciliationStore } from '../../features/alarm/store/useLaunchReconciliationStore';
 import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
@@ -73,6 +74,27 @@ export function useStateRehydration(): void {
 
 /** 한 번의 재수화 사이클. mount/active 모두 동일 로직. */
 async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
+  // #2972 — 이 사이클이 끝날 때까지 backend trip register를 억제한다. 여기서 복원한 stale
+  // route/destination을 register effect가 즉시 POST하면, 아래 runLifecycleBackstop의 force-end
+  // 판정이 비동기로 끝나기 전에 "13시간 전에 끝난 트립"이 backend에 새로 생성된다(실측
+  // 2026-10-13 20:36 POST /trips ×2 → 200). finally로 감싸 **throw해도 반드시 해제**한다 —
+  // 누락 시 register 영구 억제(전면 침묵)다.
+  useLaunchReconciliationStore.getState().begin();
+  try {
+    await runRehydrationCycle(trigger);
+  } catch (e) {
+    // 호출부가 `void runRehydration(...)`이라 throw가 unhandled rejection으로 새어나간다
+    // (이 가드 이전부터 그랬다 — 본체 첫 await인 `getTripEndedSentinel()`이 무방비였다).
+    // 이 파일의 다른 backstop들과 동일한 graceful 관례: 재수화 실패는 로그만 남기고 삼킨다
+    // — launch를 차단하지 않는다.
+    logger.warn(`trigger=${trigger} 재수화 실패 (graceful)`, e as Error);
+  } finally {
+    useLaunchReconciliationStore.getState().end();
+  }
+}
+
+/** 재수화 본체 — register 억제 창 안에서 실행된다(`runRehydration` 참고). */
+async function runRehydrationCycle(trigger: 'mount' | 'active'): Promise<void> {
   // sentinel 우선 — store reset이 hydrate된 stale state를 덮지 않도록 순서 보장.
   const sentinel = await getTripEndedSentinel();
   if (sentinel !== null) {
