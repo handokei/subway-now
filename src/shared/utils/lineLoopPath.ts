@@ -28,6 +28,40 @@ export function isClosedLoopMainStation(line: LineNumber, id: string): boolean {
 }
 
 /**
+ * Closed loop 본선 subset(순서대로 idx 목록) 안에서 fromIdx → toIdx 최단 경로의 방향 산출.
+ *
+ * `plusHops`(subset 안에서 +1 방향 hop 수)와 `minusHops`(-1 방향 hop 수, wraparound 포함)를
+ * 비교해 짧은 쪽을 고른다 — #2867 arc-length ground truth(plusHops <= minusHops → '+1' 방향).
+ * 같으면 +1 방향 선택(안정성). `shortestLinePathIndices`(경로 생성)와 `travelDirectionSign`
+ * (방향 부호만 필요한 호출자)이 **이 하나의 계산만** 공유한다 — #2949: 호출자가 이 값을 버리고
+ * `path[1]`을 idx와 다시 크기 비교하면 seam(subPos 0/본선 끝)에서 틀린다(wrap이 "idx 증가"로
+ * 오인됨). 틀릴 수 있는 재계산 코드를 아예 없애는 것이 이 함수의 목적.
+ */
+function resolveClosedLoopSubsetDirection(
+  mainLineIndices: readonly number[],
+  subFromPos: number,
+  subToPos: number,
+): { usePlusDirection: boolean; totalHops: number } {
+  const subLen = mainLineIndices.length;
+  const plusHops = (subToPos - subFromPos + subLen) % subLen;
+  const minusHops = subLen - plusHops;
+  const usePlusDirection = plusHops <= minusHops;
+  const totalHops = usePlusDirection ? plusHops : minusHops;
+  return { usePlusDirection, totalHops };
+}
+
+/** closed loop 본선 subset(idx 목록) 조회 — `shortestLinePathIndices`/`travelDirectionSign` 공유. */
+function closedLoopMainIndices(lineStations: readonly Station[], line: LineNumber): number[] {
+  const mainLineIndices: number[] = [];
+  for (let i = 0; i < lineStations.length; i++) {
+    if (isClosedLoopMainStation(line, lineStations[i].id)) {
+      mainLineIndices.push(i);
+    }
+  }
+  return mainLineIndices;
+}
+
+/**
  * 같은 line 위 두 station idx 사이의 짧은 path indices.
  *
  * - Closed loop 본선(양 끝 모두 본선 range 안)이면 정방향 vs wraparound 짧은 쪽 선택.
@@ -54,24 +88,18 @@ export function shortestLinePathIndices(
     return forwardIndices;
   }
 
-  const mainLineIndices: number[] = [];
-  for (let i = 0; i < lineStations.length; i++) {
-    if (isClosedLoopMainStation(line, lineStations[i].id)) {
-      mainLineIndices.push(i);
-    }
-  }
+  const mainLineIndices = closedLoopMainIndices(lineStations, line);
   const subFromPos = mainLineIndices.indexOf(fromIdx);
   const subToPos = mainLineIndices.indexOf(toIdx);
   /* istanbul ignore next -- 위 isClosedLoopMainStation 통과 시 본선 list에 포함 invariant */
   if (subFromPos === -1 || subToPos === -1) return forwardIndices;
 
   const subLen = mainLineIndices.length;
-  // 본선 subset 안에서 +1 (idx 증가) / -1 (idx 감소) 두 방향 hop 수 비교.
-  // 같으면 +1 방향 선택 (안정성).
-  const plusHops = (subToPos - subFromPos + subLen) % subLen;
-  const minusHops = subLen - plusHops;
-  const usePlusDirection = plusHops <= minusHops;
-  const totalHops = usePlusDirection ? plusHops : minusHops;
+  const { usePlusDirection, totalHops } = resolveClosedLoopSubsetDirection(
+    mainLineIndices,
+    subFromPos,
+    subToPos,
+  );
   const directionSign = usePlusDirection ? 1 : -1;
 
   const indices: number[] = [];
@@ -80,6 +108,50 @@ export function shortestLinePathIndices(
     indices.push(mainLineIndices[subPos]);
   }
   return indices;
+}
+
+/**
+ * 같은 line 위 두 station idx 사이의 진행 방향 부호 — #2949 단일 primitive.
+ *
+ * `shortestLinePathIndices`가 경로를 만들며 계산하고 버리던 `directionSign`
+ * (`usePlusDirection ? 1 : -1`)을 그대로 반환한다. 호출자는 이 부호만으로 'up'/'down'을
+ * 매핑하고, **`path[1]`을 idx와 다시 크기 비교하지 않는다** — 그 재계산이 closed loop seam
+ * (시청 idx=0, 충정로 idx=42)에서 틀린 원인이었다(#2949): seam station을 fromIdx로 쓰면
+ * wraparound 여부와 무관하게 `path[1] > fromIdx`가 항상 참(시청)/거짓(충정로)이 되어 방향이
+ * 고정값으로 오판된다.
+ *
+ * - Closed loop 본선 양 끝(둘 다 `isClosedLoopMainStation`)이면 그 subset 안에서 wraparound-aware
+ *   plusHops/minusHops 비교로 부호 산출 — `shortestLinePathIndices`와 동일 계산(공유, 사본 아님).
+ * - 그 외(단조 노선, 지선, 또는 한쪽만 본선)는 wraparound가 없으므로 단순 idx 대소.
+ * - `fromIdx === toIdx` 또는 둘 중 하나라도 유효하지 않은 idx면 null(판정 불가).
+ *
+ * @returns `1`(plus/증가 방향 — closed loop 본선이면 내선) | `-1`(그 반대) | `null`.
+ */
+export function travelDirectionSign(
+  lineStations: readonly Station[],
+  fromIdx: number,
+  toIdx: number,
+  line: LineNumber,
+): 1 | -1 | null {
+  if (fromIdx === toIdx) return null;
+
+  const fromId = lineStations[fromIdx]?.id;
+  const toId = lineStations[toIdx]?.id;
+  if (!fromId || !toId) return null;
+
+  if (!isClosedLoopMainStation(line, fromId) || !isClosedLoopMainStation(line, toId)) {
+    return fromIdx < toIdx ? 1 : -1;
+  }
+
+  const mainLineIndices = closedLoopMainIndices(lineStations, line);
+  const subFromPos = mainLineIndices.indexOf(fromIdx);
+  const subToPos = mainLineIndices.indexOf(toIdx);
+  /* istanbul ignore next -- 위 isClosedLoopMainStation 통과 시 본선 list에 포함 invariant
+     (shortestLinePathIndices와 동일 방어 패턴) */
+  if (subFromPos === -1 || subToPos === -1) return fromIdx < toIdx ? 1 : -1;
+
+  const { usePlusDirection } = resolveClosedLoopSubsetDirection(mainLineIndices, subFromPos, subToPos);
+  return usePlusDirection ? 1 : -1;
 }
 
 function buildForward(fromIdx: number, toIdx: number): number[] {

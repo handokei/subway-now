@@ -42,13 +42,15 @@ describe('directionOnLine (#2455)', () => {
     expect(directionOnLine('2', ddukseom.id, 'unknown-id')).toBeNull();
   });
 
-  // 2호선 순환선 seam(시청↔충정로) — resolveTripDirection이 내부적으로 쓰는 것과 동일한
-  // shortestLinePathIndices 알고리즘이므로, resolveTripDirection(route, '시청', 충정로.id)와
-  // 정확히 같은 값을 내야 한다(#2455 설계 노트에서 검증한 값 그대로 고정).
-  // #2867 — idx 증가(wrap 포함) = 내선 = 'up' ground truth로 'down'으로 교정.
-  it('2호선 seam(충정로→시청, wrap) — resolveTripDirection과 동일한 값으로 고정', () => {
+  // 2호선 순환선 seam(시청↔충정로) — directionOnLine과 resolveTripDirection이 내부적으로 같은
+  // travelDirectionSign(#2949 단일 primitive, `shortestLinePathIndices`가 계산한 부호를 그대로
+  // 반환)을 쓰므로 두 함수는 항상 self-consistent하다. 충정로→시청은 물리적으로 바로 옆
+  // 역(내선, 1 hop)이라 'up'이 정답 — #2949 fix 전에는 seam에서 `firstStepIdx > fromIdx`
+  // 재계산이 wrap을 "idx 증가"로 오해해 'down'(오답)을 냈다(K-2 #2954가 그 오답을 계약으로
+  // 고정했던 값, #2949가 고치며 갱신).
+  it('2호선 seam(충정로→시청, wrap) → up(내선, #2949 fix 후 정답)', () => {
     const chungjeongno = findStationByNameAndLine(canonicalStationName('충정로', '2'), '2')!;
     const sicheong = findStationByNameAndLine(canonicalStationName('시청', '2'), '2')!;
-    expect(directionOnLine('2', chungjeongno.id, sicheong.id)).toBe('down');
+    expect(directionOnLine('2', chungjeongno.id, sicheong.id)).toBe('up');
   });
 });

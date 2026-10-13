@@ -89,7 +89,7 @@ import stationsRaw from '../../../src/data/stations.json';
 import lineTopology from '../../../src/data/lineTopology.json';
 import {
   isClosedLoopMainStation,
-  shortestLinePathIndices,
+  travelDirectionSign,
 } from '../../../src/shared/utils/lineLoopPath';
 import type { Station } from '../../../src/shared/types/station';
 import type { LineNumber as SharedLineNumber } from '../../../src/shared/types/station';
@@ -152,21 +152,24 @@ export function inferLegDirection(
   if (fromIdx === -1 || toIdx === -1) return null;
 
   const sharedLine = line as unknown as SharedLineNumber;
-  const path = shortestLinePathIndices(lineStations, fromIdx, toIdx, sharedLine);
-  // shortestLinePathIndices invariant: fromIdx !== toIdx → path.length >= 2
-  const firstStepIdx = path[1];
+  // #2949 — device `travelDirectionSign`과 동일한 단일 primitive. 이전엔 `shortestLinePathIndices`
+  // 가 만든 경로의 `path[1]`을 fromIdx와 다시 크기 비교했는데, seam station(시청 idx=0, 충정로
+  // idx=42)이 fromStation이면 wraparound 여부와 무관하게 그 비교가 항상 같은 값으로 고정돼
+  // 방향이 오판됐다(device `tripDirection.ts`/`directionOnLine.ts`와 공유하던 결함).
+  const sign = travelDirectionSign(lineStations, fromIdx, toIdx, sharedLine);
+  // travelDirectionSign invariant: fromIdx !== toIdx && 둘 다 유효 idx → sign은 null이 아니다.
 
-  // closed-loop 본선(2호선) 양 끝 — idx 증가(wrap 포함) = 내선 = 'up'(#2867 실측 52쌍).
+  // closed-loop 본선(2호선) 양 끝 — plus 방향(wrap 포함) = 내선 = 'up'(#2867 실측 52쌍).
   if (
     isClosedLoopMainStation(sharedLine, fromStation.id) &&
     isClosedLoopMainStation(sharedLine, toStation.id)
   ) {
-    return firstStepIdx > fromIdx ? 'up' : 'down';
+    return sign === 1 ? 'up' : 'down';
   }
 
   // #2877 — 신분당·수인분당은 idx 증가=상행(나머지 노선은 idx 증가=하행, 전역 관례).
   if (REVERSED_ORIENTATION_LINES.has(line)) {
-    return firstStepIdx > fromIdx ? 'up' : 'down';
+    return sign === 1 ? 'up' : 'down';
   }
-  return firstStepIdx > fromIdx ? 'down' : 'up';
+  return sign === 1 ? 'down' : 'up';
 }
