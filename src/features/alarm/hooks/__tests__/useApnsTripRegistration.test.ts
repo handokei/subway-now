@@ -71,7 +71,12 @@ import i18next from 'i18next';
 import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../../../shared/types/station';
 import type { Route } from '../../../../shared/utils/stationRoute';
-import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY, DESTINATION_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  APNS_TOKEN_KEY,
+  ACTIVE_TRIP_KEY,
+  DESTINATION_KEY,
+  TRIP_STARTED_AT_KEY,
+} from '../../../../shared/constants/storageKeys';
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
   CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION,
@@ -347,6 +352,144 @@ describe('useApnsTripRegistration', () => {
     await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalledWith(DESTINATION_KEY));
     expect(mockClear).not.toHaveBeenCalled();
     expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith(ACTIVE_TRIP_KEY);
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // 2026-10-13 유령 트립 재등록 — `tasks/plan-2026-10-13-phantom-trip-register-race.md`
+  //
+  // 실측(덤프 20:37/20:53 + D1): 사용자 조작 0회로 앱을 열었을 때 `POST /trips`가 2회 나가
+  // 14시간 전에 끝난 트립이 backend에 되살아났고(DELETE 응답 뒤 POST 착지), 16분 30초 뒤
+  // 다음 실행에서 그 트립 목적지(뚝섬)의 하차 프롬프트가 집계 5건으로 드러났다.
+  //
+  // #2673이 이 훅의 **clear 방향**(hydration 중 null → DELETE)만 막았고, **register 방향**
+  // (hydration이 stale destination을 복원 → POST)은 열려 있다.
+  //
+  // 아래 2개는 짝이다 — 두 번째(거부 케이스)가 "storage 키를 읽어서 판정하는" 구현을
+  // 불가능하게 만든다. `useDestinationStore.ts:142`가 `set({ destination })`을 **동기**로
+  // 수행하는 반면 `setTripStartedAt`은 `:214` async chain(recall 업로드 → cleanup → prompt
+  // → DESTINATION_KEY write) **맨 마지막**이라, 정상 신규 트립에도 "destination은 있는데
+  // TRIP_STARTED_AT_KEY는 아직 없는" 창이 존재한다. 그 창에서 register를 막으면 모든 신규
+  // 트립의 첫 등록이 침묵한다.
+  describe('유령 트립 재등록 — 앱 실행만으로 backend trip이 생성되지 않는다 (2026-10-13)', () => {
+    const FOURTEEN_HOURS_MS = 14 * 60 * 60 * 1000;
+
+    const launchInputs = () => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+    });
+
+    const flush = async () => {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+
+    it('[red] force-end 대상(14h 경과) trip의 route/destination이 복원돼도 register가 나가지 않는다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        // 오전 트립이 device에서 정상 종료되지 않아 14시간 뒤에도 복원 가능한 상태로 남았다.
+        if (key === DESTINATION_KEY) return JSON.stringify(station);
+        if (key === TRIP_STARTED_AT_KEY) return String(Date.now() - FOURTEEN_HOURS_MS);
+        return null;
+      });
+
+      renderHook(() => useApnsTripRegistration(launchInputs()));
+      await flush();
+
+      expect(mockRegister).not.toHaveBeenCalled();
+    });
+
+    it('[red] stale trip 상태에서 push token이 갱신돼도(별 트리거) register가 나가지 않는다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === DESTINATION_KEY) return JSON.stringify(station);
+        if (key === TRIP_STARTED_AT_KEY) return String(Date.now() - FOURTEEN_HOURS_MS);
+        return null;
+      });
+
+      renderHook(() => useApnsTripRegistration(launchInputs()));
+      await flush();
+      // main effect 분을 제외하고 pushTokenListener 트리거만 격리해서 본다.
+      mockRegister.mockClear();
+
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-renewed' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockRegister).not.toHaveBeenCalled();
+    });
+
+    // 타입 레벨 red도 red다(CLAUDE.md TDD 룰). `launchReconciliationSettled` 입력은 아직
+    // 존재하지 않으므로 `npm run type-check`가 이 줄에서 컴파일 에러를 낸다 — 그 에러가
+    // "어디가 누락됐는가"의 증거다. babel-jest는 타입을 지우고 실행하므로 런타임에서는
+    // 미지의 prop이 무시돼 register가 그대로 나가 behavioral red도 함께 성립한다.
+    //
+    // 이 테스트가 바로 위 [거부 케이스 A1]과 짝이다 — 둘 다 TRIP_STARTED_AT_KEY가 **없는**
+    // 상태인데 하나는 통과해야 하고 하나는 차단돼야 한다. 즉 storage 키로는 원리적으로
+    // 가릴 수 없고(백스톱 cleanup이 tripBoundCleanups.ts:112에서 그 키를 지운다),
+    // "앱 실행 reconciliation이 끝났는가"라는 양성 신호가 반드시 필요하다.
+    it('[red · 타입] reconciliation 미완료면 TRIP_STARTED_AT_KEY가 없어도 register가 나가지 않는다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        // 백스톱이 force-end 후 cleanup으로 이미 지운 상태 = 신규 trip 창과 **구별 불가**.
+        if (key === DESTINATION_KEY) return JSON.stringify(station);
+        return null;
+      });
+
+      renderHook(() =>
+        useApnsTripRegistration({ ...launchInputs(), launchReconciliationSettled: false }),
+      );
+      await flush();
+
+      expect(mockRegister).not.toHaveBeenCalled();
+    });
+
+    it('[거부 케이스 A1] 정상 신규 trip — TRIP_STARTED_AT_KEY write 전 창에서도 첫 register는 나가야 한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        // 사용자가 방금 목적지를 설정했다 — set({destination})은 동기(:142)지만
+        // setTripStartedAt(:214)은 async chain 맨 마지막이라 아직 기록되지 않았다.
+        if (key === DESTINATION_KEY) return JSON.stringify(station);
+        return null;
+      });
+
+      renderHook(() => useApnsTripRegistration(launchInputs()));
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    });
+
+    it('[거부 케이스 A2] 진행 중 trip(normal, 1h 전 시작) 콜드 재시작은 재등록돼야 한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        if (key === DESTINATION_KEY) return JSON.stringify(station);
+        if (key === TRIP_STARTED_AT_KEY) return String(Date.now() - 60 * 60_000);
+        return null;
+      });
+
+      renderHook(() => useApnsTripRegistration(launchInputs()));
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    });
+
+    it('[거부 케이스 A3] silence 구간(7h — 백스톱이 종료하지 않는다)도 재등록돼야 한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        if (key === DESTINATION_KEY) return JSON.stringify(station);
+        // TRIP_LIFECYCLE_SILENCE_MS(6h) ≤ elapsed < TRIP_LIFECYCLE_FORCE_END_MS(9h)
+        if (key === TRIP_STARTED_AT_KEY) return String(Date.now() - 7 * 60 * 60_000);
+        return null;
+      });
+
+      renderHook(() => useApnsTripRegistration(launchInputs()));
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    });
   });
 
   it('#2673 — destination storage read가 실패하면 보수적으로 기존 clear 경로를 유지한다', async () => {
