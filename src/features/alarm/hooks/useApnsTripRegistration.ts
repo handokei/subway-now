@@ -124,6 +124,22 @@ export interface UseApnsTripRegistrationInputs {
    */
   promptOptInHydrated?: boolean;
   /**
+   * #2972 — 앱 실행/FG 복귀 시 trip 재수화·종료 판정(`useStateRehydration`)이 끝났는가.
+   * `useLaunchReconciliationStore.settled`를 그대로 전달한다(HomeScreen만 실제 값을 넘긴다).
+   *
+   * 2026-10-13 실측: 사용자 조작 0회로 앱을 열었을 때 13시간 전에 끝난 트립이 `POST /trips`
+   * 2건으로 backend에 **새로 생성**됐다. hydration이 storage의 stale route/destination을
+   * store로 복원하면 register가 즉시 POST하는데, force-end 판정은 비동기라 늦게 끝난다.
+   *
+   * storage 키로는 판정할 수 없다 — 백스톱이 `TRIP_STARTED_AT_KEY`를 지우고
+   * (`tripBoundCleanups.ts:112`), 정상 신규 트립도 `setTripStartedAt`이 async chain
+   * (`useDestinationStore.ts:214`) 맨 마지막이라 "키 없음 + destination 있음"이 **유령 상태와
+   * 정상 신규 트립 창 양쪽**에 해당한다. 그래서 양성 신호가 필요하다.
+   *
+   * 미지정 시 `true`(gate 열림) — 기존 호출자/테스트 하위호환. `promptOptInHydrated`와 동일 관례.
+   */
+  launchReconciliationSettled?: boolean;
+  /**
    * #2524 — 탑승 커밋(PENDING fallback lock 생성) 시그널. `infoModeEnabled`와 별개로
    * `useUserIntentStore.boardingCommitted`에서 읽어 전달한다. 안내 시작(HomeScreen
    * handleStartNavigation)에서는 세팅되지 않아 backend가 "탑승 커밋 + lock 미확정"과
@@ -369,6 +385,7 @@ export function useApnsTripRegistration({
   infoModeEnabled = false,
   promptOptIn = false,
   promptOptInHydrated = true,
+  launchReconciliationSettled = true,
   boardingCommitted = false,
   sleepMode = false,
   gpsFix = null,
@@ -581,6 +598,7 @@ export function useApnsTripRegistration({
     infoModeEnabled,
     promptOptIn,
     promptOptInHydrated,
+    launchReconciliationSettled,
     boardingCommitted,
     sleepMode,
     gpsFix,
@@ -603,6 +621,7 @@ export function useApnsTripRegistration({
       infoModeEnabled,
       promptOptIn,
       promptOptInHydrated,
+    launchReconciliationSettled,
       boardingCommitted,
       sleepMode,
       gpsFix,
@@ -759,6 +778,7 @@ export function useApnsTripRegistration({
       infoModeEnabled: ime,
       promptOptIn: poi,
       promptOptInHydrated: poih,
+      launchReconciliationSettled: lrs,
       boardingCommitted: bc,
       sleepMode: sm,
       gpsFix: gf,
@@ -779,6 +799,22 @@ export function useApnsTripRegistration({
     // hydrate 완료로 재실행되면 정확한 값으로 자연 재시도된다(별도 스케줄 불필요).
     if (!poih) {
       logger.info('register: promptOptIn storage hydrate 미완료 — 억제(hydrate 후 자동 재시도)');
+      return { ok: false, hadPromptContext: false, promptContext: null };
+    }
+
+    // #2972 — 앱 실행/FG 복귀 재수화·종료 판정(`useStateRehydration`)이 끝나기 전에는 실제
+    // POST를 내지 않는다. hydration이 복원한 stale route/destination을 register가 즉시
+    // 보내면, 비동기로 진행되는 force-end 판정이 끝나기 전에 "13시간 전에 끝난 트립"이
+    // backend에 **새로 생성**된다(실측 2026-10-13 20:36 `POST /trips` ×2 → 200, 16분 30초
+    // 생존 후 다음 실행에서 그 트립 목적지의 하차 프롬프트 5건).
+    //
+    // 바로 위 `poih` 게이트와 **같은 클래스**이고 같은 이유로 여기에 둔다 — 이 함수가 모든
+    // register 경로의 유일한 발사 chokepoint이므로(아래 #2197 주석) 한 곳의 skip이 트리거
+    // 5개(main effect / pushTokenListener / Tier 1 / Tier 2 / register-retry) 전체에 적용된다.
+    // 재수화 완료 시 main effect deps(`launchReconciliationSettled`)가 재실행되어 자연
+    // 재시도되므로 별도 스케줄이 필요 없다.
+    if (!lrs) {
+      logger.info('register: 앱 실행 재수화 판정 미완료 — 억제(판정 후 자동 재시도)');
       return { ok: false, hadPromptContext: false, promptContext: null };
     }
 
@@ -1455,6 +1491,7 @@ export function useApnsTripRegistration({
     infoModeEnabled,
     promptOptIn,
     promptOptInHydrated,
+    launchReconciliationSettled,
     boardingCommitted,
     sleepMode,
   ]);

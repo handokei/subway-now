@@ -19,6 +19,7 @@ import { useDestinationStore } from '../features/route/store/useDestinationStore
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
 import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockStore';
 import { useUserIntentStore } from '../features/alarm/store/useUserIntentStore';
+import { useLaunchReconciliationStore } from '../features/alarm/store/useLaunchReconciliationStore';
 import { useLegAdvanceStore } from '../features/alarm/store/useLegAdvanceStore';
 import { useNavigationStore } from '../features/route/store/useNavigationStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
@@ -183,6 +184,8 @@ export default function HomeScreen() {
   // #2651 (PR #2772 전체 리뷰, 항목 5) — loadPromptOptIn() cold-start hydrate 완료 여부.
   // useApnsTripRegistration에 forward해 hydrate 전 register를 억제한다(#2673과 동일 클래스 race).
   const promptOptInHydrated = useUserIntentStore((s) => s.promptOptInHydrated);
+  // #2972 — 앱 실행 재수화·종료 판정이 끝나기 전 register를 억제(유령 트립 재등록 차단).
+  const launchReconciliationSettled = useLaunchReconciliationStore((s) => s.settled);
   // #1973 / #2651 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
   // BG GPS 지속 가능 (네이버 패턴). startNavigation은 더 이상 infoModeEnabled를 자동 stamp하지
   // 않는다 — useApnsTripRegistration에는 (휘발성인 이 값이 아니라) 위 durable `promptOptIn`이
@@ -1232,6 +1235,7 @@ export default function HomeScreen() {
     // hydrate 전에는 register 자체를 억제해 storage에 true가 남아있던 trip을 backend KV에서
     // false로 덮어쓰는 race를 막는다.
     promptOptInHydrated,
+    launchReconciliationSettled,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. backend가 lockless intermediate "통과" push를
     // 억제하는 gate에 사용 (안내 시작 trip은 이 값이 서지 않아 기존 "통과" 그대로 발사).
     boardingCommitted,
