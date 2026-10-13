@@ -2283,8 +2283,23 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       // #2961 — body의 trainCode(device가 탭한 알림, #2819 embed 값)가 stamp보다 우선이다.
       // `resolveBodyTrainCodeLock`이 검증까지 전부 수행 — 통과하면 stamp는 전혀 평가되지 않는다
       // (R-5). 거부(null)면 releasedForLegSwitch 게이트 그대로 stamp 경로로 fallback(R-1~R-4).
+      //
+      // #2975 — body 경로는 `releasedForLegSwitch` 게이트에서 **분리한다**. 그 게이트는
+      // "이미 lock이 있어 release된 경우"(= 환승 leg-2)만 true이므로, 첫 탑승(leg-1)에서는
+      // device가 보낸 trainCode를 열어보지도 않고 버렸다 — 2026-10-13 06:27:45 실측:
+      // device는 로컬 autolock에 성공했는데 backend는 `{lockState:'none',
+      // noneReason:'position-resolve-none'}`을 남기고, lock은 15분 47초 뒤 backend 자체
+      // streak으로만 생겼다. lock이 없으면 `runTrainCodeTracking`(매역 push 경로)에 진입하지
+      // 못해(`boardingAnchorResolver.ts:713`) 중곡·군자 매역 알림이 침묵했다.
+      //
+      // stamp 경로는 게이트를 **유지**한다(아래) — stamp는 "backend의 마지막 발사 기록"이라
+      // leg 전환 근거가 필요하지만, body는 "사용자가 탭한 **그 알림**"이라 조건이 없다. 이
+      // 비대칭이 의도다: 둘을 같이 열면 #2824가 막은 "backend가 한 번도 제시한 적 없는
+      // trainCode 승격"으로 되돌아간다. body의 안전성은 `resolveBodyTrainCodeLock` 내부
+      // 검증(`isPromotionCorroborated` + waypoint 정합성)이 이미 담보한다 — leg-agnostic이고
+      // `currentLegAnchor` 부재를 정상 통과한다.
       const bodyTrainCodeLock =
-        releasedForLegSwitch && payload.trainCode !== undefined
+        payload.trainCode !== undefined
           ? resolveBodyTrainCodeLock(working, payload.trainCode, payload.line, payload.station, now)
           : null;
       const stampedLock =
@@ -2299,10 +2314,17 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
             trainCodeSource,
           }),
         );
-        anchorSource = 'currentLegAnchor';
-        // release→즉시 재생성(waypoint 전진 없음, tapAdvance 자체가 없음)이므로 LA push 게이트
-        // 리셋은 항상 skip — §4-2와 동일 근거.
-        const attached = attachBoardedLock(working, stampedLock, now, true);
+        // #2975 — leg-1 승격이 가능해졌으므로 anchor 출처를 고정값으로 쓰지 않는다.
+        // `currentLegAnchor`가 없으면 근거는 promptDisplay anchor다(10/13 D1 레코드가
+        // `anchorSource:'promptDisplay'`였던 그 경로). 고정하면 측정이 거짓이 된다.
+        anchorSource = working.currentLegAnchor !== undefined ? 'currentLegAnchor' : 'promptDisplay';
+        // release→즉시 재생성(waypoint 전진 없음, tapAdvance 자체가 없음)인 경우에만 LA push
+        // 게이트 리셋을 skip한다 — §4-2와 동일 근거.
+        //
+        // #2975 — leg-1 신규 lock은 release가 없었으므로 **리셋한다**(`releasedForLegSwitch`
+        // false). lockless 구간에서 이미 쌓인 `lastLaPushEpoch`/`lastLaPushAt`을 남겨두면
+        // 새 lock의 첫 LA 갱신이 최대 heartbeat 주기만큼 밀린다.
+        const attached = attachBoardedLock(working, stampedLock, now, releasedForLegSwitch);
         working = attached.working;
         lockState = attached.lockState;
       } else {
