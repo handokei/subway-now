@@ -120,7 +120,9 @@ import {
   sentryInit,
   sentryOptions,
 } from './sentry';
-import { recordTripEvent } from './tripEventLog';
+import { recordTripEvent,
+  type LaTokenRegisterOutcome,
+} from './tripEventLog';
 import {
   recordRecallUpload,
   validateRecallUpload,
@@ -3656,8 +3658,20 @@ app.post('/live-activity/register', async (c) => {
   const payload = validateLiveActivityRegister(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
+  // #2977 — 이 라우트에 계측이 0건이어서 `laPushDelivery=0/0`이 #2667 fix 이후에도 재발했을 때
+  // (2026-10-13 실측) "토큰이 등록된 적 있는가"를 D1으로 물을 수 없었다. outcome 2종을 적재해
+  // "등록 경로가 끊김"과 "등록은 됐는데 push가 안 나감"을 구별 가능하게 만든다. 정책 변경 없음 —
+  // 응답 코드/저장 동작은 그대로다. `invalid_payload`는 적재하지 않는다: 해시할 tripToken이
+  // 바로 그 무효 입력이라 token_hash를 만들 수 없다.
   const existing = await getTrip(c.env.TRIPS, payload.tripToken);
-  if (!existing) return c.json({ error: 'trip_not_found' }, 404);
+  if (!existing) {
+    await recordTripEvent(c.env.DB, {
+      tokenHash: hashTripToken(payload.tripToken),
+      kind: 'la-token-register',
+      meta: { outcome: 'trip_not_found' satisfies LaTokenRegisterOutcome },
+    });
+    return c.json({ error: 'trip_not_found' }, 404);
+  }
 
   const updated: Trip = {
     ...existing,
@@ -3665,6 +3679,16 @@ app.post('/live-activity/register', async (c) => {
     activityState: 'live',
   };
   await putTrip(c.env.TRIPS, updated);
+  await recordTripEvent(c.env.DB, {
+    tokenHash: hashTripToken(payload.tripToken),
+    kind: 'la-token-register',
+    meta: {
+      outcome: 'stored' satisfies LaTokenRegisterOutcome,
+      // 이전 상태 — 재등록(rotation)인지 최초 등록인지 구별. #1899 token rotation race 계보.
+      hadToken: existing.activityPushToken !== undefined,
+      prevState: existing.activityState,
+    },
+  });
   return c.json({ ok: true });
 });
 

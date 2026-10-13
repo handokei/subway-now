@@ -32,7 +32,11 @@ import {
 import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
-import { logLiveActivityAuthorityState, logLiveActivityUpdated } from './alarmLog';
+import {
+  logLiveActivityAuthorityState,
+  logLiveActivityTokenRegister,
+  logLiveActivityUpdated,
+} from './alarmLog';
 
 const log = createLogger('liveActivityPushChannel');
 
@@ -113,6 +117,8 @@ async function registerWithRetry(
   for (let attempt = 1; attempt <= REGISTER_RETRY_MAX_ATTEMPTS; attempt += 1) {
     if (session.cancelled) {
       log.info('LA register retry cancelled — trip ended');
+      // #2977 — 덤프 가시화. trip 종료 후 등록 루프(#2310 계보)가 실제로 중단되는지 확인용.
+      logLiveActivityTokenRegister('cancelled');
       return false;
     }
     try {
@@ -126,6 +132,8 @@ async function registerWithRetry(
       }
       lastStatus = result.status;
       log.warn(`LA register attempt ${attempt} not ok status=${result.status ?? 'none'}`);
+      // #2977 — status를 reason에 싣는다. 404(trip_not_found)와 5xx는 원인이 다르다.
+      logLiveActivityTokenRegister('not-ok', String(result.status ?? 'none'));
     } catch (e) {
       lastStatus = undefined;
       log.warn(`LA register attempt ${attempt} threw`, e);
@@ -139,6 +147,7 @@ async function registerWithRetry(
   }
   if (session.cancelled) return false;
   log.warn('LA register exhausted retries — giving up (will retry on next token emit)');
+  logLiveActivityTokenRegister('exhausted', String(lastStatus ?? 'none'));
   return false;
 }
 
@@ -199,6 +208,8 @@ async function registerAmbientToken(): Promise<void> {
       if (ok) {
         lastRegisteredAmbientKey = key;
         log.info('ambient LA token 등록 완료 — backend LA push 채널 활성');
+        // #2977 — 이 1건이 "backend LA push 채널이 열렸다"의 유일한 device측 증거다.
+        logLiveActivityTokenRegister('registered', tripToken.slice(0, 8));
       }
       return;
     }
@@ -207,6 +218,7 @@ async function registerAmbientToken(): Promise<void> {
     }
   }
   log.info('ambient LA token — 활성 trip 없음(등록 skip). 다음 emit/트립에서 재시도');
+  logLiveActivityTokenRegister('no-active-trip');
 }
 
 /**

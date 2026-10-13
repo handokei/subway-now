@@ -1861,6 +1861,92 @@ describe('Live Activity endpoints (#586 C)', () => {
       expect(stored.activityPushToken).toBe('la-token');
       expect(stored.activityState).toBe('live');
     });
+
+    // ────────────────────────────────────────────────────────────────────────
+    // #2977 — 이 라우트에 계측이 0건이었다(recordTripEvent / writeMetric / console.log 전부
+    // 없음). 그래서 `laPushDelivery=0/0`이 #2667 fix 이후에도 재발했을 때(2026-10-13 실측)
+    // "토큰이 등록된 적 있는가"를 D1으로 물을 수 없었다 — `trip_events`에 LA 관련 kind가
+    // 전 기간 0건이다. 계측만 추가하고 정책은 바꾸지 않는다(응답 코드/저장 동작 무변경).
+    describe('D1 계측 (#2977)', () => {
+      function captureEvents(): { db: Env['DB']; inserts: unknown[][] } {
+        const inserts: unknown[][] = [];
+        const run = vi.fn().mockResolvedValue({ success: true });
+        const prepare = vi.fn().mockImplementation((sql: string) => ({
+          bind: (...args: unknown[]) => {
+            if (sql.includes('trip_events')) inserts.push(args);
+            return { run };
+          },
+        }));
+        return { db: { prepare } as unknown as Env['DB'], inserts };
+      }
+
+      it('[red] 등록 성공 시 la-token-register{outcome:"stored"}를 적재한다', async () => {
+        const { db, inserts } = captureEvents();
+        const env = makeKvEnv();
+        await post('/trips', tripBody(), env);
+        env.DB = db;
+
+        await post(
+          '/live-activity/register',
+          { tripToken: 'tok-611', activityPushToken: 'la-token' },
+          env,
+        );
+
+        const events = inserts.filter((a) => a[2] === 'la-token-register');
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0][5] as string)).toMatchObject({ outcome: 'stored' });
+      });
+
+      // trip 종료 후 등록 루프(#2310 계보)가 실제로 돌고 있는지 D1으로 구별하기 위한 것.
+      it('[red] trip 부재 시 la-token-register{outcome:"trip_not_found"}를 적재한다', async () => {
+        const { db, inserts } = captureEvents();
+        const env = makeKvEnv();
+        env.DB = db;
+
+        const res = await post(
+          '/live-activity/register',
+          { tripToken: 'nope', activityPushToken: 'at' },
+          env,
+        );
+        expect(res.status).toBe(404);
+
+        const events = inserts.filter((a) => a[2] === 'la-token-register');
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0][5] as string)).toMatchObject({ outcome: 'trip_not_found' });
+      });
+
+      // 거부 케이스 — payload 자체가 깨진 경우는 tripToken을 신뢰할 수 없다(token_hash를
+      // 만들 수 없음). D1 적재 없이 400만 반환해야 한다. 적재하려면 해시할 토큰이 필요한데
+      // 그 값이 바로 무효인 입력이다.
+      it('[거부] invalid_payload는 D1에 적재하지 않는다(해시할 토큰이 없다)', async () => {
+        const { db, inserts } = captureEvents();
+        const env = makeKvEnv();
+        env.DB = db;
+
+        const res = await post('/live-activity/register', { tripToken: '' }, env);
+        expect(res.status).toBe(400);
+        expect(inserts.filter((a) => a[2] === 'la-token-register')).toHaveLength(0);
+      });
+
+      // 거부 케이스 — 계측 추가가 기존 동작을 바꾸지 않았다는 고정.
+      it('[거부] 계측 추가 후에도 응답/저장 동작은 무변경', async () => {
+        const { db } = captureEvents();
+        const env = makeKvEnv();
+        await post('/trips', tripBody(), env);
+        env.DB = db;
+
+        const res = await post(
+          '/live-activity/register',
+          { tripToken: 'tok-611', activityPushToken: 'la-token' },
+          env,
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true });
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-611')) as string);
+        expect(stored.activityPushToken).toBe('la-token');
+        expect(stored.activityState).toBe('live');
+      });
+    });
   });
 
   describe('DELETE /live-activity/:tripToken', () => {

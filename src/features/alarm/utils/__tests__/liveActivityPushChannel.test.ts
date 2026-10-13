@@ -31,10 +31,13 @@ jest.mock('../../api/alarmBackend', () => ({
 // logLiveActivityUpdated는 다른 describe 블록에서 실호출 경로로 이미 검증되던 것과 동일하게
 // no-op으로 유지(호출 여부를 검증하지 않는 기존 테스트에 영향 없음).
 const mockLogLiveActivityAuthorityState = jest.fn();
+const mockLogLaTokenRegister = jest.fn();
 jest.mock('../alarmLog', () => ({
   logLiveActivityAuthorityState: (...args: unknown[]) =>
     mockLogLiveActivityAuthorityState(...args),
   logLiveActivityUpdated: jest.fn(),
+  // #2977 — ambient 등록 결과 계측. 이 모듈의 4갈래 결과를 덤프로 가시화한다.
+  logLiveActivityTokenRegister: (...args: unknown[]) => mockLogLaTokenRegister(...args),
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -631,6 +634,23 @@ describe('liveActivityPushChannel', () => {
 
       expect(mockStartLiveActivity).not.toHaveBeenCalled();
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-ambient', 'tok-ambient');
+      // #2977 — 이 1건이 "backend LA push 채널이 열렸다"의 유일한 device측 증거다. 호출만
+      // 되고 적재되지 않으면 덤프에서 여전히 보이지 않는다(계측의 wire-completion).
+      expect(mockLogLaTokenRegister).toHaveBeenCalledWith('registered', 'trip-amb');
+    });
+
+    // #2977 — 활성 trip이 없어 등록을 skip한 경우. 기존엔 `log.info`만 남아 "등록 시도조차
+    // 없었다"와 "시도했는데 실패했다"를 구별할 수 없었다.
+    it('#2977 활성 trip 부재로 skip하면 no-active-trip을 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      const handle = setupListener();
+      startAmbientLiveActivityTokenRegistration();
+
+      handle.emit('tok-ambient');
+      await jest.runAllTimersAsync();
+
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+      expect(mockLogLaTokenRegister).toHaveBeenCalledWith('no-active-trip');
     });
 
     it('같은 (trip, token) 조합은 한 번만 등록한다', async () => {
