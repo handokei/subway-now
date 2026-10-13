@@ -2856,6 +2856,136 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.infoModeEnabled).toBe(true);
     });
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // #2975 — leg-1(첫 탑승, lock 없음)에서도 body trainCode를 써야 한다.
+  //
+  // 2026-10-13 06:27:45 실측(D1): 사용자가 프롬프트에 [탑승] 응답했고 device는 로컬
+  // autolock에 성공했는데(`boarding-prompt | fired | autolock-success | 7·용마산`), backend는
+  // `{"lockState":"none","noneReason":"position-resolve-none"}`을 남겼다. lock은 15분 47초 뒤
+  // backend 자체 streak(`leg-resolve-attempt` confirmed, trainCode 3013)으로만 생겼다.
+  //
+  // root: `index.ts:2287`의 body 경로가 `releasedForLegSwitch`(= 이미 lock이 있어 release된
+  // 경우만 true)에 게이트돼 있어 **첫 탑승에서는 device가 보낸 trainCode를 열어보지도 않는다**.
+  // `#2958`이 안전을 위해 걸고 *"100% 무변경"*(`:2282`)이라 적은 게이트를 `#2963` 스펙이 그대로
+  // 상속했다 — `/audit-sides` 시간축(트립 시작 vs 환승 경계) 편측.
+  //
+  // 영향: lock이 없으면 `runTrainCodeTracking`(매역 push 경로)에 진입하지 못한다
+  // (`boardingAnchorResolver.ts:713` — *"leg-1 매역 발사가 전멸"*). 10/13 트립에서 중곡(29분)·
+  // 군자(31분) 매역 알림 침묵의 직접 원인이다.
+  describe('leg-1 body trainCode (#2975)', () => {
+    /** 10/13 재현: live positions가 0건(= position-resolve-none) + 발사 이력에 그 열차 있음. */
+    function leg1TripWithPromptHistory(
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> {
+      return tripBody({
+        // backend가 프롬프트 발사 시 제시한 후보 — isPromotionCorroborated의 근거.
+        recentPromptCandidates: { trainCodes: ['2701', '3001'], firedAt: CREATED - 1000 },
+        ...overrides,
+      });
+    }
+
+    it('[red] positions 0건(position-resolve-none)이어도 body trainCode로 lock한다', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put('trip:tok-bc', JSON.stringify(leg1TripWithPromptHistory()));
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ trainCode: '2701' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      // leg-1이므로 lockState는 'leg1' (currentLegAnchor 부재 → attachBoardedLock 판정).
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('2701');
+    });
+
+    // 거부 ① — 발사 이력에 없는 외래 trainCode는 leg-2와 동일하게 거부돼야 한다.
+    // (leg-1에서 게이트를 열면서 검증까지 느슨해지면 안 된다.)
+    it('[거부] 발사 이력에 없는 trainCode(9999) → lock 생성 금지, 기존 none 유지', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
+      );
+      const env = makeKvEnv();
+      await env.TRIPS.put('trip:tok-bc', JSON.stringify(leg1TripWithPromptHistory()));
+
+      const res = await post(
+        '/trips/tok-bc/boarding-confirm',
+        confirmBody({ trainCode: '9999' }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+    });
+
+    // 거부 ② — stamp 경로는 `releasedForLegSwitch` 게이트를 **유지**해야 한다. stamp는
+    // "backend의 마지막 발사 기록"이라 leg 전환 근거가 필요하지만, body는 "사용자가 탭한 그
+    // 알림"이라 조건이 없다. 이 비대칭이 의도다 — 둘을 같이 열면 #2824가 막은 "backend가 한
+    // 번도 제시한 적 없는 trainCode 승격"으로 되돌아간다.
+    it('[거부] trainCode 미전송 + stamp만 있음(release 없음) → stamp를 승격하지 않는다', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
+      );
+      const env = makeKvEnv();
+      const body = leg1TripWithPromptHistory();
+      await env.TRIPS.put(
+        'trip:tok-bc',
+        JSON.stringify({
+          ...body,
+          legBoardingFireStamp: {
+            boardingStation: '중곡',
+            line: '7',
+            trainCode: '3001',
+            destination: body.destination,
+            waypointKeys: (body.waypoints as { stationName: string }[]).map(
+              (w) => `${w.stationName}|7|destination|0`,
+            ),
+            firedAt: CREATED - 1000,
+          },
+        }),
+      );
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock).toBeUndefined();
+    });
+
+    // V/X (Wire-completion #2) — 이 경로가 실제로 쓰였는지 D1으로 관측 가능해야 한다.
+    // `trainCodeSource='body'`가 leg-1에서도 기록돼야 10/13 회귀의 재발을 측정할 수 있다.
+    it('D1 boarding-confirm-result meta에 trainCodeSource="body"를 남긴다 (leg-1)', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
+      );
+      const inserts: unknown[][] = [];
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) inserts.push(args);
+          return { run };
+        },
+      }));
+      const env = makeKvEnv();
+      env.DB = { prepare } as unknown as Env['DB'];
+      await env.TRIPS.put('trip:tok-bc', JSON.stringify(leg1TripWithPromptHistory()));
+
+      await post('/trips/tok-bc/boarding-confirm', confirmBody({ trainCode: '2701' }), env);
+
+      const events = inserts.filter((a) => a[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      expect(JSON.parse(events[0][5] as string)).toMatchObject({ trainCodeSource: 'body' });
+    });
+  });
+
     it('none(0개 매칭) → 락 생성 금지, lockState none', async () => {
       fetchSpy.mockResolvedValue(
         new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
