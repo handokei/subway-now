@@ -393,6 +393,20 @@ describe('liveActivityPushChannel', () => {
       await jest.advanceTimersByTimeAsync(1000);
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
     });
+
+    // #2977 — 3회 전부 throw(네트워크 단절)로 끝나면 backend status 자체가 없다. detail을
+    // 'none'으로 적재해 "status를 받았지만 실패"(not-ok:503 등)와 "응답조차 못 받음"을
+    // 덤프에서 구별할 수 있게 한다 — 원인이 다르다(서버 거부 vs 네트워크/오프라인).
+    it('#2977 3회 모두 throw면 exhausted detail이 none이다 (status 없음)', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken.mockRejectedValue(new Error('net'));
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await jest.runAllTimersAsync();
+
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
+      expect(mockLogLaTokenRegister).toHaveBeenCalledWith('exhausted', 'none');
+    });
   });
 
   describe('ensureLiveActivityRegistered (#1288)', () => {
