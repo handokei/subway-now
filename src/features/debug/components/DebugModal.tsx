@@ -399,6 +399,9 @@ function formatLogLine(entry: AlarmLogEntry): string {
   if (entry.selectedArrivalSeconds != null) {
     parts.push(`eta=${entry.selectedArrivalSeconds}s`);
   }
+  // #2979 — OS 전달 시각. `ts`(적재 시각)와 다르면 트레이 drain으로 소급 집계된 것이다 —
+  // 앱이 죽어 있던 동안 온 알림의 실제 도착 시각이 여기 보인다.
+  if (entry.deliveredAt !== undefined) parts.push(`recv=${formatTime(entry.deliveredAt)}`);
   if (entry.expectedStationAtFire) parts.push(`exp=${entry.expectedStationAtFire}`);
   if (entry.actualLastNotifiedStation) parts.push(`last=${entry.actualLastNotifiedStation}`);
   return parts.join(' | ');

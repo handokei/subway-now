@@ -655,6 +655,17 @@ export interface AlarmLogEntry {
   // 두 시각 차로 도달 지연 분포 측정.
   sentAt?: number;
   receivedAt?: number;
+  /**
+   * #2979 — OS가 알림을 **실제로 전달한** 시각(ms). `boarding-prompt` displayed 엔트리에서만
+   * 사용한다. `ts`(적재 시각)와 분리해야 하는 이유: 트레이 drain은 앱이 다시 떴을 때 돌므로
+   * `ts`는 "언제 셌는가"일 뿐이고, 앱이 죽어 있던 동안의 전달 시각을 알려주지 못했다.
+   * 2026-10-13 실측에서 "28분에 또 탑승여부 알림이 왔다"와 "뚝섬에서 연속해서 왔다"를
+   * 양쪽 로그로 전부 가릴 수 없던 직접 원인이다.
+   *
+   * 원본은 `Notification.date`(expo-notifications, iOS `timeIntervalSince1970` — **초 단위**)이므로
+   * caller가 ms로 변환해 넘긴다.
+   */
+  deliveredAt?: number;
   // #396 — imminent phase 발사 trigger 출처. 미설정은 트리거 무관(early 등) 또는 구버전 로그.
   trigger?: AlarmLogTrigger;
   // #478 PR 1-2 — silent push 위치 게이트 결과.
@@ -2850,16 +2861,26 @@ export function logScheduleSkipped(input: {
 }
 
 /** #1021: boardingPrompt 발사 1건 적재. */
-export function logBoardingPromptFired(input: { originStation: string; line: string }): void {
+export function logBoardingPromptFired(input: {
+  originStation: string;
+  line: string;
+  /** #2979 — OS 전달 시각(ms). 미전달 시 기존 동작 그대로(필드 생략). */
+  deliveredAt?: number;
+}): void {
   const ts = Date.now();
   appendAlarmLog({
     ts,
     source: 'boarding-prompt',
     outcome: 'fired',
-    stationName: `${input.line}·${input.originStation}`,
+    stationName: `${input.line}\u00b7${input.originStation}`,
+    ...(input.deliveredAt !== undefined ? { deliveredAt: input.deliveredAt } : {}),
   });
   // #2861 (T2) — fire-and-forget. 실패해도 ring 적재(위)는 이미 완료 — 영속 daily counter 한
   // 건 손실만 발생(graceful, recordBoardingPromptDailyCount 내부에서 catch).
+  //
+  // #2979 — 분모는 `ts`(적재 시각) 기준을 유지한다. `deliveredAt`(OS 전달 시각)으로 바꾸면
+  // 트레이 drain이 과거 알림을 소급 집계할 때 **지난 날짜 bucket**에 가산돼 daily counter가
+  // 사후 변동한다(append-only 집계 계약 위반). `deliveredAt`은 진단 전용이다.
   void recordBoardingPromptDailyCount('displayed', ts);
 }
 

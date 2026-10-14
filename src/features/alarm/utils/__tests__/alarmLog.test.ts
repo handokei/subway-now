@@ -1343,6 +1343,31 @@ describe('alarmLog', () => {
       });
     });
 
+    // #2979 — displayed 적재에 OS 전달 시각을 동봉한다. `ts`는 "언제 셌는가"일 뿐이라
+    // 트레이 drain 경로(앱 재시작 후 소급 집계)에서는 도착 시각을 알려주지 못했다.
+    it('#2979 logBoardingPromptFired: deliveredAt을 전달하면 엔트리에 실린다', async () => {
+      logBoardingPromptFired({ originStation: '강남', line: '2', deliveredAt: 1792013264000 });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'boarding-prompt',
+        outcome: 'fired',
+        stationName: '2\u00b7강남',
+        deliveredAt: 1792013264000,
+      });
+    });
+
+    it('[거부] #2979 deliveredAt 미전달이면 필드가 없다(기존 동작 무변경)', async () => {
+      logBoardingPromptFired({ originStation: '강남', line: '2' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).not.toHaveProperty('deliveredAt');
+    });
+
     it('#2709 logLockSyncDelivery: outcome=attempt → source=lock-sync-delivery / outcome=received', async () => {
       logLockSyncDelivery({ outcome: 'attempt' });
       await flushAlarmLog();
