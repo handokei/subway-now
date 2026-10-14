@@ -183,7 +183,15 @@ export type TripEventKind =
   // (#2667 fix inert 확정), 1건 이상이면 등록은 됐으니 원인은 push 단계로 좁혀진다. 후자의
   // 분기에 실제로 들어갔을 때 no-op 사유(`no-token` / `state-not-live`) 계측을 별건으로
   // 추가한다 — 지금 넣으면 소비처 없는 export가 된다.
-  | 'la-token-register';
+  | 'la-token-register'
+  // #2985 — `trip_metrics` 행이 트립 전 구간을 덮지 못한 경우(window 절단) 1건. `started_at`과
+  // `fired_count`/`suppressed_count`가 모두 `trip.createdAt`을 하한으로 쓰는데, 세션 교체
+  // (`index.ts:1240` `{...incoming}`)가 그 값을 갈아치우면 앞 구간이 집계에서 통째로 빠진다.
+  // 2026-10-13 실측: 23분 트립이 75초 1행으로 남고 `fired_count`가 3→1로 과소 보고됐다.
+  //
+  // **정책 변경이 아니라 계측이다** — 행의 값은 그대로 두고 "이 행을 믿을 수 있는가"를 밖에서
+  // 판정 가능하게 만든다. 정상 트립에는 적재하지 않는다(노이즈 0).
+  | 'metrics-window-truncated';
 
 /** #2977 — `POST /live-activity/register` 결과. */
 export type LaTokenRegisterOutcome = 'stored' | 'trip_not_found' | 'invalid_payload';
