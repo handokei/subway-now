@@ -79,6 +79,9 @@ import {
   logCrossTripMirrorSkip,
   logBackendSsotRouteRegressionReject,
   logLiveActivityAuthorityState,
+  logLiveActivityTokenRegister,
+  FIRED_ALARM_SOURCES,
+  resetLaTokenRegisterDedupForTest,
   logLiveActivityUpdated,
   logLiveActivityMirrorSkip,
   resetLiveActivityMirrorSkipTracking,
@@ -1263,6 +1266,81 @@ describe('alarmLog', () => {
         { source: 'live-activity-authority-backend-pending', outcome: 'fired' },
         { source: 'live-activity-authority-backend-active', outcome: 'fired' },
       ]);
+    });
+
+    // ────────────────────────────────────────────────────────────────────────
+    // #2977 — ambient LA push token 등록 결과. 기존에는 `log.info`/`log.warn`에만 남아
+    // 덤프로 보이지 않았고, 그래서 `laPushDelivery=0/0`이 #2667 fix 이후 재발했을 때
+    // (2026-10-13) "등록 경로가 끊김"과 "push 단계가 끊김"을 구별할 수 없었다.
+    describe('#2977 logLiveActivityTokenRegister', () => {
+      beforeEach(() => {
+        resetLaTokenRegisterDedupForTest();
+      });
+
+      it('5개 outcome이 각각 고정 reason으로 적재된다 (registered만 fired)', async () => {
+        logLiveActivityTokenRegister('registered', 'abc12345');
+        logLiveActivityTokenRegister('no-active-trip');
+        logLiveActivityTokenRegister('not-ok', '404');
+        logLiveActivityTokenRegister('exhausted', '500');
+        logLiveActivityTokenRegister('cancelled');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved).toMatchObject([
+          {
+            source: 'live-activity-token-register',
+            outcome: 'fired',
+            reason: 'la-token-registered',
+            stationName: 'abc12345',
+          },
+          { source: 'live-activity-token-register', outcome: 'suppressed', reason: 'la-token-no-active-trip' },
+          {
+            source: 'live-activity-token-register',
+            outcome: 'suppressed',
+            reason: 'la-token-not-ok',
+            stationName: '404',
+          },
+          {
+            source: 'live-activity-token-register',
+            outcome: 'suppressed',
+            reason: 'la-token-exhausted',
+            stationName: '500',
+          },
+          { source: 'live-activity-token-register', outcome: 'suppressed', reason: 'la-token-cancelled' },
+        ]);
+      });
+
+      // dedup — ambient 구독은 token emit마다·trip 전환마다 재시도한다. 같은 결과가 반복되면
+      // ring(200-cap)을 도배해 다른 RCA 신호를 밀어낸다(#2768과 동형 근거).
+      it('[거부] 같은 outcome+detail 반복은 1건만 적재한다', async () => {
+        logLiveActivityTokenRegister('no-active-trip');
+        logLiveActivityTokenRegister('no-active-trip');
+        logLiveActivityTokenRegister('no-active-trip');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved).toHaveLength(1);
+      });
+
+      // detail이 바뀌면 상태 전이다 — 404 반복 뒤 500이 오면 원인이 달라졌으므로 적재한다.
+      it('같은 outcome이라도 detail이 바뀌면 적재한다 (상태 전이)', async () => {
+        logLiveActivityTokenRegister('not-ok', '404');
+        logLiveActivityTokenRegister('not-ok', '404');
+        logLiveActivityTokenRegister('not-ok', '500');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved).toHaveLength(2);
+        expect(saved.map((e) => e.stationName)).toEqual(['404', '500']);
+      });
+
+      // KPI 오염 금지 — 진단 stamp이므로 "실제 사용자 노출 알람" 분모에 들어가면 안 된다.
+      it('FIRED_ALARM_SOURCES에서 false다 (recall/정확도 분모 오염 금지)', () => {
+        expect(FIRED_ALARM_SOURCES['live-activity-token-register']).toBe(false);
+      });
     });
 
     it('#2709 logLockSyncDelivery: outcome=attempt → source=lock-sync-delivery / outcome=received', async () => {

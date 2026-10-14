@@ -173,7 +173,20 @@ export type TripEventKind =
   | 'leg-resolve-attempt'
   | 'promotion-rejected-uncorroborated'
   | 'vanish-swap'
-  | 'cooldown-bypass';
+  | 'cooldown-bypass'
+  // #2977 — LA push 채널 진단. `laPushDelivery=0/0`(backend LA push 시도 0건)이 #2667 fix
+  // 이후에도 재발했는데(2026-10-13 실측) 어디서 끊겼는지 판정할 수 없었다: device 등록 결과는
+  // `log.info`에만 남고(`liveActivityPushChannel.ts:201/209/141/128`), backend 저장 라우트
+  // (`index.ts POST /live-activity/register`)에는 계측이 0건이었다.
+  //
+  // 이 kind 하나로 1차 분기가 갈린다 — 이벤트가 **0건이면 등록 경로 자체가 끊긴 것**이고
+  // (#2667 fix inert 확정), 1건 이상이면 등록은 됐으니 원인은 push 단계로 좁혀진다. 후자의
+  // 분기에 실제로 들어갔을 때 no-op 사유(`no-token` / `state-not-live`) 계측을 별건으로
+  // 추가한다 — 지금 넣으면 소비처 없는 export가 된다.
+  | 'la-token-register';
+
+/** #2977 — `POST /live-activity/register` 결과. */
+export type LaTokenRegisterOutcome = 'stored' | 'trip_not_found' | 'invalid_payload';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

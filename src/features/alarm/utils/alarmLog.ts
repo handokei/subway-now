@@ -180,6 +180,11 @@ export type AlarmLogSource =
   | 'live-activity-authority-device-write'
   | 'live-activity-authority-backend-pending'
   | 'live-activity-authority-backend-active'
+  // #2977 — ambient LA push token 등록 결과. `laPushDelivery=0/0`(backend LA push 시도 0건)이
+  // #2667 fix 이후에도 재발했는데(2026-10-13 실측) 등록 결과가 `log.info`/`log.warn`에만 남아
+  // 덤프로 보이지 않았다 — 등록 경로가 끊긴 것인지 push 단계가 끊긴 것인지 구별 불가.
+  // reason 슬롯에 outcome(registered / no-active-trip / not-ok / exhausted / cancelled)을 싣는다.
+  | 'live-activity-token-register'
   // #2768 (게이트 전수감사 C, ⑤) — LA mirror 갱신 skip 사유. 기존 콘솔 전용
   // logger.info(liveActivityMirrorSync.ts)를 대체하지 않고 alarmLog에도 적재한다.
   // mirror sync는 5s 폴링 경로라 매 tick 적재 시 ring(200-cap)을 점령한다 — 호출자가
@@ -217,6 +222,13 @@ export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'lock-line-mismatch'는 BoardingLock 활성 시 nextWaypoint가 lock.boardingLine에 정차하지
 // 않는 다른 leg/노선의 silent push로 판정돼 차단된 케이스 (#707).
 export type AlarmLogReason =
+  // #2977 — ambient LA push token 등록 결과. detail(status 등)은 stationName 슬롯에 싣는다
+  // (`accel-pattern-observed`가 pattern을 같은 슬롯에 인코딩하는 선례와 동형).
+  | 'la-token-registered'
+  | 'la-token-no-active-trip'
+  | 'la-token-not-ok'
+  | 'la-token-exhausted'
+  | 'la-token-cancelled'
   // #2398 — UNNotificationCategory 등록 실패(setNotificationCategoryAsync reject/throw) stamp.
   | 'category-registration-failed'
   | 'dedup-station'
@@ -1325,6 +1337,50 @@ export function logLiveActivityUpdated(): void {
  * 때만 호출한다(dedup은 호출자 책임 — 매 write 시도마다(수십초 간격) 호출되면 ring이 상태값으로
  * 도배되어 다른 RCA 신호를 밀어낸다). outcome은 상태 구분용일 뿐 성공/실패 의미가 아니다.
  */
+/**
+ * #2977 — ambient LA push token 등록 결과 1건. `liveActivityPushChannel`의 네 갈래 결과를
+ * 덤프로 가시화한다(기존에는 `log.info`/`log.warn`뿐이라 관측 불가).
+ *
+ * **dedup 필수** — ambient 구독은 token emit마다, trip 전환마다 재시도하므로 같은 결과가
+ * 반복되면 alarmLog ring(200-cap)을 도배해 다른 RCA 신호를 밀어낸다. 같은 파일
+ * `#2768`(LA mirror skip)과 동형 패턴: 직전 결과를 모듈 레벨로 기억해 **바뀔 때만** 적재한다.
+ * `registered`는 상태 전이 자체가 성공 신호라 tripToken 조합이 바뀌면 다시 적재된다.
+ */
+let lastLaTokenRegisterKey: string | null = null;
+
+const LA_TOKEN_REGISTER_REASONS = {
+  registered: 'la-token-registered',
+  'no-active-trip': 'la-token-no-active-trip',
+  'not-ok': 'la-token-not-ok',
+  exhausted: 'la-token-exhausted',
+  cancelled: 'la-token-cancelled',
+} as const satisfies Record<string, AlarmLogReason>;
+
+export type LaTokenRegisterOutcome = keyof typeof LA_TOKEN_REGISTER_REASONS;
+
+export function logLiveActivityTokenRegister(
+  outcome: LaTokenRegisterOutcome,
+  detail?: string,
+): void {
+  const key = detail === undefined ? outcome : `${outcome}:${detail}`;
+  if (key === lastLaTokenRegisterKey) return;
+  lastLaTokenRegisterKey = key;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'live-activity-token-register',
+    // 'registered'만 채널이 열린 성공 신호 — 나머지는 억제 사유다.
+    outcome: outcome === 'registered' ? 'fired' : 'suppressed',
+    reason: LA_TOKEN_REGISTER_REASONS[outcome],
+    // detail(backend status / tripToken prefix)은 stationName 슬롯 인코딩.
+    ...(detail === undefined ? {} : { stationName: detail }),
+  });
+}
+
+/** 테스트 전용 — dedup 상태 초기화(#2977). production 호출 금지. */
+export function resetLaTokenRegisterDedupForTest(): void {
+  lastLaTokenRegisterKey = null;
+}
+
 export function logLiveActivityAuthorityState(
   state:
     | 'live-activity-authority-device-write'
@@ -1892,6 +1948,8 @@ export function formatFusionPickerTierDistribution(
  * 자동 반영 (글로벌 룰 3 — 데이터 주도).
  */
 const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcomeCounts | null> = {
+  // #2977 — silent push 집계 대상이 아니다(진단 stamp).
+  'live-activity-token-register': null,
   'silent-push-received': 'received',
   'silent-push-fired': 'fired',
   'silent-push-skipped': 'skipped',
@@ -1978,6 +2036,8 @@ export function countSilentPushOutcomes(
 // 노출 알람"과 "metadata/진단 stamp"를 나누는 기준이 여러 곳에 흩어지면 신규 metadata source
 // 추가 시 recall 같은 다른 KPI가 재오염될 수 있다(재발 원천 차단).
 export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
+  // #2977 — 사용자 노출 알람이 아니라 진단 stamp다. recall/정확도 KPI 분모에 섞이면 안 된다.
+  'live-activity-token-register': false,
   fg: true,
   bg: true,
   'fg-evaluated': true,
