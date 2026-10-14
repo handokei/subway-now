@@ -303,6 +303,24 @@ export async function runCaptureReplay(opts: {
    */
   twoPass?: boolean;
   /**
+   * #2981 — 각 cron tick **직전**에 호출되는 훅. 재생 중 HTTP 경로(예:
+   * `POST /trips/:token/boarding-confirm`)를 주입해 "사용자 행위 → 상태 전이 → 발사"
+   * 사슬을 통째로 게이트하기 위한 것이다.
+   *
+   * 왜 필요한가: 기존 엔트리는 `seedTrips`로 trip 상태를 **미리 확정**하고 시작한다
+   * (lock-seeded 또는 lockless). 그래서 "사용자 탭이 lock을 만드는가"는 어느 엔트리도
+   * 타지 않았고, `#2975`(leg-1에서 body trainCode를 버림 → 매역 발사 전멸)가 CI green으로
+   * 통과했다. 날짜 문제가 아니라 **축** 문제다 — 새 캡처를 만들어도 `seedTrips`가 상태를
+   * 확정하는 순간 같은 사각지대다.
+   *
+   * `tick`은 시뮬레이션 시각이다. HTTP 핸들러는 `Date.now()`를 직접 쓰므로, 훅 안에서
+   * 호출자가 `Date.now`를 tick으로 고정해야 재생 시각과 어긋나지 않는다(테스트 책임 —
+   * harness가 전역 시계를 건드리지 않는 기존 설계를 유지한다).
+   *
+   * 미지정 시 no-op — 기존 엔트리 거동 100% 무변경.
+   */
+  beforeTick?: (ctx: { tick: number; tickIndex: number; env: Env; kv: KVNamespace }) => Promise<void>;
+  /**
    * #2718 (main coordinator 지적, 2차 fidelity 정정) — `POST /position`으로 device가
    * 실제 보낸 위치/모션 series를 재생에 주입한다. key = seed trip의 `token`(`runFusionStep`이
    * `readSeries(env.TRIPS, trip.token)`으로 조회하는 바로 그 키). `runLocklessIntermediate`/
@@ -381,6 +399,16 @@ export async function runCaptureReplay(opts: {
         const point = queue.shift();
         if (point) await appendPositionPoint(kv as unknown as KVNamespace, token, point);
       }
+    }
+    // #2981 — HTTP 주입 훅. runScheduled 직전에 불러 "이 tick 시점에 사용자가 탭했다"를
+    // 재생에 끼워넣는다. 던지면 그대로 전파해 테스트가 조용히 통과하지 않게 한다.
+    if (opts.beforeTick) {
+      await opts.beforeTick({
+        tick,
+        tickIndex: tickIdx,
+        env,
+        kv: kv as unknown as KVNamespace,
+      });
     }
     const ceilingMs = isRecordedCadence
       ? (recordedCycleStarts[tickIdx + 1] ?? opts.fixture.window.toMs + 1)
