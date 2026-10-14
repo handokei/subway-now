@@ -51,8 +51,11 @@ function makeNotification(overrides: {
   identifier?: string;
   categoryIdentifier?: string | null;
   data?: unknown;
+  /** #2979 — expo-notifications `Notification.date`(iOS timeIntervalSince1970, **초**). */
+  date?: number;
 }) {
   return {
+    ...(overrides.date === undefined ? {} : { date: overrides.date }),
     request: {
       identifier: overrides.identifier ?? 'noti-1',
       content: {
@@ -118,6 +121,37 @@ describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
       line: '2',
     });
     expect(wasBoardingPromptDisplayed('n-1')).toBe(true);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // #2979 — OS가 알림을 **실제로 전달한** 시각. 트레이 drain은 앱이 다시 떴을 때 돌기 때문에
+  // `ts`(적재 시각)만으로는 "언제 왔는가"를 알 수 없었다 — 2026-10-13 "28분에 또 탑승여부
+  // 알림" / "뚝섬에서 연속해서 옴"을 양쪽 로그로 전부 가릴 수 없던 직접 원인이다.
+  it('#2979 전달 시각(초)을 ms로 변환해 deliveredAt으로 넘긴다', () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    // 2026-10-13 06:27:44 KST = 1792013264 (초). ms로 1792013264000이 돼야 한다.
+    registeredHandler!(makeNotification({ identifier: 'n-date', date: 1792013264 }));
+    expect(logBoardingPromptFired).toHaveBeenCalledWith({
+      originStation: '강남',
+      line: '2',
+      deliveredAt: 1792013264000,
+    });
+  });
+
+  // 거부 케이스 — 값이 없거나 0이면 필드를 생략한다. 넣으면 1970 타임스탬프가 덤프에 찍혀
+  // 오히려 오독을 만든다(플랫폼/목 차이로 date가 없을 수 있다).
+  it('[거부] #2979 전달 시각이 없거나 0이면 deliveredAt을 생략한다', () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    registeredHandler!(makeNotification({ identifier: 'n-nodate' }));
+    registeredHandler!(makeNotification({ identifier: 'n-zero', date: 0 }));
+    expect(logBoardingPromptFired).toHaveBeenNthCalledWith(1, {
+      originStation: '강남',
+      line: '2',
+    });
+    expect(logBoardingPromptFired).toHaveBeenNthCalledWith(2, {
+      originStation: '강남',
+      line: '2',
+    });
   });
 
   it('같은 identifier 재수신 시 dedup — logBoardingPromptFired 추가 호출 없음', () => {

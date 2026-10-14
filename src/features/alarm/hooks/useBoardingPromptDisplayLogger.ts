@@ -209,6 +209,17 @@ function tryLogDisplayed(
     logBoardingPromptFired({
       originStation: payload.originStation,
       line: payload.line,
+      // #2979 — OS가 실제로 전달한 시각. `ts`(적재 시각)만으로는 트레이 drain 경로에서
+      // "언제 왔는가"를 알 수 없다 — drain은 앱이 다시 떴을 때 돌기 때문이다. 2026-10-13
+      // "28분에 또 탑승여부 알림" / "뚝섬에서 연속해서 옴"을 양쪽 로그로 가릴 수 없던
+      // 직접 원인이고, 이 값이 있으면 **앱이 죽어 있던 동안의 전달도 소급 재구성**된다.
+      //
+      // `Notification.date`는 iOS에서 `timeIntervalSince1970`(**초**)으로 직렬화된다
+      // (`expo-notifications/ios/.../EXNotificationSerializer.m:32`) — ms로 변환한다.
+      // 0/비유한 값(플랫폼/목 차이)은 생략해 1970 타임스탬프가 찍히지 않게 한다.
+      ...(Number.isFinite(notification.date) && notification.date > 0
+        ? { deliveredAt: Math.round(notification.date * 1000) }
+        : {}),
     });
   } catch (err) {
     // listener/drain 콜백은 절대 throw 금지 — 오작동 시 silent log만.

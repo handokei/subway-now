@@ -1080,6 +1080,21 @@ describe('DebugModal helpers', () => {
     expect(line).toContain('last=시청');
   });
 
+  // #2979 — OS 전달 시각. `ts`(적재 시각)와 분리돼 보여야 트레이 drain으로 소급 집계된
+  // 알림의 실제 도착 시각을 읽을 수 있다 — 적재되기만 하고 렌더되지 않으면 덤프에서 여전히
+  // 보이지 않는다(계측의 wire-completion).
+  it('formatLogLine: #2979 deliveredAt이 있으면 recv= 토큰을 표기한다', () => {
+    const line = __test__.formatLogLine(
+      bgScheduledEntry({ deliveredAt: new Date('2026-10-13T06:27:44+09:00').getTime() }),
+    );
+    expect(line).toContain('recv=');
+  });
+
+  it('[거부] formatLogLine: #2979 deliveredAt이 없으면 recv= 토큰이 없다', () => {
+    const line = __test__.formatLogLine(bgScheduledEntry({}));
+    expect(line).not.toContain('recv=');
+  });
+
   it('formatLogLine: stamp 필드가 null/미존재면 추가 토큰이 붙지 않는다', () => {
     const line = __test__.formatLogLine(
       bgScheduledEntry({
