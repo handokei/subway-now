@@ -7929,6 +7929,10 @@ async function fireBoardingPromptForAnchor(inputs: {
     stats.silentPushFiredByKind.boardingPrompt += 1;
     // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota).
     await stampBoardingPromptFireOnce(env.TRIPS, trip.token, fireOnceAnchorKey, now);
+    // #2987 — leg-2 경로에도 후보 stamp. 없으면 `isPromotionCorroborated`가 backward-safe로
+    // 무조건 승격해 외래 trainCode가 그대로 lock된다(측정: 9999가 통과). `dirty = true`로
+    // caller가 영속화하므로 별도 putTrip 불필요.
+    trip.recentPromptCandidates = buildRecentPromptCandidates(pool, now);
     onFired(pool, gate.decision, selectedTrainCode);
     dirty = true;
     log(`${logPrefix}: fired`, {
@@ -8302,14 +8306,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       // index.ts)가 device가 보낸 trainCode를 이 목록과 대조한다 — 이 stamp가 없으면
       // `recentPromptCandidates`가 leg-1에서 영구히 undefined가 되어 그 게이트가 항상
       // backward-safe(true) fallback으로만 동작해 corroboration 검증력을 잃는다.
-      trip.recentPromptCandidates = {
-        trainCodes: pool
-          .slice()
-          .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
-          .slice(0, 5)
-          .map((entry) => entry.trainCode),
-        firedAt: now,
-      };
+      trip.recentPromptCandidates = buildRecentPromptCandidates(pool, now);
       promptOutcome = 'fired';
       candidateArvlCds = pool.map((entry) => entry.arvlCd);
       candidateEtaSeconds = pool.map((entry) => entry.arrivalSeconds);
@@ -8411,6 +8408,36 @@ function classifyMissingLegAnchor(
  * markPromptFired(trainCode 포함) + `stats.legBoardingPromptFired += 1`.
  * 차단: dedup/후보 0건 → `stats.legBoardingPromptBlocked += 1`.
  */
+/**
+ * #2987 — boarding-prompt 발사 시 제시한 후보 trainCode 목록을 trip에 stamp한다.
+ *
+ * `isPromotionCorroborated`(`index.ts:3462`)가 device가 보낸 `payload.trainCode`를 이 목록과
+ * 대조한다. **둘 다(`recentPromptCandidates`/`legResolveStreak`) 부재면 그 게이트는
+ * backward-safe로 무조건 승격**한다(`index.ts:3463`) — 즉 stamp가 없는 발사 경로에서는
+ * `#2824`의 "backend가 한 번도 제시한 적 없는 trainCode 승격" 차단이 **무력**하다.
+ *
+ * `#2844`가 leg-1(origin) 경로에 이 stamp를 넣었고 그 주석이 *"이 stamp가 없으면
+ * recentPromptCandidates가 **leg-1에서** 영구히 undefined"* 라고 범위를 선언했다 — **leg-2
+ * 환승 프롬프트 경로는 비어 있었다**. 2026-10-14 측정: leg-2 프롬프트 발사 후에도
+ * `recentPromptCandidates === undefined`이고, 그 상태에서 외래 trainCode(`9999`)가 그대로
+ * lock됐다(#2987 거부 케이스가 red로 잡음).
+ *
+ * 두 경로가 같은 계산을 쓰도록 공유한다 — 사본을 만들면 한쪽만 갱신되는 drift가 생긴다.
+ */
+export function buildRecentPromptCandidates(
+  pool: readonly { trainCode: string; arrivalSeconds: number }[],
+  now: number,
+): { trainCodes: string[]; firedAt: number } {
+  return {
+    trainCodes: pool
+      .slice()
+      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+      .slice(0, 5)
+      .map((entry) => entry.trainCode),
+    firedAt: now,
+  };
+}
+
 export async function maybeFireLegBoardingPrompt(
   trip: Trip,
   env: Env,
