@@ -318,8 +318,20 @@ export async function runCaptureReplay(opts: {
    * harness가 전역 시계를 건드리지 않는 기존 설계를 유지한다).
    *
    * 미지정 시 no-op — 기존 엔트리 거동 100% 무변경.
+   *
+   * `pushes`(#2989) — 이 tick 직전까지 발사된 push 목록(읽기 전용 view). 사슬 축 게이트가
+   * "backend가 **실제로 payload에 실은** 값"을 그 자리에서 꺼내 다음 요청에 넣기 위한 것이다
+   * (예: leg-2 프롬프트가 제시한 trainCode를 그대로 boarding-confirm으로 돌려보내기). 재생을
+   * 두 번 돌려 1회차 값을 2회차에 하드코딩하는 우회는 **사슬을 끊는다** — payload가 다른
+   * 열차로 변조돼도 2회차가 그 변조값을 그대로 confirm해 lock이 일치해버리기 때문이다.
    */
-  beforeTick?: (ctx: { tick: number; tickIndex: number; env: Env; kv: KVNamespace }) => Promise<void>;
+  beforeTick?: (ctx: {
+    tick: number;
+    tickIndex: number;
+    env: Env;
+    kv: KVNamespace;
+    pushes: readonly CapturedPush[];
+  }) => Promise<void>;
   /**
    * #2718 (main coordinator 지적, 2차 fidelity 정정) — `POST /position`으로 device가
    * 실제 보낸 위치/모션 series를 재생에 주입한다. key = seed trip의 `token`(`runFusionStep`이
@@ -408,6 +420,7 @@ export async function runCaptureReplay(opts: {
         tickIndex: tickIdx,
         env,
         kv: kv as unknown as KVNamespace,
+        pushes: capturedPushes,
       });
     }
     const ceilingMs = isRecordedCadence
