@@ -1432,7 +1432,9 @@ describe('cleanupTripWithLa', () => {
       // statement를 구분해 trip_metrics INSERT의 bind 인자만 캡처한다.
       const prepare = vi.fn().mockImplementation((sql: string) => ({
         bind: (...args: unknown[]) => {
-          if (sql.includes('trip_metrics')) capturedArgs = args;
+          // #2985 — 절단 탐지 probe의 `SELECT MAX(ended_at) FROM trip_metrics`도 이 문자열을
+          // 포함하므로 INSERT만 캡처하도록 좁힌다(안 좁히면 probe 인자가 스냅샷을 오염시킨다).
+          if (sql.includes('trip_metrics') && !/^\s*select/i.test(sql)) capturedArgs = args;
           return { run };
         },
       }));
@@ -1461,7 +1463,9 @@ describe('cleanupTripWithLa', () => {
       // #2283 — 위 테스트와 동일 이유로 trip_metrics INSERT statement만 캡처.
       const prepare = vi.fn().mockImplementation((sql: string) => ({
         bind: (...args: unknown[]) => {
-          if (sql.includes('trip_metrics')) capturedArgs = args;
+          // #2985 — 절단 탐지 probe의 `SELECT MAX(ended_at) FROM trip_metrics`도 이 문자열을
+          // 포함하므로 INSERT만 캡처하도록 좁힌다(안 좁히면 probe 인자가 스냅샷을 오염시킨다).
+          if (sql.includes('trip_metrics') && !/^\s*select/i.test(sql)) capturedArgs = args;
           return { run };
         },
       }));

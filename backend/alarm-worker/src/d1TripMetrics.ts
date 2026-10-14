@@ -37,6 +37,7 @@
  */
 
 import { drizzle } from 'drizzle-orm/d1';
+import { recordTripEvent } from './tripEventLog';
 import { hashTripToken } from './sentry';
 import { tripMetrics, type TripMetricsInsertRow } from './db/schema';
 import type { Trip } from './types';
@@ -132,6 +133,9 @@ export async function recordTripMetrics(
     // `INSERT OR IGNORE`(구 raw SQL)와 동일 의미 — 대상 제약을 지정하지 않아 어떤 제약이든
     // 위반 시 조용히 무시한다.
     await drizzle(db).insert(tripMetrics).values(row).onConflictDoNothing();
+    // #2985 — 이 행이 전 구간을 덮는지 사후 판정(계측). INSERT 뒤에 둔다 — 탐지 실패가
+    // metrics 적재를 막아선 안 된다.
+    await recordWindowTruncationIfAny(db, tokenHash, trip.createdAt, endedAt, firedCount);
   } catch (e) {
     console.warn(JSON.stringify({ msg: 'd1TripMetrics write failed', err: String(e) }));
   }
@@ -188,6 +192,80 @@ export function extractOriginStation(trip: Trip): string | null {
  * `outcome`은 호출부가 고정 리터럴만 전달하므로(바인드 파라미터화 대상 아님) SQL 텍스트에
  * 직접 삽입한다 — 사용자 입력이 아니다.
  */
+/**
+ * #2985 — 절단 탐지 스캔의 과거 상한. 같은 기기(`token_hash`는 APNs 토큰 해시라 트립이 바뀌어도
+ * 동일)의 **다른 날 트립**이 섞이지 않도록 무한 소급을 막는다. 직전 trip_metrics 행이 있으면
+ * 그 `ended_at`이 더 정확한 하한이고, 없을 때만 이 폴백을 쓴다.
+ */
+const TRUNCATION_SCAN_MAX_MS = 6 * 60 * 60_000;
+
+/**
+ * #2985 — 이 metrics 행이 트립 전 구간을 덮는지 판정하고, 아니면 `trip_events`에 1건 남긴다.
+ *
+ * 왜 필요한가: `started_at`/`fired_count`/`suppressed_count`가 모두 `trip.createdAt`을 하한으로
+ * 쓴다(`:91`/`:78`/`:82`). 그런데 `index.ts:1240`의 새 세션 분기가 `{...incoming}`으로
+ * `createdAt`을 갈아치우므로, 그 교체가 일어나면 **앞 구간이 집계에서 통째로 빠진다**.
+ * `d1TripMetrics.ts:76` 주석은 *"same-session 재등록 merge가 existing.createdAt으로 명시
+ * 고정한다"* 고 선언했는데 — 그건 **같은 세션 분기만**이다.
+ *
+ * 2026-10-13 실측: 06:23:50 시작한 23분 트립이 `started_at 06:45:41 / ended_at 06:46:56`
+ * 75초 1행으로 남고, 06:45:32의 성수 발사가 **1초 차이로 창 밖**이 되어 `fired_count`가
+ * 3→1로 과소 보고됐다. 7호선 구간은 행 자체가 없다.
+ *
+ * **계측만 한다** — 행의 값은 바꾸지 않는다. 정책 수정(창 하한 재산출/세션 교체 시 종료 처리/
+ * createdAt 보존 확대)은 이 계측으로 **빈도를 먼저 측정한 뒤** 별건으로 결정한다. #2976이
+ * leg-1 lock을 복구해 발생 조건이 좁아졌는데 얼마나 좁아졌는지 모르는 상태다.
+ *
+ * 조회 실패는 swallow — 상위 INSERT 흐름을 막지 않는다(이 파일의 기존 관례).
+ */
+async function recordWindowTruncationIfAny(
+  db: D1Database,
+  tokenHash: string,
+  startedAt: number,
+  endedAt: number,
+  firedCount: number,
+): Promise<void> {
+  try {
+    const prev = await db
+      .prepare(
+        `SELECT MAX(ended_at) AS prevEndedAt FROM trip_metrics
+         WHERE trip_token_hash = ? AND ended_at < ?`,
+      )
+      .bind(tokenHash, endedAt)
+      .first<{ prevEndedAt: number | null }>();
+    // 직전 행이 있으면 그 종료 시각이 이번 트립 구간의 하한. 없으면 폴백 창.
+    const scanFrom = prev?.prevEndedAt ?? endedAt - TRUNCATION_SCAN_MAX_MS;
+
+    const first = await db
+      .prepare(
+        `SELECT MIN(ts) AS firstTs FROM trip_events
+         WHERE token_hash = ? AND ts > ? AND ts <= ?`,
+      )
+      .bind(tokenHash, scanFrom, endedAt)
+      .first<{ firstTs: number | null }>();
+    const firstEventTs = first?.firstTs;
+    // 이벤트가 없거나 창 하한이 이미 최초 이벤트보다 이르면 절단 아님 — 적재하지 않는다.
+    if (firstEventTs === null || firstEventTs === undefined || firstEventTs >= startedAt) return;
+
+    await recordTripEvent(db, {
+      tokenHash,
+      kind: 'metrics-window-truncated',
+      meta: {
+        startedAt,
+        firstEventTs,
+        lostMs: startedAt - firstEventTs,
+        firedCountInRow: firedCount,
+        scanFrom,
+        usedPrevRow: prev?.prevEndedAt != null,
+      },
+    });
+  } catch (e) {
+    console.warn(
+      JSON.stringify({ msg: 'd1TripMetrics truncation probe failed', err: String(e) }),
+    );
+  }
+}
+
 async function countFireAttemptsByOutcome(
   db: D1Database,
   tokenHash: string,

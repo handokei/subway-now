@@ -1,3 +1,4 @@
+import type { Trip } from '../types';
 import { describe, expect, it, vi } from 'vitest';
 import { recordTripMetrics } from '../d1TripMetrics';
 import { makeTripFixture } from './helpers/testFixtures';
@@ -43,6 +44,20 @@ function makeRoutingMockDb(
         }),
       };
     }
+    // #2985 — 절단 탐지 probe의 두 SELECT와 trip_events append를 명시 라우팅한다. 이 helper는
+    // 원래 "SELECT COUNT 외 전부 INSERT"로 가정했는데, probe가 추가되면서 그 전제가 낡았다 —
+    // 라우팅하지 않으면 probe의 bind 인자가 `onInsertBind`에 캡처돼 INSERT 스냅샷 assert 21건이
+    // 통째로 오염된다(실측: 이 라우팅 없이 21 failed). null 반환 = "절단 아님" = 적재 없음이라
+    // 기존 테스트의 기대 동작과 정합하다.
+    if (sql.includes('MAX(ended_at)')) {
+      return { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue({ prevEndedAt: null }) }) };
+    }
+    if (sql.includes('MIN(ts)')) {
+      return { bind: vi.fn().mockReturnValue({ first: vi.fn().mockResolvedValue({ firstTs: null }) }) };
+    }
+    if (sql.includes('trip_events')) {
+      return { bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }) };
+    }
     return {
       bind: vi.fn().mockImplementation((...args: unknown[]) => {
         onInsertBind?.(args);
@@ -70,6 +85,151 @@ function makeRoutingMockDbCapturing(
   });
   return { db, insertArgs: () => insertArgs };
 }
+
+/**
+ * #2985 — 절단 탐지 전용 mock. 기존 `makeRoutingMockDb`는 `SELECT COUNT`만 라우팅하고 나머지를
+ * INSERT로 취급하므로(`.first` 없음) 신규 두 SELECT(`MAX(ended_at)` / `MIN(ts)`)가 그 분기로
+ * 빠져 내부 try/catch에 swallow된다 — 기존 테스트가 무영향인 이유이기도 하다.
+ */
+function makeTruncationMockDb(opts: {
+  sentCount?: number;
+  prevEndedAt?: number | null;
+  firstTs?: number | null;
+  probeThrows?: boolean;
+}): { db: D1Database; events: () => unknown[][] } {
+  const events: unknown[][] = [];
+  const prepare = vi.fn().mockImplementation((sql: string) => {
+    if (sql.includes('SELECT COUNT')) {
+      return {
+        bind: vi.fn().mockReturnValue({
+          first: vi.fn().mockResolvedValue({ count: opts.sentCount ?? 0 }),
+        }),
+      };
+    }
+    if (sql.includes('MAX(ended_at)')) {
+      return {
+        bind: vi.fn().mockReturnValue({
+          first: opts.probeThrows
+            ? vi.fn().mockRejectedValue(new Error('D1 probe error'))
+            : vi.fn().mockResolvedValue({ prevEndedAt: opts.prevEndedAt ?? null }),
+        }),
+      };
+    }
+    if (sql.includes('MIN(ts)')) {
+      return {
+        bind: vi.fn().mockReturnValue({
+          first: vi.fn().mockResolvedValue({ firstTs: opts.firstTs ?? null }),
+        }),
+      };
+    }
+    if (sql.includes('trip_events')) {
+      return {
+        bind: vi.fn().mockImplementation((...args: unknown[]) => {
+          events.push(args);
+          return { run: vi.fn().mockResolvedValue({ success: true }) };
+        }),
+      };
+    }
+    return {
+      bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }),
+    };
+  });
+  return { db: { prepare } as unknown as D1Database, events: () => events };
+}
+
+/**
+ * #2985 — `trip_metrics` 행이 트립 전 구간을 덮지 못한 경우를 `trip_events`로 관측 가능하게
+ * 만든다. **계측만** — 행의 값(`started_at`/`fired_count`/`suppressed_count`)은 바꾸지 않는다.
+ *
+ * 2026-10-13 실측 기전: `started_at`/`fired_count`/`suppressed_count`가 모두
+ * `trip.createdAt`을 하한으로 쓰는데(`d1TripMetrics.ts:91/78/82`), `index.ts:1240`의 새 세션
+ * 분기가 `{...incoming}`으로 그 값을 갈아치운다. 그 결과 23분 트립이 75초 1행으로 남고
+ * 06:45:32의 성수 발사가 1초 차이로 창 밖이 되어 `fired_count`가 3→1로 과소 보고됐다.
+ * `d1TripMetrics.ts:76` 주석은 *"same-session 재등록 merge가 existing.createdAt으로 명시
+ * 고정한다"* 고 선언했는데 — **같은 세션 분기만**이다.
+ */
+describe('#2985 metrics window 절단 탐지', () => {
+  const NOW = 1_700_000_000_000;
+
+  function tripAt(createdAt: number): Trip {
+    return {
+      token: 'tok-trunc',
+      route: { type: 'direct', line: '7', stops: 2 },
+      destination: '용마산',
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      expiresAt: createdAt + 60 * 60_000,
+      alarmAtEpochMs: createdAt,
+      createdAt,
+    } as unknown as Trip;
+  }
+
+  it('최초 이벤트가 started_at보다 이르면 metrics-window-truncated를 적재한다', async () => {
+    // 10/13 재현: 트립은 06:23:50에 시작했는데 started_at은 06:45:41로 뛰었다.
+    const startedAt = NOW;
+    const firstTs = NOW - 22 * 60_000;
+    const { db, events } = makeTruncationMockDb({ sentCount: 1, firstTs, prevEndedAt: null });
+
+    await recordTripMetrics(db, tripAt(startedAt), 'destination-arrived', startedAt + 75_000);
+
+    const rows = events().filter((a) => a[2] === 'metrics-window-truncated');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0][5] as string)).toMatchObject({
+      startedAt,
+      firstEventTs: firstTs,
+      lostMs: startedAt - firstTs,
+      firedCountInRow: 1,
+      usedPrevRow: false,
+    });
+  });
+
+  it('[거부] 최초 이벤트가 started_at 이후면 적재하지 않는다 (정상 트립 노이즈 0)', async () => {
+    const startedAt = NOW;
+    const { db, events } = makeTruncationMockDb({ firstTs: startedAt + 1_000 });
+
+    await recordTripMetrics(db, tripAt(startedAt), 'destination-arrived', startedAt + 60_000);
+
+    expect(events().filter((a) => a[2] === 'metrics-window-truncated')).toHaveLength(0);
+  });
+
+  it('[거부] trip_events가 비어 있으면(MIN(ts)=null) 적재하지 않는다', async () => {
+    const { db, events } = makeTruncationMockDb({ firstTs: null });
+
+    await recordTripMetrics(db, tripAt(NOW), 'destination-arrived', NOW + 60_000);
+
+    expect(events().filter((a) => a[2] === 'metrics-window-truncated')).toHaveLength(0);
+  });
+
+  it('[거부] 탐지 쿼리가 throw해도 metrics 적재를 막지 않는다', async () => {
+    const { db, events } = makeTruncationMockDb({ probeThrows: true, firstTs: NOW - 60_000 });
+
+    // throw가 전파되면 이 await가 reject한다 — swallow 계약 확인.
+    await expect(
+      recordTripMetrics(db, tripAt(NOW), 'destination-arrived', NOW + 60_000),
+    ).resolves.toBeUndefined();
+    expect(events().filter((a) => a[2] === 'metrics-window-truncated')).toHaveLength(0);
+  });
+
+  // 같은 기기(token_hash는 APNs 토큰 해시)의 다른 날 트립이 섞이면 모든 트립이 절단으로
+  // 오판된다. 직전 행의 ended_at이 있으면 그것이 하한이어야 한다.
+  it('직전 metrics 행이 있으면 그 ended_at을 스캔 하한으로 쓴다(usedPrevRow=true)', async () => {
+    const startedAt = NOW;
+    const prevEndedAt = NOW - 10 * 60_000;
+    const { db, events } = makeTruncationMockDb({
+      prevEndedAt,
+      firstTs: NOW - 5 * 60_000,
+      sentCount: 2,
+    });
+
+    await recordTripMetrics(db, tripAt(startedAt), 'destination-arrived', startedAt + 60_000);
+
+    const rows = events().filter((a) => a[2] === 'metrics-window-truncated');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0][5] as string)).toMatchObject({
+      scanFrom: prevEndedAt,
+      usedPrevRow: true,
+    });
+  });
+});
 
 describe('recordTripMetrics (#1835)', () => {
   const NOW = 1_700_000_000_000;
