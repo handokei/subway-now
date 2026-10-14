@@ -98,6 +98,18 @@ export function makeRide20260918LocklessTrip(token: string): Trip {
  * 전 5-waypoint)과 의도적으로 다른 시작점이다. `REPLAY_LIBRARY`에는 등록하지 않는다(실측
  * 아님) — `replay_20260918_lock_seeded_contrast.test.ts`가 직접 `runCaptureReplay`로 재생.
  */
+/** #2983 — LA push 토큰 상태를 바꾼 lock-seeded 변형. `activityState`는 2값뿐(`types.ts:147`). */
+export function makeRide20260918LaTrip(
+  token: string,
+  la: { activityPushToken?: string; activityState?: 'live' | 'ended' },
+): Trip {
+  return {
+    ...makeRide20260918LockSeededTrip(token),
+    ...(la.activityPushToken === undefined ? {} : { activityPushToken: la.activityPushToken }),
+    ...(la.activityState === undefined ? {} : { activityState: la.activityState }),
+  };
+}
+
 export function makeRide20260918LockSeededTrip(token: string): Trip {
   return {
     token,
