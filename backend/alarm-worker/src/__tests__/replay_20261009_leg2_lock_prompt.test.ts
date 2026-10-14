@@ -20,6 +20,8 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { maybeFireLegBoardingPrompt, type ScheduledDeps, type ScheduledStats } from '../scheduled';
+import app from '../index';
+import { putTrip, getTrip } from '../trips';
 import type { ArrivalEntry, SeoulArrivalClient } from '../seoul';
 import type { Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -147,5 +149,125 @@ describe('#2939 replay — 10/9 b00dd879 군자 leg-2 lock 부착 후 재발사 
 
     expect(stats.legBoardingPromptFired).toBe(1);
     expect((pushFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+  });
+});
+
+/**
+ * #2987 — "발사된 열차 == lock된 열차" 신원 사슬.
+ *
+ * ## 왜 이 테스트가 필요한가 (mutation 측정 근거)
+ *
+ * 사슬의 세 구간은 각각 두껍게 덮여 있다(backend 4001개 대상 mutation 측정):
+ *   - 프롬프트 발사 결정(`decideBoardingPromptFire`) 사망 → **74건** 실패
+ *   - payload `trainCode` embed 제거/변조 → **4건** 실패(값까지 검증)
+ *   - confirm → lock(`#2975`/`#2982`) → **3건**
+ *
+ * 그런데 **구간을 연결하는 테스트가 없다.** 위 describe(`#2939`)조차 `trip.boardingLock`에
+ * `trainCode: '5559'`를 **손으로 박는다** — push가 실제로 어느 열차를 실었는지와 무관하다.
+ * 그래서 "발사는 A를 제시했는데 lock은 B가 됐다"는 회귀가 **81건 전부 green인 채** 통과한다.
+ *
+ * 사용자 요구(2026-10-12): *"27분차를 30분에 탭하더라도 27분 열차를 락할 수 있어야 하는 거잖아"*
+ * — 그 요구는 **구간이 아니라 사슬**에 대한 것이다.
+ *
+ * ## 이 테스트의 규율
+ *
+ * **trainCode를 하드코딩하지 않는다.** 발사된 push의 payload에서 **읽어서** confirm에 넣고,
+ * lock이 그 값을 갖는지 본다. 그래서 어느 구간이 틀어져도(발사가 다른 열차를 고름 / embed가
+ * 다른 값을 실음 / confirm이 거부함) 이 테스트가 깨진다.
+ */
+describe('#2987 발사된 열차 == lock된 열차 (신원 사슬)', () => {
+  /** 27분차(ARRIVED)·30분차(운행중) 2대 pool — 사용자 시나리오 그대로. */
+  const TRAIN_ARRIVED = '2701';
+  const TRAIN_LATER = '3001';
+
+  async function fireAndCapturePromptTrainCode(
+    trip: Trip,
+    env: Env,
+    now: number,
+  ): Promise<{ promptTrainCode: string; pushCount: number }> {
+    const pool: readonly ArrivalEntry[] = [
+      arrival(TRAIN_ARRIVED, true, 1), // ARRIVED — 우선순위 상위
+      arrival(TRAIN_LATER, true, 99), // 운행중
+    ];
+    const bodies: unknown[] = [];
+    const pushFetch = vi.fn(async (_u: unknown, init?: RequestInit) => {
+      if (init?.body) bodies.push(JSON.parse(String(init.body)));
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+    const deps: ScheduledDeps = {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: pushFetch,
+      seoul: makeControllableSeoul(() => pool),
+      archFlag: 'off',
+    };
+
+    await maybeFireLegBoardingPrompt(trip, env, deps, makeStats(), now, () => {}, () => 'p-id');
+
+    // 프롬프트 push의 payload 키는 `body`다(station push의 `data`, LA push의 `aps.event`와
+    // 다르다 — 실측으로 확인). 하드코딩 테스트는 이 차이를 드러내지 못한다.
+    const prompt = bodies.find((b) => {
+      const payload = (b as { body?: { kind?: string } }).body;
+      return payload?.kind === 'boarding-prompt';
+    }) as { body: { trainCode?: string } } | undefined;
+    // payload에 trainCode가 아예 없으면 device가 보낼 것이 없다 — 사슬이 거기서 끊긴다.
+    expect(prompt?.body.trainCode).toBeTypeOf('string');
+    return { promptTrainCode: prompt!.body.trainCode as string, pushCount: bodies.length };
+  }
+
+  async function postConfirm(token: string, env: Env, now: number, trainCode: string) {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      return await app.fetch(
+        new Request(`http://example.com/trips/${token}/boarding-confirm`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'boarded', station: '군자', line: '5', trainCode }),
+        }),
+        env,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('push가 실은 열차를 그대로 confirm하면 그 열차로 lock된다 (하드코딩 아님)', async () => {
+    const now = offsetFromBase(0);
+    const kv = new InMemoryKV(() => now);
+    const env = makeEnv(kv);
+    const trip = makeTrip();
+
+    const { promptTrainCode } = await fireAndCapturePromptTrainCode(trip, env, now);
+    // 발사 결정이 ARRIVED를 골랐는지 — 사슬 앞단 sanity. 아래 assert는 이 값이 아니라
+    // promptTrainCode 변수를 쓴다(추출 규율).
+    expect(promptTrainCode).toBe(TRAIN_ARRIVED);
+
+    await putTrip(env.TRIPS, trip);
+    const res = await postConfirm(trip.token, env, now + 30_000, promptTrainCode);
+    expect(res.status).toBe(200);
+
+    const stored = await getTrip(env.TRIPS, trip.token);
+    // 사슬 전체: 발사가 제시한 열차 === lock된 열차.
+    expect(stored?.boardingLock?.trainCode).toBe(promptTrainCode);
+  });
+
+  // 거부 — push가 제시하지 않은 외래 열차는 lock되지 않는다(#2824 무근거 승격 차단).
+  it('[거부] push가 제시하지 않은 열차(9999)를 confirm해도 그 열차로 lock되지 않는다', async () => {
+    const now = offsetFromBase(0);
+    const kv = new InMemoryKV(() => now);
+    const env = makeEnv(kv);
+    const trip = makeTrip();
+
+    const { promptTrainCode } = await fireAndCapturePromptTrainCode(trip, env, now);
+    await putTrip(env.TRIPS, trip);
+
+    const res = await postConfirm(trip.token, env, now + 30_000, '9999');
+    expect(res.status).toBe(200);
+
+    const stored = await getTrip(env.TRIPS, trip.token);
+    expect(stored?.boardingLock?.trainCode).not.toBe('9999');
+    // 외래 값이 거부된 뒤 제시된 열차로 조용히 바뀌어 있어도 안 된다 — 사용자가 탭한 것이
+    // 아니기 때문이다. lock 미생성이 정답.
+    expect(stored?.boardingLock?.trainCode).not.toBe(promptTrainCode);
   });
 });
