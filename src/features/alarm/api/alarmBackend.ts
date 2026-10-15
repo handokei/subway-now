@@ -39,6 +39,7 @@ async function mirrorBoardingLine(line: string | undefined): Promise<void> {
 // 기존 호출자(route/utils/routeWaypoints 등) 호환을 위해 re-export 유지.
 // 백엔드 Trip.Waypoint와 동일 구조. backend/alarm-worker/src/types.ts와 동기화.
 import type { AlarmWaypoint } from '../../../shared/types/alarm';
+import type { TripEndReason } from '../../../shared/types/tripEnd';
 export type { AlarmWaypoint };
 
 export interface RegisterTripPayload {
@@ -624,8 +625,17 @@ export async function sendPushAck(payload: PushAckPayload): Promise<AlarmBackend
 /**
  * 활성 트립을 해제한다. URL/네트워크 실패 시에도 throw하지 않는다 — 백엔드 KV는
  * `expiresAt`으로 자동 정리되므로 클라이언트가 재시도 책임을 갖지 않는다.
+ *
+ * #2302 — `reason`은 필수다. backend가 `?reason=`을 `trip_metrics.end_reason` /
+ * `trip_events.meta.reason`에 적재하는데(`index.ts:3836`), 이 값을 보내지 않으면
+ * backend가 `'user-delete'` 기본값으로 적재해 9개 device 종료 경로가 D1에서 구분되지
+ * 않는다(2026-10-15 실측: 생성 6초 후 DELETE의 주체 특정 실패). 어휘는
+ * `TripEndReason` — 새 사유 체계가 아니라 각 경로의 기존 release/alarmLog 사유다.
  */
-export async function clearActiveTrip(token: string): Promise<AlarmBackendResult> {
+export async function clearActiveTrip(
+  token: string,
+  reason: TripEndReason,
+): Promise<AlarmBackendResult> {
   // 트립 종료 후 동일 트립을 다시 시작할 수 있도록 dedup 캐시를 초기화한다.
   // URL 미설정/네트워크 실패 경로에서도 초기화해야 클라이언트가 register dedup에
   // 의도치 않게 갇히지 않는다. in-flight Promise까지 비워야 clear 직후 register가
@@ -643,9 +653,11 @@ export async function clearActiveTrip(token: string): Promise<AlarmBackendResult
   if (!token) return { ok: false };
 
   try {
-    const res = await fetchWithTimeout(`${base}/trips/${encodeURIComponent(token)}`, {
-      method: 'DELETE',
-    });
+    // #2302 — reason은 자유 문자열 쿼리로 전달(backend가 64자로 잘라 telemetry에만 사용).
+    const res = await fetchWithTimeout(
+      `${base}/trips/${encodeURIComponent(token)}?reason=${encodeURIComponent(reason)}`,
+      { method: 'DELETE' },
+    );
     if (!res.ok) {
       log.warn(`clear failed status=${res.status}`);
       return { ok: false, status: res.status };

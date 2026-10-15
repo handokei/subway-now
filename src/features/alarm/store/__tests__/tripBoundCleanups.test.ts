@@ -75,7 +75,7 @@ describe('tripBoundCleanups', () => {
     // BG silent push 경로에서 zustand store에 접근 불가하므로 storage 직접 제거가 유일한 경로.
     // DESTINATION_KEY 누락 회귀 차단 (#868 P1-1).
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
-    await runTripBoundCleanups();
+    await runTripBoundCleanups('user-clear');
     const removedKeys = (AsyncStorage.removeItem as jest.Mock).mock.calls.map(
       (c) => c[0] as string,
     );
@@ -100,7 +100,7 @@ describe('tripBoundCleanups', () => {
     // trip 종료 시 위젯에는 trip 중 마지막 역이 남아 stale 상태로 노출됨.
     // clearWidgetStation을 호출해 "감지 중" 상태로 즉시 전환.
     mockClearWidgetStation.mockClear();
-    await runTripBoundCleanups();
+    await runTripBoundCleanups('user-clear');
     // #1524 직접 cleanup 1회. 멱등 — 이미 비어 있으면 graceful no-op.
     expect(mockClearWidgetStation).toHaveBeenCalledTimes(1);
   });
@@ -121,7 +121,7 @@ describe('tripBoundCleanups', () => {
     mockedCancel.mockResolvedValue(undefined);
     (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
 
-    await runTripBoundCleanups();
+    await runTripBoundCleanups('user-clear');
 
     expect(mockedCancel).toHaveBeenCalledWith('alarm-T-100-강남-transfer');
     expect(mockedCancel).toHaveBeenCalledWith('alarm-T-100-강남-destination');
@@ -139,7 +139,7 @@ describe('tripBoundCleanups', () => {
     (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockRejectedValue(
       new Error('already fired'),
     );
-    await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+    await expect(runTripBoundCleanups('user-clear')).resolves.toBeUndefined();
   });
 
   it('TRIP_BOUND_CLEANUPS의 모든 항목은 호출 가능하며 Promise를 반환하고 reject하지 않는다', async () => {
@@ -165,7 +165,7 @@ describe('tripBoundCleanups', () => {
 
   it('runTripBoundCleanups: AsyncStorage가 reject해도 reject를 던지지 않는다 (graceful)', async () => {
     (AsyncStorage.removeItem as jest.Mock).mockRejectedValue(new Error('boom'));
-    await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+    await expect(runTripBoundCleanups('user-clear')).resolves.toBeUndefined();
   });
 
   it('#2089 — runTripBoundCleanups: ACTIVE_TRIP_KEY 조회 자체가 reject해도 tripToken=null로 graceful 진행', async () => {
@@ -173,7 +173,7 @@ describe('tripBoundCleanups', () => {
     // 이 조회가 실패해도 나머지 storage-only cleanup은 정상 진행돼야 한다.
     (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('getItem boom'));
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
-    await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+    await expect(runTripBoundCleanups('user-clear')).resolves.toBeUndefined();
   });
 
   it('#2089 — cancelTripBoundOsQueue: ACTIVE_TRIP_KEY 조회 자체가 reject해도 tripToken=null로 graceful 진행', async () => {
@@ -317,7 +317,7 @@ describe('tripBoundCleanups', () => {
         { identifier: `alarm-${TRIP_TOKEN}-강남-destination` },
       ]);
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
       const baseline = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls
         .length;
 
@@ -443,7 +443,7 @@ describe('tripBoundCleanups', () => {
         dismissSilence: { sinceTs: Date.now(), sinceLat: null, sinceLng: null },
       });
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       // 모든 메모리 state가 null로 비워졌어야 한다 — BG 경로에서도 일관.
       expect(useDestinationStore.getState().customOrigin).toBeNull();
@@ -455,7 +455,7 @@ describe('tripBoundCleanups', () => {
     it('#2278: leg-advance stamp도 trip 경계에서 클리어된다 (이전 trip 하차 확인이 새 trip에 leak 차단)', async () => {
       useLegAdvanceStore.setState({ nextLine: '2' });
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       expect(useLegAdvanceStore.getState().nextLine).toBeNull();
     });
@@ -480,7 +480,7 @@ describe('tripBoundCleanups', () => {
       useNavigationStore.setState({ navigationActive: false, pausedAt: 1_700_000_000_000 });
       (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       const removedKeys = (AsyncStorage.removeItem as jest.Mock).mock.calls.map(
         (c) => c[0] as string,
@@ -508,7 +508,7 @@ describe('tripBoundCleanups', () => {
       useNavigationStore.setState({ navigationActive: true, pausedAt: null });
       (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       expect(useNavigationStore.getState().navigationActive).toBe(false);
     });
@@ -554,7 +554,7 @@ describe('tripBoundCleanups', () => {
         },
       });
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       // 기존 동작(메모리 정리 자체)은 유지돼야 한다.
       expect(useBoardingLockStore.getState().lock).toBeNull();
@@ -573,7 +573,7 @@ describe('tripBoundCleanups', () => {
     it('lock이 없으면 lifecycle buffer에 release 엔트리가 적재되지 않는다 (noise 방지)', async () => {
       useBoardingLockStore.setState({ lock: null });
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       expect(getLockLifecycleEntries()).toHaveLength(0);
     });
@@ -585,7 +585,7 @@ describe('tripBoundCleanups', () => {
   // 본 케이스가 깨지면 cleanup 배열에서 endLiveActivityCleanup 누락 회귀.
   it('#1892 / #1885 — runTripBoundCleanups 실행 시 Live Activity dismiss를 호출한다 (RC-9 orphan 차단)', async () => {
     mockEndLiveActivity.mockClear();
-    await runTripBoundCleanups();
+    await runTripBoundCleanups('user-clear');
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
   });
 
@@ -595,7 +595,7 @@ describe('tripBoundCleanups', () => {
     mockEndLiveActivity.mockClear();
     mockEndLiveActivity.mockRejectedValueOnce(new Error('already-ended'));
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
-    await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+    await expect(runTripBoundCleanups('user-clear')).resolves.toBeUndefined();
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
   });
 
@@ -648,7 +648,7 @@ describe('tripBoundCleanups', () => {
         .spyOn(alarmBackend, 'clearActiveTrip')
         .mockResolvedValue({ ok: true });
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       expect(clearActiveTripSpy).not.toHaveBeenCalled();
       clearActiveTripSpy.mockRestore();
@@ -665,7 +665,7 @@ describe('tripBoundCleanups', () => {
         .spyOn(alarmBackend, 'clearActiveTrip')
         .mockResolvedValue({ ok: true });
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('user-clear');
 
       expect(clearActiveTripSpy).not.toHaveBeenCalled();
       clearActiveTripSpy.mockRestore();
@@ -679,7 +679,7 @@ describe('tripBoundCleanups', () => {
         .spyOn(alarmBackend, 'clearActiveTrip')
         .mockRejectedValue(new Error('network unavailable'));
 
-      await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+      await expect(runTripBoundCleanups('user-clear')).resolves.toBeUndefined();
 
       clearActiveTripSpy.mockRestore();
     });
@@ -695,7 +695,7 @@ describe('tripBoundCleanups', () => {
       return Promise.resolve();
     });
 
-    await runTripBoundCleanups();
+    await runTripBoundCleanups('user-clear');
 
     // removeItem이 항목 수만큼(또는 그 이상 helper 경유분 포함) 호출됐는지 확인.
     // #1545 (S12) — 신규 wiring 4건(clearCrossCategoryDedup / clearAlarmLogWindows /

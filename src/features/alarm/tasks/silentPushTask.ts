@@ -1209,7 +1209,8 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         await triggerTripEndRecall();
         // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
         const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-        await runTripBoundCleanups();
+        // #2302 — backend가 통지한 종료임을 end_reason에 남긴다(device 자체 판정과 구분).
+        await runTripBoundCleanups('silent-push-trip-ended');
         // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
         await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
         // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에

@@ -194,7 +194,14 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         // #2803 — 목적지 설정(station != null)이면 방금 setCustomOrigin으로 지정한 명시
         // 출발역을 보존해야 한다(지도탭 "출발역 설정 → 목적지 설정" 흐름). trip 종료
         // (station === null)에서는 기존대로 이전 trip 잔여 customOrigin을 클리어한다.
-        .then(() => runTripBoundCleanups(station ? { preserveCustomOrigin: true } : undefined))
+        // #2302 — 같은 cleanup이 두 의미를 갖는다: station != null이면 "이전 trip을 끝내고
+        // 다른 목적지로 전환", null이면 "사용자가 안내를 끝냈다". backend end_reason에서 두
+        // 경우를 구분해야 "사용자가 직접 끝냈다"의 분모가 정확해진다.
+        .then(() =>
+          station
+            ? runTripBoundCleanups('destination-switch', { preserveCustomOrigin: true })
+            : runTripBoundCleanups('user-clear'),
+        )
         .catch(noop)
         // #1597 — cleanup 후, 새 trip의 storage write 전에 ground-truth prompt enqueue.
         // prev trip이 실제로 종료된 경우(prev !== null)에만 fire. 첫 trip 시작(prev === null)

@@ -45,9 +45,19 @@ import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import type { TripEndReason } from '../../../shared/types/tripEnd';
 
-/** breadcrumb에서 trip 종료 트리거를 구분하는 reason. */
-type TripEndReason = 'backend-confirmed' | 'user-end-trip-button';
+/**
+ * breadcrumb에서 trip 종료 트리거를 구분하는 reason.
+ *
+ * #2302 — 이 정본 시퀀스가 커버하는 두 진입점만 허용한다. 공용 `TripEndReason`의 부분집합으로
+ * 선언해 backend end_reason 어휘와 드리프트하지 않게 한다(`Extract`가 오타/신규 값을
+ * 컴파일 타임에 차단).
+ */
+type SequenceTripEndReason = Extract<
+  TripEndReason,
+  'backend-confirmed' | 'user-end-trip-button'
+>;
 
 /**
  * trip-ended cleanup 5단 시퀀스 본체. `cleanupBackendConfirmedEndedTrip` /
@@ -56,12 +66,14 @@ type TripEndReason = 'backend-confirmed' | 'user-end-trip-button';
  */
 async function runFullTripEndCleanupSequence(
   endedAt: number,
-  reason: TripEndReason,
+  reason: SequenceTripEndReason,
 ): Promise<void> {
   await triggerTripEndRecall();
   // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
   const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-  await runTripBoundCleanups();
+  // #2302 — 이 정본 시퀀스는 두 진입점(backend 확정 / 사용자 [안내 종료] 탭)을 가지며,
+  // breadcrumb과 같은 `reason`을 backend end_reason으로도 전달한다.
+  await runTripBoundCleanups(reason);
   // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
   await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
   // #2419 — in-memory destination/customOrigin/tripOrigin reset. runTripBoundCleanups는
