@@ -12,6 +12,9 @@ import { Station } from '../../../../shared/types/station';
 import { setTripStartedAt } from '../../../alarm/utils/tripStartStorage';
 import { triggerTripEndRecall } from '../../../alarm/utils/triggerTripEndRecall';
 import { setTripCorrId, generateTripCorrId } from '../../../observability/utils/tripCorrId';
+// #2302 — 종료 사유가 backend DELETE까지 실제로 전달되는지 end-to-end 확인용.
+import * as alarmBackend from '../../../alarm/api/alarmBackend';
+import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -1230,5 +1233,46 @@ describe('useDestinationStore', () => {
       await flushMicrotasks();
       expect(triggerMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+// #2302 (PR 리뷰 P2-2) — 이 경로는 같은 cleanup이 두 의미를 갖는다: station≠null이면 "이전 trip을
+// 끝내고 다른 목적지로 전환", null이면 "사용자가 안내를 끝냈다". backend `end_reason`에서 두
+// 경우가 구별돼야 "사용자가 직접 끝냈다"의 분모가 정확해진다. 리터럴이 스왑되면 이 테스트가 잡는다.
+describe('setDestination(#2302): 전환/해제가 서로 다른 end_reason으로 DELETE된다', () => {
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    useDestinationStore.setState({ destination: null, customOrigin: null, tripOrigin: null });
+    // cleanups가 clearActiveTrip을 발행하려면 backend token이 있어야 한다(tripBoundCleanups.ts).
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'backend-tok-2302');
+  });
+
+  it('목적지 전환(station≠null) → reason=destination-switch', async () => {
+    const spy = jest
+      .spyOn(alarmBackend, 'clearActiveTrip')
+      .mockResolvedValue({ ok: true });
+
+    useDestinationStore.getState().setDestination(mockStation);
+    await flush();
+
+    expect(spy).toHaveBeenCalledWith('backend-tok-2302', 'destination-switch');
+    spy.mockRestore();
+  });
+
+  it('안내 해제(null) → reason=user-clear', async () => {
+    useDestinationStore.setState({ destination: mockStation });
+    const spy = jest
+      .spyOn(alarmBackend, 'clearActiveTrip')
+      .mockResolvedValue({ ok: true });
+
+    useDestinationStore.getState().setDestination(null);
+    await flush();
+
+    expect(spy).toHaveBeenCalledWith('backend-tok-2302', 'user-clear');
+    spy.mockRestore();
   });
 });

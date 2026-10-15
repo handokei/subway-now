@@ -52,6 +52,7 @@ import {
   resetPromptOptIn,
 } from './useUserIntentStore';
 import { createLogger } from '../../../shared/utils/logger';
+import type { TripEndReason } from '../../../shared/types/tripEnd';
 
 const log = createLogger('tripBoundCleanups');
 
@@ -314,13 +315,19 @@ async function clearTripBoundStoreMemory(options?: {
  * Promise.allSettled로 동시에 띄우고 모든 reject를 흡수한다 (한 항목 실패가
  * 다른 항목 실행이나 호출자에게 전파되지 않도록).
  */
-export function runTripBoundCleanups(options?: {
-  // #2803 — true면 CUSTOM_ORIGIN_KEY storage 제거와 customOrigin 메모리 clear를 건너뛴다.
-  // FG setDestination이 새 목적지(station != null)를 설정하는 switch 경로에서만 사용 —
-  // 사용자가 지도탭에서 명시 설정한 출발역이 목적지 설정만으로 사라지지 않게 한다.
-  // 다른 모든 호출자(trip 종료류)는 옵션 없이 호출해 기존 clear 동작을 유지한다.
-  preserveCustomOrigin?: boolean;
-}): Promise<void> {
+export function runTripBoundCleanups(
+  // #2302 — 이 cleanup이 어느 종료 경로에서 호출됐는지. 아래 `clearActiveTrip`으로 그대로
+  // 전달돼 backend `trip_metrics.end_reason`에 적재된다. 필수 인자인 이유는
+  // `shared/types/tripEnd.ts` 헤더 참고(라벨 단일화로 9경로 구분 불가였던 실측).
+  reason: TripEndReason,
+  options?: {
+    // #2803 — true면 CUSTOM_ORIGIN_KEY storage 제거와 customOrigin 메모리 clear를 건너뛴다.
+    // FG setDestination이 새 목적지(station != null)를 설정하는 switch 경로에서만 사용 —
+    // 사용자가 지도탭에서 명시 설정한 출발역이 목적지 설정만으로 사라지지 않게 한다.
+    // 다른 모든 호출자(trip 종료류)는 옵션 없이 호출해 기존 clear 동작을 유지한다.
+    preserveCustomOrigin?: boolean;
+  },
+): Promise<void> {
   const preserveCustomOrigin = options?.preserveCustomOrigin ?? false;
   // #2089 — TRIP_BOUND_CLEANUPS가 ACTIVE_TRIP_KEY/TRIP_STARTED_AT_KEY를 제거하기 전에
   // effective tripToken을 먼저 읽어야 safetyNetScheduler의 tripToken-scoped cancel이
@@ -361,7 +368,7 @@ export function runTripBoundCleanups(options?: {
           () => cancelAllSafetyNetAlarms(tripToken),
           () => cancelAllPrescheduledAlarms(tripToken),
           ...(backendTripToken
-            ? [() => clearActiveTrip(backendTripToken).then(noop)]
+            ? [() => clearActiveTrip(backendTripToken, reason).then(noop)]
             : []),
         ]
       : baseCleanups;

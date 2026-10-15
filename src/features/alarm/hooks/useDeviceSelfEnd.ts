@@ -217,7 +217,9 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
           reason: 'arrived',
         });
         await triggerTripEndRecall();
-        await runTripBoundCleanups();
+        // #2302 — alarmLog reason(위 appendAlarmLog)과 lock release 사유(아래 releaseLock)에
+        // 쓰는 같은 매핑을 backend end_reason에도 그대로 재사용한다 — 새 어휘 금지.
+        await runTripBoundCleanups(REASON_TO_ALARM_LOG_REASON[reason]);
         await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
         useDestinationStore.setState({
           destination: null,

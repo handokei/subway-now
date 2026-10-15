@@ -192,6 +192,16 @@ export type TripEventKind =
   // **정책 변경이 아니라 계측이다** — 행의 값은 그대로 두고 "이 행을 믿을 수 있는가"를 밖에서
   // 판정 가능하게 만든다. 정상 트립에는 적재하지 않는다(노이즈 0).
   | 'metrics-window-truncated'
+  // #3003 — `POST /trips` 결과. 이 라우트의 exit 분기 6개 중 D1에 남는 것이 `cooldown-bypass`
+  // 1개뿐이어서, 2026-10-15 16:25~16:43 트립의 **400 × 30**을 D1으로 알 수 없었다(그 결과
+  // `/live-activity/register` 404 × 12 → LA 영구 부재). 수치는 device 덤프에서만 나왔고
+  // `console.log`는 `wrangler tail` 실시간 전용이라 사후 조회가 불가하다.
+  //
+  // `la-token-register`(#2977)와 같은 1차 분기 구조다 — `stored`가 0건이면 **등록 경로 자체가
+  // 끊긴 것**이고, 있으면 원인은 그 뒤(LA 토큰/cron 발사)로 좁혀진다.
+  //
+  // 정책 변경이 아니라 계측이다 — 응답 코드/body/저장 동작은 그대로다.
+  | 'trip-register'
   // #3007 — "정지 15분 = 종료 제안 시점"이 성립한 tick 1건. **계측 전용**(동작 변경 없음) —
   // LA 종료 제안(alert/버튼)은 PR-B에서 붙는다. 이 kind를 먼저 깔아 **실데이터로 발동 빈도를
   // 확인**한 뒤 UI를 만든다(inert wire 방지).
@@ -206,6 +216,20 @@ export type TripEventKind =
 
 /** #2977 — `POST /live-activity/register` 결과. */
 export type LaTokenRegisterOutcome = 'stored' | 'trip_not_found' | 'invalid_payload';
+
+/**
+ * #3003 — `POST /trips`의 결과 분기.
+ *
+ * `invalid_json`은 **포함하지 않는다** — body 자체가 파싱 불가라 `token_hash`를 만들 hash
+ * 대상이 없다(#2977이 `invalid_payload`를 같은 이유로 제외한 선례). 따라서 이 kind의 이벤트가
+ * 0건인 것은 "요청이 없었다"와 "JSON이 깨진 요청만 있었다"를 **구별하지 못한다** — 후자가
+ * 의심되면 `wrangler tail`을 실시간으로 봐야 한다.
+ */
+export type TripRegisterOutcome =
+  | 'stored'
+  | 'invalid-trip'
+  | 'rate-limited'
+  | 'recently-ended-rejected';
 
 /**
  * ADR-037 D2 (#2533) — intermediate waypoint 라우팅 분기 진단 표식.

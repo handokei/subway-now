@@ -20,6 +20,11 @@ import {
   verifyBoardingLockPersisted,
 } from '../index';
 import { waypointSignatureKey } from '../trips';
+// #3003 — rate-limited 분기 재현용(윈도우 카운터를 KV에 직접 심는다).
+import {
+  TRIP_REGISTER_MAX_PER_WINDOW,
+  TRIP_REGISTER_WINDOW_MS,
+} from '../tripRegisterRateLimit';
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import { TripDO } from '../tripDO';
 import { TRIP_DO_FLAG_KV_KEY } from '../tripDoFlag';
@@ -5928,6 +5933,10 @@ describe('POST /boarding-lock/sync (#901)', () => {
       });
       env.DB = { prepare } as unknown as Env['DB'];
       await post('/trips', tripWithLock(), env);
+      // #3003 — setup의 `POST /trips`도 이제 trip_events(kind='trip-register')를 1건 적재한다.
+      // 이 테스트의 대상은 **sync 단계**의 적재이므로 setup 분을 세지 않도록 카운터를 비운다
+      // (아래 주석의 3건/2건 열거는 sync 단계 기준이다).
+      prepare.mockClear();
 
       const ctx = makeExecutionContext();
       // waypoints[0]='강남' 일치 → advance 발생. #2352 — hydrate-issued 관측(autoLockCandidate
@@ -7106,6 +7115,142 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
 // silent push `trip-ended:eta-missing` 후 device 자동 재시도/재하이드레이션이 backend에 도달하면
 // 기존 코드는 `getTrip()`만 확인(=null, 이미 삭제됨)하고 무조건 새 trip을 만들어 → backend
 // auto-revive → dedup state reset → false fire 회귀. retention(1h) 안에서는 race로 간주하고 reject.
+// ──────────────────────────────────────────────────────────────────────────────
+// #3003 — `POST /trips`의 exit 분기 6개 중 D1에 남는 것이 `cooldown-bypass` 1개뿐이었다.
+// 2026-10-15 실측: 16:25~16:43 트립에서 이 라우트가 400 × 30이었고 그 결과 backend에 trip이
+// 없어 `/live-activity/register` 404 × 12 → LA 영구 부재였는데, **그 400을 D1으로는 알 수
+// 없었다**(같은 24h `trip_events`에 register 관련 kind 0건 — 수치는 device 덤프에서만 나왔다).
+// `console.log`는 `wrangler tail` 실시간 전용이라 사후 조회가 불가하다.
+//
+// 계측만 추가한다 — 응답 코드/body/저장 동작은 바꾸지 않는다(#2977의 LA 토큰 라우트와 동형).
+describe('POST /trips — D1 계측 (#3003)', () => {
+  function captureEvents(): { db: Env['DB']; inserts: unknown[][] } {
+    const inserts: unknown[][] = [];
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const prepare = vi.fn().mockImplementation((sql: string) => ({
+      bind: (...args: unknown[]) => {
+        if (sql.includes('trip_events')) inserts.push(args);
+        return { run };
+      },
+    }));
+    return { db: { prepare } as unknown as Env['DB'], inserts };
+  }
+
+  function registerEvents(inserts: unknown[][]): Array<Record<string, unknown>> {
+    return inserts
+      .filter((a) => a[2] === 'trip-register')
+      .map((a) => JSON.parse(a[5] as string) as Record<string, unknown>);
+  }
+
+  it('[red] 등록 성공 시 trip-register{outcome:"stored"}를 적재한다', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(200);
+
+    // outcome별로 분리 assert — 합산 카운트만 보면 한 분기가 죽어도 다른 분기가 수를 채운다.
+    const stored = registerEvents(inserts).filter((m) => m.outcome === 'stored');
+    expect(stored).toHaveLength(1);
+    // 요청 시작 시점에 trip이 없었다 = 첫 등록. `isNew`라 부르지 않는 이유는 구현 주석 참고.
+    expect(stored[0]).toMatchObject({ existedAtRequestStart: false });
+  });
+
+  it('[red] 같은 token 재등록 시 existedAtRequestStart=true로 구별된다', async () => {
+    const env = makeKvEnv();
+    await post('/trips', base(), env);
+    const { db, inserts } = captureEvents();
+    env.DB = db;
+
+    await post('/trips', base(), env);
+
+    const stored = registerEvents(inserts).filter((m) => m.outcome === 'stored');
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ existedAtRequestStart: true });
+  });
+
+  // 오늘(2026-10-15) 30회가 바로 이 분기다 — TTL 넘긴 `expiresAt`으로 `validateTrip`이 거부.
+  // #2998이 거부 사유를 **응답 body**에 실었지만 D1에는 넣지 않아 사후 조회가 불가했다.
+  it('[red] invalid_trip 거부 시 trip-register{outcome:"invalid-trip", reason}를 적재한다', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+
+    const res = await post('/trips', { ...base(), expiresAt: Date.now() - 1000 }, env);
+    expect(res.status).toBe(400);
+
+    const rejected = registerEvents(inserts).filter((m) => m.outcome === 'invalid-trip');
+    expect(rejected).toHaveLength(1);
+    // 사유까지 적재해야 `invalid-expiresAt`과 `missing-token`을 D1에서 구별할 수 있다.
+    expect(rejected[0].reason).toBe('invalid-expiresAt');
+  });
+
+  it('[red] trip-recently-ended 거부 시 trip-register{outcome:"recently-ended-rejected", endReason}를 적재한다', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+    (env.TRIPS as unknown as InMemoryKV).store.set('tripStatus:tok', {
+      value: JSON.stringify({ endedAt: Date.now() - 5_000, endReason: 'eta-missing' }),
+    });
+
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(400);
+
+    const rejected = registerEvents(inserts).filter(
+      (m) => m.outcome === 'recently-ended-rejected',
+    );
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({ endReason: 'eta-missing' });
+  });
+
+  // 거부 케이스 — body는 파싱됐지만 `token`이 string이 아니면 hash 대상이 없다. 적재를
+  // 건너뛰되 응답은 그대로 400이어야 한다(계측이 정책을 바꾸지 않는다).
+  it('[거부] invalid_trip이지만 token이 string이 아니면 적재하지 않는다', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+
+    const res = await post('/trips', { ...base(), token: 123 }, env);
+    expect(res.status).toBe(400);
+    expect(registerEvents(inserts)).toHaveLength(0);
+  });
+
+  // #1575 rate limit은 최초 create(`existingForRateLimit === null`)에만 적용되므로, 윈도우
+  // 카운터를 KV에 직접 심어 429 분기를 탄다(11회 POST는 첫 성공이 trip을 만들어 이후가
+  // update로 판정되기 때문에 재현되지 않는다).
+  it('[red] rate_limited 거부 시 trip-register{outcome:"rate-limited"}를 적재한다', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+    const windowStart =
+      Math.floor(Date.now() / TRIP_REGISTER_WINDOW_MS) * TRIP_REGISTER_WINDOW_MS;
+    (env.TRIPS as unknown as InMemoryKV).store.set(
+      `trip-rate:${'tok'.slice(0, 16)}:${windowStart}`,
+      { value: String(TRIP_REGISTER_MAX_PER_WINDOW) },
+    );
+
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(429);
+
+    const limited = registerEvents(inserts).filter((m) => m.outcome === 'rate-limited');
+    expect(limited).toHaveLength(1);
+    expect(limited[0]).toMatchObject({ count: TRIP_REGISTER_MAX_PER_WINDOW });
+  });
+
+  // 거부 케이스 — body 자체가 파싱 불가라 hash할 token이 없다. #2977이 `invalid_payload`를
+  // 같은 이유로 제외한 선례. "0건"을 "안 일어났다"로 오독하지 않도록 이 사실을 고정한다.
+  it('[거부] invalid_json은 D1에 적재하지 않는다 (해시할 토큰이 없다)', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+
+    const res = await post('/trips', '{not json', env);
+    expect(res.status).toBe(400);
+    expect(registerEvents(inserts)).toHaveLength(0);
+  });
+});
+
 describe('POST /trips — #1425 trip-recently-ended reject', () => {
   function seedTripEnded(
     env: Env,

@@ -167,7 +167,9 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       // 기존 status=ended 분기와 동일한 순서 — recall이 cleanup 이전이어야 storage 입력 유지.
       await triggerTripEndRecall();
       const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-      await runTripBoundCleanups();
+      // #2302 — Signal 4(backend 30분 무음) self-end. 이 경로도 alarmLog에 흔적을 남기지
+      // 않으므로(logger.info만) backend end_reason이 유일한 사후 식별 수단이다.
+      await runTripBoundCleanups('launch-backend-silent-timeout');
       await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
       // #2419 — in-memory destination/customOrigin/tripOrigin reset. runTripBoundCleanups는
       // storage만 정리하므로 이게 없으면 stale destination이 메모리에 남아 lockless trip이

@@ -80,7 +80,9 @@ const mockRunTripBoundCleanups = jest.fn().mockResolvedValue(undefined);
 // #1370 L4 — trip-ended 수신 즉시 OS queue cancel.
 const mockCancelTripBoundOsQueue = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../store/tripBoundCleanups', () => ({
-  runTripBoundCleanups: () => mockRunTripBoundCleanups(),
+  // #2302 — 인자 forwarding 필수. 기존 mock은 reason을 버려서 '경로별 사유가 backend로
+  // 간다'는 claim을 테스트가 보증하지 못했다(PR 리뷰 P2-2).
+  runTripBoundCleanups: (...args: unknown[]) => mockRunTripBoundCleanups(...args),
   cancelTripBoundOsQueue: () => mockCancelTripBoundOsQueue(),
 }));
 
@@ -2705,6 +2707,9 @@ describe('silentPushTask', () => {
       it('trip-ended 수신 → runTripBoundCleanups 호출 + 표준 발사 경로 미진입', async () => {
         await handleSilentPush(tripEndedPayload({ sentAt: 1_780_000_000_000 }));
         expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        // #2302 — backend end_reason이 이 경로로 고정돼야 D1에서 "backend가 통지한 종료"와
+        // device 자체 판정(self-end/backstop)을 구별할 수 있다.
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('silent-push-trip-ended');
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();

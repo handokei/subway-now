@@ -340,6 +340,11 @@ describe('useDeviceSelfEnd', () => {
       // 기록돼야 한다. 이 값이 'user'로 찍히면 자동 해제가 사용자 조작으로 오기록되는
       // 회귀(#2715)가 재발한 것이다.
       expect(mockReleaseLock).toHaveBeenCalledWith('trip-device-self-end-fusion-destination');
+      // #2302 — backend end_reason도 같은 매핑을 재사용해야 한다(새 어휘 금지). 이 값이 다르면
+      // 같은 사건이 D1과 lock lifecycle에서 다른 이름으로 기록된다.
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith(
+        'trip-device-self-end-fusion-destination',
+      );
       expect(mockAppendAlarmLog).toHaveBeenCalledWith(
         expect.objectContaining({
           source: 'lifecycle-backstop',

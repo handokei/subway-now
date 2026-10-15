@@ -124,7 +124,9 @@ async function runRehydrationCycle(trigger: 'mount' | 'active'): Promise<void> {
       // 중복 호출 안전. 메모리 store도 setState로 즉시 reset해 stale state가 노출되지 않게 한다.
       // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
       const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-      await runTripBoundCleanups();
+      // #2302 — 이 경로는 alarmLog에 흔적을 남기지 않으므로 backend end_reason이 유일한
+      // 사후 식별 수단이다. 아래 breadcrumb/releaseLock과 같은 사유 문자열을 쓴다.
+      await runTripBoundCleanups('sentinel-rehydration');
       // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
       await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
       useDestinationStore.setState({
@@ -239,7 +241,8 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
     logger.info(`trigger=${trigger} force-end elapsedMs=${elapsedMs} → cleanup`);
     // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
     const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-    await runTripBoundCleanups();
+    // #2302 — backend end_reason도 breadcrumb/releaseLock과 동일 사유로 기록한다.
+    await runTripBoundCleanups('lifecycle-9h-force-end');
     // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
     await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
     useDestinationStore.setState({
@@ -285,7 +288,9 @@ async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<
     logger.info(`trigger=${trigger} pause auto-end (pausedAt=${pausedAt}) → cleanup`);
     // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
     const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-    await runTripBoundCleanups();
+    // #2302 — 2026-10-15 실측에서 이 경로가 "생성 6초 후 DELETE"의 용의자였는데 모든 경로가
+    // 'user-delete'로 기록돼 배제도 확정도 불가했다. 경로 고유 사유로 기록한다.
+    await runTripBoundCleanups('navigation-pause-auto-end');
     // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
     await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
     useDestinationStore.setState({
