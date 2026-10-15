@@ -8,6 +8,9 @@ import {
   hasArvlcdTrainProgress,
   maxDisplacementMeters,
   updateSsotMotion,
+  END_PROMPT_STATIONARY_MS,
+  hasBeenStationaryFor,
+  isEndPromptDue,
 } from '../motionState';
 import {
   DEVICE_SYNC_STALE_THRESHOLD_MS,
@@ -548,4 +551,85 @@ describe('updateSsotMotion — write throttle (KV quota #2439-ish)', () => {
       expect(result!.motionState).toBe('stationary');
     },
   );
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// #3007 PR-A — 정지 15분 "종료 제안 시점" 판정.
+//
+// 사용자 확정 조건(2026-10-16): **트립 활성 + 이동 없음 15분**(`pausedAt` 무관). 기존 15분
+// backstop은 storage `pausedAt`을 읽어 "일시정지 버튼 탭" 이후에만 걸렸고, 10/15 두 사례
+// (14:04 좀비 2시간 → KV 쿼터 60~72% 소모 후 backend 사망 / 23:28 역만 탭하고 정지)가
+// **모두 pause를 누르지 않은 상태**여서 전부 미커버였다.
+//
+// 판정은 기기 모션 플래그가 아니라 **GPS 변위**로 한다 — #2763이
+// *"CMMotionActivity가 승차 중에도 간헐적으로 'stationary'를 보내는 실측 패턴"*을 이유로
+// 그 신호를 이미 완화했다. `motionEvidence[].signal`에 좌표가 들어 있어 재료는 충분하다.
+//
+// **상태 저장 0**: 마커를 SSoT에 쓰면 KV write가 생겨 쿼터 문제를 쿼터로 고치는 꼴이 된다.
+// 대신 `하한(D)은 만족 && 하한(D+cron 1tick)은 불만족`으로 "방금 넘겼다"를 무상태로 판정한다.
+describe('#3007 — hasBeenStationaryFor / isEndPromptDue', () => {
+  const NOW = 10_000_000;
+  const D = END_PROMPT_STATIONARY_MS;
+
+  /** 같은 좌표에 `count`개 샘플을 `spacing` 간격으로 깐다(최신이 `newestTs`). */
+  function stationarySamples(
+    count: number,
+    newestTs: number,
+    spacing = SSOT_MOTION_WRITE_MIN_INTERVAL_MS,
+  ): MotionEvidence[] {
+    const out: MotionEvidence[] = [];
+    for (let i = count - 1; i >= 0; i--) {
+      out.push(gpsEvidence(37.5, 127.0, newestTs - i * spacing));
+    }
+    return out;
+  }
+
+  it('[red] 15분 내내 같은 좌표 + 샘플 충분 → hasBeenStationaryFor(15분) = true', () => {
+    // 윈도우를 실제로 덮도록 가장 오래된 샘플을 15분 전에 둔다.
+    const samples = stationarySamples(40, NOW, D / 39);
+    const ssot = makeSsot({ motionEvidence: samples });
+    expect(hasBeenStationaryFor(ssot, NOW, D)).toBe(true);
+  });
+
+  it('[red] 샘플이 MOTION_MIN_SAMPLES 미만이면 판정 불가 → false (fail-safe)', () => {
+    const samples = stationarySamples(MOTION_MIN_SAMPLES - 1, NOW, D / 8);
+    const ssot = makeSsot({ motionEvidence: samples });
+    expect(hasBeenStationaryFor(ssot, NOW, D)).toBe(false);
+  });
+
+  it('[red] evidence가 윈도우를 못 덮으면(최신 5분치만) → false (fail-safe)', () => {
+    // 샘플 수는 충분하지만 가장 오래된 것이 5분 전 — 15분을 보장하지 못한다.
+    const samples = stationarySamples(20, NOW, 15_000); // 20 × 15s = 5분
+    const ssot = makeSsot({ motionEvidence: samples });
+    expect(hasBeenStationaryFor(ssot, NOW, D)).toBe(false);
+  });
+
+  it('[red] 윈도우 내 변위가 임계 이상이면 → false', () => {
+    const samples = stationarySamples(40, NOW, D / 39);
+    // 한 샘플만 50m 가량 떨어뜨린다(약 9e-6도 ≈ 1m).
+    samples[20] = gpsEvidence(37.5 + 50 * 9e-6, 127.0, samples[20].ts);
+    const ssot = makeSsot({ motionEvidence: samples });
+    expect(hasBeenStationaryFor(ssot, NOW, D)).toBe(false);
+  });
+
+  it('[red] 정지 15분을 방금 넘긴 tick만 due = true', () => {
+    // 15분 하한은 덮지만 (15분 + 1 cron tick) 하한은 못 덮는 구간.
+    const samples = stationarySamples(40, NOW, D / 39);
+    const ssot = makeSsot({ motionEvidence: samples });
+    expect(isEndPromptDue(ssot, NOW)).toBe(true);
+  });
+
+  it('[red] 정지가 그보다 오래 지속되면 due = false (이미 지난 시점 — 중복 제안 금지)', () => {
+    // 20분치를 덮는 샘플 → 15분·16분 하한 모두 만족 → due 아님.
+    const samples = stationarySamples(48, NOW, (D + 5 * 60_000) / 47);
+    const ssot = makeSsot({ motionEvidence: samples });
+    expect(hasBeenStationaryFor(ssot, NOW, D)).toBe(true);
+    expect(isEndPromptDue(ssot, NOW)).toBe(false);
+  });
+
+  it('[red] 15분 미만 정지는 due = false', () => {
+    const samples = stationarySamples(40, NOW, (D / 2) / 39);
+    const ssot = makeSsot({ motionEvidence: samples });
+    expect(isEndPromptDue(ssot, NOW)).toBe(false);
+  });
 });

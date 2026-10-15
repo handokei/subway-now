@@ -201,7 +201,18 @@ export type TripEventKind =
   // 끊긴 것**이고, 있으면 원인은 그 뒤(LA 토큰/cron 발사)로 좁혀진다.
   //
   // 정책 변경이 아니라 계측이다 — 응답 코드/body/저장 동작은 그대로다.
-  | 'trip-register';
+  | 'trip-register'
+  // #3007 — "정지 15분 = 종료 제안 시점"이 성립한 tick 1건. **계측 전용**(동작 변경 없음) —
+  // LA 종료 제안(alert/버튼)은 PR-B에서 붙는다. 이 kind를 먼저 깔아 **실데이터로 발동 빈도를
+  // 확인**한 뒤 UI를 만든다(inert wire 방지).
+  //
+  // 근거: 2026-10-15 14:04 트립이 `trip-end {reason:"expired"}`로 2시간 좀비로 살며 KV write
+  // 쿼터의 60~72%를 먹었고 21:17부터 backend가 500으로 사망했다(#3006). 15분 종료 제안이
+  // 있었다면 그날 소비가 ~27%였다.
+  //
+  // 중복 적재 없음 — `isEndPromptDue`가 "하한 D 만족 && 하한 D+1tick 불만족"으로 due tick
+  // 하나만 true가 되게 무상태 판정한다(마커를 KV에 쓰지 않기 위한 설계).
+  | 'end-prompt-due';
 
 /** #2977 — `POST /live-activity/register` 결과. */
 export type LaTokenRegisterOutcome = 'stored' | 'trip_not_found' | 'invalid_payload';

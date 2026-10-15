@@ -39,6 +39,8 @@ import {
   type TripPositionSSoT,
 } from './tripPositionSsot';
 import { haversineKm } from './positionSeries';
+// #3007 — due-tick 마진으로 cron 명목 주기를 재사용한다(새 상수 금지).
+import { CRON_INTERVAL_MS } from './cronConstants';
 import type { PositionPoint } from './types';
 
 /** GPS displacement 평가 윈도우 (ms). 5분. */
@@ -62,6 +64,58 @@ export const MOTION_MOVING_DISPLACEMENT_M = 50;
  * 20% 여유. token의 첫 evidence(cold start)는 항상 write.
  */
 export const SSOT_MOTION_WRITE_MIN_INTERVAL_MS = 25_000;
+
+/**
+ * #3007 — "종료할까요?" 제안까지의 정지 지속 시간. device `PAUSE_AUTO_END_MS`
+ * (`src/shared/constants/realtime.ts`)와 **같은 값의 backend 미러**다 — backend는 device 상수를
+ * import할 수 없다. 새 임계가 아니므로 **한쪽을 바꾸면 반드시 다른 쪽도 바꿔야 한다.**
+ */
+export const END_PROMPT_STATIONARY_MS = 15 * 60_000;
+
+/**
+ * #3007 — `durationMs` 내내 "이동 없음"이었는가.
+ *
+ * **왜 기기 모션 플래그를 쓰지 않는가**: `signal.motion`(CMMotionActivity)은 승차 중에도
+ * 간헐적으로 `'stationary'`를 보낸다 — #2763이 그 실측 패턴 때문에 이 신호의 권위를 이미
+ * 낮췄다(`computeMotionState` 2번 분기). 그래서 **GPS 변위**로 판정하고, 임계·샘플 수는
+ * 기존 상수(`MOTION_STATIONARY_DISPLACEMENT_M` / `MOTION_MIN_SAMPLES`)를 그대로 재사용한다.
+ *
+ * **fail-safe로 false를 반환하는 두 경우** — 잘못된 종료 제안보다 침묵이 낫다:
+ *  1. 샘플이 `MOTION_MIN_SAMPLES` 미만 (판정 근거 부족)
+ *  2. evidence가 윈도우를 **실제로 덮지 못함** — 가장 오래된 샘플이 `now - durationMs`보다
+ *     최근이면 그 앞 구간을 모른다. ring cap(50) × push throttle(25s) ≈ 20.8분이 상한이므로
+ *     15분 판정은 가능하지만 여유가 크지 않다. tolerance는 push throttle 1주기.
+ *
+ * 상태를 저장하지 않는다(KV write 0) — #3006 쿼터 문제를 쿼터로 고치지 않기 위한 제약.
+ */
+export function hasBeenStationaryFor(
+  ssot: TripPositionSSoT,
+  now: number,
+  durationMs: number,
+): boolean {
+  const windowStart = now - durationMs;
+  const slice = ssot.motionEvidence.filter(
+    (e) => e.source === 'device-position' && e.ts >= windowStart && e.ts <= now,
+  );
+  if (slice.length < MOTION_MIN_SAMPLES) return false;
+  const oldestTs = slice.reduce((min, e) => (e.ts < min ? e.ts : min), slice[0].ts);
+  // 윈도우 커버리지 — 가장 오래된 샘플이 윈도우 시작 근방까지 닿아야 한다.
+  if (oldestTs > windowStart + SSOT_MOTION_WRITE_MIN_INTERVAL_MS) return false;
+  return maxDisplacementMeters(slice) < MOTION_STATIONARY_DISPLACEMENT_M;
+}
+
+/**
+ * #3007 — "정지 15분을 **방금** 넘긴 tick"인가.
+ *
+ * 마커를 저장하지 않고 무상태로 1회성을 보장한다: 하한 `D`는 만족하는데 `D + cron 1 tick`은
+ * 만족하지 않는 구간은 1분 cron 주기(`wrangler.toml` `[triggers] crons`, 매분)에서
+ * **정확히 한 tick**만 존재한다.
+ * 정지가 더 오래 이어지면 둘 다 true가 되어 false를 반환한다 — 중복 제안 금지.
+ */
+export function isEndPromptDue(ssot: TripPositionSSoT, now: number): boolean {
+  if (!hasBeenStationaryFor(ssot, now, END_PROMPT_STATIONARY_MS)) return false;
+  return !hasBeenStationaryFor(ssot, now, END_PROMPT_STATIONARY_MS + CRON_INTERVAL_MS);
+}
 
 /** motionEvidence 중 최신 'device-position' sample의 ts. 없으면 null. */
 function newestDevicePositionEvidenceTs(
