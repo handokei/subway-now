@@ -108,10 +108,31 @@ private struct LockScreenView: View {
         state.boardingPhase == "pre-boarding" || state.boardingPhase == "hop-end"
     }
 
+    /// #2997 S2 — 상태 뷰(주)와 탑승/하차 버튼 행(보조)을 **합성**한다.
+    ///
+    /// 종전에는 `isBoardingPrompt`가 **배타 분기**여서 `boardingPhase`가 오면 긴급/일반 뷰에
+    /// 도달하지 못하고 카드 전체가 질문 화면으로 교체됐다 — 역명은 남지만 **남은 정거장·목적지
+    /// route(`LockScreenRouteView`)·ETA가 사라졌다**. 2026-10-15 사용자 결정: *"상태가 주,
+    /// 버튼은 보조"* — 상태 표시는 **항상** 유지하고 버튼은 아래에 덧붙인다.
+    ///
+    /// #2997 S1이 `boardingPhase`를 heartbeat마다 싣기 시작하면 lock 전 구간 내내 이 분기가
+    /// 참이 되므로, 배타 분기를 그대로 두면 **그 구간 전체에서 상태판이 사라진다.**
+    ///
+    /// 판정은 추가하지 않는다(A+C 원칙) — `isBoardingPrompt`는 `boardingPhase` 유무만 보고
+    /// 그 값은 backend가 결정한다. 이 파일은 **받은 대로 그리기만** 한다.
     var body: some View {
-        if isBoardingPrompt {
-            BoardingPromptView(state: state, phase: state.boardingPhase ?? "")
-        } else if isUrgent {
+        VStack(spacing: 0) {
+            stateView
+            if isBoardingPrompt {
+                BoardingPromptRow(state: state, phase: state.boardingPhase ?? "")
+            }
+        }
+    }
+
+    /// 상태 표시(주) — 기존 긴급/일반 분기를 그대로 유지한다(각자 자체 padding/background 보유).
+    @ViewBuilder
+    private var stateView: some View {
+        if isUrgent {
             // 긴급 모드
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 4)
@@ -220,10 +241,16 @@ private struct LockScreenView: View {
     }
 }
 
-/// #2439 — pre-boarding("탑승하셨나요?") / hop-end("하차하셨나요?") 프롬프트 배너.
+/// #2997 S2 — pre-boarding("탑승하셨나요?") / hop-end("하차하셨나요?") **버튼 행**.
+///
+/// #2439가 만든 `BoardingPromptView`(카드 전체를 차지하는 배너)를 **한 줄로 축소**했다 —
+/// 역명은 상태 뷰(`stateView`)가 이미 그리므로 중복을 제거하고 **질문 + 버튼만** 남긴다.
+/// 상태(남은 정거장·route·ETA)를 잃지 않으면서 버튼을 상시 노출하기 위한 변경(사용자 결정:
+/// "상태가 주, 버튼은 보조").
+///
 /// LA 자체는 16.1+ 유지 — 버튼만 iOS 17+ `@available` 가드로 분리해, 17 미만 기기는 텍스트만 본다.
 @available(iOS 16.1, *)
-private struct BoardingPromptView: View {
+private struct BoardingPromptRow: View {
     let state: SubwayActivityAttributes.ContentState
     let phase: String
 
@@ -243,25 +270,29 @@ private struct BoardingPromptView: View {
     }
 
     var body: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(state.boardingPromptOriginStation ?? state.stationName)
-                    .font(.title3)
-                    .fontWeight(.black)
-                    .foregroundColor(.white)
+        VStack(spacing: 0) {
+            // 상태 뷰와의 경계 — 버튼 행이 "보조"임을 시각적으로 구분한다.
+            Rectangle()
+                .fill(.white.opacity(0.12))
+                .frame(height: 1)
+
+            HStack(spacing: 12) {
+                // #2997 S2 — 역명은 상태 뷰(`stateView`)가 이미 그린다. 여기서는 질문만.
                 Text(NSLocalizedString(questionKey, comment: "Live Activity boarding/disembark confirmation prompt"))
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundColor(.white.opacity(0.85))
-            }
 
-            Spacer()
+                Spacer()
 
-            if #available(iOS 17.0, *) {
-                BoardingPromptButton(state: state, phase: phase, autoLockedTracking: isAutoLockedTracking)
+                if #available(iOS 17.0, *) {
+                    BoardingPromptButton(state: state, phase: phase, autoLockedTracking: isAutoLockedTracking)
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
         }
-        .padding(16)
+        // 상태 뷰의 배경과 이어지도록 동일 계열을 쓴다(상태 뷰가 분기별 배경을 각자 보유).
         .background(Color.black.opacity(0.85))
     }
 }
