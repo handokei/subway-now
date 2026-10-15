@@ -194,7 +194,62 @@ export function buildLiveActivityContentState(
   // multi-hop optional 필드는 존재하는 것만 spread — undefined assignment를 피해 기존 5 필드
   // toEqual 단언과 ActivityKit content-state diff 모두 깔끔.
   const multiHop = computeMultiHopContext(trip);
-  return { ...base, ...multiHop, ...withTrainCode };
+  return { ...base, ...multiHop, ...withTrainCode, ...computeBoardingContext(trip) };
+}
+
+/**
+ * #2997 S1 — LA 탑승 섹션 content를 **프롬프트 발사와 무관하게** 산출한다.
+ *
+ * ## 왜 backend가 소유자인가
+ *
+ * ActivityKit push는 content-state를 **통째로 교체**하고(`sendLiveActivityUpdate` →
+ * APNs `content-state`), backend heartbeat가 `LA_HEARTBEAT_INTERVAL_MS`(90s)마다 돈다.
+ * 그래서 device가 이 필드를 써도 다음 heartbeat에 지워진다 — 실측 `{"sent":13,"failed":0}`/시간.
+ * 그리고 `#2498`이 *"backend push가 유일한 저자"*, 확정 아키텍처가 *"device=탭만"*으로
+ * 이미 소유권을 backend에 두었다. device 훅(`useLiveActivityPreBoardingLifecycle`)은
+ * `#2854`가 "유령 배너" 때문에 이 필드를 **의도적으로 내려놨고**, 그 결정을 **유지**한다
+ * (그걸 지키는 테스트가 현존: `useLiveActivityPreBoardingLifecycle.test.ts:82`·`:95`).
+ *
+ * ## 무음 보장 (구조적 — 설계의 핵심)
+ *
+ * `boardingAlertTitle`/`boardingAlertBody`를 **채우지 않는다.**
+ * `resolveAlertConfiguration`(`modules/live-activity/ios/LiveActivityManager.swift`)이 그 두
+ * 필드 부재 시 `nil`을 반환해 **배너·소리 없이 content만 교체**된다. 배너는 임박 시점
+ * (`fireBoardingPromptForAnchor`)에서만 그 필드를 채운다 — `#2854`가 막은 "트립 시작부터 무조건
+ * 탑승하셨나요 배너" 회귀를 재발시키지 않으면서 **버튼은 상시 노출**한다.
+ *
+ * ## 이 필드 하나가 사슬을 연다
+ *
+ * 위젯은 `boardingPhase == "pre-boarding"`만으로 탑승/미탑승 버튼을 렌더하고
+ * (`targets/subway-widget/SubwayLiveActivityWidget.swift`), 버튼 탭은 위젯 익스텐션이
+ * backend `POST /trips/:token/boarding-confirm`으로 **직접** 보낸다(`BoardingIntents.swift`,
+ * `openAppWhenRun: false` — 앱이 완전히 정지해도 동작, #2527/#2528). 즉 프롬프트 OR 게이트
+ * (`promptOptIn`/`infoModeEnabled`)를 **완화하지 않고도** 사용자가 LA에서 탑승을 확정할 수 있다
+ * — 그 게이트를 건드리면 일시정지 억제 수단(`promptOptIn=false` forward)이 사라지므로 금지다.
+ *
+ * ## 거부 조건
+ *
+ * - **anchor 없음** → 미설정. 위젯이 정상 추적 뷰(역/남은정거장/route)를 그대로 그린다.
+ * - **lock 활성** → 질문 phase 금지. 이미 열차를 아는데 다시 묻는 `#2939`(10/9 실측) 재발 방지.
+ *   lock 상태의 "추적중" 표시는 device auto-lock 경로(#2528)가 담당한다.
+ */
+function computeBoardingContext(trip: Trip): LiveActivityContentState {
+  // lock이 활성이면 질문하지 않는다(#2939).
+  if (trip.boardingLock !== undefined) return {};
+  // anchor = "어느 역에서 탑승을 묻는가". leg-1은 promptDisplay, 환승 후는 currentLegAnchor.
+  const anchor = trip.currentLegAnchor
+    ? { station: trip.currentLegAnchor.boardingStation, line: trip.currentLegAnchor.line }
+    : trip.promptDisplay
+      ? { station: trip.promptDisplay.originStation, line: trip.promptDisplay.line }
+      : undefined;
+  if (anchor === undefined) return {};
+  return {
+    boardingPhase: 'pre-boarding',
+    boardingPromptTripToken: trip.token,
+    boardingPromptOriginStation: anchor.station,
+    boardingPromptLine: anchor.line,
+    // boardingAlertTitle/Body는 의도적으로 생략 — 위 "무음 보장" 참고.
+  };
 }
 
 /**
