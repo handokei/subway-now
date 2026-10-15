@@ -75,6 +75,12 @@ import {
   type AdvanceEvidence,
   type EvidenceEnvironment,
 } from './advanceTripPosition';
+// #3007 — 정지 15분 due 판정(무상태, KV write 0). 상세는 motionState.ts 헤더.
+import {
+  END_PROMPT_STATIONARY_MS,
+  isEndPromptDue,
+  maxDisplacementMeters,
+} from './motionState';
 import {
   deleteSsot,
   DEVICE_SYNC_STALE_THRESHOLD_MS,
@@ -1732,6 +1738,31 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     const stationarySsot = await readSsot(env.TRIPS, trip.token, {
       cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
     });
+    // #3007 PR-A — "정지 15분 = 종료 제안 시점" 판정 + D1 적재. **동작 변경 없음**(계측만).
+    //
+    // 배치 위치가 중요하다: 바로 아래 stationary-skip은 `continue`로 루프를 빠져나가므로
+    // 이 블록이 그 뒤에 있으면 **정지 트립에서 판정 자체가 실행되지 않는다** — 하필 우리가
+    // 잡으려는 상태가 그 상태다. 그래서 skip 판정 **앞**에 둔다.
+    //
+    // 같은 `stationarySsot` read를 재사용하므로 **추가 KV read 0**이고, 판정은 무상태라
+    // **KV write 0**이다(#3006 쿼터 문제를 쿼터로 고치지 않기 위한 제약 — `isEndPromptDue` 주석).
+    if (stationarySsot !== null && isEndPromptDue(stationarySsot, now)) {
+      const dueSamples = stationarySsot.motionEvidence.filter(
+        (e) => e.source === 'device-position' && e.ts >= now - END_PROMPT_STATIONARY_MS,
+      );
+      await recordTripEvent(env.DB, {
+        tokenHash: hashTripToken(trip.token),
+        kind: 'end-prompt-due',
+        station: waypoint.stationName,
+        line: waypoint.line,
+        meta: {
+          windowMs: END_PROMPT_STATIONARY_MS,
+          sampleCount: dueSamples.length,
+          displacementM: Math.round(maxDisplacementMeters(dueSamples)),
+          motionState: stationarySsot.motionState,
+        },
+      });
+    }
     if (
       stationarySsot !== null &&
       shouldSkipStationary(
