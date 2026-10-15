@@ -66,6 +66,82 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
 
 const WAYPOINT: Waypoint = { stationName: '강남', line: '2', kind: 'destination' };
 
+/**
+ * #2997 S1 — LA boarding content를 **프롬프트 발사와 무관하게** 상시 산출한다.
+ *
+ * ## 왜 (2026-10-15 실측)
+ *
+ * 사용자: *"탑승했는지에 대한 알림조차 안 오고, LA에도 탑승 관련으로 나온 게 아무것도 없다
+ * (LA 카드 자체는 있다)"*. 덤프 `d50c8992-1015.txt`: `boardingPrompt(all)=0`,
+ * `laPushDelivery=100% (117/117)` — LA는 살아 있는데 탑승 섹션만 비어 있었다.
+ *
+ * 생산자 전수 판정(lock 없음 + promptOptIn 없음 trip):
+ *   - device 평상시 pre-boarding → `boardingPhase` 미세팅(#2854가 "유령 배너" 때문에 의도적으로
+ *     내려놓고 backend에 위임, `useLiveActivityPreBoardingLifecycle.ts:73`)
+ *   - device auto-lock 직후(#2528) → lock 필수라 해당 없음
+ *   - backend `fireBoardingPromptForAnchor`(`scheduled.ts:7971`) → OR 게이트(`:8043`/`:8454`/`:8761`)에 막힘
+ *   → **세 경로 모두에서 배제돼 LA 탑승 섹션이 구조적으로 빈다.**
+ *
+ * 위젯은 `boardingPhase == "pre-boarding"`만으로 탑승/미탑승 버튼을 렌더한다
+ * (`SubwayLiveActivityWidget.swift:289`). 즉 **이 필드를 채우는 것만으로 사용자가 LA에서
+ * 탑승을 확정할 수 있다** — 버튼 탭은 위젯이 backend로 직접 POST하므로(`BoardingIntents.swift:216`,
+ * 앱이 꺼져 있어도 동작) 사슬이 완결된다.
+ *
+ * ## 무음 보장 (구조적)
+ *
+ * `boardingAlertTitle`/`boardingAlertBody`를 **채우지 않는다** → `resolveAlertConfiguration`
+ * (`LiveActivityManager.swift:170`)이 nil을 반환해 **배너/소리 없이** content만 교체된다.
+ * 배너는 임박 시점(프롬프트 발사, `scheduled.ts:7975`)에서만 그 필드를 채운다 — #2854가 막은
+ * "유령 배너" 회귀 재발 방지.
+ */
+describe('#2997 S1 — boarding content 상시 산출 (프롬프트 발사 무관)', () => {
+  const ANCHORED = { originStation: '용마산', line: '7' } as const;
+
+  it('lock 없고 anchor(promptDisplay) 있으면 boardingPhase + 버튼 컨텍스트를 싣는다', () => {
+    const trip = makeTrip({ token: 'tok-s1', promptDisplay: ANCHORED });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingPhase).toBe('pre-boarding');
+    expect(cs.boardingPromptTripToken).toBe('tok-s1');
+    expect(cs.boardingPromptOriginStation).toBe('용마산');
+    expect(cs.boardingPromptLine).toBe('7');
+  });
+
+  it('[무음 보장] alert 필드는 싣지 않는다 — 배너/소리 없이 content만 교체', () => {
+    const trip = makeTrip({ token: 'tok-s1', promptDisplay: ANCHORED });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingAlertTitle).toBeUndefined();
+    expect(cs.boardingAlertBody).toBeUndefined();
+  });
+
+  it('[거부] anchor가 없으면 boardingPhase를 싣지 않는다 — 정상 추적 뷰 유지', () => {
+    const trip = makeTrip({ token: 'tok-s1' });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingPhase).toBeUndefined();
+    expect(cs.boardingPromptTripToken).toBeUndefined();
+  });
+
+  it('[거부] lock이 활성이면 질문 phase를 싣지 않는다 — lock 후 재질문 방지(#2939 계보)', () => {
+    const trip = makeTrip({
+      token: 'tok-s1',
+      promptDisplay: ANCHORED,
+      boardingLock: {
+        trainCode: '7301',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['용마산', '중곡'],
+        expiresAt: NOW + 3_600_000,
+      },
+    });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingPhase).not.toBe('pre-boarding');
+  });
+});
+
 describe('buildLiveActivityContentState (#613)', () => {
   it('emits widget-aligned schema (stationName/lineName/lineColorHex/stopsRemaining/etaMinutes)', () => {
     const cs = buildLiveActivityContentState(WAYPOINT, 90, 3);
