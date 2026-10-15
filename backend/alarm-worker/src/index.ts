@@ -122,6 +122,7 @@ import {
 } from './sentry';
 import { recordTripEvent,
   type LaTokenRegisterOutcome,
+  type TripRegisterOutcome,
 } from './tripEventLog';
 import {
   recordRecallUpload,
@@ -792,6 +793,34 @@ export async function dualWriteTripDo(env: Env, trip: Trip): Promise<void> {
   }
 }
 
+/**
+ * #3003 — `POST /trips` 결과 1건 적재 helper.
+ *
+ * 이 라우트의 exit 분기 6개 중 D1에 남는 것이 `cooldown-bypass` 1개뿐이어서 2026-10-15의
+ * 400 × 30을 D1으로 판정할 수 없었다(`trip-register` kind 주석 참고). 분기마다 inline으로
+ * `recordTripEvent`를 호출하면 `tokenHash`/`kind` 조합이 drift하므로 한 곳으로 좁힌다.
+ *
+ * `scheduleTripEvent`(waitUntil, ctx 부재 시 fire-and-forget degrade)를 경유한다 — 이 라우트의
+ * 기존 telemetry 관례와 같다(#2283 리뷰 P2-2). **await하지 않는 것이 요구사항이다**: 성공 분기에서
+ * 응답 직전에 await를 넣으면 `resolveBoardingAnchorAtRegister`(waitUntil 스케줄)가 응답 반환보다
+ * 먼저 완료될 수 있어 "register 응답은 지장 없음" 계약이 깨진다(실측: 그 테스트가 red가 됐다).
+ */
+function recordTripRegisterEvent(
+  c: Context<{ Bindings: Env }>,
+  token: string,
+  outcome: TripRegisterOutcome,
+  meta: Record<string, unknown> = {},
+): void {
+  scheduleTripEvent(
+    c,
+    recordTripEvent(c.env.DB, {
+      tokenHash: hashTripToken(token),
+      kind: 'trip-register',
+      meta: { outcome, ...meta },
+    }),
+  );
+}
+
 app.post('/trips', async (c) => {
   let body: unknown;
   try {
@@ -806,7 +835,18 @@ app.post('/trips', async (c) => {
   const incoming = validateTrip(body, (reason) => {
     rejectReason = reason;
   });
-  if (!incoming) return c.json({ error: 'invalid_trip', reason: rejectReason }, 400);
+  if (!incoming) {
+    // #3003 — 오늘(2026-10-15) 이 분기가 30회 났고 D1에 아무 기록이 없어 덤프로만 알 수 있었다.
+    // `incoming`이 null이라 신뢰 가능한 token이 없지만, raw body의 `token`이 string이면 그것으로
+    // hash해 **어느 기기가** 거부당했는지까지 남긴다(값 자체는 저장하지 않는다 — hash만).
+    const rawToken = (body as { token?: unknown } | null)?.token;
+    if (typeof rawToken === 'string' && rawToken.length > 0) {
+      recordTripRegisterEvent(c, rawToken, 'invalid-trip', {
+        reason: rejectReason,
+      });
+    }
+    return c.json({ error: 'invalid_trip', reason: rejectReason }, 400);
+  }
 
   // #1575 (T12, ADR-017 V8 (b)) — per-token rate limit 10 req / 10 min.
   // Device register loop / cold restart 반복 / FG↔BG 빠른 전환 race로 같은 token이 분당
@@ -845,6 +885,11 @@ app.post('/trips', async (c) => {
           retryAfterSeconds: rateLimit.retryAfterSeconds,
         }),
       );
+      // #3003 — 위 console.log는 `wrangler tail` 실시간 전용이라 사후 조회가 불가하다.
+      recordTripRegisterEvent(c, incoming.token, 'rate-limited', {
+        count: rateLimit.count,
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      });
       return c.json(
         { error: 'rate_limited', retryAfterSeconds: rateLimit.retryAfterSeconds },
         429,
@@ -1037,6 +1082,13 @@ app.post('/trips', async (c) => {
             bypassCount,
           }),
         );
+        // #3003 — bypass 쿼터 소진 거부. `cooldown-bypass`(허용분)는 이미 적재되는데 거부분은
+        // console.log만 남아 D1에서 "우회가 몇 번 허용되고 언제부터 막혔나"의 뒷절반이 비었다.
+        recordTripRegisterEvent(c, incoming.token, 'recently-ended-rejected', {
+          endReason: recentlyEnded.endReason,
+          ageMs: Date.now() - recentlyEnded.endedAt,
+          bypassQuotaExhausted: true,
+        });
         return c.json(
           { error: 'trip-recently-ended', reason: recentlyEnded.endReason },
           400,
@@ -1052,6 +1104,12 @@ app.post('/trips', async (c) => {
           ageMs: Date.now() - recentlyEnded.endedAt,
         }),
       );
+      // #3003 — #1425 쿨다운 거부(비-destination 사유). #2912가 "정당 재등록까지 차단"으로
+      // 확정된 분기라 재발 여부를 D1으로 볼 수 있어야 한다.
+      recordTripRegisterEvent(c, incoming.token, 'recently-ended-rejected', {
+        endReason: recentlyEnded.endReason,
+        ageMs: Date.now() - recentlyEnded.endedAt,
+      });
       return c.json(
         { error: 'trip-recently-ended', reason: recentlyEnded.endReason },
         400,
@@ -1358,6 +1416,16 @@ app.post('/trips', async (c) => {
   if (trip.infoModeEnabled === true && trip.boardingLock === undefined) {
     scheduleTripEvent(c, resolveBoardingAnchorAtRegister(c.env, trip));
   }
+
+  // #3003 — 성공 1건 적재. 이 이벤트가 **0건이면 등록 경로 자체가 끊긴 것**이고, 있으면
+  // 원인은 그 뒤(LA 토큰 등록 / cron 발사)로 좁혀진다 — #2977이 LA 토큰에서 쓴 1차 분기 구조.
+  //
+  // `existedAtRequestStart`는 `existingForRateLimit`(위에서 이미 읽어둔 값) 기준이라 추가 KV
+  // read가 없다. **`isNew`라고 부르지 않는 이유**: 그 값은 요청 **시작 시점** 스냅샷이고,
+  // 뒤따르는 per-token 직렬화 구간에서 동시 요청이 trip을 만들면 실제 신규성과 어긋날 수 있다.
+  recordTripRegisterEvent(c, trip.token, 'stored', {
+    existedAtRequestStart: existingForRateLimit !== null,
+  });
 
   // #1897 (RC-5) — KV에 박힌 권위 apnsEnv 를 device로 echo. device 는 이를 stamp 해 다음
   // register 시 build env 대신 송신 → backend self-heal(envCorrected) 발동을 0에 수렴.
