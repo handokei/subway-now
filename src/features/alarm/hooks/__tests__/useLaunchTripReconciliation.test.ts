@@ -353,6 +353,9 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockFetchTripStatus).not.toHaveBeenCalled();
       expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
       expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      // #2302 — 이 경로는 alarmLog에 흔적을 남기지 않으므로(logger.info만) backend end_reason이
+      // 유일한 사후 식별 수단이다. status='ended' 분기('backend-confirmed')와 구별돼야 한다.
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
       expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledTimes(1);
       expect(mockSetSentinel).toHaveBeenCalledWith(now, null);
       expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();

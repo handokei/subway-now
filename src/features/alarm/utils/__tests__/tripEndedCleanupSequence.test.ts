@@ -56,6 +56,8 @@ describe('cleanupBackendConfirmedEndedTrip', () => {
   // destination이 lockless trip을 유령 재시작시키는 회귀(#2419)를 막는다.
   it('in-memory destination/customOrigin/tripOrigin을 null로 reset', async () => {
     await cleanupBackendConfirmedEndedTrip(1_700_000_000_000);
+    // #2302 — 진입점의 reason이 cleanup까지 pass-through돼야 한다(두 진입점 구별).
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
 
     const state = useDestinationStore.getState();
     expect(state.destination).toBeNull();
@@ -140,6 +142,9 @@ describe('cleanupUserInitiatedEndedTrip', () => {
 
     expect(mockTriggerTripEndRecall).toHaveBeenCalled();
     expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+    // #2302 — 사용자 명시 종료는 backend end_reason에서도 backend-confirmed와 구별돼야 한다
+    // (그 구별이 "자동 종료 비율"의 분모를 정확하게 만든다).
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('user-end-trip-button');
     expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledWith('corr-2');
     expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(1_700_000_100_000, 'corr-2');
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();

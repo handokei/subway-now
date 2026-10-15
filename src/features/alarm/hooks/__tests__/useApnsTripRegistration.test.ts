@@ -329,6 +329,10 @@ describe('useApnsTripRegistration', () => {
       useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
     );
     await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
+    // #2302 — 이 안전망이 쏘는 DELETE는 2026-09-17·2026-10-15 두 번 모두 `user-delete`로
+    // 기록돼 사용자 명시 종료와 구분되지 않았다(이 파일 아래 #2673 주석의 "hydrate 3~5초 뒤"
+    // 실측이 같은 지문). 경로 고유 사유를 전달해 D1에서 식별 가능해야 한다.
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('hydration-safety-net');
     // #2857 fix 전: 이 분기는 clearActiveTrip/removeItem을 직접 호출해 LA dismiss(endLiveActivity)를
     // 포함한 runTripBoundCleanups를 전혀 경유하지 않았다 — 좀비 LA 영구 생존의 root.
     expect(mockClear).not.toHaveBeenCalled();

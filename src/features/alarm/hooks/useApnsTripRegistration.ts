@@ -1217,7 +1217,10 @@ export function useApnsTripRegistration({
         // 동일하게 chokepoint를 거치도록 교체 — clearActiveTrip은 runTripBoundCleanups 내부에서
         // 읽어낸 ACTIVE_TRIP_KEY 값으로 동일하게 호출된다.
         if (prevTokenRaw) {
-          await runTripBoundCleanups();
+          // #2302 — 이 안전망이 쏘는 DELETE는 2026-09-17·2026-10-15 두 번 모두 'user-delete'로
+          // 기록돼 사용자 명시 종료와 구분되지 않았다(위 #2673 주석의 "hydrate 3~5초 뒤" 실측이
+          // 같은 지문). 경로 고유 사유로 기록해 다음 발생 시 D1에서 즉시 식별되게 한다.
+          await runTripBoundCleanups('hydration-safety-net');
         }
         // 트립 없음 분기에서도 lock 시그를 reset — 다음 trip이 새로 등록될 때 첫 cycle은
         // 즉시 발사(debounce 미적용) 보장.

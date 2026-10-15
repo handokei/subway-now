@@ -312,7 +312,7 @@ describe('alarmBackend', () => {
 
       it('clearActiveTrip 호출 후엔 같은 페이로드도 다시 등록된다', async () => {
         await registerActiveTrip(SAMPLE_PAYLOAD);
-        await clearActiveTrip('token-hex');
+        await clearActiveTrip('token-hex', 'user-clear');
         (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
         const reregister = await registerActiveTrip(SAMPLE_PAYLOAD);
         expect(reregister).toEqual({ ok: true, status: 200 });
@@ -597,7 +597,7 @@ describe('alarmBackend', () => {
         const p1 = registerActiveTrip(SAMPLE_PAYLOAD);
         // clear 도중에도 in-flight Map은 비워져야 한다.
         (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, status: 200 } as Response);
-        await clearActiveTrip('token-hex');
+        await clearActiveTrip('token-hex', 'user-clear');
         // pending register는 stale로 남지만 새 register 호출은 새 Promise를 만들어야 함.
         (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, status: 200 } as Response);
         const p2 = registerActiveTrip(SAMPLE_PAYLOAD);
@@ -636,14 +636,14 @@ describe('alarmBackend', () => {
 
   describe('clearActiveTrip', () => {
     it('URL 미설정 시 skipped=true', async () => {
-      const result = await clearActiveTrip('token-x');
+      const result = await clearActiveTrip('token-x', 'user-clear');
       expect(result.skipped).toBe(true);
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
     it('token 비어 있으면 ok=false (호출 안 함)', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
-      const result = await clearActiveTrip('');
+      const result = await clearActiveTrip('', 'user-clear');
       expect(result).toEqual({ ok: false });
       expect(global.fetch).not.toHaveBeenCalled();
     });
@@ -651,24 +651,49 @@ describe('alarmBackend', () => {
     it('정상 응답 시 ok=true, URL에 token URL-encode', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
       (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
-      const result = await clearActiveTrip('a/b');
+      const result = await clearActiveTrip('a/b', 'user-clear');
       expect(result.ok).toBe(true);
       const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
-      expect(url).toBe('https://api.test.dev/trips/a%2Fb');
+      // #2302 — reason이 필수 쿼리로 함께 붙는다(아래 전용 케이스가 reason 자체를 고정한다).
+      expect(url).toBe('https://api.test.dev/trips/a%2Fb?reason=user-clear');
       expect(init.method).toBe('DELETE');
     });
 
     it('non-2xx 응답 시 ok=false + status', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
       (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404 } as Response);
-      const result = await clearActiveTrip('t');
+      const result = await clearActiveTrip('t', 'user-clear');
       expect(result).toEqual({ ok: false, status: 404 });
+    });
+
+    // #2302 — 종료 사유를 backend end_reason으로 전달. backend는 `DELETE /trips/:token?reason=`을
+    // 읽어 `trip_metrics.end_reason` / `trip_events.meta.reason`에 적재한다(index.ts:3836,
+    // liveActivity.ts:534·542). reason이 없으면 backend가 'user-delete' 기본값으로 적재해
+    // 9개 device 종료 경로가 모두 같은 라벨이 된다 — 2026-10-15 실측에서 6초 만에 DELETE된
+    // trip의 주체를 특정할 수 없었던 직접 원인.
+    it('#2302: reason을 ?reason= 쿼리로 전달한다', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      await clearActiveTrip('t', 'navigation-pause-auto-end');
+      const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/trips/t?reason=navigation-pause-auto-end');
+      expect(init.method).toBe('DELETE');
+    });
+
+    it('#2302: token과 reason을 각각 URL-encode한다', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      await clearActiveTrip('a/b', 'trip-device-self-end-arc-completion');
+      const [url] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe(
+        'https://api.test.dev/trips/a%2Fb?reason=trip-device-self-end-arc-completion',
+      );
     });
 
     it('fetch throw 시 ok=false (throw 안 함)', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
       (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
-      const result = await clearActiveTrip('t');
+      const result = await clearActiveTrip('t', 'user-clear');
       expect(result).toEqual({ ok: false });
     });
   });
@@ -915,7 +940,7 @@ describe('alarmBackend', () => {
 
     it('clearActiveTrip 호출 시 mirror 제거', async () => {
       await AsyncStorage.setItem(ACTIVE_BOARDING_LINE_KEY, '2');
-      await clearActiveTrip('token-hex');
+      await clearActiveTrip('token-hex', 'user-clear');
       expect(await AsyncStorage.getItem(ACTIVE_BOARDING_LINE_KEY)).toBeNull();
     });
 
