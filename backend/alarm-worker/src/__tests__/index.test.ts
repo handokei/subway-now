@@ -104,6 +104,27 @@ describe('validateTrip', () => {
     expect(validateTrip({ ...base(), expiresAt: Date.now() - 1 })).toBeNull();
   });
 
+  /**
+   * #2998 — 거부 사유가 사후 판정 가능해야 한다. 2026-10-15 실측에서 `/trips`가 30회 연속
+   * 400이었는데 device 덤프에는 status만 찍혀(`RESP POST /trips status=400`) 13개 거부 분기 중
+   * 어느 것인지 알 수 없었다 — `reject()`가 `console.warn` + Sentry breadcrumb만 남기기 때문.
+   * 응답에 사유를 실으면 덤프만으로 즉시 판정된다(D1 행 적재 없이).
+   */
+  it('#2998 validateTrip이 거부 사유를 onReject로 통지한다', () => {
+    const reasons: string[] = [];
+    expect(validateTrip({ ...base(), expiresAt: Date.now() - 1 }, (r) => reasons.push(r))).toBeNull();
+    expect(reasons).toEqual(['invalid-expiresAt']);
+
+    reasons.length = 0;
+    expect(validateTrip({ ...base(), waypoints: [] }, (r) => reasons.push(r))).toBeNull();
+    expect(reasons).toEqual(['empty-waypoints']);
+
+    // 거부 케이스 — 통과하는 payload는 콜백을 부르지 않는다.
+    reasons.length = 0;
+    expect(validateTrip(base(), (r) => reasons.push(r))).not.toBeNull();
+    expect(reasons).toEqual([]);
+  });
+
   it('rejects empty waypoints', () => {
     expect(validateTrip({ ...base(), waypoints: [] })).toBeNull();
   });
@@ -1021,20 +1042,28 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
 
   // POST /trips 거부 케이스 — 동일한 400 + error-code shape를 테이블로 검증(중복 제거).
   // #1324 degenerate(0-stop direct) row는 KV에 trip이 쓰이지 않았는지까지 추가 확인한다.
-  it.each<[string, unknown, string, boolean]>([
-    ['invalid JSON', 'not-json{', 'invalid_json', false],
-    ['invalid trip body', { token: '' }, 'invalid_trip', false],
+  // #2998 — 응답에 `reason`이 함께 실린다(invalid_json은 validateTrip 이전 단계라 reason 없음).
+  // 덤프에 status만 찍혀 30회 연속 400의 사유를 판정할 수 없던 갭을 닫은 것 — 테이블이 사유까지
+  // 고정해 "사유가 빠지는" 회귀를 잡는다.
+  it.each<[string, unknown, string, string | undefined, boolean]>([
+    ['invalid JSON', 'not-json{', 'invalid_json', undefined, false],
+    ['invalid trip body', { token: '' }, 'invalid_trip', 'missing-token', false],
     [
       'degenerate 0-stop direct route (#1324)',
       tripBody({ route: { type: 'direct', line: '2', stops: 0 } }),
       'invalid_trip',
+      'zero-stop-direct-route',
       true,
     ],
-  ])('returns 400 on %s', async (_name, body, expectedError, expectNoTrip) => {
+  ])('returns 400 on %s', async (_name, body, expectedError, expectedReason, expectNoTrip) => {
     const env = makeKvEnv();
     const res = await post('/trips', body, env);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: expectedError });
+    expect(await res.json()).toEqual(
+      expectedReason === undefined
+        ? { error: expectedError }
+        : { error: expectedError, reason: expectedReason },
+    );
     if (expectNoTrip) expect(await env.TRIPS.get('trip:tok-578')).toBeNull();
   });
 });
@@ -7240,7 +7269,8 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
 
       const res = await post('/trips', { ...base(), waypoints: [] }, env);
       expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: 'invalid_trip' });
+      // #2998 — 사유 동봉. "어느 구조 거부인지"가 응답으로 드러난다.
+      expect(await res.json()).toEqual({ error: 'invalid_trip', reason: 'empty-waypoints' });
     });
 
     it('거부 케이스 — endReason이 destination이 아니면(예: eta-missing) 남은 waypoints가 있어도 계속 차단된다 (좁은 예외, 일괄 완화 아님)', async () => {

@@ -800,8 +800,13 @@ app.post('/trips', async (c) => {
     return c.json({ error: 'invalid_json' }, 400);
   }
 
-  const incoming = validateTrip(body);
-  if (!incoming) return c.json({ error: 'invalid_trip' }, 400);
+  // #2998 — 거부 사유를 응답에 동봉한다(위 `validateTrip` onReject doc 참고). device 로그가
+  // status만 싣던 탓에 30회 연속 400의 원인을 덤프만으로 판정할 수 없었다.
+  let rejectReason: string | undefined;
+  const incoming = validateTrip(body, (reason) => {
+    rejectReason = reason;
+  });
+  if (!incoming) return c.json({ error: 'invalid_trip', reason: rejectReason }, 400);
 
   // #1575 (T12, ADR-017 V8 (b)) — per-token rate limit 10 req / 10 min.
   // Device register loop / cold restart 반복 / FG↔BG 빠른 전환 race로 같은 token이 분당
@@ -3943,13 +3948,24 @@ export function resolveProgressWaypoints(
   return sliced.length > 0 ? sliced : baseWaypoints;
 }
 
-export function validateTrip(input: unknown): Trip | null {
+export function validateTrip(
+  input: unknown,
+  // #2998 — 거부 사유 관측 훅. 종전에는 `console.warn` + Sentry breadcrumb만 남아
+  // **사후 판정이 불가능**했다: 2026-10-15 실측에서 `/trips`가 30회 연속 400이었는데 덤프에는
+  // status만 찍혀(사유 없음) 원인 특정에 코드 역추적 + 재현 테스트가 필요했다. 호출부가 이
+  // 콜백으로 사유를 받아 **400 응답 body에 실으면** device 로그/덤프가 그걸 싣는다 — D1 행
+  // 적재(#2073 quota 전례) 없이 같은 사고가 즉시 판정된다.
+  //
+  // optional — 기존 호출자(테스트 다수)는 미전달로 100% 무변경.
+  onReject?: (reason: string) => void,
+): Trip | null {
   // #1731 — reject helper: console.warn + Sentry breadcrumb (DSN 미설정 시 no-op).
   // sanitizedPayload: token은 앞 8자만 노출 (PII mask).
   function reject(reason: string, tokenRaw?: string): null {
     const tokenPrefix = typeof tokenRaw === 'string' ? tokenRaw.slice(0, 8) : undefined;
     console.warn(`validateTrip reject: ${reason}`, JSON.stringify({ reason, tokenPrefix }));
     addValidateRejectBreadcrumb(reason, { tokenPrefix });
+    onReject?.(reason);
     return null;
   }
 
