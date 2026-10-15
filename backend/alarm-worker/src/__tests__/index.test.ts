@@ -5933,6 +5933,10 @@ describe('POST /boarding-lock/sync (#901)', () => {
       });
       env.DB = { prepare } as unknown as Env['DB'];
       await post('/trips', tripWithLock(), env);
+      // #3003 — setup의 `POST /trips`도 이제 trip_events(kind='trip-register')를 1건 적재한다.
+      // 이 테스트의 대상은 **sync 단계**의 적재이므로 setup 분을 세지 않도록 카운터를 비운다
+      // (아래 주석의 3건/2건 열거는 sync 단계 기준이다).
+      prepare.mockClear();
 
       const ctx = makeExecutionContext();
       // waypoints[0]='강남' 일치 → advance 발생. #2352 — hydrate-issued 관측(autoLockCandidate
@@ -7198,6 +7202,18 @@ describe('POST /trips — D1 계측 (#3003)', () => {
     );
     expect(rejected).toHaveLength(1);
     expect(rejected[0]).toMatchObject({ endReason: 'eta-missing' });
+  });
+
+  // 거부 케이스 — body는 파싱됐지만 `token`이 string이 아니면 hash 대상이 없다. 적재를
+  // 건너뛰되 응답은 그대로 400이어야 한다(계측이 정책을 바꾸지 않는다).
+  it('[거부] invalid_trip이지만 token이 string이 아니면 적재하지 않는다', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+
+    const res = await post('/trips', { ...base(), token: 123 }, env);
+    expect(res.status).toBe(400);
+    expect(registerEvents(inserts)).toHaveLength(0);
   });
 
   // #1575 rate limit은 최초 create(`existingForRateLimit === null`)에만 적용되므로, 윈도우
