@@ -665,6 +665,30 @@ describe('alarmBackend', () => {
       expect(result).toEqual({ ok: false, status: 404 });
     });
 
+    // #2302 — 종료 사유를 backend end_reason으로 전달. backend는 `DELETE /trips/:token?reason=`을
+    // 읽어 `trip_metrics.end_reason` / `trip_events.meta.reason`에 적재한다(index.ts:3836,
+    // liveActivity.ts:534·542). reason이 없으면 backend가 'user-delete' 기본값으로 적재해
+    // 9개 device 종료 경로가 모두 같은 라벨이 된다 — 2026-10-15 실측에서 6초 만에 DELETE된
+    // trip의 주체를 특정할 수 없었던 직접 원인.
+    it('#2302: reason을 ?reason= 쿼리로 전달한다', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      await clearActiveTrip('t', 'navigation-pause-auto-end');
+      const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/trips/t?reason=navigation-pause-auto-end');
+      expect(init.method).toBe('DELETE');
+    });
+
+    it('#2302: token과 reason을 각각 URL-encode한다', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      await clearActiveTrip('a/b', 'trip-device-self-end-arc-completion');
+      const [url] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe(
+        'https://api.test.dev/trips/a%2Fb?reason=trip-device-self-end-arc-completion',
+      );
+    });
+
     it('fetch throw 시 ok=false (throw 안 함)', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
       (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));

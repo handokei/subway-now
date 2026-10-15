@@ -613,9 +613,32 @@ describe('tripBoundCleanups', () => {
         .spyOn(alarmBackend, 'clearActiveTrip')
         .mockResolvedValue({ ok: true });
 
-      await runTripBoundCleanups();
+      await runTripBoundCleanups('sentinel-rehydration');
 
-      expect(clearActiveTripSpy).toHaveBeenCalledWith('backend-tok-2129');
+      expect(clearActiveTripSpy).toHaveBeenCalledWith(
+        'backend-tok-2129',
+        'sentinel-rehydration',
+      );
+      clearActiveTripSpy.mockRestore();
+    });
+
+    // #2302 — 호출자가 전달한 종료 사유가 DELETE까지 그대로 흘러야 한다. 이 forwarding이 없으면
+    // backend가 모든 종료를 'user-delete' 기본값으로 적재해(d1TripMetrics.ts:93) 9개 device
+    // 종료 경로가 D1에서 구분 불가가 된다(2026-10-15 실측: 6초 DELETE의 주체 특정 실패).
+    it('#2302: 호출자의 reason이 clearActiveTrip까지 그대로 전달된다 (경로별 구분 가능)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+        Promise.resolve(k === ACTIVE_TRIP_KEY ? 'backend-tok-2302' : null),
+      );
+      const clearActiveTripSpy = jest
+        .spyOn(alarmBackend, 'clearActiveTrip')
+        .mockResolvedValue({ ok: true });
+
+      await runTripBoundCleanups('hydration-safety-net');
+
+      expect(clearActiveTripSpy).toHaveBeenCalledWith(
+        'backend-tok-2302',
+        'hydration-safety-net',
+      );
       clearActiveTripSpy.mockRestore();
     });
 

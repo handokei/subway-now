@@ -232,6 +232,9 @@ describe('useStateRehydration', () => {
     await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
     // #1351 R2: setDestination(null)이 아니라 runTripBoundCleanups 직접 호출.
     expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+    // #2302 — 이 경로는 alarmLog에 흔적을 남기지 않으므로(logger.info만) backend end_reason이
+    // 유일한 사후 식별 수단이다. breadcrumb/releaseLock과 같은 사유 문자열을 전달한다.
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('sentinel-rehydration');
     expect(mockSetDestination).not.toHaveBeenCalled();
     // 메모리 store는 setState로 atomic reset.
     expect(mockSetState).toHaveBeenCalledWith({
@@ -505,6 +508,8 @@ describe('useStateRehydration', () => {
         }),
       );
       expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+      // #2302 — backend end_reason도 같은 사유로 기록돼야 한다(releaseLock/breadcrumb과 동일 문자열).
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('lifecycle-9h-force-end');
       expect(mockSetState).toHaveBeenCalledWith({
         destination: null,
         customOrigin: null,
@@ -569,6 +574,9 @@ describe('useStateRehydration', () => {
         ),
       );
       expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+      // #2302 — 2026-10-15 실측에서 이 경로가 6초 DELETE의 용의자였는데 `user-delete` 라벨
+      // 때문에 배제도 확정도 불가했다. backend end_reason으로 구분 가능해야 한다.
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('navigation-pause-auto-end');
       expect(mockSetState).toHaveBeenCalledWith({
         destination: null,
         customOrigin: null,
