@@ -1231,6 +1231,15 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
               customOrigin: null,
               tripOrigin: null,
             });
+            // #2302 (PR 리뷰 P2-1) — 이 경로는 **같은 trip-end에 라벨이 2개** 남는다:
+            // backend `end_reason`은 `'silent-push-trip-ended'`(위 cleanup 인자, FG/BG 공통),
+            // 여기 breadcrumb/releaseLock은 `'silent-push-fg-immediate'`(FG 즉시 reset 경로).
+            // 의미가 다르다 — 앞은 "왜 끝났나", 뒤는 "어느 경로로 즉시 정리했나" — 그런데
+            // `addDomainBreadcrumb('trip','end',{reason})`의 reason 슬롯을 쓰고 있어 구조적으로는
+            // 종료 사유 자리를 차지한다. **이번 PR에서 통일하지 않는 이유**: 이 문자열은
+            // #2018 γ′의 기존 관측 신호이고 Sentry breadcrumb / BoardingLock Lifecycle 조회가
+            // 이 값에 의존할 수 있어, 종료 사유 배선 PR이 건드릴 범위를 넘는다(surgical).
+            // 통일은 #3005(종료 시퀀스 수렴)에서 사유 체계를 한 곳으로 모을 때 함께 처리한다.
             addDomainBreadcrumb('trip', 'end', {
               reason: 'silent-push-fg-immediate',
             });
