@@ -397,7 +397,22 @@ async function performRegisterFetch(
   hash: string,
 ): Promise<AlarmBackendResult> {
   const createdAt = payload.createdAt ?? Date.now();
-  const expiresAt = payload.expiresAt ?? createdAt + DEFAULT_TRIP_TTL_MS;
+  // #2998 — `expiresAt`은 **전송 시점** 기준이다. `createdAt`에서 파생하면 안 된다.
+  //
+  // `createdAt`은 세션 신원이라(#578/#589 `evaluateSameSession`) 같은 trip이 여러 번
+  // register해도 고정돼야 하고, 실제로 `useApnsTripRegistration.ts:641-648`이 `useRef`로
+  // 고정한다 — 같은 역을 다시 탭하면 `sessionKey`(token:routeSig:destId)가 불변이므로
+  // 콜드 스타트 전까지 갱신되지 않는다. 그 값에 TTL을 더하면 **수명이 세션 신원에 묶여**
+  // TTL(2h)을 넘긴 trip은 전송 `expiresAt`이 영구히 과거가 되고, backend
+  // `validateTrip`(`index.ts` `expiresAt <= Date.now()`)이 모든 재등록을 400으로 거부한다.
+  //
+  // 2026-10-15 실측(덤프 d50c8992-1015.txt): 14:04:17 등록 200 → 16:04 TTL 만료 →
+  // 16:25~16:43 재등록 **400 × 30**, `/live-activity/register` 404 × 12, 프롬프트 0건.
+  // 앱 재시작은 없었다(buffer age 9585s + barometer firstCallbackAt=14:04:07 교차) — 사용자가
+  // "앱을 켰다"고 인식한 것은 포그라운드 복귀였고, 그래서 `useRef`가 유지됐다.
+  //
+  // 두 축은 독립이다: `createdAt` = 세션 신원(고정), `expiresAt` = 수명(매 전송마다 갱신).
+  const expiresAt = payload.expiresAt ?? Date.now() + DEFAULT_TRIP_TTL_MS;
   const body = {
     token: payload.token,
     route: payload.route,

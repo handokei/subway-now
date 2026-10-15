@@ -201,8 +201,18 @@ describe('S12 (#2907) — boarding-confirm 404도 재시도 가능성을 device�
   });
 });
 
-describe('S12 (#2907) — 거부 사유 전달 범위: #1425 쿨다운은 reason을 주지만, validateTrip 구조 거부는 안 준다', () => {
-  it('validateTrip 구조 거부(예: empty-waypoints)는 reason 필드가 응답에 없다 — device가 재시도/포기/재생성을 분기할 수 없다', async () => {
+describe('S12 (#2907) — 거부 사유 전달 범위: #2998이 validateTrip 구조 거부에도 reason을 실었다', () => {
+  /**
+   * #2998 — 이 describe는 원래 *"validateTrip 구조 거부는 reason이 **없다**"* 를 pin해
+   * **관측 갭을 문서화**하고 있었다(#2907). 그 갭이 2026-10-15에 실제 사고로 터졌다:
+   * `/trips`가 30회 연속 400이었는데 device 덤프에는 `RESP POST /trips status=400`만 찍혀
+   * 13개 거부 분기 중 어느 것인지 알 수 없었고, 원인 특정에 코드 역추적 + 재현 테스트가
+   * 필요했다(사유는 `console.warn` + Sentry breadcrumb에만 남는다).
+   *
+   * 이제 응답이 `reason`을 싣는다 — pin을 **반대로 뒤집어** 그 사실을 고정한다. D1 행 적재는
+   * 하지 않는다(#2073 quota 전례) — device 로그/덤프가 응답 body를 싣는 것으로 충분하다.
+   */
+  it('#2998 validateTrip 구조 거부(예: empty-waypoints)도 reason을 응답에 포함한다 — 덤프만으로 사유 판정 가능', async () => {
     const env = makeKvEnv();
     const res = await post(
       '/trips',
@@ -218,8 +228,7 @@ describe('S12 (#2907) — 거부 사유 전달 범위: #1425 쿨다운은 reason
     );
     expect(res.status).toBe(400);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({ error: 'invalid_trip' });
-    expect(body.reason).toBeUndefined();
+    expect(body).toEqual({ error: 'invalid_trip', reason: 'empty-waypoints' });
   });
 
   it('반면 #1425 쿨다운 거부는 reason(endReason)을 포함한다 — 단, device가 이 reason으로 무엇을 해야 하는지(재시도 금지/새 trip 생성)는 어디에도 명시돼 있지 않다 (관측 갭)', async () => {
