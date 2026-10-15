@@ -85,6 +85,37 @@ describe('alarmBackend', () => {
       });
     });
 
+    /**
+     * #2998 — 2026-10-15 실측 회귀. `createdAt`은 세션 신원(#578/#589 `evaluateSameSession`)이라
+     * 같은 trip이면 고정되는데(`useApnsTripRegistration.ts:641-648` `useRef`), `expiresAt`이 그
+     * 값에서 파생돼(`createdAt + TTL`) **함께 고정**됐다. 그래서 TTL(2h)을 넘긴 trip은 전송하는
+     * `expiresAt`이 영구히 과거가 되고 backend `validateTrip`(`index.ts:3964`
+     * `expiresAt <= Date.now()`)이 **모든 재등록을 400으로 거부**한다 — 앱을 완전히 죽이지
+     * 않으면(`useRef` 유지) 자력 회복 불가.
+     *
+     * 실측: 14:04:17 등록 200 → 16:04 TTL 만료 → 16:25~16:43 재등록 **400 × 30**,
+     * `/live-activity/register` 404 × 12, 프롬프트 0건(덤프 `d50c8992-1015.txt`).
+     * `validateTrip`을 그 실 `createdAt`으로 호출해 `invalid-expiresAt` 확정(대조군: `expiresAt`만
+     * 미래로 바꾸면 통과 — 다른 필드는 전부 유효).
+     *
+     * 계약: **`expiresAt`은 전송 시점 기준**(`Date.now() + TTL`)이고 `createdAt`과 독립이다.
+     * `createdAt`은 세션 신원으로 그대로 전달한다(아래 거부 케이스가 그것을 고정한다).
+     */
+    it('#2998 createdAt이 TTL보다 오래돼도 expiresAt은 전송 시점 기준이라 미래다', async () => {
+      const staleCreatedAt = NOW - 3 * 60 * 60 * 1000; // 3시간 전 세션
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://backend.test';
+
+      await registerActiveTrip({ ...SAMPLE_PAYLOAD, createdAt: staleCreatedAt, expiresAt: undefined });
+
+      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+      // 핵심 — backend `validateTrip`의 `expiresAt <= Date.now()` 거부를 통과해야 한다.
+      expect(body.expiresAt).toBeGreaterThan(NOW);
+      expect(body.expiresAt).toBe(NOW + 2 * 60 * 60 * 1000);
+      // 거부 케이스 — createdAt은 세션 신원이므로 **갱신되지 않는다**(#578/#589 waypoint 보존).
+      expect(body.createdAt).toBe(staleCreatedAt);
+    });
+
     it('createdAt/expiresAt 미지정 시 기본값(now, +2시간)', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
       (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
