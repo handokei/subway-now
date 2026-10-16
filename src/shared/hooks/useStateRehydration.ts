@@ -252,6 +252,14 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
     });
     addDomainBreadcrumb('trip', 'end', { reason: 'lifecycle-9h-force-end' });
     // #2715 — 위 breadcrumb과 동일 사유 문자열을 release reason으로도 재사용.
+    //
+    // #3005 — **이 호출은 정상 경로에서 no-op이다.** 위 `runTripBoundCleanups(reason)`이 이미
+    // 같은 사유로 lock을 release했고 `releaseLock`은 `if (prev)` 가드로 두 번째 호출을 기록하지
+    // 않는다(`useBoardingLockStore.ts`). #3005 이전에는 cleanup이 사유를 받지 못해 lifecycle
+    // 버퍼에 `'trip-cleanup'`만 남고 **이 사유는 유실**됐다 — 이제 cleanup이 같은 값을 기록한다.
+    // 이 줄은 cleanup이 부분 실패해 lock이 남은 경우에만 실제로 동작하는 backstop으로 존치한다
+    // (사유가 cleanup 쪽과 동일하므로 드리프트 없음). 같은 패턴이 sentinel/pause 분기와
+    // `useDeviceSelfEnd`에도 있다.
     await useBoardingLockStore.getState().releaseLock('lifecycle-9h-force-end');
     // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
     await setTripEndedSentinel(now, endedCorrIdSnapshot);

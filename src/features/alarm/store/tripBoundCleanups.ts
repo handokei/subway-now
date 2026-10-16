@@ -43,7 +43,7 @@ import { clearAlarmLogWindows } from '../utils/alarmLog';
 import { clearActiveTrip, resetAlarmBackendDedup } from '../api/alarmBackend';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useNavigationStore } from '../../route/store/useNavigationStore';
-import { useBoardingLockStore } from './useBoardingLockStore';
+import { useBoardingLockStore, type LockReleaseReason } from './useBoardingLockStore';
 import { useLegAdvanceStore } from './useLegAdvanceStore';
 import { useAlarmEventStore } from './useAlarmEventStore';
 import {
@@ -160,7 +160,7 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // runTripBoundCleanups만 호출되어 storage는 비워도 메모리는 stale로 남는다 (FG 복귀 시
   // useStateRehydration이 sentinel을 보고 destination/lock만 reset — alarmEvent 등은 누락).
   // 본 wiring으로 BG 경로에서도 메모리/storage가 동시에 일관 상태가 된다.
-  clearTripBoundStoreMemory,
+  clearTripBoundStoreMemoryWithDefaultReason,
   // #1923 — trip 종료 시 사용자 명시 의향 토글 reset.
   // 이전 trip의 의향 신호가 새 trip에 leak되지 않도록 memory + storage 동시 false 처리.
   // 4 cleanup 경로 (FG setDestination(null/switch) / silent push trip-ended /
@@ -274,20 +274,37 @@ function endLiveActivityCleanup(): Promise<void> {
  * AsyncStorage.removeItem 멱등이라 이 배열의 다른 `BOARDING_LOCK_KEY` removeItem 항목과
  * 병렬 실행돼도 안전하다.
  */
-async function clearTripBoundStoreMemory(options?: {
-  preserveCustomOrigin?: boolean;
+/**
+ * #3005 — `TRIP_BOUND_CLEANUPS` 배열용 0-인자 항목.
+ *
+ * 배열은 `() => Promise<void>` 목록이라 reason을 담을 수 없다. production 경로
+ * (`runTripBoundCleanups`)는 **항상** 이 항목을 호출자 reason이 바인딩된 thunk로 **교체**해
+ * 실행하므로 이 기본값은 배열을 직접 소비하는 코드(테스트의 enumeration 가드 등)에만 쓰인다.
+ * 기본값을 `'trip-cleanup'`으로 두는 이유는 과거 lifecycle 버퍼 조회 호환이다.
+ */
+function clearTripBoundStoreMemoryWithDefaultReason(): Promise<void> {
+  return clearTripBoundStoreMemory({ preserveCustomOrigin: false, reason: 'trip-cleanup' });
+}
+
+async function clearTripBoundStoreMemory(options: {
+  preserveCustomOrigin: boolean;
+  // #3005 — lock release 사유. 과거엔 항상 `'trip-cleanup'`으로 고정돼 **모든 종료 경로의
+  // 사유가 하나로 뭉개졌다.** 종료 경로들이 cleanup 뒤에 부르던 `releaseLock(사유)`는 이미
+  // lock이 null이라 `releaseLock`의 `if (prev)` 가드에 걸려 **아무것도 기록하지 못했다**
+  // (useBoardingLockStore.ts). 이제 호출자의 reason이 여기로 흘러 **한 번만, 정확히** 기록된다.
+  reason: LockReleaseReason;
 }): Promise<void> {
   const destState = useDestinationStore.getState();
   // customOrigin: setDestination 경로는 이미 null로 동기화하지만, BG silent push 경로는
   // 누락. 사용자가 직접 지정한 출발역이 새 trip에 leak되지 않도록 비운다.
   // #2803 — preserveCustomOrigin이 true면(FG setDestination이 station!=null로 새 목적지를
   // 설정하는 흐름) 방금 지정한 명시 출발역을 그대로 둔다.
-  if (!options?.preserveCustomOrigin && destState.customOrigin !== null) {
+  if (!options.preserveCustomOrigin && destState.customOrigin !== null) {
     useDestinationStore.setState({ customOrigin: null });
   }
   // boardingLock: releaseLock을 경유해 lifecycle breadcrumb을 남긴다 (#2152 P1).
   if (useBoardingLockStore.getState().lock !== null) {
-    await useBoardingLockStore.getState().releaseLock('trip-cleanup');
+    await useBoardingLockStore.getState().releaseLock(options.reason);
   }
   // alarmEvent / dismissSilence: storage(ALARM_EVENT_KEY/dismissSilenceStorage)도 위에서
   // 이미 cleanup. 메모리만 추가 동기화 — 새 trip UI에 이전 alarm overlay/silence가 leak 차단.
@@ -357,11 +374,22 @@ export function runTripBoundCleanups(
     // #2803 — preserveCustomOrigin이 true면 CUSTOM_ORIGIN_KEY storage 제거(clearCustomOriginKey)와
     // customOrigin 메모리 clear(clearTripBoundStoreMemory)를 배열에서 빼고, customOrigin은
     // 그대로 둔 채 나머지 메모리만 정리하는 버전으로 교체한다.
+    // #3005 — `clearTripBoundStoreMemory` 항목은 **항상** reason을 바인딩한 thunk로 교체한다.
+    // 배열은 모듈 레벨 상수라 reason을 담을 수 없고, 교체하지 않으면 lock release 사유가
+    // `'trip-cleanup'` 기본값으로 뭉개진다(이 PR이 고치는 결함).
+    // #3005 — 메모리 cleanup은 **항상** reason을 바인딩한 thunk로 교체한다(배열은 모듈 레벨
+    // 상수라 reason을 담을 수 없다). 교체하지 않으면 lock release 사유가 기본값으로 뭉개진다.
+    const memoryCleanup = (): Promise<void> =>
+      clearTripBoundStoreMemory({ preserveCustomOrigin, reason });
     const baseCleanups = preserveCustomOrigin
       ? TRIP_BOUND_CLEANUPS.filter(
-          (cleanup) => cleanup !== clearCustomOriginKey && cleanup !== clearTripBoundStoreMemory,
-        ).concat(() => clearTripBoundStoreMemory({ preserveCustomOrigin: true }))
-      : TRIP_BOUND_CLEANUPS;
+          (cleanup) =>
+            cleanup !== clearCustomOriginKey &&
+            cleanup !== clearTripBoundStoreMemoryWithDefaultReason,
+        ).concat(memoryCleanup)
+      : TRIP_BOUND_CLEANUPS.filter(
+          (cleanup) => cleanup !== clearTripBoundStoreMemoryWithDefaultReason,
+        ).concat(memoryCleanup);
     const cleanups = tripToken
       ? [
           ...baseCleanups,
