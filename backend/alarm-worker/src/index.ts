@@ -263,6 +263,49 @@ export function createJsonLogger(
 export const app = new Hono<{ Bindings: Env }>();
 
 /**
+ * #3006 D — 모든 라우트의 uncaught 에러를 관측한다. **상태코드는 바꾸지 않는다**(500 유지).
+ *
+ * 2026-10-15: KV 무료 write 쿼터가 바닥나(프로브로 코드 10048 확인) `POST /position` 500 × 63,
+ * `POST /trips` 500 × 9가 2시간 넘게 났는데 `backend_errors` 테이블은 **0행**이었다.
+ * `captureBackendException`(Sentry + D1 양쪽 sink)이 이미 9곳에서 쓰이는데 핫패스에는 붙어
+ * 있지 않았고 전역 핸들러도 없어서, **장애가 사용자 신고 없이는 발견 불가**였다.
+ *
+ * 분류 가능한 실패(KV 쓰기)는 각 라우트가 직접 degrade한다 — 이 핸들러는 그 바깥의
+ * **분류 불가 에러**를 받아 적재만 하는 backstop이다. 그래서 응답은 기존과 동일한 500이다.
+ *
+ * 적재는 fire-and-forget(`void`) — 관측이 응답을 지연시키거나 막아선 안 된다.
+ */
+/**
+ * #3006 D — KV 쓰기 장애로 `POST /trips`가 503을 낼 때 device에 알리는 재시도 지연(초).
+ *
+ * cron 주기(1분)와 정렬한다 — 더 짧으면 쿼터가 바닥난 상태에서 재시도가 장애를 키우고,
+ * 더 길면 일시 장애에서 trip 등록이 불필요하게 늦어진다.
+ */
+const REGISTER_RETRY_AFTER_SEC = 60;
+
+/**
+ * #3006 D — KV 쓰기 장애를 "재시도 가능한 실패"로 분류하는 전용 에러.
+ *
+ * 직렬화 콜백(`withTripRegisterLock`) 안에서는 HTTP 응답을 반환할 수 없어, 쓰기 실패를 이
+ * 타입으로 승격해 호출부가 503으로 매핑한다. `instanceof`로 좁히므로 **로직 버그는 그대로
+ * 전파돼 500을 유지한다** — 모든 에러를 503으로 가리면 진짜 버그가 "일시 장애"로 숨는다.
+ */
+class KvWriteUnavailableError extends Error {
+  constructor(
+    readonly stage: string,
+    readonly cause: unknown,
+  ) {
+    super(`KV write unavailable at ${stage}`);
+    this.name = 'KvWriteUnavailableError';
+  }
+}
+
+app.onError((err, c) => {
+  void captureBackendException(c.env, err, { path: c.req.path });
+  return c.json({ error: 'internal_error' }, 500);
+});
+
+/**
  * #2283 리뷰 P2-2 — trip_events 기록(핫패스 `/boarding-lock/sync` 내 telemetry)이 응답 latency에
  * 얹히지 않도록 `c.executionCtx.waitUntil`로 응답 반환 이후에 완료시킨다.
  *
@@ -1123,7 +1166,9 @@ app.post('/trips', async (c) => {
   // 이 구간을 여전히 원본 incoming token 기준으로 직렬화 — 같은 device의 두 요청이 반드시 같은
   // 큐에서 대기해 read-reset-write 사이클이 겹치지 않게 한다.
   const registerLockToken = incoming.token;
-  const { trip, isSameSession } = await withTripRegisterLock(
+  let lockResult: { trip: Trip; isSameSession: boolean };
+  try {
+    lockResult = await withTripRegisterLock(
     registerLockToken,
     async () => {
       const directExisting = await getTrip(c.env.TRIPS, incoming.token);
@@ -1320,7 +1365,22 @@ app.post('/trips', async (c) => {
       ? applyProgress(baseTrip, incoming, progress)
       : baseTrip;
 
-      await putTrip(c.env.TRIPS, trip);
+      // #3006 D — KV 쓰기 실패 시 **503 + Retry-After**. 500이 아닌 이유: 등록이 실제로
+      // 실패했으므로 200은 거짓말이지만, 500은 device 재시도 로직(#1960 `scheduleRegisterRetry`)이
+      // 영구 실패처럼 다루는 신호다. 쿼터/일시 장애는 **재시도하면 복구되는 실패**이므로
+      // 503 + Retry-After로 그 사실을 전달한다(2026-10-15 실측: 이 경로 500 × 9 → trip이
+      // backend에 영영 안 생겨 LA 토큰 404 × 12 → LA 영구 부재).
+      //
+      // `/position`과 달리 degrade(200)가 불가능하다 — trip 레코드가 없으면 cron도 push도
+      // 성립하지 않는다. 에러 문자열은 보지 않는다(쿼터 판별 금지, `/position`과 동일 원칙).
+      try {
+        await putTrip(c.env.TRIPS, trip);
+      } catch (err) {
+        // 직렬화 콜백 안에서는 응답을 반환할 수 없다(이 콜백의 계약은 `{trip, isSameSession}`).
+        // 전용 에러로 승격해 호출부가 503으로 매핑한다 — 그 외 에러는 그대로 전파돼 500을
+        // 유지한다(로직 버그를 503으로 가리지 않기 위함).
+        throw new KvWriteUnavailableError('putTrip', err);
+      }
 
       // #2452 — cron listTrips() list-quota 게이트 마커. REGISTER 성공(생성/업데이트 공통)
       // 시에만 stamp한다 — POST /position에서는 절대 stamp하지 않는다(#2450 write throttle을
@@ -1350,7 +1410,20 @@ app.post('/trips', async (c) => {
 
       return { trip, isSameSession };
     },
-  );
+    );
+  } catch (err) {
+    // #3006 D — KV 쓰기 장애만 503으로 매핑한다. 그 외 에러는 재전파 → `app.onError`가 적재하고
+    // 기존과 동일한 500을 낸다(로직 버그를 재시도 가능한 실패로 가리지 않는다).
+    if (!(err instanceof KvWriteUnavailableError)) throw err;
+    void captureBackendException(c.env, err.cause, {
+      path: 'trips',
+      stage: err.stage,
+    });
+    return c.json({ error: 'kv_unavailable' }, 503, {
+      'Retry-After': String(REGISTER_RETRY_AFTER_SEC),
+    });
+  }
+  const { trip, isSameSession } = lockResult;
 
   // #2144 — register 성공(putTrip 완료) 후 같은 token의 옛 tripStatus 종료 마커를 정리한다.
   // 위 cooldown 판정(#1425 reject / #1663 seoul-outage bypass)이 이미 끝난 뒤라 cooldown 의미는
@@ -1958,7 +2031,34 @@ app.post('/position', async (c) => {
   const payload = validatePositionPayload(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
-  await appendPositionPoint(c.env.TRIPS, payload.token, payload.point);
+  // #3006 D — KV 쓰기 실패가 트립을 죽이지 않게 한다.
+  //
+  // 이 핸들러의 쓰기는 모두 **보강 신호**다(series/accel/proximity/motion). 반면 응답에 실리는
+  // `lockSuggestion`/`originStationId`는 #1534가 지정한 **primary transport**다 — silent push가
+  // OS suspend/kill로 도달하지 못해도 device는 이 응답으로 lock을 인계받는다. 쓰기 실패로 500을
+  // 내면 **그 대안 경로까지 함께 죽는다**(2026-10-15 실측: 500 × 63, 2시간 회복 0).
+  //
+  // 그래서 쓰기 실패는 흡수하고 `degraded: true`로 알린다. 읽기(`readSsot`)는 그대로 진행한다 —
+  // KV read quota는 write의 100배라 쓰기만 막힌 상태가 정상적인 실패 모드다.
+  //
+  // **에러 문자열을 보지 않는다**: 쿼터 에러의 Worker 런타임 메시지 형태를 확정할 수 없으므로
+  // "쿼터인지"를 판별하지 않고 쓰기 실패 자체를 degrade 신호로 쓴다.
+  let degraded = false;
+  const degradeOnKvFailure = async (
+    stage: string,
+    write: () => Promise<unknown>,
+  ): Promise<void> => {
+    try {
+      await write();
+    } catch (err) {
+      degraded = true;
+      void captureBackendException(c.env, err, { path: 'position', stage });
+    }
+  };
+
+  await degradeOnKvFailure('appendPositionPoint', () =>
+    appendPositionPoint(c.env.TRIPS, payload.token, payload.point),
+  );
   // #2617 (코드리뷰 반영) — fallback implicit ACK 입력. `/position`은 FG 폴링과 BG location
   // task가 같은 주기로 호출하는 공유 채널이라 "도달했다" 자체는 FG를 증명하지 않는다
   // (deviceContact.ts RCA 참고) — `appState==='fg'`일 때만 stamp한다. BG 접촉을 implicit ACK로
@@ -1977,20 +2077,26 @@ app.post('/position', async (c) => {
   // /position 채널은 재등록과 무관하게 매 cycle 신선한 GPS 기준 근접 신호를 흘려 stamp 기회를
   // 보강한다 — position series/point 저장과는 독립된 side-effect(series에는 적재하지 않음).
   const { originDistanceM, originAccuracyM } = parseOriginProximityFields(body);
-  await stampOriginProximityIfNeeded(
-    c.env.TRIPS,
-    payload.token,
-    originDistanceM,
-    originAccuracyM,
-    Date.now(),
+  await degradeOnKvFailure('stampOriginProximity', () =>
+    stampOriginProximityIfNeeded(
+      c.env.TRIPS,
+      payload.token,
+      originDistanceM,
+      originAccuracyM,
+      Date.now(),
+    ),
   );
   // #823 Phase 3 E1 — 가속도 옵션 필드. 부재 또는 invalid 시 skip (positionSeries는 이미 적재됨).
   if (payload.accelSummary) {
-    await appendAccelSample(c.env.TRIPS, payload.token, payload.accelSummary);
+    const accelSummary = payload.accelSummary;
+    await degradeOnKvFailure('appendAccelSample', () =>
+      appendAccelSample(c.env.TRIPS, payload.token, accelSummary),
+    );
   }
   // #1556 (T3) — SSOT.motionState 갱신. SSOT 부재(trip 미등록) 시 graceful no-op.
   // T2 advanceTripPosition 게이트 #2가 본 motionState='stationary'를 차단 입력으로 사용한다.
-  await updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now(), {
+  await degradeOnKvFailure('updateSsotMotion', () =>
+    updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now(), {
     onTransition: (from, to) => {
       // P0-1 (#1577) — Site 5 of 6: motion-transition 적재.
       writeMetric(c.env, {
@@ -1999,7 +2105,8 @@ app.post('/position', async (c) => {
         reason: `${from}->${to}`,
       });
     },
-  });
+    }),
+  );
   // P0-1 (#1577) — Site 6 of 6: position-upload 적재 (V8a /position rate 검증).
   writeMetric(c.env, {
     eventType: 'position-upload',
@@ -2019,6 +2126,9 @@ app.post('/position', async (c) => {
   });
   return c.json({
     ok: true,
+    // #3006 D — KV 쓰기가 실패했음을 device에 알린다. 정상 경로에서는 **필드 자체가 없다**
+    // (응답 계약 불변 — 기존 소비자 무영향). device 노출 문구는 별 건(#2997 S4-b 표면).
+    ...(degraded ? { degraded: true } : {}),
     // currentStationId가 빈 문자열이 아닐 때만 forward — 빈 stationId는 device 측에서
     // "추론 미정착" 신호로 다뤄야 하므로 명시 누락 (graceful).
     ...(ssot?.currentStationId
