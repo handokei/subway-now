@@ -76,8 +76,21 @@ export async function checkTripRegisterRateLimit(
   if (current >= TRIP_REGISTER_MAX_PER_WINDOW) {
     return { allowed: false, retryAfterSeconds, count: current };
   }
-  await kv.put(key, String(current + 1), {
-    expirationTtl: Math.ceil(TRIP_REGISTER_WINDOW_MS / 1000) + 60,
-  });
+  // #3006 D — 카운터 쓰기 실패가 **등록 자체를 막아선 안 된다.** 이 쓰기는 스팸 방어용
+  // 보강 신호이고, 실패 시 선택은 "이번 요청을 통과시킨다"(fail-open)다. 실패를 그대로
+  // 전파하면 KV 쓰기 장애(쿼터 소진 등)에서 `POST /trips`가 putTrip에 도달조차 못 하고
+  // 500이 된다 — 2026-10-15 실측에서 trip이 영영 생성되지 않은 경로다.
+  //
+  // 호출부(`index.ts`)가 쓰기 장애를 503으로 분류하는 지점은 `putTrip`이다(등록의 본체).
+  // 여기서는 swallow하고 통과시킨다 — 관측은 호출부의 degrade/503 경로가 담당한다.
+  try {
+    await kv.put(key, String(current + 1), {
+      expirationTtl: Math.ceil(TRIP_REGISTER_WINDOW_MS / 1000) + 60,
+    });
+  } catch (e) {
+    console.warn(
+      JSON.stringify({ msg: 'tripRegisterRateLimit: counter write failed (fail-open)', err: String(e) }),
+    );
+  }
   return { allowed: true, retryAfterSeconds, count: current + 1 };
 }
