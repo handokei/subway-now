@@ -542,7 +542,10 @@ describe('tripBoundCleanups', () => {
       clearLockLifecycleEntries();
     });
 
-    it('lock이 활성일 때 runTripBoundCleanups 실행 시 lifecycle buffer에 release(reason=trip-cleanup) 엔트리가 적재된다', async () => {
+    // #3005 — 이 테스트의 의도(#2152)는 "`releaseLock`을 경유해 lifecycle breadcrumb이 남는가"다.
+    // 사유 문자열이 `'trip-cleanup'`이었던 것은 cleanup이 사유를 받지 못했기 때문이고,
+    // 이제 호출자의 reason이 그대로 기록된다 — 의도는 그대로, 기대 사유만 갱신한다.
+    it('lock이 활성일 때 runTripBoundCleanups 실행 시 lifecycle buffer에 release 엔트리가 적재된다 (사유=호출자 reason)', async () => {
       useBoardingLockStore.setState({
         lock: {
           destinationId: 'stn-1',
@@ -564,7 +567,7 @@ describe('tripBoundCleanups', () => {
       expect(releaseEntries[0]).toMatchObject({
         kind: 'boarding-lock-lifecycle',
         event: 'release',
-        reason: 'trip-cleanup',
+        reason: 'user-clear',
         trainCode: 'T-100',
         line: '7',
       });

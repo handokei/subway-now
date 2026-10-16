@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { TripEndReason } from '../../../shared/types/tripEnd';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
 import {
@@ -56,22 +57,26 @@ import { recordPendingLockPromotion } from '../utils/lockCorrectionMetrics';
  *   같은 breadcrumb 문자열 재사용.
  */
 export type LockReleaseReason =
+  // #3005 — trip 종료로 인한 release는 **공용 어휘를 그대로 쓴다**(`shared/types/tripEnd`).
+  // 과거에는 그 중 6개(`sentinel-rehydration` / `lifecycle-9h-force-end` /
+  // `navigation-pause-auto-end` / `trip-device-self-end-*`)를 여기에 **중복 선언**해 두 어휘가
+  // 따로 자랐다. #2302가 `TripEndReason`을 만들었으므로 trip 종료 축은 그 타입에 위임하고,
+  // 여기에는 **lock 고유 사유만** 남긴다 — 한쪽에 값을 추가하면 다른 쪽도 고쳐야 하는 상황을
+  // 끝낸다.
+  | TripEndReason
+  // 이하 lock 고유 사유 — trip 종료와 무관하게 lock만 풀리는 경우.
   | 'user'
   | 'transfer'
   | 'vanish'
   | 'destination-change'
   | 'expired'
   | 'train-code-mismatch'
+  // trip 종료 cleanup이 사유를 전달하지 않던 시절의 기본값. #3005 이후 호출자가 항상 실제
+  // 사유를 넘기므로 신규 사용은 없지만, 과거 lifecycle 버퍼/Sentry breadcrumb 조회 호환으로 존치.
   | 'trip-cleanup'
   | 'auto-release-destination'
   | 'auto-release-transfer'
-  | 'silent-push-fg-immediate'
-  | 'trip-device-self-end-fusion-destination'
-  | 'trip-device-self-end-arc-completion'
-  | 'trip-device-self-end-eta-backstop'
-  | 'sentinel-rehydration'
-  | 'lifecycle-9h-force-end'
-  | 'navigation-pause-auto-end';
+  | 'silent-push-fg-immediate';
 
 /**
  * #2290 P1 (PR #2295 리뷰 2회차) — `createLock` 호출부가 만드는 lock payload. `boardingEvidence`는
