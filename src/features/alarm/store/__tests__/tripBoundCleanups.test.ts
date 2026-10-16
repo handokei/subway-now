@@ -570,6 +570,65 @@ describe('tripBoundCleanups', () => {
       });
     });
 
+    // #3005 — `releaseLock`은 `prev`(기존 lock)가 있을 때만 기록한다
+    // (`useBoardingLockStore.ts:212 if (prev)`). 그런데 `runTripBoundCleanups`가 **먼저**
+    // `releaseLock('trip-cleanup')`으로 lock을 비우므로, 종료 경로들이 그 **뒤에** 호출하는
+    // `releaseLock('lifecycle-9h-force-end')` 등은 전부 `prev === null`로 **no-op**이 된다.
+    //
+    // 결과: lock 활성 trip의 release 사유가 경로와 무관하게 전부 `'trip-cleanup'` 하나로
+    // 뭉개지고, 사이트별 사유는 DebugModal "BoardingLock Lifecycle"에 **기록되지 않는다.**
+    // 그 사이트들의 단위 테스트가 green이었던 것은 `mockReleaseLock`을 쓰기 때문이다
+    // (부품 green ≠ whole — 마지막 소비자가 inert).
+    //
+    // #2302가 `runTripBoundCleanups(reason)`을 만들었으므로 그 reason을 lock release까지
+    // 흘려 **한 번만, 정확한 사유로** 기록해야 한다.
+    it('#3005: 호출자의 reason이 lock release 사유로 기록된다 (trip-cleanup으로 뭉개지지 않음)', async () => {
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'stn-1',
+          trainCode: 'T-900',
+          boardingStationId: 'stn-0',
+          boardingLine: '7',
+          boardedAt: Date.now(),
+          expectedDurationMs: 600_000,
+        },
+      });
+
+      await runTripBoundCleanups('lifecycle-9h-force-end');
+
+      const releaseEntries = getLockLifecycleEntries().filter((e) => e.event === 'release');
+      // 한 번만 기록된다 — 중복 기록도 회귀다.
+      expect(releaseEntries).toHaveLength(1);
+      expect(releaseEntries[0]).toMatchObject({
+        event: 'release',
+        reason: 'lifecycle-9h-force-end',
+        trainCode: 'T-900',
+      });
+    });
+
+    // 사이트가 cleanups **뒤에** 또 releaseLock을 부르면 그 호출은 아무것도 남기지 않는다 —
+    // 이 사실을 고정해 "사후 호출을 남겨두면 사유가 기록된다"는 착각을 차단한다.
+    it('#3005: cleanups 이후의 releaseLock 호출은 inert다 (lock이 이미 null — 중복 기록 없음)', async () => {
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'stn-1',
+          trainCode: 'T-901',
+          boardingStationId: 'stn-0',
+          boardingLine: '7',
+          boardedAt: Date.now(),
+          expectedDurationMs: 600_000,
+        },
+      });
+
+      await runTripBoundCleanups('navigation-pause-auto-end');
+      // 종료 경로들이 실제로 하는 일 — cleanups 뒤의 사후 release.
+      await useBoardingLockStore.getState().releaseLock('navigation-pause-auto-end');
+
+      const releaseEntries = getLockLifecycleEntries().filter((e) => e.event === 'release');
+      expect(releaseEntries).toHaveLength(1);
+      expect(releaseEntries[0]).toMatchObject({ reason: 'navigation-pause-auto-end' });
+    });
+
     it('lock이 없으면 lifecycle buffer에 release 엔트리가 적재되지 않는다 (noise 방지)', async () => {
       useBoardingLockStore.setState({ lock: null });
 
