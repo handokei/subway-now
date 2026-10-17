@@ -227,6 +227,25 @@ function clearNavigationPauseState(): Promise<void> {
 }
 
 /**
+ * #2293 (plan 2026-10-15 pausedAt resume channel asymmetry, S1) — 재개(resume) chokepoint
+ * 단일화.
+ *
+ * `startNavigation()` 직접 호출부 3곳(안내 시작 버튼 / boardingPrompt [탑승] 응답 /
+ * BoardingTrainList 직접 탭) 중 memory clear는 `startNavigation()` 자체가 수행하지만,
+ * storage clear(`clearNavigationPausedAt`)는 안내 시작 버튼 호출부에만 수기로 wire돼 있었다
+ * — 나머지 2곳으로 재개하면 FG 배지는 사라져도 storage stamp가 남아, 이후
+ * `isPauseAutoEndDue`가 재개된 활성 trip을 "일시정지 15분 경과"로 오판해 backstop이
+ * `DELETE /trips`를 발행하는 회귀(LA 영구 부재로 이어짐)였다.
+ *
+ * 두 채널을 호출부마다 개별 기억하게 하는 구조 자체를 제거한다 — `startNavigation()`을
+ * 직접 호출하던 3곳 전부가 이 합성 함수로 교체된다.
+ */
+export function resumeNavigation(): void {
+  useNavigationStore.getState().startNavigation();
+  void clearNavigationPausedAt();
+}
+
+/**
  * #2371 (Part of #2306) — navigationActive를 trip 종료 시 false로 되돌린다.
  * memory-only 값(persist 미적용)이라 storage clear가 필요 없어 Promise.resolve로 즉시 완료.
  */

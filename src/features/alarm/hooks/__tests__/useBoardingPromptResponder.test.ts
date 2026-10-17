@@ -115,15 +115,16 @@ jest.mock('../../store/useUserIntentStore', () => {
   };
 });
 
-// #2371 — useNavigationStore mock. boarded path 진입 시 startNavigation() 호출 검증
-// (#2306 RCA — 잠금 시 BG GPS 미시작 회귀 fix).
-jest.mock('../../../route/store/useNavigationStore', () => {
-  const mockStartNavigation = jest.fn();
+// #2371 / #2293 (plan 2026-10-15 S1) — tripBoundCleanups.resumeNavigation mock. boarded path
+// 진입 시 resumeNavigation() 호출 검증(#2306 RCA — 잠금 시 BG GPS 미시작 회귀 fix). 과거엔
+// useNavigationStore.startNavigation()을 직접 호출했으나, 이 경로가 storage 채널
+// (NAVIGATION_PAUSED_AT_KEY) clear를 수기로 안 들고 와 재개된 trip이 stale pause stamp로
+// backstop에 의해 DELETE되는 회귀가 있었다 — resumeNavigation()으로 단일화.
+jest.mock('../../store/tripBoundCleanups', () => {
+  const mockResumeNavigation = jest.fn();
   return {
-    useNavigationStore: {
-      getState: () => ({ startNavigation: mockStartNavigation }),
-    },
-    __mockStartNavigation: mockStartNavigation,
+    resumeNavigation: mockResumeNavigation,
+    __mockResumeNavigation: mockResumeNavigation,
   };
 });
 
@@ -177,8 +178,8 @@ const {
   __mockSetInfoModeEnabled: setInfoModeEnabledMock,
   __mockSetBoardingCommitted: setBoardingCommittedMock,
 } = jest.requireMock('../../store/useUserIntentStore');
-const { __mockStartNavigation: startNavigationMock } = jest.requireMock(
-  '../../../route/store/useNavigationStore',
+const { __mockResumeNavigation: resumeNavigationMock } = jest.requireMock(
+  '../../store/tripBoundCleanups',
 );
 const { __mockStampLegAdvance: stampLegAdvanceMock } = jest.requireMock(
   '../../store/useLegAdvanceStore',
@@ -1557,18 +1558,21 @@ describe('handleResponse — #1923 infoModeEnabled stamp (사용자 명시 의�
 // #2371 (Part of #2306) — boardingPrompt "탑승" 응답도 navigationActive를 켠다. 잠금 시 BG GPS
 // 세션이 navigationActive에만 걸려 있어, 명시 의향을 표명해도 화면을 잠그면 BG GPS가 시작되지
 // 않던 회귀(#2306 RCA)의 fix — infoMode stamp와 정확히 대칭으로 wire.
-describe('handleResponse — #2371 navigationActive wire (BG GPS 시작 트리거)', () => {
+// #2293 (plan 2026-10-15 S1) — startNavigation() 직접 호출 대신 resumeNavigation()을 호출한다.
+// 이 경로(boardingPrompt [탑승] 응답)는 재개 3경로 중 하나이며, storage pausedAt clear를
+// 누락해 재개된 trip이 cold-start backstop에 의해 DELETE되는 회귀의 fix 대상이었다.
+describe('handleResponse — #2371/#2293 resumeNavigation wire (BG GPS 시작 + pause stamp clear)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  itEachBoardedLikeAction('%s → useNavigationStore.startNavigation() 호출', () =>
-    expect(startNavigationMock).toHaveBeenCalledTimes(1),
+  itEachBoardedLikeAction('%s → resumeNavigation() 호출', () =>
+    expect(resumeNavigationMock).toHaveBeenCalledTimes(1),
   );
 
   itEachDismissedLikeAction(
-    '%s → startNavigation 호출 안 함 (dismissed path는 의향 표명 없음)',
-    () => expect(startNavigationMock).not.toHaveBeenCalled(),
+    '%s → resumeNavigation 호출 안 함 (dismissed path는 의향 표명 없음)',
+    () => expect(resumeNavigationMock).not.toHaveBeenCalled(),
   );
 });
 

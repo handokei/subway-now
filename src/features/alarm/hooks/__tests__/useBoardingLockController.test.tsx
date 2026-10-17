@@ -64,20 +64,22 @@ const { __mockSetInfoModeEnabled: setInfoModeEnabledMock } = jest.requireMock(
   '../../store/useUserIntentStore',
 );
 
-// #2371 — useNavigationStore mock. createLockFromTrain(user-tap) 진입 시 startNavigation()
-// 호출 검증 + hydrateLockFromCandidate(무탭 fusion auto-lock)에서는 호출 안 됨을 검증
+// #2371 / #2293 (plan 2026-10-15 S1) — tripBoundCleanups.resumeNavigation mock.
+// createLockFromTrain(user-tap) 진입 시 resumeNavigation() 호출 검증 +
+// hydrateLockFromCandidate(무탭 fusion auto-lock)에서는 호출 안 됨을 검증
 // (#2306 RCA — 잠금 시 BG GPS 미시작 회귀 fix + 무탭 auto-lock BG 시작 금지 회귀 방지).
-jest.mock('../../../route/store/useNavigationStore', () => {
-  const mockStartNavigation = jest.fn();
+// 과거엔 useNavigationStore.startNavigation()을 직접 호출했으나, storage 채널
+// (NAVIGATION_PAUSED_AT_KEY) clear를 수기로 안 들고 와 재개된 trip이 stale pause stamp로
+// backstop에 의해 DELETE되는 회귀가 있었다 — resumeNavigation()으로 단일화.
+jest.mock('../../store/tripBoundCleanups', () => {
+  const mockResumeNavigation = jest.fn();
   return {
-    useNavigationStore: {
-      getState: () => ({ startNavigation: mockStartNavigation }),
-    },
-    __mockStartNavigation: mockStartNavigation,
+    resumeNavigation: mockResumeNavigation,
+    __mockResumeNavigation: mockResumeNavigation,
   };
 });
-const { __mockStartNavigation: startNavigationMock } = jest.requireMock(
-  '../../../route/store/useNavigationStore',
+const { __mockResumeNavigation: resumeNavigationMock } = jest.requireMock(
+  '../../store/tripBoundCleanups',
 );
 
 // #2330 (consensus-D) — 탭 vs consensus-confirmed 불일치 telemetry mock.
@@ -748,35 +750,38 @@ describe('useBoardingLockController', () => {
     // 명시 의향 표명이므로 navigationActive도 함께 켠다. hydrateLockFromCandidate(무탭 fusion
     // auto-lock 경로)에서는 절대 켜지면 안 됨(#1973 "명시 trigger 없이 자동 BG 금지") — 회귀
     // 방지 assertion은 아래 hydrateLockFromCandidate describe에 배치.
-    describe('#2371 navigationActive wire (BG GPS 시작 트리거)', () => {
+    // #2293 (plan 2026-10-15 S1) — startNavigation() 직접 호출 대신 resumeNavigation()을 호출한다.
+    // 이 경로(BoardingTrainList 직접 탭)는 재개 3경로 중 하나이며, storage pausedAt clear를
+    // 누락해 재개된 trip이 cold-start backstop에 의해 DELETE되는 회귀의 fix 대상이었다.
+    describe('#2371/#2293 resumeNavigation wire (BG GPS 시작 + pause stamp clear)', () => {
       beforeEach(() => {
-        startNavigationMock.mockClear();
+        resumeNavigationMock.mockClear();
       });
 
-      it('createLockFromTrain 성공 시 startNavigation() 1회 호출', async () => {
+      it('createLockFromTrain 성공 시 resumeNavigation() 1회 호출', async () => {
         const { result } = renderHook(() => useBoardingLockController(defaultInputs));
         await act(async () => {
           result.current.createLockFromTrain(makeTrain({ trainCode: 'T-NAV' }));
         });
-        expect(startNavigationMock).toHaveBeenCalledTimes(1);
+        expect(resumeNavigationMock).toHaveBeenCalledTimes(1);
       });
 
-      it('destinationId null이면 startNavigation 호출 안 함 (createLock 진입 전 early return)', async () => {
+      it('destinationId null이면 resumeNavigation 호출 안 함 (createLock 진입 전 early return)', async () => {
         const { result } = renderHook(() =>
           useBoardingLockController({ ...defaultInputs, destinationId: null }),
         );
         await act(async () => {
           result.current.createLockFromTrain(makeTrain());
         });
-        expect(startNavigationMock).not.toHaveBeenCalled();
+        expect(resumeNavigationMock).not.toHaveBeenCalled();
       });
 
-      it('#1449 trip route 외 line은 startNavigation 호출 안 함 (createLock 진입 전 line filter reject)', async () => {
+      it('#1449 trip route 외 line은 resumeNavigation 호출 안 함 (createLock 진입 전 line filter reject)', async () => {
         const { result } = renderHook(() => useBoardingLockController(defaultInputs));
         await act(async () => {
           result.current.createLockFromTrain(makeTrain({ trainCode: 'T-WRONG', line: '9' }));
         });
-        expect(startNavigationMock).not.toHaveBeenCalled();
+        expect(resumeNavigationMock).not.toHaveBeenCalled();
       });
     });
 
@@ -893,16 +898,16 @@ describe('useBoardingLockController', () => {
     });
 
     // #2371 (Part of #2306) 회귀 방지 — hydrateLockFromCandidate는 무탭 fusion auto-lock
-    // 경로이므로 startNavigation()이 절대 호출되면 안 된다(#1973 "명시 trigger 없이 자동 BG
-    // 금지"). createLockFromTrain(user-tap)에서만 startNavigation을 호출하는지 대칭 검증.
-    it('#2371: hydrateLockFromCandidate(무탭)는 startNavigation() 호출 안 함', async () => {
-      startNavigationMock.mockClear();
+    // 경로이므로 resumeNavigation()이 절대 호출되면 안 된다(#1973 "명시 trigger 없이 자동 BG
+    // 금지"). createLockFromTrain(user-tap)에서만 resumeNavigation을 호출하는지 대칭 검증.
+    it('#2371/#2293: hydrateLockFromCandidate(무탭)는 resumeNavigation() 호출 안 함', async () => {
+      resumeNavigationMock.mockClear();
       const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
       });
       await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
-      expect(startNavigationMock).not.toHaveBeenCalled();
+      expect(resumeNavigationMock).not.toHaveBeenCalled();
     });
 
     it('역명+line 매칭 시 boardingStationId 정정', async () => {
