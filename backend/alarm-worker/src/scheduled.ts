@@ -916,6 +916,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   originGpsFreeSnapshotDistrusted: number;
   /**
+   * #2997 (S3 v2) — `trackingOptIn` 단독(명시 의향 promptOptIn/infoModeEnabled 둘 다 없음) trip이
+   * 근접 실측(hasProximityReading) 부재로 GPS-free origin 프롬프트를 fail-closed skip한 누적
+   * 횟수. 명시 의향 trip의 기존 fail-open(위 originGpsFreeSnapshotDistrusted)과는 반대 방향 —
+   * 이 카운터가 오르는 것은 #2651("집에서 222m 발사") 구조적 재발 차단이 실제로 작동 중이라는
+   * 증거다.
+   */
+  trackingOptInProximityMissingBlocked: number;
+  /**
    * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 arvlCd(ENTERING/ARRIVED)
    * ground truth로 통과(anchor stamp + hop-end prompt + waypoint slice)한 누적 횟수. 종전에는
    * `runLocklessIntermediate`/`tryFireConsensusTrainLeg` 둘 다 kind==='intermediate'에만 반응해
@@ -1486,6 +1494,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     originGpsFreeBoardingPromptFired: 0,
     originGpsFreeBoardingPromptBlocked: 0,
     originGpsFreeSnapshotDistrusted: 0,
+    trackingOptInProximityMissingBlocked: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -8071,7 +8080,15 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   // 이미 응답/직접 탭으로 명시 의향(`infoModeEnabled`)을 표명한 trip이 lock 해제 후
   // lockMissing으로 돌아왔을 때도 재프롬프트를 받아야 한다(ADR-014 동급 보장) — 위 GPS 9단
   // 게이트와 동일한 OR 정합.
-  if (trip.promptOptIn !== true && trip.infoModeEnabled !== true) return;
+  //
+  // #2997 (S3 v2) — `trackingOptIn`(목적지만 설정, 약한 의향)을 3번째 OR 항으로 추가. 명시
+  // 의향(promptOptIn/infoModeEnabled) 둘 다 없는 trip도 이 축 하나로 대상이 된다 — 단, 이
+  // 함수 뒤쪽의 거리 가드에 "명시 의향 없음 + 근접 실측 부재 → fail-closed" 추가 조건이
+  // 걸려 있어(바로 아래 hasProximityReading 판정부) `trackingOptIn` 단독 trip은 근접이 실측
+  // 확인돼야만 실제 발사된다(#2651 "집에서 222m 발사" 구조적 재발 차단). 명시 의향 trip은
+  // 이 OR 자체가 이미 true이므로 아래 추가 조건의 대상이 아니다(동작 불변).
+  const hasExplicitIntent = trip.promptOptIn === true || trip.infoModeEnabled === true;
+  if (!hasExplicitIntent && trip.trackingOptIn !== true) return;
 
   // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
   if (trip.boardingLock !== undefined) return;
@@ -8136,6 +8153,21 @@ export async function maybeFireOriginBoardingPromptGpsFree(
         newestSeriesAccuracyM: newest?.accuracy ?? null,
       });
     }
+  }
+
+  // #2997 (S3 v2) — `trackingOptIn` 단독(명시 의향 없음) trip은 근접 실측
+  // (hasProximityReading)이 없으면 fail-closed로 skip한다. 명시 의향 trip은 바로 위
+  // `hasProximityReading` 판정이 false일 때 아래 `isTooFarFromOrigin`이 자동으로 false가 되어
+  // (기존 fail-open, #2653 "함정 고정" 테스트가 그 동작을 고정) 그대로 발사로 진행한다 —
+  // 이 가드는 그 경로를 건드리지 않고 `!hasExplicitIntent` 조건으로만 추가 분기한다.
+  if (!hasExplicitIntent && !hasProximityReading) {
+    stats.trackingOptInProximityMissingBlocked += 1;
+    log('origin-boarding-prompt-gps-free: trackingOptIn-only trip blocked (no proximity reading, fail-closed)', {
+      token: trip.token.slice(0, 8),
+      originStation: display.originStation,
+      line: display.line,
+    });
+    return;
   }
 
   const anchorFresh =

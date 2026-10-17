@@ -4238,6 +4238,9 @@ export function validateTrip(
     // 미송신/비boolean이면 undefined(default false, 기존 gate-less 발사 동작 보존 X — 신규 게이트
     // 자체가 opt-in 없으면 완전 침묵으로 바뀌는 것이 이번 이슈의 목적).
     promptOptIn: typeof obj.promptOptIn === 'boolean' ? obj.promptOptIn : undefined,
+    // #2997 (S3 v2) — trackingOptIn(목적지만 설정) 시그널. 미송신/비boolean이면 undefined
+    // (default false, 기존 동작 보존).
+    trackingOptIn: typeof obj.trackingOptIn === 'boolean' ? obj.trackingOptIn : undefined,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. 미송신/비boolean이면 undefined(default false, 기존
     // lockless "통과" 동작 보존).
     boardingCommitted:
