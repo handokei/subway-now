@@ -218,6 +218,12 @@ export const USER_INTENT_BOARDING_COMMITTED_KEY = 'subway-now:user-intent-boardi
 // (runTripBoundCleanups)에서만 false로 reset.
 // 형식: 'true' 또는 키 부재(=false).
 export const USER_INTENT_PROMPT_OPT_IN_KEY = 'subway-now:user-intent-prompt-opt-in';
+// #2997 (S3 v2) — "이 트립을 추적해달라"는 약한 의향 시그널. 목적지 설정(setDestination,
+// 새 trip 시작)만으로 true로 stamp — 안내 시작/응답/열차 탭 같은 명시 행동이 필요 없다.
+// infoModeEnabled/promptOptIn(둘 다 명시 행동 필요)과는 목적이 다르다(ADR-014 "명시 의향 =
+// lock 동급 보장" 희석 방지를 위해 별도 축으로 분리). trip 종료 시 runTripBoundCleanups에서
+// false로 reset. 형식: 'true' 또는 키 부재(=false).
+export const USER_INTENT_TRACKING_OPT_IN_KEY = 'subway-now:user-intent-tracking-opt-in';
 // #2045 (Signal 4, Issue #2043 β 후속) — 마지막 silent push 수신 시각 (epoch ms).
 // silentPushTask.handleSilentPush가 유효 payload 진입점(handleSilentPush)에서 stamp,
 // useLaunchTripReconciliation이 launch 시점에 read해 backend-timeout self-end 판정에 사용.

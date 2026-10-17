@@ -45,6 +45,7 @@ import {
   USER_INTENT_INFO_MODE_KEY,
   USER_INTENT_BOARDING_COMMITTED_KEY,
   USER_INTENT_PROMPT_OPT_IN_KEY,
+  USER_INTENT_TRACKING_OPT_IN_KEY,
 } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -105,6 +106,18 @@ export interface UserIntentState {
    * true가 남아있던 trip을 backend KV에서 false로 덮어쓴다).
    */
   promptOptInHydrated: boolean;
+  /**
+   * #2997 (S3 v2) — "이 트립을 추적해달라"는 약한 의향 토글. `promptOptIn`/`infoModeEnabled`
+   * (둘 다 명시 행동 필요)와 달리 **목적지 설정만으로** true로 stamp된다
+   * (`useDestinationStore.setDestination`). backend `maybeFireOriginBoardingPromptGpsFree`의
+   * 의향 게이트에 3번째 OR 항으로 들어가 출발역 탑승 프롬프트를 열지만, 근접 실측이 없으면
+   * backend가 fail-closed로 skip한다(#2651 재발 차단, backend scheduled.ts).
+   */
+  trackingOptIn: boolean;
+  /** memory + AsyncStorage 동기 영속화. `setPromptOptIn`과 동일 pattern. */
+  setTrackingOptIn: (optIn: boolean) => Promise<void>;
+  /** cold start 시 storage hydrate. parse 실패/키 부재는 false 유지. */
+  loadTrackingOptIn: () => Promise<void>;
 }
 
 export const useUserIntentStore = create<UserIntentState>((set) => ({
@@ -112,6 +125,7 @@ export const useUserIntentStore = create<UserIntentState>((set) => ({
   boardingCommitted: false,
   promptOptIn: false,
   promptOptInHydrated: false,
+  trackingOptIn: false,
 
   setInfoModeEnabled: async (enabled: boolean) => {
     set({ infoModeEnabled: enabled });
@@ -184,6 +198,28 @@ export const useUserIntentStore = create<UserIntentState>((set) => ({
       log.warn('promptOptIn hydrate failed', e);
     }
   },
+
+  setTrackingOptIn: async (optIn: boolean) => {
+    set({ trackingOptIn: optIn });
+    try {
+      if (optIn) {
+        await AsyncStorage.setItem(USER_INTENT_TRACKING_OPT_IN_KEY, STORAGE_VALUE_TRUE);
+      } else {
+        await AsyncStorage.removeItem(USER_INTENT_TRACKING_OPT_IN_KEY);
+      }
+    } catch (e) {
+      log.warn('trackingOptIn persist failed', e);
+    }
+  },
+
+  loadTrackingOptIn: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(USER_INTENT_TRACKING_OPT_IN_KEY);
+      set({ trackingOptIn: raw === STORAGE_VALUE_TRUE });
+    } catch (e) {
+      log.warn('trackingOptIn hydrate failed', e);
+    }
+  },
 }));
 
 /**
@@ -215,4 +251,14 @@ export function resetBoardingCommitted(): Promise<void> {
  */
 export function resetPromptOptIn(): Promise<void> {
   return useUserIntentStore.getState().setPromptOptIn(false);
+}
+
+/**
+ * #2997 (S3 v2) — trip 종료 시 `runTripBoundCleanups`에서 호출하는 cleanup helper.
+ *
+ * 이전 trip의 trackingOptIn(목적지만 설정) 신호가 새 trip에 leak되지 않도록 memory + storage
+ * 동시 false 처리. `resetPromptOptIn`과 동일 wiring pattern.
+ */
+export function resetTrackingOptIn(): Promise<void> {
+  return useUserIntentStore.getState().setTrackingOptIn(false);
 }

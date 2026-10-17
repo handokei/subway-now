@@ -458,6 +458,38 @@ describe('alarmBackend', () => {
         expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
+      // #2997 (S3 v2) — trackingOptIn(목적지만 설정, 약한 의향) 송신/dedup. promptOptIn과
+      // 동일 wiring pattern이지만 별개 필드 — backend GPS-free leg-1 boarding-prompt 의향
+      // 게이트의 3번째 OR 항(근접 실측 필수 조건은 backend가 적용).
+      it('#2997 trackingOptIn=true 송신 시 body에 포함', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, trackingOptIn: true });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.trackingOptIn).toBe(true);
+      });
+
+      it('#2997 trackingOptIn=false/미설정이면 body에 미포함 (graceful, backend false default)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, trackingOptIn: false });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.trackingOptIn).toBeUndefined();
+      });
+
+      it('#2997 trackingOptIn OFF→ON 전환 시 hash 갱신 → 재등록 (목적지 설정 직후 backend 3번째 OR 게이트 즉시 활성화)', async () => {
+        const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, trackingOptIn: false });
+        expect(first.ok).toBe(true);
+        const second = await registerActiveTrip({ ...SAMPLE_PAYLOAD, trackingOptIn: true });
+        expect(second).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        const secondBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+        expect(secondBody.trackingOptIn).toBe(true);
+      });
+
+      it('#2997 동일 trackingOptIn 값 연속 호출 시 dedup (skipped=true)', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, trackingOptIn: true });
+        const dedup = await registerActiveTrip({ ...SAMPLE_PAYLOAD, trackingOptIn: true });
+        expect(dedup).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
       // #2524 — 탑승 커밋(PENDING lock) 시그널 송신/dedup. infoModeEnabled와 동일 wiring pattern.
       it('#2524 boardingCommitted=true 송신 시 body에 포함', async () => {
         await registerActiveTrip({ ...SAMPLE_PAYLOAD, boardingCommitted: true });

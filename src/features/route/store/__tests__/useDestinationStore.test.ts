@@ -95,6 +95,7 @@ describe('useDestinationStore', () => {
       boardingCommitted: false,
       promptOptIn: false,
       promptOptInHydrated: false,
+      trackingOptIn: false,
     });
     jest.clearAllMocks();
     // jest.clearAllMocks가 mock implementations도 리셋 — #919 trigger/setTripStartedAt이
@@ -302,6 +303,43 @@ describe('useDestinationStore', () => {
     // cleanup chain(tripTransitionQueue)의 어떤 await도 아직 resolve되지 않은 이 시점에서
     // 이미 promptOptIn 메모리가 false여야 한다 — resetPromptOptIn(비동기)을 기다리면 안 된다.
     expect(useUserIntentStore.getState().promptOptIn).toBe(false);
+  });
+
+  // #2997 (S3 v2) — 목적지 설정(새 trip 시작)만으로 trackingOptIn(약한 의향)이 stamp돼야
+  // backend GPS-free leg-1 boarding-prompt 의향 게이트의 3번째 OR 항을 통과한다. 안내 시작
+  // 버튼을 전혀 누르지 않아도 true여야 한다(명시 행동 불요 — promptOptIn/infoModeEnabled와
+  // 구분되는 지점).
+  it('setDestination(#2997): 목적지 설정만으로(안내 시작 없이) trackingOptIn이 true로 stamp된다', () => {
+    const { setDestination } = useDestinationStore.getState();
+    expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
+
+    setDestination(mockStation);
+
+    expect(useUserIntentStore.getState().trackingOptIn).toBe(true);
+  });
+
+  it('setDestination(#2997): trip 종료(null)는 trackingOptIn을 직접 true로 만들지 않는다(reset은 cleanup 담당)', () => {
+    const { setDestination } = useDestinationStore.getState();
+    setDestination(mockStation);
+    useUserIntentStore.setState({ trackingOptIn: true });
+
+    setDestination(null);
+
+    // setDestination(null) 분기 자체는 trackingOptIn을 건드리지 않는다 — 실제 reset은
+    // TRIP_BOUND_CLEANUPS의 resetTrackingOptIn(비동기 cleanup chain)이 담당한다.
+    expect(useUserIntentStore.getState().trackingOptIn).toBe(true);
+  });
+
+  it('setDestination(#2997): 같은 목적지 재설정(switch 아님)은 trackingOptIn을 재단언하지 않는다(이미 true인 상태 유지)', () => {
+    const { setDestination } = useDestinationStore.getState();
+    setDestination(mockStation);
+    expect(useUserIntentStore.getState().trackingOptIn).toBe(true);
+
+    useUserIntentStore.setState({ trackingOptIn: false });
+    // 동일 station 재설정 — isSwitch=false 분기라 trackingOptIn stamp 호출 자체가 일어나지 않는다.
+    setDestination(mockStation);
+
+    expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
   });
 
   it('setDestination(#702/#799): 같은 목적지 재설정 시에는 trip-bound storage 전부 유지', () => {

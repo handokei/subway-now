@@ -50,6 +50,7 @@ import {
   resetUserIntentInfoMode,
   resetBoardingCommitted,
   resetPromptOptIn,
+  resetTrackingOptIn,
 } from './useUserIntentStore';
 import { createLogger } from '../../../shared/utils/logger';
 import type { TripEndReason } from '../../../shared/types/tripEnd';
@@ -174,6 +175,10 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // chokepoint에서 명시적으로 해제해야 이전 trip의 opt-in이 새 trip에 leak되지 않는다.
   // "일시정지"는 이 값을 건드리지 않는다 — 4 cleanup 경로(trip 종료류)에서만 wire.
   resetPromptOptIn,
+  // #2997 (S3 v2) — trip 종료 시 trackingOptIn(목적지만 설정) 신호 reset. 이전 trip의 약한
+  // 의향 신호가 새 trip에 leak되지 않도록 memory + storage 동시 false 처리. 4 cleanup 경로
+  // 모두 자동 wire(resetUserIntentInfoMode와 동일 패턴).
+  resetTrackingOptIn,
   // #2045 (Signal 4) — trip 종료 시 last-silent-push-received stamp 제거.
   // 새 trip의 첫 launch reconciliation 시점에 이전 trip의 last-received가 남아 있으면
   // (직전 trip이 정상 종료 후 새 trip 시작 X → 앱 launch) → 새 trip 판정 오염 방지.
