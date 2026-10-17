@@ -24,10 +24,8 @@ import { useLegAdvanceStore } from '../features/alarm/store/useLegAdvanceStore';
 import { useNavigationStore } from '../features/route/store/useNavigationStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
 import { PausedNavigationBadge } from '../features/route/components/PausedNavigationBadge';
-import {
-  setNavigationPausedAt,
-  clearNavigationPausedAt,
-} from '../features/alarm/utils/navigationPauseStorage';
+import { setNavigationPausedAt } from '../features/alarm/utils/navigationPauseStorage';
+import { resumeNavigation } from '../features/alarm/store/tripBoundCleanups';
 import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, anchorRouteToCurrentStation, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { isInTripByEvidence } from '../shared/utils/boardingWait';
 import { getFiredAlarms } from '../features/alarm/utils/notificationState';
@@ -194,7 +192,6 @@ export default function HomeScreen() {
   // #2293 — 일시정지 배지 카운트다운 소스(메모리, FG 전용). cold-start 자동 종료 판정은
   // useStateRehydration이 별도 영속 채널(NAVIGATION_PAUSED_AT_KEY)로 처리.
   const navigationPausedAt = useNavigationStore((s) => s.pausedAt);
-  const startNavigation = useNavigationStore((s) => s.startNavigation);
   const stopNavigation = useNavigationStore((s) => s.stopNavigation);
   // #746: 알람 dismiss → silence 시작점 기록. 같은 컴포넌트의 userLocation을 같이 캡처.
   const setDismissSilence = useAlarmEventStore((s) => s.setDismissSilence);
@@ -475,13 +472,16 @@ export default function HomeScreen() {
   // useUserIntentStore 필드, PR #2772 리뷰) 역할만 한다. useBackgroundLocation은
   // useNavigationStore.navigationActive를 deps로 보고 BG GPS lifecycle을 따른다.
   const handleStartNavigation = useCallback(() => {
-    startNavigation();
+    // #2293 (plan 2026-10-15 S1) — resumeNavigation이 memory(startNavigation)와 storage
+    // (clearNavigationPausedAt)를 단일 chokepoint에서 함께 처리한다. 과거엔 이 호출부에서만
+    // storage clear를 수기로 wire해서, boardingPrompt [탑승] 응답 / BoardingTrainList 직접
+    // 탭 2곳이 storage clear 없이 startNavigation()만 호출해 재개된 trip이 cold-start
+    // backstop에 의해 잘못 종료되는 회귀가 있었다 — 3곳 모두 이 합성 함수로 통일.
+    resumeNavigation();
     // #2651 (PR #2772 리뷰) — promptOptIn을 durable하게 persist. navigationActive(휘발성)만
     // 쓰면 mid-trip 콜드 재시작 후 재등록에서 opt-in이 사라지는 회귀가 있었다.
     void setPromptOptIn(true);
-    // #2293 — 재개 시 일시정지 stamp 제거(cold-start backstop이 재개된 trip을 잘못 종료하지 않도록).
-    void clearNavigationPausedAt();
-  }, [startNavigation, setPromptOptIn]);
+  }, [setPromptOptIn]);
   // #2293 (Part of #2285 결정 ①+③) — "일시정지" 진입. navigationActive off + BG GPS 중단은
   // 유지하되(#1973), destination/trip은 보존한다. pausedAt을 함께 stamp해 배지 카운트다운 +
   // PAUSE_AUTO_END_MS(15분) 경과 시 자동 종료 backstop의 기준점으로 쓴다.

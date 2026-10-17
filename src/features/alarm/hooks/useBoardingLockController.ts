@@ -11,7 +11,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useBoardingLockStore, type LockReleaseReason } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
-import { useNavigationStore } from '../../route/store/useNavigationStore';
+import { resumeNavigation } from '../store/tripBoundCleanups';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
@@ -453,8 +453,10 @@ export function useBoardingLockController({
       // 동급 명시 의향 표명이므로 navigationActive도 함께 켠다(#2306 RCA — 화면 잠금 시 BG GPS
       // 미시작 → leg 알림 전멸). hydrateLockFromCandidate(무탭 fusion auto-lock 경로)는 의도적으로
       // 건드리지 않는다 — 사용자 명시 탭이 아닌 candidate 채택까지 BG GPS를 켜면 #1973
-      // "명시 trigger 없이 자동 BG 금지" 원칙 위반.
-      useNavigationStore.getState().startNavigation();
+      // "명시 trigger 없이 자동 BG 금지" 원칙 위반. resumeNavigation은 memory
+      // (startNavigation)과 storage(clearNavigationPausedAt)를 함께 처리하는 재개
+      // chokepoint다(#2293 S1).
+      resumeNavigation();
       const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
       // #663: boardingLine은 사용자가 실제로 탭한 train의 line을 사용. currentStation.line은 fusion
       // 추정이라 환승역에서 옆 노선으로 잘못 잠긴 상태일 수 있다 (#662). train.line은 어댑터가 subwayId로
