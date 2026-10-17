@@ -182,6 +182,10 @@ export default function HomeScreen() {
   // #2651 (PR #2772 전체 리뷰, 항목 5) — loadPromptOptIn() cold-start hydrate 완료 여부.
   // useApnsTripRegistration에 forward해 hydrate 전 register를 억제한다(#2673과 동일 클래스 race).
   const promptOptInHydrated = useUserIntentStore((s) => s.promptOptInHydrated);
+  // #2997 (S3 v2) — trackingOptIn(목적지만 설정, 약한 의향) SSoT. useDestinationStore.
+  // setDestination이 목적지 설정 시 stamp하므로 여기서는 읽어서 forward + cold-start hydrate만.
+  const trackingOptIn = useUserIntentStore((s) => s.trackingOptIn);
+  const loadTrackingOptIn = useUserIntentStore((s) => s.loadTrackingOptIn);
   // #2972 — 앱 실행 재수화·종료 판정이 끝나기 전 register를 억제(유령 트립 재등록 차단).
   const launchReconciliationSettled = useLaunchReconciliationStore((s) => s.settled);
   // #1973 / #2651 — 안내 시작/중단 명시 trigger SSoT. WhileInUse 권한 사용자도 안내 시작 후
@@ -1235,6 +1239,10 @@ export default function HomeScreen() {
     // hydrate 전에는 register 자체를 억제해 storage에 true가 남아있던 trip을 backend KV에서
     // false로 덮어쓰는 race를 막는다.
     promptOptInHydrated,
+    // #2997 (S3 v2) — trackingOptIn(목적지만 설정, 약한 의향) 시그널. 명시 행동 없이 목적지
+    // 설정만으로 stamp돼, backend GPS-free leg-1 boarding-prompt 의향 게이트의 3번째 OR 항이
+    // 된다(근접 실측 필수 조건은 backend가 적용).
+    trackingOptIn,
     launchReconciliationSettled,
     // #2524 — 탑승 커밋(PENDING lock) 시그널. backend가 lockless intermediate "통과" push를
     // 억제하는 gate에 사용 (안내 시작 trip은 이 값이 서지 않아 기존 "통과" 그대로 발사).
@@ -1310,6 +1318,10 @@ export default function HomeScreen() {
     // 살아있어야 재등록 payload에 promptOptIn=true가 계속 실린다 — infoModeEnabled와 동일한
     // storage 복원 패턴.
     void loadPromptOptIn();
+    // #2997 (S3 v2) — cold start 시 trackingOptIn(목적지만 설정) 시그널 hydrate. 안내 시작
+    // 여부와 무관하게 목적지 설정만으로 stamp되므로, infoModeEnabled/promptOptIn과 동일한
+    // storage 복원 패턴이 필요하다.
+    void loadTrackingOptIn();
     // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
     // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).
     // #700 — tripOrigin을 먼저 await으로 hydrate한 다음 destination을 set한다.

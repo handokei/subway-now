@@ -124,6 +124,15 @@ export interface UseApnsTripRegistrationInputs {
    */
   promptOptInHydrated?: boolean;
   /**
+   * #2997 (S3 v2) — "이 트립을 추적해달라"는 약한 의향 시그널. `useUserIntentStore.trackingOptIn`
+   * (목적지 설정만으로 stamp)에서 읽어 전달한다. `promptOptIn`/`infoModeEnabled`와 달리 안내
+   * 시작/응답/열차 탭 같은 명시 행동이 전혀 필요 없다 — backend GPS-free leg-1 boarding-prompt
+   * 의향 게이트에 3번째 OR 항으로 추가되지만, 이 축만으로 열린 trip은 근접 실측이 없으면
+   * backend가 fail-closed로 skip한다(#2651 재발 차단).
+   * 미지정/false: 필드 미송신(graceful) — 기존 동작 완전 보존.
+   */
+  trackingOptIn?: boolean;
+  /**
    * #2972 — 앱 실행/FG 복귀 시 trip 재수화·종료 판정(`useStateRehydration`)이 끝났는가.
    * `useLaunchReconciliationStore.settled`를 그대로 전달한다(HomeScreen만 실제 값을 넘긴다).
    *
@@ -239,6 +248,9 @@ interface RegisterCallInputs {
   infoModeEnabled: boolean;
   /** #2651 — boarding-prompt opt-in(안내 시작) 시그널. true면 backend boarding-prompt 발사 gate 활성. */
   promptOptIn: boolean;
+  /** #2997 (S3 v2) — 목적지 설정만으로 켜지는 약한 의향 시그널. 근접 실측 필수 조건과 함께 backend
+   * GPS-free leg-1 boarding-prompt 의향 게이트의 3번째 OR 항이 된다. */
+  trackingOptIn: boolean;
   /** #2524 — 탑승 커밋(PENDING lock) 시그널. true면 backend가 lockless "통과" push를 억제. */
   boardingCommitted: boolean;
   /** #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 (ADR-023 결정 gate 미사용). */
@@ -362,6 +374,8 @@ async function callRegister(
     ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
     // #2651 — boarding-prompt opt-in(안내 시작) 신호. ON일 때만 송신 — backend는 부재 시 false default.
     ...(input.promptOptIn ? { promptOptIn: true } : {}),
+    // #2997 (S3 v2) — trackingOptIn(목적지만 설정) 신호. ON일 때만 송신 — backend는 부재 시 false default.
+    ...(input.trackingOptIn ? { trackingOptIn: true } : {}),
     // #2524 — 탑승 커밋(PENDING lock) 시그널. ON일 때만 송신 — backend는 부재 시 false default.
     ...(input.boardingCommitted ? { boardingCommitted: true } : {}),
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용으로 저장(ADR-023).
@@ -384,6 +398,7 @@ export function useApnsTripRegistration({
   subsurface = false,
   infoModeEnabled = false,
   promptOptIn = false,
+  trackingOptIn = false,
   promptOptInHydrated = true,
   launchReconciliationSettled = true,
   boardingCommitted = false,
@@ -597,6 +612,7 @@ export function useApnsTripRegistration({
     rawSubsurface: subsurface,
     infoModeEnabled,
     promptOptIn,
+    trackingOptIn,
     promptOptInHydrated,
     launchReconciliationSettled,
     boardingCommitted,
@@ -620,6 +636,7 @@ export function useApnsTripRegistration({
       rawSubsurface: subsurface,
       infoModeEnabled,
       promptOptIn,
+      trackingOptIn,
       promptOptInHydrated,
     launchReconciliationSettled,
       boardingCommitted,
@@ -777,6 +794,7 @@ export function useApnsTripRegistration({
       subsurface: sub,
       infoModeEnabled: ime,
       promptOptIn: poi,
+      trackingOptIn: toi,
       promptOptInHydrated: poih,
       launchReconciliationSettled: lrs,
       boardingCommitted: bc,
@@ -844,6 +862,7 @@ export function useApnsTripRegistration({
       subsurface: sub,
       infoModeEnabled: ime,
       promptOptIn: poi,
+      trackingOptIn: toi,
       boardingCommitted: bc,
       sleepMode: sm,
       createdAt: resolveTripCreatedAt(sessionKey),
@@ -1493,6 +1512,7 @@ export function useApnsTripRegistration({
     etaWithinPollingWindow,
     infoModeEnabled,
     promptOptIn,
+    trackingOptIn,
     promptOptInHydrated,
     launchReconciliationSettled,
     boardingCommitted,

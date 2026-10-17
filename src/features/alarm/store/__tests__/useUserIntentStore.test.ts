@@ -10,11 +10,13 @@ import {
   resetUserIntentInfoMode,
   resetBoardingCommitted,
   resetPromptOptIn,
+  resetTrackingOptIn,
 } from '../useUserIntentStore';
 import {
   USER_INTENT_INFO_MODE_KEY,
   USER_INTENT_BOARDING_COMMITTED_KEY,
   USER_INTENT_PROMPT_OPT_IN_KEY,
+  USER_INTENT_TRACKING_OPT_IN_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -40,6 +42,7 @@ describe('useUserIntentStore (#1923)', () => {
       infoModeEnabled: false,
       boardingCommitted: false,
       promptOptIn: false,
+      trackingOptIn: false,
     });
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
@@ -350,6 +353,88 @@ describe('useUserIntentStore (#1923)', () => {
 
     it('Promise를 반환해 TRIP_BOUND_CLEANUPS 배열 shape에 맞음', () => {
       const result = resetPromptOptIn();
+      expect(result).toBeInstanceOf(Promise);
+    });
+  });
+
+  // #2997 (S3 v2) — trackingOptIn(목적지만 설정, 약한 의향). setPromptOptIn과 동일 persist
+  // pattern — set true/false, load valid/invalid, persist 실패 graceful, reset helper 모두 cover.
+  describe('setTrackingOptIn', () => {
+    it('true → memory state + AsyncStorage 동기화 ("true" 영속화)', async () => {
+      await useUserIntentStore.getState().setTrackingOptIn(true);
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(true);
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(USER_INTENT_TRACKING_OPT_IN_KEY, 'true');
+      expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+    });
+
+    it('false → memory state + AsyncStorage removeItem (키 삭제)', async () => {
+      await useUserIntentStore.getState().setTrackingOptIn(true);
+      (AsyncStorage.setItem as jest.Mock).mockClear();
+      (AsyncStorage.removeItem as jest.Mock).mockClear();
+
+      await useUserIntentStore.getState().setTrackingOptIn(false);
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(USER_INTENT_TRACKING_OPT_IN_KEY);
+      expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    });
+
+    it('setItem 실패해도 throw 없이 graceful (memory는 반영 유지)', async () => {
+      (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('disk full'));
+      await expect(
+        useUserIntentStore.getState().setTrackingOptIn(true),
+      ).resolves.toBeUndefined();
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(true);
+    });
+
+    it('removeItem 실패해도 throw 없이 graceful (memory는 false 유지)', async () => {
+      useUserIntentStore.setState({ trackingOptIn: true });
+      (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('disk error'));
+      await expect(
+        useUserIntentStore.getState().setTrackingOptIn(false),
+      ).resolves.toBeUndefined();
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
+    });
+  });
+
+  describe('loadTrackingOptIn', () => {
+    it('storage에 "true" 있으면 memory state true로 hydrate', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('true');
+      await useUserIntentStore.getState().loadTrackingOptIn();
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(true);
+      expect(AsyncStorage.getItem).toHaveBeenCalledWith(USER_INTENT_TRACKING_OPT_IN_KEY);
+    });
+
+    it('storage가 키 부재(null)면 memory state false 유지', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      await useUserIntentStore.getState().loadTrackingOptIn();
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
+    });
+
+    it('storage value가 임의 string이면 false로 hydrate', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('garbage-value');
+      await useUserIntentStore.getState().loadTrackingOptIn();
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
+    });
+
+    it('getItem 실패해도 throw 없이 graceful (false 유지)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('disk error'));
+      await expect(
+        useUserIntentStore.getState().loadTrackingOptIn(),
+      ).resolves.toBeUndefined();
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
+    });
+  });
+
+  describe('resetTrackingOptIn (trip-bound cleanup helper)', () => {
+    it('현재 true 상태에서 호출 시 false로 reset + AsyncStorage removeItem', async () => {
+      useUserIntentStore.setState({ trackingOptIn: true });
+      await resetTrackingOptIn();
+      expect(useUserIntentStore.getState().trackingOptIn).toBe(false);
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(USER_INTENT_TRACKING_OPT_IN_KEY);
+    });
+
+    it('Promise를 반환해 TRIP_BOUND_CLEANUPS 배열 shape에 맞음', () => {
+      const result = resetTrackingOptIn();
       expect(result).toBeInstanceOf(Promise);
     });
   });

@@ -239,6 +239,26 @@ export interface Trip {
    */
   promptOptIn?: boolean;
   /**
+   * #2997 (S3 v2) — "이 트립을 추적해달라"는 약한 의향 시그널. device가 **목적지만 설정**하면
+   * (안내 시작/응답/열차 탭 전부 없이도) stamp된다 — `promptOptIn`/`infoModeEnabled`(둘 다
+   * 명시 행동 필요)보다 약한 축. 실측 `lockless-no-user-intent=79`(10/15 23:28 덤프)가 보여준
+   * "목적지만 설정하고 그대로 둔 trip 전면 침묵"을 푸는 유일한 신규 축이다.
+   *
+   * `infoModeEnabled` 재사용 금지(ADR-014 "명시 의향 trip = lock 동급 보장" 희석 방지,
+   * `memory/feedback_user_intent_equal_protection` 금지 사례) — 그래서 별도 필드.
+   *
+   * backend 분기 — `maybeFireOriginBoardingPromptGpsFree`(GPS-free leg-1) **단 한 곳**에서만
+   * `promptOptIn === true || infoModeEnabled === true || trackingOptIn === true`로 3-way OR
+   * 대상이 된다. 단, 이 축만으로 열린 trip은 명시 의향 trip과 달리 **근접 실측
+   * (hasProximityReading)이 없으면 fail-closed로 skip**된다(#2651 "집에서 222m 발사" 구조적
+   * 재발 차단 — 명시 의향 trip의 기존 fail-open은 절대 변경하지 않는다).
+   * 환승(`maybeFireLegBoardingPrompt`)·하차(`maybeFireHopEndPrompt`)·매역 push(`:2043`)는
+   * 이 필드를 보지 않는다(범위 밖, v2 plan 명시).
+   *
+   * 미송신/비boolean이면 undefined(=false 취급) — 기존 동작 완전 보존.
+   */
+  trackingOptIn?: boolean;
+  /**
    * #2524 — 사용자가 boardingPrompt [탑승] 응답/배너 탭으로 승차를 "커밋"했지만 지하/arrivals
    * 공백·ambiguity로 실 trainCode를 못 구해 device가 PENDING fallback lock을 생성한 경우에만
    * true로 송신되는 시그널. `infoModeEnabled`(안내 시작/info-mode도 true로 만듦)만으로는 backend가

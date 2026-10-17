@@ -2805,6 +2805,42 @@ describe('useApnsTripRegistration', () => {
     });
   });
 
+  // #2997 (S3 v2) — trackingOptIn(목적지만 설정, 약한 의향) backend forward 검증. promptOptIn과
+  // 동일 wiring pattern이지만 별개 필드 — backend GPS-free leg-1 boarding-prompt 의향 게이트의
+  // 3번째 OR 항(근접 실측 필수 조건은 backend가 적용).
+  describe('trackingOptIn (#2997)', () => {
+    const baseInputs = (trackingOptIn?: boolean) => ({
+      route: directRoute,
+      destination: station,
+      nextStationEtaSeconds: 120,
+      ...(trackingOptIn === undefined ? {} : { trackingOptIn }),
+    });
+    const renderTrackingOptIn = (initial?: boolean) =>
+      renderHook(
+        ({ toi }: { toi?: boolean }) => useApnsTripRegistration(baseInputs(toi)),
+        { initialProps: { toi: initial } },
+      );
+
+    it.each([
+      { label: 'trackingOptIn=true → payload에 포함', toi: true, expected: true },
+      { label: 'trackingOptIn 미지정 → payload에 미포함 (graceful)', toi: undefined, expected: undefined },
+      { label: 'trackingOptIn=false → payload에 미포함 (graceful)', toi: false, expected: undefined },
+    ])('$label', async ({ toi, expected }) => {
+      renderTrackingOptIn(toi);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].trackingOptIn).toBe(expected);
+    });
+
+    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend 3번째 OR 게이트 즉시 활성화)', async () => {
+      const { rerender } = renderTrackingOptIn(false);
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].trackingOptIn).toBeUndefined();
+      rerender({ toi: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].trackingOptIn).toBe(true);
+    });
+  });
+
   // #2651 (PR #2772 전체 리뷰, 항목 5) — cold-start hydrate race. `useUserIntentStore
   // .loadPromptOptIn()`이 끝나기 전에는 `promptOptInHydrated=false`가 전달된다 — 그 상태에서
   // register가 나가면 실제로는 storage에 true가 남아있던 trip의 promptOptIn이 undefined로

@@ -229,6 +229,14 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       if (station) {
         void setTripCorrId(generateTripCorrId());
       }
+      // #2997 (S3 v2) — 목적지 설정(새 trip 시작) 자체가 trackingOptIn(약한 의향) stamp
+      // 트리거다. 안내 시작/응답/열차 탭 같은 명시 행동이 전혀 없어도 켜져, backend
+      // `maybeFireOriginBoardingPromptGpsFree`의 의향 게이트를 3번째 OR 항으로 통과시킨다
+      // (근접 실측이 있어야만 실제 발사 — backend fail-closed 가드). trip 종료(station===null)
+      // 경로는 이 분기에 진입하지 않고 TRIP_BOUND_CLEANUPS의 resetTrackingOptIn이 해제한다.
+      if (station) {
+        void useUserIntentStore.getState().setTrackingOptIn(true);
+      }
       // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
       // #2803 — 클리어는 trip 종료(station === null)에서만. 목적지 설정(station != null)은
       // 사용자가 방금 지도탭에서 명시 설정한 출발역을 보존해야 한다(GPS 폴백 회귀 fix).
