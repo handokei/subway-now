@@ -1,0 +1,96 @@
+appId: com.subwaynow.app
+name: "regression - A3 (#922) — 사전 예약 fire delta wire-up + burst 가드 (#918)"
+# Epic #912 P1 A3(#918) 회귀 가드. 자동 lock(A1) 직후 useTripBoundAlarmScheduler가
+# tripBoundScheduler.prescheduleStationAlerts로 OS local notification에 사전 예약한다.
+# wire-up이 회귀하면 (a) 예약이 등록되지 않거나 (b) 'fireMs <= nowMs' 가드가 깨져 모든 stop이
+# 즉시 burst fire한다. 후자는 tripBoundScheduler.ts 라인 98 주석 ("매역 알림 burst 회귀")
+# 으로 명시된 위험. 본 flow는 (b)를 client-observable로 가드한다.
+#
+# Maestro는 prescheduledMetrics ledger를 직접 읽을 수 없으므로, 실측 fire delta는 단위 테스트가
+# 가드한다(prescheduledMetrics.test.ts, tripBoundScheduler.test.ts). 본 flow는 wire-up 회귀로
+# 인한 즉시-burst 발사를 alarm-overlay 미노출로 가드한다.
+#
+# 전제: scripts/maestro-mock-backend.js가 SCENARIO=a3-preschedule-fire-delta PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+---
+- setLocation:
+    latitude: 37.548014
+    longitude: 127.074658
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 어린이대공원 확인
+- assertVisible:
+    text: "어린이대공원|Children"
+
+# 목적지: 군자 (7호선 단순 trip — A3의 핵심은 자동 lock + preschedule wire-up 안정성)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "군자"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-7-017"
+- waitForAnimationToEnd
+
+# 자동 lock 형성 대기 (A1 경로) — useTripBoundAlarmScheduler는 lock 형성을 트리거로 동작.
+- extendedWaitUntil:
+    visible:
+      id: "boarding-lock-hop-card"
+    timeout: 20000
+
+# 자동 lock 직후 useTripBoundAlarmScheduler가 prescheduleStationAlerts를 호출하면 sequentially
+# 모든 stop의 (early, imminent) 알람을 OS 큐에 등록한다. 정상 동작 시 fire 시각은 모두
+# wall-clock 미래(boardedAt + cumulativeHopMs - lead) → 30초 안에는 fire 0건.
+# 회귀(fireMs <= nowMs 가드 손상) 시 등록과 동시에 burst fire → alarm-overlay 즉시 노출.
+#
+# 30초 윈도 선정 근거: 어린이대공원→군자 단일 hop legSeconds=80s(7-018|7-017). 정상 fire 시각은
+# boardedAt + 80s - 10s(imminent lead) = boardedAt + 70s. lock 형성을 T=0s 기준으로 30초 대기 →
+# 정상 fire는 T≈70s에 발생하므로 30s 윈도는 안전하게 미발사 구간이다. 회귀로 burst가 나면 lock
+# 형성 직후 즉시 fire → 30초 안에 alarm-overlay 노출 → 본 flow가 실패한다.
+- repeat:
+    times: 30
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# A3 회귀 검증: burst fire 0건. 정상이면 30초 안에 alarm-overlay/곧 도착/하차 알림 모두 미노출.
+- assertNotVisible:
+    id: "alarm-overlay"
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# lock은 유지 — preschedule이 lock을 부수면 안 됨.
+- assertVisible:
+    id: "boarding-lock-hop-card"
+
+# 트립 chip은 어린이대공원에 안정 — preschedule이 currentStation을 ghost로 점프시키면 안 됨.
+- assertVisible:
+    text: "어린이대공원|Children"

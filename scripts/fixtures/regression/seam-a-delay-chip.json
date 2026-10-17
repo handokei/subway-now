@@ -1,0 +1,88 @@
+{
+  "name": "Seam A — boarding lock 지연 칩 노출 (#897)",
+  "seam": "A",
+  "_doc": [
+    "Epic #896 Seam A(#897) 회귀 가드. 사용자가 BoardingTrainList에서 열차를 lock한 시점의 ETA(initialEtaSeconds)",
+    "보다 이후 폴링의 동일 trainCode 잔여 ETA가 임계값(+180s) 이상 늘면 BoardingLockHopCard에",
+    "'+N분 지연' 칩(testID=boarding-lock-hop-delay-chip)이 노출되어야 한다.",
+    "",
+    "fixture 구성:",
+    "  - 어린이대공원(7-016) phase 0~30s: trainCode 7180 arrivalSeconds=120 → 사용자가 row 탭 → lock 형성",
+    "    (lock.initialEtaSeconds=120 snapshot).",
+    "  - phase 30s 이후: 동일 trainCode 7180 arrivalSeconds=360(=lock 시점 +240s, 임계값 +180s 초과)",
+    "    → BoardingLockHopCard의 currentEtaSeconds=360 → '+4분 지연' 칩 노출.",
+    "  - 목적지 군자(7-017)는 ETA 큰 값으로 응답해 false-positive 알람 발사 차단.",
+    "",
+    "기대 client-observable 동작: lock 생성 후 60초+ 시점에 boarding-lock-hop-delay-chip 노출,",
+    "ghost 알람 0건, 트립 chip은 어린이대공원으로 안정."
+  ],
+  "arrivals": {
+    "어린이대공원": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "장암",
+              "arrivalMinutes": 2,
+              "arrivalSeconds": 120,
+              "statusMessage": "2분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      },
+      {
+        "fromMs": 30000,
+        "body": {
+          "up": [
+            {
+              "destination": "장암",
+              "arrivalMinutes": 6,
+              "arrivalSeconds": 360,
+              "statusMessage": "6분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "군자": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "군자",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  }
+}

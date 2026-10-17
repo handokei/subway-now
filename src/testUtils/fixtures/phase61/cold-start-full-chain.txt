@@ -1,0 +1,73 @@
+[Subway debug] 2026-06-26T09:05:00.000Z
+
+## GPS
+lat=37.56, lng=127.04, speed=- m/s, accuracy=350.0 m
+fused=(no fused signal)
+state=fg, lastFix=09:05:00
+subsurface=true (readings=8)
+
+## Nearest
+(no nearest — accuracy too low)
+
+## Fusion
+confidence=gps-only-underground, source=gps
+tier=low
+signalMask=UUU
+
+## Trip
+lockless=false
+tripStartedAt=09:05:30
+currentHopIndex=0
+route hop count=4
+displayOnlyEstimate=(none)
+lifecyclePhase=active
+
+## Sleep
+sleepMode=off
+firstHopApproaching=false
+
+## Arrival
+(no arrival data)
+
+## Silent Push
+permission=granted
+apnsToken=…ab12cd34
+activeTrip=(none)
+apnsEnv=production
+taskRegistration=success
+route=(none)
+destination=(none)
+currentStation=(none)
+received=0 (last (never))
+receivedByKind=stn=0 xfer=0 dst=0 unk=0
+fired=0 (last (never))
+lastSkipped=(never)
+lowPowerMode=off
+
+## Backend SSoT
+(no recent SSoT push)
+
+## Scheduled queue (0)
+
+## Gates
+movement-low-accuracy=5
+
+## BoardingLock
+active=no
+
+## Cold Start
+detected=yes
+candidatesCount=3
+weightedCount=3
+pickerShown=yes
+userSelected=yes
+
+## Estimator State (1)
+09:05:30 | none | - idx=-
+
+## Notifications fired (0)
+
+## Alarm log (2)
+sources: cold-start-candidate-select=1, fg=1
+09:05:30 | cold-start-candidate-select | fired | user-selected | 왕십리
+09:05:35 | fg | suppressed | lockless-no-user-intent | station-passed | 왕십리

@@ -1,0 +1,48 @@
+name: Swift Safety Net CI
+
+# #2839 — Swift는 CI 테스트가 전무해 컴파일 에러가 아무 데서도 안 잡히던 갭을 메운다.
+# 이 프로젝트는 managed Expo 프로젝트라 ios/ 디렉토리가 checked-in되지 않고 `expo prebuild` +
+# `pod install`로만 생성된다 — 이 job에서 그 전체 파이프라인(prebuild → pod install →
+# xcodebuild)을 돌리는 것은 Expo/CocoaPods/네이티브 타겟 설정에 강결합돼 오탐이 잦고
+# CI 시간이 크게 늘어난다. 그래서 최소 안전망으로 `swiftc -parse`(문법 파싱 단계)만 돈다.
+#
+# 이 체크가 잡는 것: 중괄호/괄호 불균형, 잘못된 선언 위치, 키워드 오타 등 구문 오류.
+# 이 체크가 못 잡는 것: 타입 오류, 존재하지 않는 심볼/API 참조, ActivityKit/UIKit/
+# ExpoModulesCore 등 프레임워크·모듈 의존 타입체크, 링크 오류. 이런 클래스의 에러는
+# 여전히 사용자의 다음 실기기 빌드(`npm run ios` / EAS)에서만 잡힌다.
+
+on:
+  pull_request:
+    paths:
+      - 'modules/**/*.swift'
+      - 'targets/**/*.swift'
+      - 'ios/**'
+  push:
+    branches: [main, dev]
+    paths:
+      - 'modules/**/*.swift'
+      - 'targets/**/*.swift'
+      - 'ios/**'
+
+jobs:
+  swift-parse-check:
+    name: Swift Parse Check
+    runs-on: macos-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: swiftc -parse (구문 검증)
+        run: |
+          set -uo pipefail
+          FAIL=0
+          FILES=$(find modules targets -name "*.swift" 2>/dev/null; [ -d ios ] && find ios -name "*.swift" 2>/dev/null; true)
+          for file in $FILES; do
+            echo "parsing: $file"
+            if ! swiftc -parse "$file"; then
+              echo "구문 오류: $file"
+              FAIL=1
+            fi
+          done
+          exit $FAIL

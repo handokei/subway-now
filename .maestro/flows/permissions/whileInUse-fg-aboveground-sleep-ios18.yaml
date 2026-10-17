@@ -1,0 +1,54 @@
+appId: com.subwaynow.app
+name: "permissions - WhileInUse × FG × 지상 × 취침 (#923 cell)"
+# 권한 매트릭스 cell.
+# 차원: permission=whileInUse, appState=fg, environment=aboveground, mode=sleep, os=ios18
+#
+# 검증 목표:
+#   - 권한이 "사용하는 동안"으로 다운그레이드된 상태에서 취침 모드를 켜도
+#     홈 화면이 정상 렌더되고 매역 알람 진입점이 유지됨을 보장한다.
+#   - 취침 모드 토글이 권한 약화와 무관하게 reachable 해야 한다 (회귀 가드).
+#
+# 전제: baseline cell과 동일 (EXPO_PUBLIC_E2E_MOCK=1, 강남역 fixture).
+---
+- setLocation:
+    latitude: 37.497942
+    longitude: 127.027621
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: inuse
+      notifications: allow
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+- assertVisible:
+    text: "강남|Gangnam"
+
+# 취침 모드 토글 영역까지 스크롤 후 ON 전환
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+
+- tapOn:
+    id: "home-sleep-mode-switch"
+
+# 토글 후에도 매역 알람 진입점이 유지되어야 한다 (권한 약화 + 취침 조합 회귀 가드)
+- assertVisible:
+    id: "home-sleep-mode-switch"

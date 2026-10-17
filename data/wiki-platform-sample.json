@@ -1,0 +1,247 @@
+{
+  "generatedAt": "2026-06-10T12:41:46.301Z",
+  "source": "ko.wikipedia.org",
+  "license": "CC BY-SA 4.0",
+  "results": [
+    {
+      "stationName": "소요산",
+      "line": "1",
+      "wikiTitle": null,
+      "rawField": null,
+      "layout": "unknown",
+      "confidence": "low"
+    },
+    {
+      "stationName": "시청",
+      "line": "2",
+      "wikiTitle": "시청역 (서울)",
+      "rawField": "[[수도권 전철 1호선]] : 2면 2선<br/>[[서울 지하철 2호선]] : 1면 2선",
+      "layout": "side",
+      "confidence": "medium"
+    },
+    {
+      "stationName": "대화",
+      "line": "3",
+      "wikiTitle": "대화역",
+      "rawField": "1면 2선",
+      "layout": "island",
+      "confidence": "medium"
+    },
+    {
+      "stationName": "당고개",
+      "line": "4",
+      "wikiTitle": null,
+      "rawField": null,
+      "layout": "unknown",
+      "confidence": "low"
+    },
+    {
+      "stationName": "방화",
+      "line": "5",
+      "wikiTitle": "방화역",
+      "rawField": "2면 3선",
+      "layout": "mixed",
+      "confidence": "low"
+    },
+    {
+      "stationName": "장암",
+      "line": "7",
+      "wikiTitle": "장암역",
+      "rawField": "1면 1선",
+      "layout": "mixed",
+      "confidence": "low"
+    },
+    {
+      "stationName": "개화",
+      "line": "9",
+      "wikiTitle": "개화역",
+      "rawField": "1면 2선([[섬식 승강장|섬식)]]",
+      "layout": "island",
+      "confidence": "high"
+    },
+    {
+      "stationName": "응암",
+      "line": "6",
+      "wikiTitle": "응암역",
+      "rawField": "1면 2선([[섬식 승강장|섬식]])",
+      "layout": "island",
+      "confidence": "high"
+    },
+    {
+      "stationName": "암사",
+      "line": "8",
+      "wikiTitle": "암사역",
+      "rawField": "2면 2선",
+      "layout": "side",
+      "confidence": "medium"
+    },
+    {
+      "stationName": "서울역",
+      "line": "airport",
+      "wikiTitle": "서울역",
+      "rawField": "경부선 : 8면 20선<br>경의선  : 1면 6선 || 각 1면 2선([[섬식 승강장|섬식]])",
+      "layout": "mixed",
+      "confidence": "medium"
+    },
+    {
+      "stationName": "운천",
+      "line": "gyeongui",
+      "wikiTitle": null,
+      "rawField": null,
+      "layout": "unknown",
+      "confidence": "low"
+    },
+    {
+      "stationName": "인천",
+      "line": "bundang",
+      "wikiTitle": "인천역",
+      "rawField": "[[수도권 전철 1호선|1호선]]: 2면 3선<br />[[수인·분당선]] : 1면 2선",
+      "layout": "mixed",
+      "confidence": "low"
+    },
+    {
+      "stationName": "광교(경기대)",
+      "line": "sinbundang",
+      "wikiTitle": null,
+      "rawField": null,
+      "layout": "unknown",
+      "confidence": "low"
+    },
+    {
+      "stationName": "동두천",
+      "line": "1",
+      "wikiTitle": "동두천역",
+      "rawField": "3면 14선",
+      "layout": "mixed",
+      "confidence": "low"
+    },
+    {
+      "stationName": "을지로입구",
+      "line": "2",
+      "wikiTitle": "을지로입구역",
+      "rawField": "2면 2선([[상대식 승강장|상대식]])",
+      "layout": "side",
+      "confidence": "high"
+    },
+    {
+      "stationName": "주엽",
+      "line": "3",
+      "wikiTitle": "주엽역",
+      "rawField": "2면 2선([[상대식 승강장|상대식]])",
+      "layout": "side",
+      "confidence": "high"
+    },
+    {
+      "stationName": "상계",
+      "line": "4",
+      "wikiTitle": "상계역",
+      "rawField": "2면 2선([[상대식 승강장|상대식]])",
+      "layout": "side",
+      "confidence": "high"
+    },
+    {
+      "stationName": "개화산",
+      "line": "5",
+      "wikiTitle": "개화산역",
+      "rawField": "2면 2선([[상대식 승강장|상대식]])",
+      "layout": "side",
+      "confidence": "high"
+    },
+    {
+      "stationName": "도봉산",
+      "line": "7",
+      "wikiTitle": "도봉산역",
+      "rawField": "2면 4선 || 2면 2선",
+      "layout": "mixed",
+      "confidence": "medium"
+    },
+    {
+      "stationName": "김포공항",
+      "line": "9",
+      "wikiTitle": "김포공항역",
+      "rawField": "2면 2선 ([[상대식 승강장|상대식]]) || 지하 3층: 2면 3선([[혼합식 승강장|혼합식]])<br />지하 4층: 1면 2선([[섬식 승강장|섬식]]) || 2면 2선([[상대식 승강장|상대식]]) || 2면 2선 ([[상대식 승강장|상대식]]) 지하 12층(지하 85m깊이에 건설)",
+      "layout": "mixed",
+      "confidence": "medium"
+    },
+    {
+      "stationName": "역촌",
+      "line": "6",
+      "wikiTitle": "역촌역",
+      "rawField": "1면 1선([[단선 승강장|단선]])",
+      "layout": "mixed",
+      "confidence": "low"
+    },
+    {
+      "stationName": "천호",
+      "line": "8",
+      "wikiTitle": "천호역",
+      "rawField": "각각 2면 2선([[상대식 승강장|상대식]])",
+      "layout": "side",
+      "confidence": "high"
+    },
+    {
+      "stationName": "공덕",
+      "line": "airport",
+      "wikiTitle": "공덕역",
+      "rawField": "서울 지하철 5호선 : 1면 2선([[섬식 승강장|섬식)]]<br />서울 지하철 6호선 : 2면 2선([[상대식 승강장|상대식)]]<br /> || 2면 2선([[상대식 승강장|상대식)]] || 2면 2선([[상대식 승강장|상대식)]]",
+      "layout": "mixed",
+      "confidence": "medium"
+    },
+    {
+      "stationName": "임진강",
+      "line": "gyeongui",
+      "wikiTitle": "임진강역",
+      "rawField": "1면 1선",
+      "layout": "mixed",
+      "confidence": "low"
+    },
+    {
+      "stationName": "신포",
+      "line": "bundang",
+      "wikiTitle": null,
+      "rawField": null,
+      "layout": "unknown",
+      "confidence": "low"
+    },
+    {
+      "stationName": "광교중앙(아주대)",
+      "line": "sinbundang",
+      "wikiTitle": null,
+      "rawField": null,
+      "layout": "unknown",
+      "confidence": "low"
+    },
+    {
+      "stationName": "보산",
+      "line": "1",
+      "wikiTitle": "보산역",
+      "rawField": "2면 2선 ([[상대식 승강장|상대식]])",
+      "layout": "side",
+      "confidence": "high"
+    },
+    {
+      "stationName": "을지로3가",
+      "line": "2",
+      "wikiTitle": "을지로3가역",
+      "rawField": "[[서울 지하철 2호선|2호선]]: 2면 2선([[상대식 승강장|상대식]])<br />[[서울 지하철 3호선|3호선]]: 1면 2선([[섬식 승강장|섬식]])",
+      "layout": "mixed",
+      "confidence": "high"
+    },
+    {
+      "stationName": "정발산",
+      "line": "3",
+      "wikiTitle": "정발산역",
+      "rawField": "2면 2선([[상대식 승강장|상대식]])",
+      "layout": "side",
+      "confidence": "high"
+    },
+    {
+      "stationName": "노원",
+      "line": "4",
+      "wikiTitle": "노원역",
+      "rawField": "서울 지하철 4호선: 2면 2선([[상대식 승강장|상대식]])<br />서울 지하철 7호선: 1면 2선(섬식)",
+      "layout": "mixed",
+      "confidence": "high"
+    }
+  ]
+}

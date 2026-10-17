@@ -1,0 +1,73 @@
+appId: com.subwaynow.app
+name: "regression - Seam F (#922) — trainCode 사라짐 후 false-positive 차단"
+# 2026-06-05 13:24~28 실기기 회귀 재현. 7호선 어린이대공원에서 추적 중이던 trainCode 7174가
+# OpenAPI 응답에서 사라졌을 때, 다음 후보(7176)로 부드럽게 transition하면서 client UI는
+# 'lockMissing' 또는 ghost '곧 도착' 알람을 발사하지 않아야 한다.
+#
+# 전제: scripts/maestro-mock-backend.js가 SCENARIO=seam-f-13-24 PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+# fixture는 25s 시점에 7174를 응답에서 제거 → flow는 그 이후로 충분히 대기해 검증.
+---
+- setLocation:
+    latitude: 37.548014
+    longitude: 127.074658
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 어린이대공원 확인 (한/영 둘 다 매칭)
+- assertVisible:
+    text: "어린이대공원|Children"
+
+# 목적지: 군자 (7호선 단순 trip — Seam F의 핵심은 환승이 아닌 trainCode 사라짐 자체)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "군자"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-7-017"
+- waitForAnimationToEnd
+
+# 트립 형성 후 90초 대기 — fixture 25s 시점 trainCode 사라짐 + 그 이후 65s 회복 관찰.
+# 회귀(false-positive 발사)는 보통 사라짐 직후 1~2 cycle(30~60s) 안에 발생했다.
+- repeat:
+    times: 90
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# Seam F 회귀 검증: lockMissing/곧 도착/하차 알림 UI 노출 시 실패.
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# 트립 진행 chip은 어린이대공원으로 안정 — trainCode 7174 사라져도 다음 후보(7176)로
+# silent transition. ghost waypoint advance가 일어났다면 chip이 군자로 잘못 advance.
+- assertVisible:
+    text: "어린이대공원|Children"

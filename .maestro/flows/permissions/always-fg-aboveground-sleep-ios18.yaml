@@ -1,0 +1,52 @@
+appId: com.subwaynow.app
+name: "permissions - Always × FG × 지상 × 취침 (#923 cell)"
+# 권한 매트릭스 cell.
+# 차원: permission=always, appState=fg, environment=aboveground, mode=sleep, os=ios18
+#
+# 검증 목표:
+#   - 매역 알림 SLA의 정본 조합(권한=항상 + 취침 모드 ON)에서 홈 화면이 정상
+#     렌더되고 취침 모드 토글이 reachable 함을 보장한다.
+#   - 다음 PR(실측 recall)에서 본 cell의 expectedRecallPct를 채울 예정.
+#
+# 전제: baseline cell과 동일 (EXPO_PUBLIC_E2E_MOCK=1, 강남역 fixture).
+---
+- setLocation:
+    latitude: 37.497942
+    longitude: 127.027621
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+- assertVisible:
+    text: "강남|Gangnam"
+
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+
+- tapOn:
+    id: "home-sleep-mode-switch"
+
+- assertVisible:
+    id: "home-sleep-mode-switch"

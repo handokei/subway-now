@@ -1,0 +1,22 @@
+{
+  "_meta": {
+    "source": "서울교통공사 지하철혼잡도정보 (서울 열린데이터광장 OA-12928)",
+    "url": "https://data.seoul.go.kr/dataList/OA-12928/F/1/datasetView.do",
+    "note": "PoC용 발췌 샘플. 실제 API 키 발급 후 SeoulOdCongestionProvider로 대체. 값은 공개 명세에 따른 평균 혼잡도(%) 추정치이며 실시간이 아닌 30분 단위 평균.",
+    "issue": "#1097 P0-A"
+  },
+  "entries": [
+    { "line": "2", "stationName": "강남", "direction": "up", "dayType": "weekday", "timeSlot": "08:00", "raw": 155 },
+    { "line": "2", "stationName": "강남", "direction": "up", "dayType": "weekday", "timeSlot": "08:30", "raw": 168 },
+    { "line": "2", "stationName": "강남", "direction": "up", "dayType": "weekday", "timeSlot": "09:00", "raw": 142 },
+    { "line": "2", "stationName": "강남", "direction": "down", "dayType": "weekday", "timeSlot": "08:00", "raw": 95 },
+    { "line": "2", "stationName": "강남", "direction": "down", "dayType": "weekday", "timeSlot": "08:30", "raw": 110 },
+    { "line": "2", "stationName": "강남", "direction": "up", "dayType": "saturday", "timeSlot": "08:00", "raw": 60 },
+    { "line": "2", "stationName": "강남", "direction": "up", "dayType": "sunday", "timeSlot": "08:00", "raw": 48 },
+    { "line": "2", "stationName": "잠실", "direction": "up", "dayType": "weekday", "timeSlot": "08:30", "raw": 140 },
+    { "line": "2", "stationName": "잠실", "direction": "down", "dayType": "weekday", "timeSlot": "18:00", "raw": 152 },
+    { "line": "9", "stationName": "여의도", "direction": "up", "dayType": "weekday", "timeSlot": "08:00", "raw": 175 },
+    { "line": "9", "stationName": "여의도", "direction": "up", "dayType": "weekday", "timeSlot": "08:30", "raw": 188 },
+    { "line": "9", "stationName": "여의도", "direction": "down", "dayType": "weekday", "timeSlot": "18:30", "raw": 165 }
+  ]
+}
