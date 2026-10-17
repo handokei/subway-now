@@ -193,7 +193,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legAdvanceDirectionUnknownBlocked: 0, promptDirectionUnknownBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legAdvanceDirectionUnknownBlocked: 0, promptDirectionUnknownBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0, trackingOptInProximityMissingBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -13130,6 +13130,148 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     // #916 follow-up B — GPS-free onFired도 lastAutoPromptedAt을 stamp한다(구 9단 경로가 은퇴
     // 전까지 담당하던 동일 필드 — GPS-free는 별도 30분 dedup 게이트 없이 stamp만 유지).
     expect(trip.lastAutoPromptedAt).toBe(NOW);
+  });
+
+  // #2997 (S3 v2) — `trackingOptIn`(목적지 설정만으로 켜지는 약한 의향 축). 기존 의향 게이트
+  // (promptOptIn/infoModeEnabled)에 OR로 추가해 "목적지만 설정" trip의 출발역 탑승 프롬프트
+  // 영구 침묵(lockless-no-user-intent=79, 실측 #2997 본문)을 푼다. 단, 약한 축으로 열린
+  // trip은 #2651("집에서 222m 발사") 재발을 구조적으로 막기 위해 근접 실측(hasProximityReading)이
+  // 있어야만 발사된다 — reading 부재는 fail-closed(명시 의향 trip의 기존 fail-open과 반대).
+  describe('#2997 — trackingOptIn(목적지만 설정) 축: 열지만 근접 실측 필수', () => {
+    // 이 describe 전용 — 명시 의향(promptOptIn/infoModeEnabled) 둘 다 없고 trackingOptIn만 true.
+    function makeTrackingOptInOnlyTrip(overrides: Partial<Trip> = {}): Trip {
+      return makeTrip({
+        promptOptIn: false,
+        infoModeEnabled: false,
+        trackingOptIn: true,
+        ...overrides,
+      } as Partial<Trip>);
+    }
+
+    async function seedLiveGps(kv: InMemoryKV, token: string, ts: number, accuracy: number): Promise<void> {
+      await appendPositionPoint(kv as unknown as KVNamespace, token, {
+        lat: 0,
+        lng: 0,
+        accuracy,
+        ts,
+        motion: 'stationary',
+      });
+    }
+
+    it('① trackingOptIn만 있는 trip + 근접(80m) + 살아있는 GPS → 발사(기존엔 NoOptIn으로 영구 skip)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrackingOptInOnlyTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 80,
+          originAccuracyM: 10,
+        },
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW, 10);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+
+    it('② [핵심 가드] trackingOptIn만 있는 trip + proximity reading 부재(지하, promptGeoContext 자체 없음) → 발사되지 않는다(fail-closed, #2651 재발 차단)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // promptGeoContext 자체가 없다 — 명시 의향 trip이면 이 상태는 fail-open(발사 허용,
+      // 위 #2653 describe의 "함정 고정" 테스트가 그 동작을 고정)이지만, trackingOptIn-only
+      // trip은 반대로 발사되지 않아야 한다.
+      const trip = makeTrackingOptInOnlyTrip();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.trackingOptInProximityMissingBlocked).toBe(1);
+    });
+
+    it('③ trackingOptIn만 있는 trip + reading 있지만 멀다(5000m) → 발사되지 않는다(기존 거리 게이트 유지)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrackingOptInOnlyTrip({
+        promptGeoContext: {
+          origin: { lat: 0, lng: 0 },
+          nextStation: { lat: 0, lng: 0 },
+          direction: null,
+          originDistanceM: 5000,
+          originAccuracyM: 10,
+        },
+      });
+      const kv = new InMemoryKV();
+      await seedLiveGps(kv, trip.token, NOW, 10);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
+    });
+
+    it('④ 의향 축이 전부 없으면(promptOptIn/infoModeEnabled/trackingOptIn 모두 false) 기존대로 skip', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptOptIn: false,
+        infoModeEnabled: false,
+        trackingOptIn: false,
+      } as Partial<Trip>);
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it('⑤ [동작 불변 가드] 명시 의향(promptOptIn=true) trip은 trackingOptIn과 무관하게 reading 부재에도 기존처럼 발사(fail-open 유지)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      // makeTrip() 기본값 = promptOptIn:true, infoModeEnabled:true, trackingOptIn 미설정.
+      const trip = makeTrip();
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.trackingOptInProximityMissingBlocked).toBe(0);
+    });
   });
 
   // #2854 — 프롬프트 발사 성공 순간 LA도 alert(소리·배너)로 함께 갱신한다. 공유 발사 본체
