@@ -4,6 +4,7 @@ import {
   TRIP_BOUND_CLEANUPS,
   runTripBoundCleanups,
   cancelTripBoundOsQueue,
+  resumeNavigation,
   __resetDefensiveCancelForTest,
 } from '../tripBoundCleanups';
 import {
@@ -498,6 +499,48 @@ describe('tripBoundCleanups', () => {
       (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
       await clearNavigationPausedAt();
       expect(AsyncStorage.removeItem).toHaveBeenCalled();
+    });
+
+    // #2293 (plan 2026-10-15 pausedAt resume channel asymmetry, S1) — 재개 chokepoint 단일화.
+    // startNavigation() 직접 호출 3곳(안내 시작 버튼 / boardingPrompt [탑승] 응답 /
+    // BoardingTrainList 직접 탭) 중 2곳이 storage clear를 수기로 안 들고 와 stale
+    // NAVIGATION_PAUSED_AT_KEY가 남고, backstop이 재개된 활성 trip을 DELETE하는 회귀의 fix.
+    // resumeNavigation()은 memory(startNavigation)와 storage(clearNavigationPausedAt)를 단일
+    // 호출로 함께 처리해, 호출부마다 storage clear를 기억해야 하는 구조 자체를 제거한다.
+    describe('resumeNavigation (#2293 S1 — 재개 chokepoint 단일화)', () => {
+      it('resumeNavigation() 호출 시 storage NAVIGATION_PAUSED_AT_KEY가 제거된다 (storage 채널 — 최종 값 assert)', async () => {
+        (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+
+        resumeNavigation();
+        // clearNavigationPausedAt은 fire-and-forget(비await) — 내부 microtask flush 대기.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const removedKeys = (AsyncStorage.removeItem as jest.Mock).mock.calls.map(
+          (c) => c[0] as string,
+        );
+        expect(removedKeys).toContain(
+          jest.requireActual('../../../../shared/constants/storageKeys').NAVIGATION_PAUSED_AT_KEY,
+        );
+      });
+
+      it('resumeNavigation() 호출 시 memory pausedAt이 null로 clear된다 (memory 채널)', async () => {
+        useNavigationStore.setState({ navigationActive: false, pausedAt: 1_700_000_000_000 });
+        (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+
+        resumeNavigation();
+
+        expect(useNavigationStore.getState().pausedAt).toBeNull();
+      });
+
+      it('resumeNavigation() 호출 시 navigationActive가 true로 set된다 (startNavigation 효과)', () => {
+        useNavigationStore.setState({ navigationActive: false, pausedAt: null });
+        (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+
+        resumeNavigation();
+
+        expect(useNavigationStore.getState().navigationActive).toBe(true);
+      });
     });
 
     // #2371 (Part of #2306) — navigationActive는 사용자 "일시정지" 버튼(stopNavigation)에만
