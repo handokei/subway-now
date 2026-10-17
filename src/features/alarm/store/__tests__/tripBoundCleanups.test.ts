@@ -541,6 +541,27 @@ describe('tripBoundCleanups', () => {
 
         expect(useNavigationStore.getState().navigationActive).toBe(true);
       });
+
+      // acceptance 5 (콜드 셀) — 앱 재시작 후 memory pausedAt은 이미 null(휘발성 reset)이지만,
+      // storage stamp(NAVIGATION_PAUSED_AT_KEY)는 영속이라 재시작 전 일시정지의 잔존 가능성이
+      // 있다. memory 채널을 같이 세면 재시작이 이미 null로 만들어 "틀린 이유로 green"이 되므로
+      // (검사 #10), storage 키의 최종 값만 assert한다 — memory는 cold-start 기본값(false/null)
+      // 그대로 둔 채로 재개를 호출해도 storage clear가 실제로 일어나는지만 확인.
+      it('resumeNavigation() 호출 시 콜드 재시작 시나리오(memory 이미 cold-start 기본값)에서도 storage stamp가 제거된다', async () => {
+        useNavigationStore.setState({ navigationActive: false, pausedAt: null });
+        (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+
+        resumeNavigation();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const removedKeys = (AsyncStorage.removeItem as jest.Mock).mock.calls.map(
+          (c) => c[0] as string,
+        );
+        expect(removedKeys).toContain(
+          jest.requireActual('../../../../shared/constants/storageKeys').NAVIGATION_PAUSED_AT_KEY,
+        );
+      });
     });
 
     // #2371 (Part of #2306) — navigationActive는 사용자 "일시정지" 버튼(stopNavigation)에만
