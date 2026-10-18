@@ -924,6 +924,15 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   trackingOptInProximityMissingBlocked: number;
   /**
+   * #3025 — `trackingOptIn` 단독(명시 의향 promptOptIn/infoModeEnabled 둘 다 없음) trip이 환승
+   * leg-2 탑승(`maybeFireLegBoardingPrompt`) 또는 하차(`maybeFireHopEndPrompt`) 프롬프트에서
+   * 탑승 증거(`lockEverAttached`/`boardingCommitted`) 부재로 fail-closed skip한 누적 횟수.
+   * 위 `trackingOptInProximityMissingBlocked`(출발역, 근접 실측 부재)와 대칭 — 이 카운터가
+   * 오르는 것은 약한 축 trip에서 #2926(legResolveStreak false positive) 상속을 거부하는
+   * 가드가 실제로 작동 중이라는 증거다. `legResolveStreak`은 의도적으로 증거에서 제외한다.
+   */
+  trackingOptInNoBoardingEvidenceBlocked: number;
+  /**
    * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 arvlCd(ENTERING/ARRIVED)
    * ground truth로 통과(anchor stamp + hop-end prompt + waypoint slice)한 누적 횟수. 종전에는
    * `runLocklessIntermediate`/`tryFireConsensusTrainLeg` 둘 다 kind==='intermediate'에만 반응해
@@ -1495,6 +1504,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     originGpsFreeBoardingPromptBlocked: 0,
     originGpsFreeSnapshotDistrusted: 0,
     trackingOptInProximityMissingBlocked: 0,
+    trackingOptInNoBoardingEvidenceBlocked: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
