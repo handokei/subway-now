@@ -1197,7 +1197,7 @@ export default function HomeScreen() {
   useBackgroundLocation(destination);
   const permissionWatcher = useLocationPermissionWatcher();
   useLiveActivityDismissBridge();
-  useLiveActivityPreBoardingLifecycle();
+  useLiveActivityPreBoardingLifecycle(route);
   // #2828 — lock 이후/BG 재개 시 아무도 LA를 start 안 하던 갭. FG active 상태에서 트립은
   // 활성인데 LA가 없으면 (update→start fall-through로 멱등) 확보한다. currentStation은
   // #2790과 동일하게 in-app이 채택한 result?.station 앵커를 따른다.
