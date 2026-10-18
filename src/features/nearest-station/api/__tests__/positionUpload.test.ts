@@ -652,6 +652,69 @@ describe('postBoardingConfirm (#2852)', () => {
     expect(JSON.parse(init.body)).toEqual({ action: 'boarded', station: '강남', line: '2' });
     expect(JSON.parse(init.body)).not.toHaveProperty('trainCode');
   });
+
+  // #3055 C — 응답 body 파싱(`resolvedTrainCode`/`resolveTier`). 기존 body 미파싱 계약은 하위호환.
+  describe('응답 body 파싱 (#3055)', () => {
+    function mockBody(body: unknown): void {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => body,
+      } as unknown as Response);
+    }
+    beforeEach(() => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    });
+
+    it('boarded + resolvedTrainCode/resolveTier → 결과에 실린다', async () => {
+      mockBody({ ok: true, lockState: 'leg1', resolvedTrainCode: '7325', resolveTier: 'assertion-departed' });
+      expect(await postBoardingConfirm('tok', 'boarded', '용마산', '7')).toEqual({
+        ok: true,
+        status: 200,
+        resolvedTrainCode: '7325',
+        resolveTier: 'assertion-departed',
+      });
+    });
+
+    it('resolveTier 없이 resolvedTrainCode만 → tier 키 없음', async () => {
+      mockBody({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
+      const r = await postBoardingConfirm('tok', 'boarded', '용마산', '7');
+      expect(r).toEqual({ ok: true, status: 200, resolvedTrainCode: '7246' });
+      expect(r).not.toHaveProperty('resolveTier');
+    });
+
+    it('[거부] 알 수 없는 resolveTier 값은 버린다(타입 계약 밖 값 전파 금지)', async () => {
+      mockBody({ resolvedTrainCode: '7246', resolveTier: 'mystery' });
+      const r = await postBoardingConfirm('tok', 'boarded', '용마산', '7');
+      expect(r).toEqual({ ok: true, status: 200, resolvedTrainCode: '7246' });
+    });
+
+    it('[거부] resolvedTrainCode가 문자열이 아니거나 빈 문자열이면 무시', async () => {
+      for (const bad of [123, '', null, {}]) {
+        mockBody({ resolvedTrainCode: bad, resolveTier: 'assertion-departed' });
+        expect(await postBoardingConfirm('tok', 'boarded', '용마산', '7')).toEqual({ ok: true, status: 200 });
+      }
+    });
+
+    it('[거부] body 파싱 실패(json throw)/null body여도 ok 결과는 유지 — throw 금지', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error('bad json');
+        },
+      } as unknown as Response);
+      expect(await postBoardingConfirm('tok', 'boarded', '용마산', '7')).toEqual({ ok: true, status: 200 });
+      mockBody(null);
+      expect(await postBoardingConfirm('tok', 'boarded', '용마산', '7')).toEqual({ ok: true, status: 200 });
+    });
+
+    it('[거부] disembarked/not-boarded 응답의 필드는 소비하지 않는다', async () => {
+      mockBody({ resolvedTrainCode: '7325' });
+      expect(await postBoardingConfirm('tok', 'disembarked', '용마산', '7')).toEqual({ ok: true, status: 200 });
+      expect(await postBoardingConfirm('tok', 'not-boarded', '용마산', '7')).toEqual({ ok: true, status: 200 });
+    });
+  });
 });
 
 const RESPONSE_EMBED_SUGGESTION: LockSuggestionMirror = {
