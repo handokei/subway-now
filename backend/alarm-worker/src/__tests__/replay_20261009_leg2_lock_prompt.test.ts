@@ -114,15 +114,17 @@ function arrival(trainCode: string, isUp: boolean, arvlCd: number | null): Arriv
 }
 
 describe('#2939 replay — 10/9 b00dd879 군자 leg-2 lock 부착 후 재발사 회귀', () => {
-  it('11:37:24 fired(approaching) → 11:37:51 lock 5559 부착 → 11:38:24 상당 재평가는 발사 0건', async () => {
+  it('11:37:24 fired(실측 approaching, #3057 이후 합성 arvlCd=1) → 11:37:51 lock 5559 부착 → 11:38:24 상당 재평가는 발사 0건', async () => {
     let simNow = offsetFromBase(0);
     const kv = new InMemoryKV(() => simNow);
     const env = makeEnv(kv);
     const trip = makeTrip();
     const stats = makeStats();
 
-    // ── 11:37:24 — 최초 발사(approaching). 실측과 동일하게 fired 1건.
-    let pool: readonly ArrivalEntry[] = [arrival('5559', true, 5)];
+    // ── 11:37:24 — 최초 발사. 실측 D1 라벨은 approaching(arvlCd=5)이었으나 #3057로 approaching
+    // 발사가 은퇴해 합성 arvlCd를 5->1(도착 확정)로 교정한다 — 이 replay의 관심사는 "lock 부착 후
+    // 재발사 0건"(lock-already-attached)이지 최초 발사의 arvlCd가 아니다. fired 1건은 동일.
+    let pool: readonly ArrivalEntry[] = [arrival('5559', true, 1)];
     const seoul = makeControllableSeoul(() => pool);
     const pushFetch = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
     const deps: ScheduledDeps = { apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: pushFetch, seoul, archFlag: 'off' };

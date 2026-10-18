@@ -56,8 +56,16 @@ import type { Env } from '../types';
 const fixture = parseReplayFixture(fixtureJson);
 const TRIP_TOKEN = 'leg1-confirm-axis';
 
-/** 환승역에서 7호선 승차를 탭한 시점 — fixture 창 시작 + 2 cycle. */
-const CONFIRM_AFTER_TICKS = 2;
+/**
+ * 환승역에서 7호선 승차를 탭한 시점 — fixture 창 시작 + 1 cycle.
+ *
+ * #3057 — 2→1. 프롬프트가 도착 확정({arvlCd 1,2}/position)에서만 발사되도록 바뀌어, 첫 프롬프트가
+ * tick 1 cron에서 먼저 도착한 7254를 제시하고 `recentPromptCandidates=['7254']`를 stamp한다.
+ * tick 2에서 탭(7256)하면 #2824 corroboration gate가 "제시된 적 없는 열차"로 거부한다(탭 자체가
+ * 아니라 이 fixture의 타이밍 문제). 프롬프트 stamp 이전(tick 1 beforeTick)에 탭하면 이 테스트의
+ * 관심사(탭 → lock → 매역 발사)가 그대로 검증된다.
+ */
+const CONFIRM_AFTER_TICKS = 1;
 
 function destinationArrivedFired(pushes: CapturedPush[]): boolean {
   return pushes.some((push) => {

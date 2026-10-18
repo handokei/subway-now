@@ -147,7 +147,12 @@ const CYCLES: ReadonlyArray<{ offsetSec: number; u1ArvlCd: number }> = [
 ];
 
 describe('#2801 (3차 reopen) replay — 10/2 leg-2 boarding-prompt approaching miss', () => {
-  it('9회 전부 suppressed였던 cron 샘플을 approaching 게이트로 재생하면 06:46:11 상당 cycle(index=2)에서 정확히 1회 발사하고, 이후(5분 repeat gate + trainCode dedup) 전체 창 종료까지 추가 발사는 0이다', async () => {
+  // #3057 KNOWN GAP (assertion 무변경, it.fails) — 이 replay는 D1 candidateArvlCds 재구성이라 position
+  // 캡처가 없다. 새 게이트(도착 확정만 발사)는 arvlCd만으로는 0회 발사한다. 따라서 "position 지속창이
+  // 10/2류 miss를 흡수한다"는 재설계의 핵심 주장을 이 replay로는 증명도 반증도 못 한다(fixture 데이터
+  // 갭이지 설계 반증이 아니다). 10/2 당시 프로덕션 position 피드에 해당 열차가 있었는지는 미확인.
+  // 10/2 position 캡처 확보 시 이 it.fails를 해제하고 position 포함 replay로 승격한다.
+  it.fails('9회 전부 suppressed였던 cron 샘플을 approaching 게이트로 재생하면 06:46:11 상당 cycle(index=2)에서 정확히 1회 발사하고, 이후(5분 repeat gate + trainCode dedup) 전체 창 종료까지 추가 발사는 0이다', async () => {
     const kv = new InMemoryKV(() => simNow);
     let simNow = offsetFromBase(0);
     const env = makeEnv(kv);

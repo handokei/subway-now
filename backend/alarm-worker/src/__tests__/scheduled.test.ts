@@ -12500,23 +12500,27 @@ describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)', () => {
       expect(trip.legBoardingPromptState?.fired).toBe(true);
     });
 
-    // 거부 ⓑ — lock 없음 + approaching→imminent(같은 열차 재확인)는 #2898이 의도적으로 허용한
-    // 2회 발사를 그대로 유지한다(이 fix가 그 soft-block 경로를 건드리지 않음을 확인).
-    it('거부 ⓑ — lock 없음 + 같은 열차 approaching→imminent → 2회 발사 유지(#2898 보존)', async () => {
+    // 거부 ⓑ — lock 없음 + 같은 열차 재관측. #3057: 상한 2->1(approaching 발사 은퇴)이므로 같은 열차의
+    // 두 번째 도착 확정 관측은 발사하지 않고, 새 열차는 5분 이내여도 발사한다(#2898 ④).
+    it('거부 ⓑ — lock 없음 + 같은 열차 재관측은 1회 유지, 새 열차 도착은 bypass 발사(#3057)', async () => {
       let simNow = NOW;
       const kv = new InMemoryKV(() => simNow);
-      const fetchImplApproaching = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 5 }]));
+      const fetchImplFirst = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
       const trip = makeTrip({ boardingLock: undefined });
-      const deps1 = makeDeps(fetchImplApproaching);
       const stats = makeStats();
-      await maybeFireLegBoardingPrompt(trip, makeEnv(kv), deps1, stats, simNow, () => {}, () => 'pid-approaching');
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv), makeDeps(fetchImplFirst), stats, simNow, () => {}, () => 'pid-first');
       expect(stats.legBoardingPromptFired).toBe(1);
 
-      // 2분 후(5분 repeat-gate 내) 같은 열차가 임박(arvlCd=1)으로 재관측 — same-train bypass.
+      // 2분 후(5분 repeat-gate 내) 같은 열차가 출발(arvlCd=2)로 재관측 — 같은 열차는 소진돼 차단.
       simNow = NOW + 2 * 60_000;
-      const fetchImplImminent = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 1 }]));
-      const deps2 = makeDeps(fetchImplImminent);
-      await maybeFireLegBoardingPrompt(trip, makeEnv(kv), deps2, stats, simNow, () => {}, () => 'pid-imminent');
+      const fetchImplSame = vi.fn(makeArrivalsResponse([{ btrainNo: '5559', isUp: true, arvlCd: 2 }]));
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv), makeDeps(fetchImplSame), stats, simNow, () => {}, () => 'pid-same');
+      expect(stats.legBoardingPromptFired).toBe(1);
+
+      // 3분 후 새 열차(5561)가 도착 확정 — 직전 열차 소진이므로 bypass 발사.
+      simNow = NOW + 3 * 60_000;
+      const fetchImplNext = vi.fn(makeArrivalsResponse([{ btrainNo: '5561', isUp: true, arvlCd: 1 }]));
+      await maybeFireLegBoardingPrompt(trip, makeEnv(kv), makeDeps(fetchImplNext), stats, simNow, () => {}, () => 'pid-next');
       expect(stats.legBoardingPromptFired).toBe(2);
     });
   });
@@ -14042,11 +14046,10 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       ]);
     });
 
-    // code-review(medium) — approaching 게이트가 공유 본체(`fireBoardingPromptForAnchor`)라
-    // origin gps-free 경로에도 적용되는데 이 describe의 기존 케이스가 전부 arvlCd=1(imminent)뿐 —
-    // origin 경로에서 approaching이 실제로 발사+D1 전파되는지 문서화한다(leg-2는
-    // replay_20261002_leg2_prompt_miss.test.ts가 이미 커버).
-    it('approaching(arvlCd=[5,99]) → fire + D1에 meta={leg:origin, outcome:fired, candidateArvlCds:[5,99], gateDecision:approaching}로 기록', async () => {
+    // #3057 — approaching(전역출발/전역도착) 발사 은퇴. origin gps-free 경로도 공유 본체
+    // (`fireBoardingPromptForAnchor`)의 도착 확정 게이트를 따르므로 [5,99]만 관측되면 억제되고
+    // D1에 suppressed-not-imminent로 남는다(leg-2는 replay_20261018_arrival_confirmed_prompt가 커버).
+    it('전역도착(arvlCd=[5,99])만 → 미발사 + D1에 meta={leg:origin, outcome:suppressed-not-imminent, gateDecision:suppressed-not-imminent}', async () => {
       const fetchImpl = vi.fn(
         makeArrivalsResponse([
           { btrainNo: '7246', isUp: true, arvlCd: 5 },
@@ -14067,9 +14070,15 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         () => {},
         () => 'pid-origin-approaching',
       );
-      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
       expect(findOriginOutcomeInserts(inserts)).toEqual([
-        { leg: 'origin', outcome: 'fired', candidateArvlCds: [5, 99], candidateEtaSeconds: [120, 120], gateDecision: 'approaching' },
+        {
+          leg: 'origin',
+          outcome: 'suppressed-not-imminent',
+          candidateArvlCds: [5, 99],
+          candidateEtaSeconds: [120, 120],
+          gateDecision: 'suppressed-not-imminent',
+        },
       ]);
     });
 
@@ -14199,11 +14208,11 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       // 경로는 candidateTrains 자체가 0건이 돼 gate 평가 전에 종료되므로 더 이상 성립하지
       // 않는다 — 대신 같은 "selectedTrainCode=null" 결과를 **ambiguity**(같은 tier 후보 2개)
       // 경로로 재현한다. 공유 기본값(군자→용마산='up')과 정합하게 둘 다 isUp:true, 둘 다
-      // arvlCd=5(approaching)로 둬 동률 ambiguity를 만든다.
+      // arvlCd=1(도착 확정, #3057)로 둬 동률 ambiguity를 만든다.
       const fetchImpl = vi.fn(
         makeArrivalsResponse([
-          { btrainNo: '7246', isUp: true, arvlCd: 5 },
-          { btrainNo: '7247', isUp: true, arvlCd: 5 },
+          { btrainNo: '7246', isUp: true, arvlCd: 1 },
+          { btrainNo: '7247', isUp: true, arvlCd: 1 },
         ]),
       );
       const trip = makeTrip();
@@ -14213,11 +14222,11 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       // 이중 방어에서 즉시 억제되도록(위 cycle A/B 패턴을 단일 호출로 단축).
       // #2898 — key가 station 단독이 아니라 `${station}:${boardingPromptDedupKey(...)}`로
       // 세분화됐다. 위 ambiguity(동률 후보 2개)로 pickAutoTrainCode가 null을 반환하므로
-      // dedupKey는 trainCode가 아니라 'null-trainCode:approaching'이다.
+      // dedupKey는 trainCode가 아니라 'null-trainCode:imminent'이다.
       await stampBoardingPromptFireOnce(
         kv as unknown as KVNamespace,
         trip.token,
-        '군자:null-trainCode:approaching',
+        '군자:null-trainCode:imminent',
         NOW - 60_000,
       );
       const { db, inserts } = makeFireLogDb();
@@ -14233,7 +14242,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       );
       expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
       expect(findOriginOutcomeInserts(inserts)).toEqual([
-        { leg: 'origin', outcome: 'silenced', gateDecision: 'approaching' },
+        { leg: 'origin', outcome: 'silenced', gateDecision: 'imminent' },
       ]);
     });
   });

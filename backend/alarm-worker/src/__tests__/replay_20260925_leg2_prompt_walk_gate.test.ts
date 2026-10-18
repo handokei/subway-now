@@ -66,4 +66,31 @@ describe('#2801 — leg-2 boarding-prompt walk-gate가 사용자 실열차(7256)
     // 최소 1건 나와야 한다. fix 전에는 이 테스트도 실패한다(동일 RED, 이중 고정).
     expect(candidateTrainCodes).toContain('7256');
   });
+
+  // #3057 회귀 고정 — 9/18 건대입구 단배차: 7254가 position으로 도착 확정되어 먼저 발사된 뒤 약 120초 후
+  // 사용자 실열차 7256이 도착 확정(arvlCd=2)된다. 열차당 상한이 2였을 때는 5분 게이트가 7256 프롬프트를
+  // 막아 7256이 어떤 후보에도 안 들어갔다(#2824 corroboration이 탭을 거부). 상한 1이면 #2898 ④ bypass가
+  // 열려 두 번째 프롬프트에 7256이 후보로 실린다.
+  it('7254 도착 확정 프롬프트 직후(5분 이내) 7256 도착 확정 프롬프트가 별도로 발사된다 (단배차 bypass)', async () => {
+    const fixture = ENTRY!.loadFixture();
+    const result = await runCaptureReplay({
+      fixture,
+      seedTrips: ENTRY!.seedTrips(),
+      cronIntervalMs: ENTRY!.cronIntervalMs === 'recorded' ? undefined : ENTRY!.cronIntervalMs,
+      phaseOffsetMs: 0,
+      apns: 'capture',
+      seedPositionSeries: ENTRY!.seedPositionSeries?.(),
+    });
+    const prompts = result.pushes
+      .map((push) => ({ push, data: push.body.body as Record<string, unknown> | undefined }))
+      .filter(({ data }) => data?.kind === 'boarding-prompt' && Array.isArray(data.candidateTrains));
+    const codesOf = (data: Record<string, unknown> | undefined): string[] =>
+      (data?.candidateTrains as { trainCode: string }[]).map((c) => c.trainCode);
+    const first = prompts.find(({ data }) => codesOf(data).includes('7254'));
+    const second = prompts.find(({ data }) => codesOf(data).includes('7256'));
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(second!.push.simNowMs - first!.push.simNowMs).toBeLessThan(5 * 60_000);
+    expect(second!.data?.trainCode).toBe('7256');
+  });
 });

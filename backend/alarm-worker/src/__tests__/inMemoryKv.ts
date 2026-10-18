@@ -23,7 +23,21 @@ export class InMemoryKV {
    * 실행이 실 60초를 넘길 때(또는 느린 CI 머신에서) seed trip이 벽시계 TTL로 소멸해 재생
    * 결과가 "거짓 침묵"으로 오염된다.
    */
-  constructor(private readonly now: () => number = () => Date.now()) {}
+  constructor(
+    private readonly now: () => number = () => Date.now(),
+    /**
+     * #3057 — 키 접두사별 시계 override. replay 하네스는 trip 키 TTL을 고정 시계로 못박지만
+     * (위 설명) self-poll 키(`realtime-position:`/`selfPoll:station:`)까지 고정하면 90s TTL이
+     * 영구 미만료 -> 영구 cache-hit -> 이후 position을 다시 fetch하지 않아 9/13 실캡처에 있는
+     * 도착 확정 position이 재생에서 유실된다. 해당 접두사 키만 이 시계(simNow)로 만료 판정한다.
+     */
+    private readonly prefixClocks: ReadonlyArray<{ prefix: string; now: () => number }> = [],
+  ) {}
+
+  private clockFor(key: string): number {
+    const override = this.prefixClocks.find((c) => key.startsWith(c.prefix));
+    return override ? override.now() : this.now();
+  }
 
   /**
    * 실제 KV.get(key, options) 시그니처 호환. #1423 — Cloudflare KV runtime은 `cacheTtl < 30`
@@ -40,7 +54,7 @@ export class InMemoryKV {
     }
     const entry = this.store.get(key);
     if (!entry) return null;
-    if (entry.expiresAt && entry.expiresAt < this.now()) {
+    if (entry.expiresAt && entry.expiresAt < this.clockFor(key)) {
       this.store.delete(key);
       return null;
     }
@@ -53,7 +67,7 @@ export class InMemoryKV {
     options?: { expirationTtl?: number },
   ): Promise<void> {
     const expiresAt = options?.expirationTtl
-      ? this.now() + options.expirationTtl * 1000
+      ? this.clockFor(key) + options.expirationTtl * 1000
       : undefined;
     this.store.set(key, { value, expiresAt });
     // #2452 — 프로덕션에서 `trip:` 키는 항상 `POST /trips` 등록(activeTripsGate.markTripRegistered

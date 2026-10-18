@@ -191,7 +191,9 @@ describe('evidence 2026-08-18 저녁 BG 환승 시나리오 — 조립 체인 re
 
     // #2355 — subwayNm=null + subwayId='1002'(2호선) masked 응답. matchLine이 subwayId
     // 역파생 없이는 매칭 0건 → boardingPromptSkippedEmpty로 회귀했을 케이스.
-    const seoul = makeMaskedSeoul('성수', 'T2', '1002', 0);
+    // #3057 — 발사 게이트가 도착 확정({1,2})만 통과시키므로 합성 arvlCd를 0(진입)→1(도착)로 교정
+    // (이 테스트의 관심사는 subwayId 역파생이지 arvlCd 타이밍이 아니다).
+    const seoul = makeMaskedSeoul('성수', 'T2', '1002', 1);
     const fetchImpl = vi.fn(async (_url: string, _init?: { body?: string }) => new Response(null, { status: 200 }));
 
     const stats = await runOnce(kv, seoul, fetchImpl);
