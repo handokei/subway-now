@@ -266,14 +266,14 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
   // 이라는 역전된 믿음으로 isUp:true(내선)를 골랐던 것을 물리적으로 맞는 외선(isUp:false)으로
   // 교정한다. boardingPrompt.ts의 direction 필터(강남→역삼=down)가 isUp:true 열차를 올바르게
   // 배제하게 된 것이 이 fix의 의도된 효과다.
-  function arrivedTrain(trainCode: string): ArrivalEntry {
+  function arrivedTrain(trainCode: string, arvlCd: number | null = 1): ArrivalEntry {
     return {
       destination: '성수',
       arrivalSeconds: 0,
       trainCode,
       isUp: false,
       subwayNm: '2호선',
-      arvlCd: 1,
+      arvlCd,
     };
   }
 
@@ -316,9 +316,15 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
   // `boardingPrompt*` → `originGpsFreeBoardingPrompt*`로 바뀐다 — GPS-free는 reason별 전용
   // counter가 없어(#2531 단일 `originGpsFreeBoardingPromptBlocked`) log capture로 reason을
   // 직접 확인한다. fixture 값(NOW/trainCode/거리/간격)은 원본 그대로 무수정.
-  function makeDeps(now: number, trainCode: string, pushId: string, log?: ScheduledDeps['log']): ScheduledDeps {
+  function makeDeps(
+    now: number,
+    trainCode: string,
+    pushId: string,
+    log?: ScheduledDeps['log'],
+    arvlCd: number | null = 1,
+  ): ScheduledDeps {
     return {
-      seoul: makeOriginScopedSeoul('강남', [arrivedTrain(trainCode)]),
+      seoul: makeOriginScopedSeoul('강남', [arrivedTrain(trainCode, arvlCd)]),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       now: () => now,
@@ -328,6 +334,27 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
       log,
     };
   }
+
+  // #3057 — origin 경로 대칭: arvlCd=null(fallback-unobservable) 미확정 열차는 새 열차 bypass를 받지 못하고
+  // 5분 게이트에 막힌다(leg 경로는 scenario_2895_s3에서 고정).
+  it('arvlCd=null 미확정 열차 3대를 60초 간격으로 관측해도 origin fallback 발사는 1회만 나간다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeNearbyTrip());
+    const env = makeEnv(kv);
+    const fired: number[] = [];
+    const logCalls: string[] = [];
+    for (const [i, trainCode] of ['TR-A', 'TR-B', 'TR-C'].entries()) {
+      const stats = await runScheduled(
+        env,
+        makeDeps(NOW + i * 60_000, trainCode, `push-${i}`, (message) => logCalls.push(message), null),
+      );
+      fired.push(stats.originGpsFreeBoardingPromptFired);
+    }
+    expect(fired).toEqual([1, 0, 0]);
+    expect(
+      logCalls.filter((m) => m.startsWith('origin-boarding-prompt-gps-free: skipped interval (5분 게이트')).length,
+    ).toBe(2);
+  });
 
   it('15분 창 내 서로 다른 trainCode 4대 arvlCd=1 (5분 간격) → 정확히 3발 후 4번째 max-fires 차단', async () => {
     const kv = new InMemoryKV();

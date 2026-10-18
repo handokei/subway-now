@@ -398,14 +398,11 @@ describe('#2895 — S3: 미응답 상태에서 실제 도착 시 재확인 프�
       now += 60_000;
     }
     expect(fired).toEqual([1, 0, 0, 0]);
-    // 실패 사유: 5분 간격 게이트 (bypass 거부)
-    expect(
-      log.mock.calls.some(
-        ([message, meta]) =>
-          message === 'leg-boarding-prompt: gate blocked' &&
-          (meta as { reason?: string }).reason === 'fired-too-recently',
-      ),
-    ).toBe(true);
+    // 최종 거부 로그 — bypass 거부로 'skipped interval (5분 게이트…)'가 찍혀야 한다(early 소프트 블록 로그와 구분).
+    const finalRejects = log.mock.calls.filter(([message]) =>
+      String(message).startsWith('leg-boarding-prompt: skipped interval (5분 게이트'),
+    );
+    expect(finalRejects.length).toBe(3);
   });
 });
 
