@@ -29,6 +29,7 @@
 | tripPositionSsot.ts:186 | 불변식 | 이 모듈은 lock 승격 절대 안 함 — device useLockSuggestion만 소비 | 부분 |
 | boardingAnchorResolver.ts:36 | 불변식 | 틀린 열차 lock 절대 금지 — 이 모듈의 존재 이유 | 있음(replay_20261018_assertion_departed.test.ts ⓓⓔⓕⓘ — stale/반대방향/ARRIVED 우선/복수 후보 ambiguous, #3056) |
 | boardingAnchorResolver.ts:126 | 갭 | staleness 상한 의도적 보류(N=1 편향 우려) | 없음(의도) |
+| boardingAnchorResolver.ts `assertionMode` 최후 tier (#3056) | 갭 | 탑승 표명 경로가 앵커 정위치 fresh(120s) DEPARTED 단독을 lock한다. 사용자 열차가 아직 앵커에 안 잡히고 같은 방향 선행 열차 1대만 120s 내 DEPARTED로 남으면 **틀린 열차 lock 가능**(ambiguous는 2대+만 차단). 신규 창 도입은 :126 보류와 충돌해 코드로 막지 않았다. 결정: D1 `boarding-confirm-result.meta.resolveTier='assertion-departed'` 라벨로 배포 후 24h backfill 오수용률을 측정한 뒤 창 재조정 여부를 정한다. 결합 효과: #3057 도착확정 발사는 탭 시점을 열차 이벤트에 앵커해 이 창을 구조적으로 좁힌다 | 부분(라벨 측정 대기, 창 재조정 미결정) |
 | liveActivity.ts:11 | 불변식 | ContentState 필수 3필드(stationName/lineName/lineColorHex) backend가 항상 채움 | 있음 |
 | liveActivity.ts:434 | 함정 | 'la-stale-backstop'은 backend 내부 식별자 — 외부 enum 노출 금지 | **없음** |
 | advanceTripPosition.ts:716 | 함정 | consensus-tick D1 append는 전이 시에만(#2073 quota) | 부분 |

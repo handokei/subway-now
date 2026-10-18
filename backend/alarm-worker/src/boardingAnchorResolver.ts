@@ -173,8 +173,14 @@ export interface BoardingAnchor {
   direction: 'up' | 'down' | null;
 }
 
+/**
+ * #3056 — D1 계측용 resolve tier 라벨. `assertion-departed` = 탑승 표명(assertionMode) 최후 tier로
+ * 수용된 건(배포 후 24h backfill로 오수용률을 측정하기 위한 구분자). 기존 경로는 미설정.
+ */
+export type BoardingResolveTier = 'assertion-departed';
+
 export type BoardingResolution =
-  | { status: 'resolved'; trainCode: string }
+  | { status: 'resolved'; trainCode: string; tier?: BoardingResolveTier }
   | { status: 'ambiguous' }
   | { status: 'none' };
 
@@ -330,7 +336,9 @@ export function resolveTrainCodeFromPositions(
   // #3056 — 탑승 표명(회고 시제) 최후 tier: 위 두 경로가 모두 none일 때만 앵커 정위치 fresh DEPARTED.
   if (assertionMode) {
     const departed = fresh.filter((p) => p.trainSttus === TRAIN_STATUS.DEPARTED);
-    if (departed.length === 1) return { status: 'resolved', trainCode: departed[0].trainCode };
+    if (departed.length === 1) {
+      return { status: 'resolved', trainCode: departed[0].trainCode, tier: 'assertion-departed' };
+    }
     if (departed.length > 1) return { status: 'ambiguous' };
   }
   return { status: 'none' };
@@ -680,7 +688,10 @@ export async function attemptBoardingAnchorResolution(
   options?: LegOriginResolutionOptions,
   // #2893 — 2번째 선택 인자(detail)는 outcome==='none'일 때만 noneReason을 싣는다. 기존
   // 호출자(1개 인자만 받는 콜백)는 완전 무영향.
-  onOutcome?: (outcome: BoardingResolveOutcome, detail?: { noneReason?: BoardingResolveNoneReason }) => void,
+  onOutcome?: (
+    outcome: BoardingResolveOutcome,
+    detail?: { noneReason?: BoardingResolveNoneReason; resolveTier?: BoardingResolveTier },
+  ) => void,
   onTapLegAdvance?: (advance: TapLegAdvance) => void,
   onLegTransition?: (confirmation: LegBoardingConfirmation) => void,
 ): Promise<BoardingLockMeta | null> {
@@ -755,6 +766,7 @@ export async function attemptBoardingAnchorResolution(
   const resolutionAnchor = { line: anchor.line, boardingStation: anchor.originStation, direction };
 
   let resolvedTrainCode: string;
+  let resolveTier: BoardingResolveTier | undefined;
   if (options?.legTransition) {
     const confirmation = evaluateLegBoardingTransition(
       resolutionAnchor,
@@ -788,9 +800,11 @@ export async function attemptBoardingAnchorResolution(
       return null;
     }
     resolvedTrainCode = resolution.trainCode;
+    resolveTier = resolution.tier;
   }
 
-  onOutcome?.('resolved');
+  // #3056 — assertion-departed tier로 수용된 건만 D1에서 구분 가능하도록 detail에 싣는다.
+  onOutcome?.('resolved', resolveTier !== undefined ? { resolveTier } : undefined);
   return {
     trainCode: resolvedTrainCode,
     line: anchor.line,

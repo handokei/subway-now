@@ -16,7 +16,7 @@
  * 용마산 7325 trainSttus=2 하행(updnLine=1), recptnDt 23:25:07 KST. 탭 시각 = recptn + 29s.
  */
 import { describe, expect, it, vi } from 'vitest';
-import app from '../index';
+import app, { buildBoardingConfirmEventMeta } from '../index';
 import {
   attemptBoardingAnchorResolution,
   evaluateLegBoardingTransition,
@@ -103,6 +103,7 @@ describe('#3056 resolveTrainCodeFromPositions — assertionMode(탑승 표명 �
     expect(resolveTrainCodeFromPositions(ANCHOR, positions, tapMs, SEGMENT, true)).toEqual({
       status: 'resolved',
       trainCode: DEPARTED_TRAIN,
+      tier: 'assertion-departed',
     });
   });
 
@@ -119,6 +120,7 @@ describe('#3056 resolveTrainCodeFromPositions — assertionMode(탑승 표명 �
     expect(resolveTrainCodeFromPositions(ANCHOR, positions, edge, SEGMENT, true)).toEqual({
       status: 'resolved',
       trainCode: DEPARTED_TRAIN,
+      tier: 'assertion-departed',
     });
     expect(resolveTrainCodeFromPositions(ANCHOR, positions, edge + 1, SEGMENT, true)).toEqual({ status: 'none' });
   });
@@ -175,6 +177,7 @@ describe('#3056 resolveTrainCodeFromPositions — assertionMode(탑승 표명 �
       SEGMENT,
       true,
     );
+    // 기존 passed 경로 결과는 tier 라벨 없이 그대로(라벨은 새 최후 tier 전용).
     expect(r).toEqual({ status: 'resolved', trainCode: 'B_PASSED' });
   });
 
@@ -194,7 +197,7 @@ describe('#3056 resolveTrainCodeFromPositions — assertionMode(탑승 표명 �
     const opposite = pos({ trainCode: 'D_OPP', isUp: true });
     expect(
       resolveTrainCodeFromPositions(ANCHOR, [pos({ trainCode: 'D1' }), stale, opposite], SYN_NOW, SEGMENT, true),
-    ).toEqual({ status: 'resolved', trainCode: 'D1' });
+    ).toEqual({ status: 'resolved', trainCode: 'D1', tier: 'assertion-departed' });
   });
 
   it('앵커 정위치가 아닌 DEPARTED(2 hop 이상 전방 / 다른 역)는 새 tier가 수용하지 않는다', () => {
@@ -275,16 +278,20 @@ describe('#3056 attemptBoardingAnchorResolution — 경로별 게이트', () => 
   it('ⓙ 탑승 표명(tapAnchor) → 용마산 7325 lock 합성 (outcome=resolved)', async () => {
     const { tapMs } = await loadFixture();
     let outcome: string | undefined;
+    let tier: string | undefined;
     const lock = await attemptBoardingAnchorResolution(
       makeTrip('t3056-j', tapMs),
       makeSeoul(tapMs),
       tapMs,
       { allowLegTransfer: true, tapAnchor: { boardingStation: '용마산', line: '7' } },
-      (o) => {
+      (o, d) => {
         outcome = o;
+        tier = d?.resolveTier;
       },
     );
     expect(outcome).toBe('resolved');
+    // D1 구분자: 최후 tier 수용 건만 라벨이 붙는다(배포 후 오수용률 backfill 측정 전제).
+    expect(tier).toBe('assertion-departed');
     expect(lock?.trainCode).toBe(DEPARTED_TRAIN);
     expect(lock?.line).toBe('7');
   });
@@ -305,6 +312,37 @@ describe('#3056 attemptBoardingAnchorResolution — 경로별 게이트', () => 
     );
     expect(lock).toBeNull();
     expect(outcome).toBe('ambiguous');
+  });
+});
+
+describe('#3056 D1 tier 라벨 — 기존 경로는 미설정, 최후 tier만 resolveTier', () => {
+  it('기존 ARRIVED 경로로 resolved되면 resolveTier 미설정(detail 없음)', async () => {
+    const { tapMs, departed } = await loadFixture();
+    const arrived = { ...departed, trainCode: '7300', trainSttus: TRAIN_STATUS.ARRIVED };
+    const seoul = { fetchPositions: async () => [arrived] } as unknown as SeoulArrivalClient;
+    const calls: Array<[string, unknown]> = [];
+    const lock = await attemptBoardingAnchorResolution(
+      makeTrip('t3056-tier', tapMs),
+      seoul,
+      tapMs,
+      { allowLegTransfer: true, tapAnchor: { boardingStation: '용마산', line: '7' } },
+      (o, d) => calls.push([o, d]),
+    );
+    expect(lock?.trainCode).toBe('7300');
+    expect(calls).toEqual([['resolved', undefined]]);
+  });
+
+  it('buildBoardingConfirmEventMeta: resolved일 때만 resolveTier를 싣는다', () => {
+    expect(buildBoardingConfirmEventMeta('leg1', 'resolved', 'tap', undefined, undefined, 'assertion-departed')).toEqual({
+      lockState: 'leg1',
+      outcome: 'resolved',
+      anchorSource: 'tap',
+      resolveTier: 'assertion-departed',
+    });
+    expect(buildBoardingConfirmEventMeta('leg1', 'resolved', 'tap')).not.toHaveProperty('resolveTier');
+    expect(
+      buildBoardingConfirmEventMeta('none', 'none', 'tap', 'position-resolve-none', undefined, 'assertion-departed'),
+    ).not.toHaveProperty('resolveTier');
   });
 });
 
