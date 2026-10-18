@@ -37,7 +37,6 @@ import { describe, expect, it, vi } from 'vitest';
 import app from '../index';
 import { runCaptureReplay, makeCaptureFetch, type CapturedPush } from './helpers/replayHarness';
 import { makeWholeRideSpineTrip } from './helpers/wholeRideSpineTrip';
-import { injectPrevDepartedTrainArrived } from './helpers/injectArrivalConfirmation';
 import { firedStationOccurrences } from './helpers/pushAssertions';
 import { parseReplayFixture } from '../replayFixture';
 import { getTrip } from '../trips';
@@ -151,13 +150,6 @@ describe('#3027 Task 0 — 합성 whole-ride 등뼈 (S-B 본선: 목적지만 �
             const justConfirmed = await getTrip(env.TRIPS, token);
             lockTrainCodeRightAfterOriginConfirm = justConfirmed?.boardingLock?.trainCode;
           }
-        }
-
-        // #3057 — 프롬프트가 도착 확정 때만 발사되도록 바뀌어, 이 fixture(9/13 실캡처 계보 — 환승역
-        // 도착 직전 8371 arvlCd=3에서 끝나고 append는 성수/뚝섬뿐)에는 leg-2 도착 확정이 없다.
-        // 캡처가 보여준 그 arvlCd=3 열차의 도착 position만 주입한다(helper 주석 참고).
-        if (originConfirmed && !legConfirmed) {
-          await injectPrevDepartedTrainArrived(wholeRideFixture, env, tick, transferWaypoint!.stationName, leg2Line);
         }
 
         // ── B5/B6 — leg-2 프롬프트가 떴으면 그 embed 열차로 confirm한다(#2989와 동일 기법,

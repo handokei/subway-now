@@ -139,10 +139,14 @@ export const IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
  */
 export const PROMPT_POSITION_FRESH_MS = 3 * 60 * 1000;
 
-/** #3057 — 도착 확정으로 인정하는 realtimePosition trainSttus (1 도착, 2 출발). */
-const POSITION_CONFIRMED_STATUS: ReadonlySet<number> = new Set([
-  TRAIN_STATUS.ARRIVED,
-  TRAIN_STATUS.DEPARTED,
+/**
+ * #3057 — 도착 확정으로 인정하는 realtimePosition trainSttus -> 합성 arvlCd 명시 매핑.
+ * 두 코드 체계(`TRAIN_STATUS` vs `ARRIVAL_CODE`)는 숫자가 우연히 겹칠 뿐 다른 체계라(alarm.ts 경고)
+ * 암묵 대입하지 않고 의미 단위로 매핑한다. 1 도착 -> 1 도착, 2 출발 -> 2 출발.
+ */
+const POSITION_STATUS_TO_ARVLCD: ReadonlyMap<number, number> = new Map([
+  [TRAIN_STATUS.ARRIVED, ARRIVAL_CODE.ARRIVED],
+  [TRAIN_STATUS.DEPARTED, ARRIVAL_CODE.DEPARTED],
 ]);
 
 export type BoardingFireDecision =
@@ -174,7 +178,7 @@ export function selectPositionConfirmedTrains(
     (p) =>
       p.stationName === station &&
       p.trainSttus !== null &&
-      POSITION_CONFIRMED_STATUS.has(p.trainSttus) &&
+      POSITION_STATUS_TO_ARVLCD.has(p.trainSttus) &&
       now - p.recptnMs <= PROMPT_POSITION_FRESH_MS &&
       (direction === null || (direction === 'up') === p.isUp),
   );
@@ -194,7 +198,7 @@ export function mergePositionConfirmedIntoPool(
   const subwayNm = canonicalLineName(line) ?? line;
   const merged = [...pool];
   for (const train of confirmed) {
-    const arvlCd = train.trainSttus;
+    const arvlCd = POSITION_STATUS_TO_ARVLCD.get(train.trainSttus ?? -1) ?? null;
     const idx = merged.findIndex((entry) => entry.trainCode === train.trainCode);
     if (idx >= 0) {
       merged[idx] = { ...merged[idx], arvlCd, arrivalSeconds: 0 };
@@ -335,6 +339,23 @@ export function evaluateBoardingPromptRepeatGate(
  * 그대로면 같은 키가 이미 있어 차단(5분 repeat gate가 지나도 동일 phase 반복 재발사를
  * 막는 이 이슈의 본래 목적).
  */
+const NULL_TRAIN_TOKEN = 'null-trainCode';
+
+/**
+ * #3057 — fire-once(독립 5분 이중 방어) 키. trainCode가 있으면 `${station}:${trainCode}`(decision 제외)
+ * — stale read로 같은 열차가 'imminent' -> 'position-confirmed'처럼 phase만 바뀌어 재평가돼도 같은 키라
+ * 이중 발사가 차단된다. trainCode를 특정 못 한 경우만 decision을 fallback으로 포함한다(#2880).
+ */
+export function boardingPromptFireOnceKey(
+  station: string,
+  selectedTrainCode: string | null,
+  decision: BoardingFireDecision['decision'],
+): string {
+  return selectedTrainCode === null
+    ? `${station}:${boardingPromptDedupKey(null, decision)}`
+    : `${station}:${selectedTrainCode}`;
+}
+
 export function boardingPromptDedupKey(
   selectedTrainCode: string | null,
   decision: BoardingFireDecision['decision'],
@@ -379,6 +400,13 @@ export function isExactDuplicateFire(
  */
 export const MAX_FIRES_PER_TRAIN_CODE = 1;
 
+/**
+ * #3057 — trainCode를 특정하지 못한 발사(null-trainCode 토큰)의 상한. ambiguity로 한 번 쏜 뒤
+ * 영구 침묵하면 miss가 되므로(miss/false-positive 동급) phase 전환(position-confirmed -> imminent
+ * 등)으로 재확인 1회를 더 허용한다. 실 trainCode는 열차당 1회라 이 예외가 필요 없다.
+ */
+export const MAX_FIRES_PER_NULL_TRAIN_TOKEN = 2;
+
 /** `boardingPromptDedupKey`가 만든 `${trainCode}:${decision}` 키에서 trainCode 토큰만 추출. */
 function trainCodeTokenOf(dedupKey: string): string {
   const idx = dedupKey.indexOf(':');
@@ -387,7 +415,7 @@ function trainCodeTokenOf(dedupKey: string): string {
 
 /** selectedTrainCode의 dedup 토큰(실 trainCode 또는 'null-trainCode' fallback, #2880과 동일). */
 function resolveTrainCodeToken(selectedTrainCode: string | null): string {
-  return selectedTrainCode ?? 'null-trainCode';
+  return selectedTrainCode ?? NULL_TRAIN_TOKEN;
 }
 
 /**
@@ -402,12 +430,20 @@ export function trainCodeFireCount(
   return (firedTrainCodes ?? []).filter((key) => trainCodeTokenOf(key) === token).length;
 }
 
-/** #2898 — 같은 trainCode에 대해 `MAX_FIRES_PER_TRAIN_CODE`(1) 미만이면 발사 가능. */
+/** #3057 — 토큰별 상한: 실 trainCode는 1, null-trainCode는 2. */
+function maxFiresForToken(token: string): number {
+  return token === NULL_TRAIN_TOKEN ? MAX_FIRES_PER_NULL_TRAIN_TOKEN : MAX_FIRES_PER_TRAIN_CODE;
+}
+
+/** #2898 — 같은 trainCode에 대해 토큰별 상한(실 trainCode 1 / null 2) 미만이면 발사 가능. */
 export function canFireForTrainCode(
   firedTrainCodes: readonly string[] | undefined,
   selectedTrainCode: string | null,
 ): boolean {
-  return trainCodeFireCount(firedTrainCodes, selectedTrainCode) < MAX_FIRES_PER_TRAIN_CODE;
+  return (
+    trainCodeFireCount(firedTrainCodes, selectedTrainCode) <
+    maxFiresForToken(resolveTrainCodeToken(selectedTrainCode))
+  );
 }
 
 /**
@@ -417,14 +453,14 @@ export function canFireForTrainCode(
  * 뒤(`shouldProceedToSend` 시점) 이 함수로 최종 판정한다. 다음 두 경우에만 bypass(발사 허용):
  *
  *   1. 지금 선택된 trainCode가 **마지막으로 발사된 열차와 같고**, 그 열차의 누적 발사가
- *      `MAX_FIRES_PER_TRAIN_CODE` 미만이면 → 같은 열차의 재확인(approaching→arrival, 스펙 ①).
+ *      `MAX_FIRES_PER_TRAIN_CODE` 미만이면 → 같은 열차의 재확인(스펙 ①; #3057 이후 상한 1이라 실질 불발).
  *   2. 지금 선택된 trainCode가 **마지막으로 발사된 열차와 다르고**, 그 마지막 열차가 이미
  *      `MAX_FIRES_PER_TRAIN_CODE`에 도달(소진)했으면 → 열차 교체로 새 cycle 시작(스펙 ④).
  *
- * 그 외(아직 소진되지 않은 다른 열차)는 여전히 5분 게이트로 차단한다 — 단배차(배차 간격 좁은
- * 역)에서 서로 다른 열차가 연달아 관측되며 반복 발사되는 것을 막는 기존 취지(#2130 Part B-be-2)
- * 는 그대로 유지한다(거부 케이스 ⓒ). 5분 게이트 자체를 제거하는 것이 아니라 (trainCode, phase)
- * 축으로 세분화할 뿐이다.
+ * #3057 사용자 결정("도착 확정된 새 열차마다 즉시 1회, 간격 하한 없음") — #2898의 5분 게이트의
+ * "다른 열차" 적용을 **대체**한다: 서로 다른 열차는 각자 도착 확정 때 1회씩 발사되고(열차당 상한 1
+ * 소진 후 새 열차는 bypass), 5분 게이트는 trainCode를 특정 못 한 null-token 발사에만 실질적으로
+ * 남는다. 폭주 방어는 열차당 상한 + leg당 `MAX_FIRE_COUNT`(3)가 담당한다.
  */
 export function canBypassRepeatIntervalForTrainTransition(
   firedTrainCodes: readonly string[] | undefined,
@@ -436,8 +472,8 @@ export function canBypassRepeatIntervalForTrainTransition(
   const lastToken = trainCodeTokenOf(lastKey);
   const currentToken = resolveTrainCodeToken(selectedTrainCode);
   const lastTokenFireCount = list.filter((key) => trainCodeTokenOf(key) === lastToken).length;
-  if (currentToken === lastToken) return lastTokenFireCount < MAX_FIRES_PER_TRAIN_CODE;
-  return lastTokenFireCount >= MAX_FIRES_PER_TRAIN_CODE;
+  if (currentToken === lastToken) return lastTokenFireCount < maxFiresForToken(lastToken);
+  return lastTokenFireCount >= maxFiresForToken(lastToken);
 }
 
 /**

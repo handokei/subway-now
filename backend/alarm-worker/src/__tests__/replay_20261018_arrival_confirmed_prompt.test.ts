@@ -322,7 +322,52 @@ describe('#3057 — self-poll KV 장애는 position 확정 없음으로 degrade(
       seoul: makeSeoul(() => [arrival('T1', 1)]),
       archFlag: 'off',
     } as unknown as ScheduledDeps;
-    await maybeFireLegBoardingPrompt(trip, makeEnv(kv), deps, stats, NOW, vi.fn(), () => 'push-kv');
+    const log = vi.fn();
+    await maybeFireLegBoardingPrompt(trip, makeEnv(kv), deps, stats, NOW, log, () => 'push-kv');
     expect(stats.legBoardingPromptFired).toBe(1);
+    // 침묵 degrade 금지 — 실패가 로그로 관측된다.
+    expect(
+      log.mock.calls.some(([message]) => String(message).startsWith('boarding-prompt: position read failed')),
+    ).toBe(true);
   });
 });
+
+describe('#3057 P1-3 — fire-once 키는 trainCode 단위(decision 제외)', () => {
+  it('stale trip read로 같은 열차가 position-confirmed -> imminent로 phase만 바뀌어 재평가돼도 이중 발사하지 않는다', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    await writeSelfPollPosition(kv as unknown as KVNamespace, '7', [position('P1', { now: NOW, trainSttus: 1 })], NOW);
+    const pushFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const baseDeps = {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: pushFetch as unknown as typeof fetch,
+      archFlag: 'off',
+    };
+    const stats = makeStats();
+    // 1차: arrival 피드 비어 position만 확정 -> 'position-confirmed' 발사.
+    await maybeFireLegBoardingPrompt(
+      makeTrip('trip-fire-once', NOW),
+      makeEnv(kv),
+      { ...baseDeps, seoul: makeSeoul(() => []) } as unknown as ScheduledDeps,
+      stats,
+      NOW,
+      vi.fn(),
+      () => 'push-1',
+    );
+    expect(stats.legBoardingPromptFired).toBe(1);
+
+    // 2차: 발사 이력이 반영되기 전의 stale trip(새 객체) + arrival 피드가 같은 열차를 1(도착)로 보고 -> 'imminent'.
+    await maybeFireLegBoardingPrompt(
+      makeTrip('trip-fire-once', NOW),
+      makeEnv(kv),
+      { ...baseDeps, seoul: makeSeoul(() => [arrival('P1', 1)]) } as unknown as ScheduledDeps,
+      stats,
+      NOW + 30_000,
+      vi.fn(),
+      () => 'push-2',
+    );
+    expect(stats.legBoardingPromptFired).toBe(1);
+    expect(pushFetch).toHaveBeenCalledTimes(1);
+  });
+});
+

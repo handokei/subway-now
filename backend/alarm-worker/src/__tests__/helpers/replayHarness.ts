@@ -370,7 +370,12 @@ export async function runCaptureReplay(opts: {
   // 부수적 TTL이 도메인 로직(`trip.expiresAt <= deps.now()`, scheduled.ts가 이미 시뮬레이션
   // 시계로 정확히 판단)과 별개로 재생을 오염시키지 않게 한다 — 재생이 실 벽시계뿐 아니라
   // "시뮬레이션 시계가 흐른다"는 사실 자체와도 완전히 독립되는 동급 해법.
-  const kv = new InMemoryKV(() => startMs);
+  // #3057 — self-poll 키만 simNow 시계(위 trip 고정 시계 설명 참고): 90s TTL이 실제로 만료돼야
+  // cron이 매 cycle 새 position을 fetch한다(고정하면 영구 cache-hit로 이후 position 유실).
+  const kv = new InMemoryKV(() => startMs, [
+    { prefix: 'realtime-position:', now: () => simNow },
+    { prefix: 'selfPoll:station:', now: () => simNow },
+  ]);
   for (const trip of opts.seedTrips) {
     await putTrip(kv as unknown as KVNamespace, trip);
   }

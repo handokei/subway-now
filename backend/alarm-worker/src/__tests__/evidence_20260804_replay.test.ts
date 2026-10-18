@@ -401,9 +401,11 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
     expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
     expect(
       logCalls.some(
-        ([message]) => message === 'origin-boarding-prompt-gps-free: skipped train duplicate',
+        ([message, meta]) =>
+          message === 'origin-boarding-prompt-gps-free: gate blocked' &&
+          meta?.reason === 'suppressed-not-imminent',
       ),
-    ).toBe(true);
+    ).toBe(true); // #3057 — 소진 열차는 판정 pool에서 제외돼 duplicate 로그 이전에 억제된다
   });
 
   // #3057 — 상한 1(열차당 도착 확정 1회) 이후 직전 열차가 소진되므로 5분 미만에 도착한 **새 열차**는

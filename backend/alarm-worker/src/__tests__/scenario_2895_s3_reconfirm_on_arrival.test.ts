@@ -318,4 +318,63 @@ describe('#2895 — S3: 미응답 상태에서 실제 도착 시 재확인 프�
     const persisted = await getTrip(kv as unknown as KVNamespace, trip.token);
     expect(persisted?.legBoardingPromptState?.fireCount ?? 0).toBe(1);
   });
+
+  // #3057 사용자 결정(이슈 최신 코멘트): "도착 확정된 새 열차마다 즉시 1회, 간격 하한 없음".
+  it('A·B·C가 2분 간격으로 연달아 도착 확정되면 각 1회씩 발사하고, 같은 열차 재관측은 막으며, leg cap 3으로 4번째 열차는 막는다', async () => {
+    const kv = new InMemoryKV(() => now);
+    let now = NOW;
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    let pool: readonly ArrivalEntry[] = [];
+    const seoul = makeControllableSeoul(() => pool);
+    const pushFetch = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
+    const fireAt = async (trainCode: string): Promise<number> => {
+      pool = [arrival(trainCode, false, 1)];
+      const stats = await tick(kv, seoul, pushFetch as unknown as ReturnType<typeof vi.fn>, now);
+      return stats.legBoardingPromptFired;
+    };
+
+    expect(await fireAt('A')).toBe(1);
+    now += 120_000;
+    expect(await fireAt('B')).toBe(1);
+    now += 120_000;
+    expect(await fireAt('B')).toBe(0); // 같은 열차 재관측 금지
+    expect(await fireAt('C')).toBe(1);
+    now += 120_000;
+    expect(await fireAt('D')).toBe(0); // leg cap(MAX_FIRE_COUNT=3) 유지
+
+    const persisted = await getTrip(kv as unknown as KVNamespace, trip.token);
+    expect(persisted?.legBoardingPromptState?.fireCount ?? 0).toBe(3);
+  });
+
+  // 감사 A2 — 소진된 열차 A가 DEPARTED(arvlCd=2)로 풀에 잔존해도 새 열차 B(arvlCd=1)가 선택·발사돼야 한다
+  // (`pickAutoTrainCode` tier 2>1 때문에 A가 계속 선택돼 B를 막던 결함).
+  it('A 발사·소진 후 A가 DEPARTED로 잔존한 채 B가 도착하면 B가 선택되어 B의 trainCode로 발사된다', async () => {
+    const kv = new InMemoryKV(() => now);
+    let now = NOW;
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    let pool: readonly ArrivalEntry[] = [arrival('A', false, 1)];
+    const seoul = makeControllableSeoul(() => pool);
+    const pushFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const asFetch = pushFetch as unknown as ReturnType<typeof vi.fn>;
+
+    await tick(kv, seoul, asFetch, now); // A 도착 -> 소진
+
+    now += 120_000;
+    pool = [arrival('A', false, 2), arrival('B', false, 1)];
+    const stats = await tick(kv, seoul, asFetch, now);
+    expect(stats.legBoardingPromptFired).toBe(1);
+    const [, init] = pushFetch.mock.calls[1] as unknown as [string, { body: string }];
+    const sent = JSON.parse(init.body) as { body?: { trainCode?: string } };
+    expect(sent.body?.trainCode).toBe('B');
+
+    // 소진 열차만 남으면(새 열차 없음) 억제된다.
+    now += 60_000;
+    pool = [arrival('A', false, 2), arrival('B', false, 2)];
+    const stats3 = await tick(kv, seoul, asFetch, now);
+    expect(stats3.legBoardingPromptFired).toBe(0);
+  });
 });

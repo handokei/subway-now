@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ARRIVAL_CODE } from '../alarm';
 import {
   boardingPromptDedupKey,
+  boardingPromptFireOnceKey,
   canBypassRepeatIntervalForTrainTransition,
   canFireForTrainCode,
   decideBoardingPromptFire,
@@ -170,7 +171,9 @@ describe('trainCodeFireCount / canFireForTrainCode (#2898, #3057 상한 1)', () 
   it('selectedTrainCode=null이면 null-trainCode 토큰으로 센다(#2880 fallback과 정합)', () => {
     const firedTrainCodes = ['null-trainCode:position-confirmed'];
     expect(trainCodeFireCount(firedTrainCodes, null)).toBe(1);
-    expect(canFireForTrainCode(firedTrainCodes, null)).toBe(false);
+    // null-token 상한은 2(ambiguous 후 영구 침묵 방지) — 1회 후엔 아직 발사 가능, 2회 후 차단.
+    expect(canFireForTrainCode(firedTrainCodes, null)).toBe(true);
+    expect(canFireForTrainCode([...firedTrainCodes, 'null-trainCode:imminent'], null)).toBe(false);
   });
 
   // #2898 배포 경계 — 구형식(':' 없는 bare trainCode) 키도 토큰 전체로 안전하게 인식(하위 호환).
@@ -200,9 +203,16 @@ describe('canBypassRepeatIntervalForTrainTransition (#2898, #3057 상한 1)', ()
   });
 
   it('selectedTrainCode=null은 null-trainCode 토큰으로 판정(같은 토큰 거부 / 실 열차로 바뀌면 허용)', () => {
-    expect(canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed'], null)).toBe(false);
+    expect(canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed'], null)).toBe(true);
+    expect(
+      canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed', 'null-trainCode:imminent'], null),
+    ).toBe(false);
     expect(canBypassRepeatIntervalForTrainTransition(['U1:position-confirmed'], null)).toBe(true);
-    expect(canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed'], 'U1')).toBe(true);
+    // null이 마지막이고 상한(2) 미달이면 새 열차도 아직 bypass 불가, 소진(2회)되면 허용.
+    expect(canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed'], 'U1')).toBe(false);
+    expect(
+      canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed', 'null-trainCode:imminent'], 'U1'),
+    ).toBe(true);
   });
 
   // #2898 배포 경계 — 구형식 마지막 키(':' 없음)도 토큰 전체로 비교한다.
@@ -500,6 +510,23 @@ describe('#3057 — decideBoardingPromptFire (도착 확정 게이트)', () => {
       fire: true,
       decision: 'fallback-unobservable',
     });
+  });
+});
+
+describe('#3057 — boardingPromptFireOnceKey', () => {
+  it('trainCode가 있으면 decision을 키에서 제외 — phase만 바뀐 같은 열차는 같은 키(이중 발사 차단)', () => {
+    expect(boardingPromptFireOnceKey('용마산', '7325', 'imminent')).toBe('용마산:7325');
+    expect(boardingPromptFireOnceKey('용마산', '7325', 'position-confirmed')).toBe('용마산:7325');
+  });
+
+  it('다른 열차는 다른 키, trainCode null이면 decision 포함 fallback 키(#2880)', () => {
+    expect(boardingPromptFireOnceKey('용마산', '7326', 'imminent')).not.toBe(
+      boardingPromptFireOnceKey('용마산', '7325', 'imminent'),
+    );
+    expect(boardingPromptFireOnceKey('용마산', null, 'imminent')).toBe('용마산:null-trainCode:imminent');
+    expect(boardingPromptFireOnceKey('용마산', null, 'position-confirmed')).toBe(
+      '용마산:null-trainCode:position-confirmed',
+    );
   });
 });
 
