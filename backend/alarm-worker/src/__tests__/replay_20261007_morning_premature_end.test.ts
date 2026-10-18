@@ -107,6 +107,10 @@ describe('#2888 재생 — 10/7 아침 id154 조기 destination-arrived', () => 
       positions,
       RESOLVE_ATTEMPT_MS,
       undefined,
+      // #2780 — 이 재현은 직전 pending이 없는 첫 관측(resolved→pending 승격)이라
+      // hasUserBoardingResponse(AND 조건은 DEPARTED 전이 confirm 분기에만 적용)와 무관하다.
+      // 실측 재현 자체(positions/타임스탬프)는 변경하지 않는다.
+      false,
     );
 
     expect(confirmation.status).toBe('pending');

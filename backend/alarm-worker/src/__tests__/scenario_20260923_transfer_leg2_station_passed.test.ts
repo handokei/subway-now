@@ -163,10 +163,13 @@ describe('#2799 — 환승 leg-2 매역 발사 시나리오 (굳은 alarmAtEpoch
   });
 
   // ── B) leg-2 lockless(재탭 안 함) — auto-lock 승격 후 매역까지 가는가 ──────────
-  it('B) leg-2 lockless + ARRIVED→DEPARTED 전이 → auto-lock 승격 + 다음 cycle 성수 매역 발사', async () => {
+  it('B) leg-2 lockless + ARRIVED→DEPARTED 전이 + 탑승 증거(boardingCommitted=true) → auto-lock 승격 + 다음 cycle 성수 매역 발사', async () => {
     const kv = new InMemoryKV();
     const token = 'leg2-lockless';
-    // leg-1만 탭했고 환승 후 재탭 안 한 상태: lock 없음 + infoMode + currentLegAnchor + walk-gate 통과.
+    // leg-2 boarding-prompt에 [탑승] 응답은 했지만(`boardingCommitted=true`) device가
+    // trainCode를 자체 확정 못 해 PENDING fallback으로 흐른 상태(#2780 옵션 ⓑ,
+    // `useBoardingPromptResponder.ts:827`) — lock 없음 + infoMode + currentLegAnchor +
+    // walk-gate 통과 + 탑승 증거.
     const trip: Trip = {
       token,
       route: { type: 'transfer', fromLine: '7', toLine: '2', stopsToTransfer: 0 },
@@ -181,6 +184,7 @@ describe('#2799 — 환승 leg-2 매역 발사 시나리오 (굳은 alarmAtEpoch
       infoModeEnabled: true,
       currentLegAnchor: { boardingStation: '건대입구', line: '2' },
       legBoardingEligibleAt: NOW - 60_000,
+      boardingCommitted: true,
     } as unknown as Trip;
     await putTrip(kv as unknown as KVNamespace, trip);
 
