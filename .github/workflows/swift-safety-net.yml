@@ -6,10 +6,14 @@ name: Swift Safety Net CI
 # xcodebuild)을 돌리는 것은 Expo/CocoaPods/네이티브 타겟 설정에 강결합돼 오탐이 잦고
 # CI 시간이 크게 늘어난다. 그래서 최소 안전망으로 `swiftc -parse`(문법 파싱 단계)만 돈다.
 #
-# 이 체크가 잡는 것: 중괄호/괄호 불균형, 잘못된 선언 위치, 키워드 오타 등 구문 오류.
-# 이 체크가 못 잡는 것: 타입 오류, 존재하지 않는 심볼/API 참조, ActivityKit/UIKit/
-# ExpoModulesCore 등 프레임워크·모듈 의존 타입체크, 링크 오류. 이런 클래스의 에러는
-# 여전히 사용자의 다음 실기기 빌드(`npm run ios` / EAS)에서만 잡힌다.
+# 이 체크가 잡는 것:
+#   - 전 Swift 파일(`-parse`): 중괄호/괄호 불균형, 잘못된 선언 위치, 키워드 오타 등 구문 오류.
+#   - widget 타깃(`-typecheck`, #3015): 타입 오류, 존재하지 않는 심볼/API 참조, availability
+#     위반(#3014 `@available` 분리 계열). SwiftUI/WidgetKit/ActivityKit/AppIntents 등
+#     시스템 프레임워크만 쓰므로 SDK만으로 성립한다.
+# 이 체크가 여전히 못 잡는 것: `modules/**`의 타입 오류(= `import ExpoModulesCore` 때문에
+# pod install 없이는 타입체크 불가), 링크 오류. 이 클래스의 에러는 여전히 사용자의 다음
+# 실기기 빌드(`npm run ios` / EAS)에서만 잡힌다.
 
 on:
   pull_request:
@@ -46,3 +50,25 @@ jobs:
             fi
           done
           exit $FAIL
+
+      # #3015 — widget 타깃은 `-typecheck`까지 간다. `-parse`가 구문만 보는 탓에 #3014
+      # (`@available`이 선언과 갈라져 `markCurrentActivity` 호출이 깨짐)이 9/9 통과하고
+      # 머지돼 사용자 실기기 빌드에서만 터졌다. 실측: 깨진 상태에서 `-parse` 전 파일 통과 /
+      # `-typecheck` error 2건(`BoardingIntents.swift:119:15`, 사용자 빌드 로그와 동일).
+      #
+      # modules/ 를 포함하지 않는 이유: `import ExpoModulesCore`가 있어 pod install 없이는
+      # `no such module`로 실패한다. widget 타깃은 SwiftUI/WidgetKit/ActivityKit/AppIntents 등
+      # **시스템 프레임워크만** 쓰므로 SDK만으로 성립한다.
+      #
+      # ⚠️ `-target`의 iOS 버전을 올리면 이 체크는 **조용히 inert가 된다** — availability 진단은
+      # deployment target 기준이라, ios17.0으로 돌리면 위 깨진 상태가 그대로 통과한다(실측 확인).
+      # 그래서 버전을 하드코딩하지 않고 expo-target.config.json(SSoT)에서 읽는다.
+      - name: swiftc -typecheck (widget 타깃 — availability/타입 검증, #3015)
+        run: |
+          set -euo pipefail
+          TARGET_VERSION=$(node -p "require('./targets/subway-widget/expo-target.config.json').deploymentTarget")
+          echo "widget deploymentTarget=${TARGET_VERSION} (expo-target.config.json)"
+          xcrun --sdk iphoneos swiftc -typecheck \
+            -target "arm64-apple-ios${TARGET_VERSION}" \
+            targets/subway-widget/*.swift \
+            targets/subway-widget/_shared/*.swift
