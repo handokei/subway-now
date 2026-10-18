@@ -63,6 +63,7 @@ import {
   type ScheduledStats,
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
+import { toSeoulQueryName } from '../seoulStationNameMap';
 import { attemptBoardingAnchorResolution } from '../boardingAnchorResolver';
 import { getTransferSeconds } from '../../../../src/shared/utils/transferTimes';
 import { ARVLCD_FIRE_ONCE_TTL_SEC, arvlCdFireOnceKey } from '../arvlcdFireOnceTtl';
@@ -196,7 +197,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legAdvanceDirectionUnknownBlocked: 0, promptDirectionUnknownBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0, trackingOptInProximityMissingBlocked: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legAdvanceDirectionUnknownBlocked: 0, promptDirectionUnknownBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0, trackingOptInProximityMissingBlocked: 0, originGpsFreeDisplayDerived: 0, originGpsFreeDisplayDerivationFailed: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -456,6 +457,43 @@ function makeSeoul(arrivals: ArrivalEntry[]): SeoulArrivalClient {
         }),
         { status: 200 },
       )) as unknown as typeof fetch,
+  });
+}
+
+/**
+ * #3038 — `makeSeoul`은 역명과 무관하게 항상 같은 `arrivals`를 응답하는 단순 mock이라,
+ * `maybeFireOriginBoardingPromptGpsFree`가 display를 파생해 origin역(예: '시청') arrivals를
+ * 함께 조회하게 된 뒤로는 intermediate 전용으로 구성한 arrivals가 origin 질의에도 그대로
+ * 매칭돼 교차 발사를 낸다(실 Seoul API는 역마다 다른 응답을 준다 — `makeSeoul`의 단순화가
+ * 노출된 것, derivation의 결함이 아니다). `expectedStation`과 일치하는 질의에만 `arrivals`를
+ * 응답하고 그 외(예: origin 질의)는 빈 Seoul 응답으로 — 실제 API처럼 역을 구분한다.
+ */
+function makeStationAwareSeoul(expectedStation: string, arrivals: ArrivalEntry[]): SeoulArrivalClient {
+  const expectedQueryName = encodeURIComponent(toSeoulQueryName(expectedStation));
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes(expectedQueryName)) {
+        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          realtimeArrivalList: arrivals.map((a) => ({
+            barvlDt: String(a.arrivalSeconds),
+            recptnDt: '',
+            updnLine: a.isUp ? '상행' : '하행',
+            trainLineNm: a.destination,
+            btrainNo: a.trainCode,
+            subwayNm: a.subwayNm,
+            arvlCd: a.arvlCd,
+          })),
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch,
   });
 }
 
@@ -895,6 +933,15 @@ describe('runScheduled', () => {
       // restrictArrivalsByLegDirection이 fail-closed로 바뀌어 앵커 없으면 후보 0건이 된다 —
       // 실 프로덕션 트립은 #2280 이후 항상 이 필드를 보내므로 기본으로 채운다(대다수 케이스의
       // arrival fixture가 isUp=true라 'up'과 정합).
+      //
+      // #3038 — display 유실 + 의향 ON(promptOptIn/infoModeEnabled) trip은 이제
+      // `maybeFireOriginBoardingPromptGpsFree`가 originStationName+waypoint로 display를
+      // 파생해 origin 프롬프트 후보 단계(Seoul arrivals 조회)까지 진행한다(스펙 그 자체 —
+      // 이 derivation 자체는 되돌리지 않는다). 이 describe들은 `runLocklessIntermediate` 검증
+      // 대상이므로 그 교차 조회가 `runLocklessCycle`의 station-aware Seoul mock(아래)으로
+      // 흡수된다 — origin 질의('시청')는 그 mock에서 빈 응답을 받아 후보 0건으로 조용히
+      // 종료되고(관측 가능한 blocked 카운터만 증가, push 없음), intermediate 질의('강남')만
+      // 실제 arrivals를 받는다. trip 모양 자체는 무변경 — mock만 역명을 구분한다.
       return makeTrip({
         originStationName: '시청',
         waypoints: [
@@ -931,8 +978,14 @@ describe('runScheduled', () => {
         await seedLocklessMotionSeries(kv, input.trip.token, motion);
       }
       const seoulFetch = vi.fn();
+      // #3038 — intermediate waypoint station(예: '강남')에만 응답하는 station-aware mock.
+      // origin-prompt가 originStationName('시청')으로 교차 조회해도 이 mock은 빈 응답을 줘
+      // 교차 발사를 내지 않는다(이 helper의 목적인 lockless intermediate 검증만 영향받는다).
+      const intermediateStation = input.trip.waypoints[0]?.stationName;
       const seoul = input.arrivals
-        ? makeSeoul(input.arrivals)
+        ? intermediateStation !== undefined
+          ? makeStationAwareSeoul(intermediateStation, input.arrivals)
+          : makeSeoul(input.arrivals)
         : new SeoulArrivalClient({
             apiKey: 'K',
             host: 'h',
@@ -1410,8 +1463,10 @@ describe('runScheduled', () => {
         // 정거장 30m + 정지 → DWELLING(confidence<0.7, phase 게이트 통과) + motion=stationary.
         await seedLocklessMotionSeries(kv, trip.token, 'stationary', 30);
         const apnsFetch = vi.fn();
+        // #3038 — runScheduled 직접 호출(runLocklessCycle 미경유)이라 station-aware mock을
+        // 직접 지정 — origin-prompt의 '시청' 교차 조회가 교차 발사로 새지 않게 한다.
         const stats = await runScheduled(makeEnv(kv), {
-          seoul: makeSeoul([OTHER_TRAIN_ARRIVED]),
+          seoul: makeStationAwareSeoul('강남', [OTHER_TRAIN_ARRIVED]),
           apnsConfig,
           apnsHosts: APNS_HOSTS,
           fetchImpl: apnsFetch as unknown as typeof fetch,
@@ -5443,8 +5498,15 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
         },
       ];
       const fetchImpl = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+      // #3038 — origin-prompt가 originStationName('시청')으로도 arrivals를 조회하게 된 뒤로는
+      // station-aware mock으로 intermediate waypoint('강남')에만 응답해야 이 테스트 의도(LA
+      // content-state 검증)와 무관한 교차 발사를 피한다 — 위 `makeStationAwareSeoul` 주석 참고.
+      const intermediateStation = trip.waypoints[0]?.stationName;
       const stats = await runScheduled(makeEnv(kv), {
-        seoul: makeSeoul(seoulArrivals),
+        seoul:
+          intermediateStation !== undefined
+            ? makeStationAwareSeoul(intermediateStation, seoulArrivals)
+            : makeSeoul(seoulArrivals),
         apnsConfig,
         apnsHosts: APNS_HOSTS,
         fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -7116,8 +7178,11 @@ describe('runScheduled — #837 P2-1 lockless dedup vs Kalman reset 순서', () 
     await kv.put(`kalman:${token}`, JSON.stringify({ v: 40, P: 100, ts: NOW - 5_000 }));
 
     const fetchSpy = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
+    // #3038 — origin-prompt가 originStationName('시청')으로도 조회하게 된 뒤로는 station-aware
+    // mock으로 intermediate waypoint('강남')에만 응답해야 이 테스트 의도(Kalman reset 순서)와
+    // 무관한 교차 발사(및 그로 인한 fetchSpy 호출)를 피한다.
     const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([makeArrivedSignal(1)]),
+      seoul: makeStationAwareSeoul('강남', [makeArrivedSignal(1)]),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: fetchSpy,
@@ -13493,6 +13558,103 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       );
       expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
       expect(stats.trackingOptInProximityMissingBlocked).toBe(0);
+    });
+  });
+
+  // #3038 — `trip.promptDisplay`가 등록 race(1초 간격 2연발, context-null인 쪽이 last-write)로
+  // 유실되면 두 번째 게이트(`if (!display) return`)가 무카운터 silent return을 낸다(10/18 18:37
+  // 실라이드, R2 8cycle 재생으로 확정 — 군자 arrivals 조회 0회와 유일하게 정합). fix: trip에
+  // 이미 저장된 `originStationName`(#2280 SSoT 출발역) + `waypoints[0].line`으로 display를
+  // 파생해 진행한다. 파생 재료가 하나라도 없으면 기존처럼 return하되 카운터를 증가시킨다
+  // (이 게이트가 다른 모든 게이트처럼 관측 가능해야 한다).
+  describe('#3038 — promptDisplay 유실 시 originStationName+waypoint로 파생 fallback', () => {
+    it('① [RED] promptOptIn=true + display 없음 + originStationName=군자 + 임박 열차 → 발사(기존 0 → 수정 1)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: '군자' });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+
+    it('② [RED] 같은 상태에서 파생 성공 카운터(originGpsFreeDisplayDerived)가 +1 된다(기존엔 카운터 자체가 없음)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: '군자' });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeDisplayDerived).toBe(1);
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(0);
+    });
+
+    it('③ [거부] display·originStationName 둘 다 없음 → 미발사 + 파생실패 카운터(originGpsFreeDisplayDerivationFailed) +1', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: undefined });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(1);
+      expect(stats.originGpsFreeDisplayDerived).toBe(0);
+    });
+
+    it('③-b [거부] display 없음 + originStationName은 있으나 waypoints가 비어 line을 파생할 수 없음 → 미발사 + 파생실패 카운터 +1', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: '군자', waypoints: [] });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(1);
+    });
+
+    it('④ [동작 불변] display 있으면 파생 분기 미진입 — 기존 경로 100% 불변', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip(); // default promptDisplay 존재(originStation:'군자', line:'7')
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeDisplayDerived).toBe(0);
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(0);
     });
   });
 
