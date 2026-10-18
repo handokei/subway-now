@@ -291,6 +291,7 @@ describe('evaluateLegBoardingTransition (#2754)', () => {
       [position({ trainCode: '7256' })],
       NOW,
       undefined,
+      false,
     );
     expect(result).toEqual({
       status: 'pending',
@@ -300,15 +301,36 @@ describe('evaluateLegBoardingTransition (#2754)', () => {
     });
   });
 
-  it('red → green: pending(7256) + 이번 cycle 같은 anchor station에서 7256 DEPARTED 관측 → confirmed(탑승 확정)', () => {
+  it('red → green: pending(7256) + DEPARTED 관측 + 탑승 증거(hasUserBoardingResponse=true) → confirmed(탑승 확정)', () => {
     const result = evaluateLegBoardingTransition(
       ANCHOR,
       [position({ trainCode: '7256', trainSttus: 2 })],
       NOW,
       { trainCode: '7256', firstObservedAt: NOW - 60_000 },
+      true,
     );
     expect(result.status).toBe('confirmed');
     expect(result).toMatchObject({ status: 'confirmed', trainCode: '7256' });
+  });
+
+  // #2780 red ① — 9/21 실측(3056)의 핵심 결함. DEPARTED 전이는 관측됐으나 사용자가 그 열차에
+  // 탔다는 증거(hasUserBoardingResponse)가 전혀 없다. 옵션 ⓑ(증거 AND) 적용 전에는 이 경우도
+  // 그대로 confirmed됐다 — 그것이 9/21에 한 대 앞 열차(3056)를 lock한 결함이다. 적용 후에는
+  // confirm을 보류하고 pending을 유지한다(요구사항 3 — 폐지가 아니라 confirm만 보류).
+  it('#2780 red①: pending(3056) + DEPARTED 전이 + 증거 없음(hasUserBoardingResponse=false) → confirmed 아님, pending 유지(9/21 실측 3056 재현)', () => {
+    const result = evaluateLegBoardingTransition(
+      ANCHOR,
+      [position({ trainCode: '3056', trainSttus: 2 })],
+      NOW,
+      { trainCode: '3056', firstObservedAt: NOW - 60_000 },
+      false,
+    );
+    expect(result).toEqual({
+      status: 'pending',
+      trainCode: '3056',
+      firstObservedAt: NOW - 60_000, // 최초 관측 시각 보존 — 다음 cycle에도 계속 관찰
+      candidates: [{ trainCode: '3056', trainSttus: 2 }],
+    });
   });
 
   it('red → green(핵심 회귀 방지): pending(7260) + 이번 cycle도 7260이 계속 ARRIVED(DEPARTED 전이 없음) → confirmed 아님, pending 유지 — 9/18 실캡처의 오탑승(7260) 재현', () => {
@@ -317,9 +339,12 @@ describe('evaluateLegBoardingTransition (#2754)', () => {
       [position({ trainCode: '7260', trainSttus: 1 })],
       NOW,
       { trainCode: '7260', firstObservedAt: NOW - 60_000 },
+      true,
     );
     // 구 설계라면 이 시점(같은 trainCode 2 cycle 연속 resolved)에 승격했다 — 그것이 정확히
     // 9/18 실캡처의 오탑승 결함이다. 새 설계는 DEPARTED 전이가 없으므로 계속 pending이다.
+    // hasUserBoardingResponse=true여도 DEPARTED 전이 자체가 없으므로 이 테스트는 증거 유무와
+    // 무관하게 pending을 유지해야 한다(③ 거부 케이스와 독립된 축).
     expect(result).toEqual({
       status: 'pending',
       trainCode: '7260',
@@ -328,12 +353,30 @@ describe('evaluateLegBoardingTransition (#2754)', () => {
     });
   });
 
+  // #2780 거부 ④ — legResolveStreak(=pending 그 자체)의 존재만으로는 증거가 아니다. pending이
+  // 있다는 사실과 hasUserBoardingResponse는 완전히 독립된 입력이다 — 이 테스트는 pending이
+  // 길게 유지돼도(firstObservedAt이 과거) hasUserBoardingResponse=false면 여전히 confirm되지
+  // 않음을 확정한다(legResolveStreak만으로 증거를 합성할 수 없다, #2926 false positive와 동일
+  // 금지 패턴).
+  it('#2780 거부④: pending 유지 기간(legResolveStreak)이 길어도 hasUserBoardingResponse=false면 DEPARTED 전이에서 confirm되지 않는다', () => {
+    const result = evaluateLegBoardingTransition(
+      ANCHOR,
+      [position({ trainCode: '3056', trainSttus: 2 })],
+      NOW,
+      { trainCode: '3056', firstObservedAt: NOW - 10 * 60_000 }, // 10분간 pending 유지됨
+      false,
+    );
+    expect(result.status).toBe('pending');
+    expect(result).toMatchObject({ trainCode: '3056', firstObservedAt: NOW - 10 * 60_000 });
+  });
+
   it('pending(7911) + 이번 cycle 다른 trainCode(7922)만 resolved(7911은 DEPARTED로도 관측 안 됨) → 새 후보로 교체(pending, firstObservedAt=now)', () => {
     const result = evaluateLegBoardingTransition(
       ANCHOR,
       [position({ trainCode: '7922' })],
       NOW,
       { trainCode: '7911', firstObservedAt: NOW - 60_000 },
+      false,
     );
     expect(result).toEqual({
       status: 'pending',
@@ -349,6 +392,7 @@ describe('evaluateLegBoardingTransition (#2754)', () => {
       [position({ trainCode: '7911' }), position({ trainCode: '7922' })],
       NOW,
       { trainCode: '7911', firstObservedAt: NOW - 60_000 },
+      true,
     );
     expect(result.status).toBe('rejected');
   });
@@ -357,12 +401,12 @@ describe('evaluateLegBoardingTransition (#2754)', () => {
     const result = evaluateLegBoardingTransition(ANCHOR, [], NOW, {
       trainCode: '7911',
       firstObservedAt: NOW - 60_000,
-    });
+    }, true);
     expect(result.status).toBe('rejected');
   });
 
   it('pending 없음 + 이번 cycle 후보 0개 → none(리셋할 pending 자체가 없음)', () => {
-    const result = evaluateLegBoardingTransition(ANCHOR, [], NOW, undefined);
+    const result = evaluateLegBoardingTransition(ANCHOR, [], NOW, undefined, false);
     expect(result).toEqual({ status: 'none', candidates: [] });
   });
 });
@@ -551,7 +595,7 @@ describe('attemptBoardingAnchorResolution', () => {
         trip,
         seoul,
         NOW,
-        { allowLegTransfer: true, legTransition: {} },
+        { allowLegTransfer: true, legTransition: { hasUserBoardingResponse: false } },
         (o) => {
           onOutcomeCalled = o;
         },
@@ -565,7 +609,7 @@ describe('attemptBoardingAnchorResolution', () => {
       expect(transition).toMatchObject({ status: 'pending', trainCode: '7246' });
     });
 
-    it('pending(7246) + 이번 cycle 7246 DEPARTED 전이 관측 → confirmed, BoardingLockMeta 반환', async () => {
+    it('pending(7246) + 이번 cycle 7246 DEPARTED 전이 관측 + 탑승 증거(hasUserBoardingResponse=true) → confirmed, BoardingLockMeta 반환', async () => {
       const seoul = makeSeoulWithPositions([{ trainCode: '7246', trainSttus: 2 }]);
       const trip = makeTrip({
         currentLegAnchor: { boardingStation: '중곡', line: '7' },
@@ -577,7 +621,13 @@ describe('attemptBoardingAnchorResolution', () => {
         trip,
         seoul,
         NOW,
-        { allowLegTransfer: true, legTransition: { pending: { trainCode: '7246', firstObservedAt: NOW - 60_000 } } },
+        {
+          allowLegTransfer: true,
+          legTransition: {
+            pending: { trainCode: '7246', firstObservedAt: NOW - 60_000 },
+            hasUserBoardingResponse: true,
+          },
+        },
         undefined,
         undefined,
         (c) => {
@@ -587,6 +637,44 @@ describe('attemptBoardingAnchorResolution', () => {
       expect(result).not.toBeNull();
       expect(result?.trainCode).toBe('7246');
       expect(transition?.status).toBe('confirmed');
+    });
+
+    // #2780 red② — 옵션 ⓑ(증거 AND) 핵심. pending(3056) + DEPARTED 전이는 관측됐지만
+    // hasUserBoardingResponse=false(사용자가 leg-2 boarding-prompt에 응답하지 않음, 9/21 실측
+    // boarding_prompt_responded=0과 동일 조건) → confirmed로 승격하면 안 되고, lock도 생성되지
+    // 않아야 한다(null 반환). onLegTransition은 status:'pending'을 그대로 통지한다(요구사항 3 —
+    // confirm만 보류, pending 관측 자체는 유지).
+    it('#2780 red②: pending(3056) + DEPARTED 전이 + 증거 없음(hasUserBoardingResponse=false) → confirmed 아님, null 반환(lock 미생성), onLegTransition(pending) 통지', async () => {
+      const seoul = makeSeoulWithPositions([{ trainCode: '3056', trainSttus: 2 }]);
+      const trip = makeTrip({
+        currentLegAnchor: { boardingStation: '중곡', line: '7' },
+        legBoardingEligibleAt: NOW - 1,
+        promptDisplay: undefined,
+      });
+      let outcome: string | undefined;
+      let transition: LegBoardingConfirmation | undefined;
+      const result = await attemptBoardingAnchorResolution(
+        trip,
+        seoul,
+        NOW,
+        {
+          allowLegTransfer: true,
+          legTransition: {
+            pending: { trainCode: '3056', firstObservedAt: NOW - 60_000 },
+            hasUserBoardingResponse: false,
+          },
+        },
+        (o) => {
+          outcome = o;
+        },
+        undefined,
+        (c) => {
+          transition = c;
+        },
+      );
+      expect(result).toBeNull();
+      expect(outcome).toBe('none');
+      expect(transition).toMatchObject({ status: 'pending', trainCode: '3056' });
     });
   });
 
