@@ -406,30 +406,21 @@ describe('evidence 2026-08-04 — boarding-prompt 반복 발사 정책 전체 �
     ).toBe(true);
   });
 
-  it('5분 미만 간격 재발사 시도 → fired-too-recently로 차단', async () => {
+  // #3057 — 상한 1(열차당 도착 확정 1회) 이후 직전 열차가 소진되므로 5분 미만에 도착한 **새 열차**는
+  // #2898 ④ bypass로 발사된다(단배차 역 사용자 실열차 miss 방지, 9/18 건대입구 7254->7256). 구 기대값
+  // ("다른 trainCode도 5분 게이트로 차단")은 approaching+arrival 2회 상한 전제였다.
+  it('5분 미만 간격 새 열차 도착 → 직전 열차 소진이므로 bypass로 발사, 같은 열차는 차단', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeNearbyTrip());
     const env = makeEnv(kv);
 
     await runScheduled(env, makeDeps(NOW, 'TR-1', 'push-0'));
-    // 2분 후 — 5분 최소 간격 미달. 다른 trainCode라 duplicate 게이트는 통과하지만
-    // min-interval(fired-too-recently) 게이트가 먼저 차단.
-    const logCalls: Array<[string, Record<string, unknown> | undefined]> = [];
-    const stats = await runScheduled(
-      env,
-      makeDeps(NOW + 2 * 60 * 1000, 'TR-2', 'push-1', (message, meta) => {
-        logCalls.push([message, meta]);
-      }),
-    );
+    const stats = await runScheduled(env, makeDeps(NOW + 2 * 60 * 1000, 'TR-2', 'push-1'));
+    expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
 
-    expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
-    expect(
-      logCalls.some(
-        ([message, meta]) =>
-          message === 'origin-boarding-prompt-gps-free: gate blocked' &&
-          meta?.reason === 'fired-too-recently',
-      ),
-    ).toBe(true);
+    // 같은 열차(TR-2) 재관측은 5분 미만이어도 이후에도 발사되지 않는다(열차당 1회).
+    const again = await runScheduled(env, makeDeps(NOW + 3 * 60 * 1000, 'TR-2', 'push-2'));
+    expect(again.originGpsFreeBoardingPromptFired).toBe(0);
   });
 
   it('스탬프 227m(자택) 차단 → 근접 가드로 미발사', async () => {

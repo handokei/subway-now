@@ -17,10 +17,10 @@
  *   ambiguity → 자동 안 함 → 클라가 manual fallback.
  */
 
-import { ARRIVAL_CODE } from './alarm';
-import { matchLine } from './lineAlias';
+import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
+import { canonicalLineName, matchLine } from './lineAlias';
 import { evaluateWindow, type WindowedMetrics } from './positionSeries';
-import type { ArrivalEntry } from './seoul';
+import type { ArrivalEntry, PositionEntry } from './seoul';
 import type { BoardingPromptState } from './types';
 
 // #2844 — 구 게이트 #4(ORIGIN_RADIUS_KM)/#5(DIRECTION_COSINE_THRESHOLD)/#6(MIN_WINDOW_SAMPLES)/
@@ -109,75 +109,129 @@ export const MIN_FIRE_INTERVAL_MS = 5 * 60 * 1000;
 export const MAX_FIRE_COUNT = 3;
 
 /**
- * #2801 (REOPENED 2026-09-30 정정 스펙 §1/§2) — boarding-prompt 임박 게이트.
+ * #3057 (2026-10-19 사용자 결정, #2801 임박집합 {0,1,2}·3차 reopen approaching {3,5} 타이밍 결정 대체)
+ * — boarding-prompt는 **도착 확정**일 때만 발사한다.
  *
- * 9/30 실측 트립(e25e1158) D1 RCA: `fireBoardingPromptForAnchor`의 유일 발사 게이트가
- * `candidateTrains.length === 0`뿐이라 "노선/방향만 필터한 아무 열차"(전역출발/운행중 포함)만
- * 있어도 발사됐다 — 열차가 아직 도착하지 않은 조기 발사(leg-2 06:42/06:44, 열차는 06:46 도착).
+ * 사용자 verbatim: "탑승여부이니까 배너로 도착확정시에만 프롬프트가 올 수 있도록 하자. 알림
+ * 프롬프트도 마찬가지고". 10/18 라이드에서 프롬프트가 열차보다 최대 ~2.5분 일찍 와, 사용자가
+ * 탑승 후 탭한 시점엔 열차가 DEPARTED -> resolver 탈락(#3056) -> PENDING lock -> 전 채널 침묵.
  *
- * 임박 정의(0 진입/1 도착/2 출발): 0/1은 승강장 진입/도착. 2(출발)를 포함하는 이유는 cron
- * 60s 폴링 주기가 도착 창(~30s)보다 길어 진입→도착→출발이 한 폴링 갭에 지나갈 수 있고,
- * `pickAutoTrainCode`의 lock-pick 우선순위(2>1>0, 회고형 — 푸시 도착·탭 시점엔 열차가 이미
- * 출발해 있는 게 정상)와 발사 게이트의 의미를 정합시키기 위함이다.
+ * arrival 피드 도착 확정 = arvlCd {1 도착, 2 출발}. 0(진입)은 도착 확정이 아니라 제거했다.
+ * 2(출발)를 유지하는 이유는 기존 회고형 정합 그대로(`pickAutoTrainCode` lock-pick 2>1>0 — 푸시
+ * 도착·탭 시점엔 열차가 이미 출발해 있는 게 정상). 3(전역출발)/5(전역도착) approaching tier는
+ * 발사 트리거에서 제거했다 — 그 존재 이유였던 10/2 샘플링 miss(도착창 ~30s < cron 폴링)는
+ * realtimePosition 확정(아래 `selectPositionConfirmedTrains`)이 구조적으로 대체한다:
+ * trainSttus=2(DEPARTED)는 다음 역 도착까지 ~2분 지속돼 폴링이 놓칠 수 없다.
+ *
+ * 주의 — `alarm.ts`의 `EARLY_CODES={4,5}`/`scheduled.ts pickBestArrivalSignal` 2순위 tier {4,5}는
+ * **표시/추정용**이라 이 집합과 무관하다. 세 taxonomy를 통일하지 말 것(의미가 다르다).
+ * `pickAutoTrainCode`의 priority tier 3/5도 발사가 아닌 **선택**용이라 무변경.
  */
 export const IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
-  ARRIVAL_CODE.ENTERING, // 0
   ARRIVAL_CODE.ARRIVED, // 1
   ARRIVAL_CODE.DEPARTED, // 2
 ]);
 
 /**
- * #2801 (3차 reopen, 2026-10-03 실측) — approaching 게이트. 임박{0,1,2}이 cron 60s 폴링에
- * 걸리지 않은 채(도착창 ~30s가 폴링 갭보다 짧아) leg-2 "탑승하셨나요?" 시도 9회가 전부
- * suppressed-not-imminent로 억제된 10/2 실측 miss를 봉합한다. 사용자 열차의 최근접 관측은
- * 5(전역도착)/3(전역출발) — 직전역 신호(도착 60~150s 전), 플랫폼 대기 사용자에게 "곧 도착"
- * 프롬프트로 적절한 창이다.
- *
- * 4(전역진입, ≈2~3분 전)는 **의도적으로 제외** — 9/30 조기 발사 불만(4분 전 발사) 창에
- * 근접하고 10/2 실측에도 미관측. 필요 시 측정 후 별도 이슈로 확장.
- *
- * code-review(medium, #2801) — taxonomy drift 주의: 이 레포에는 {4,5} 집합을 쓰는 곳이 이미
- * 둘 더 있다 — `alarm.ts`의 `EARLY_CODES={PREV_ENTERING,PREV_ARRIVED}`(표시 phase='early' 판정)
- * 와 `scheduled.ts`의 `pickBestArrivalSignal`의 2순위 tier(위치/ETA 추정 신호). 둘 다 "4/5=이르지만
- * 유효한 신호"라는 같은 철학이라 {4,5}를 쓴다. 이 상수는 **발사 게이트**라는 다른 성격이고
- * {3,5}라는 다른 집합을 쓴다 — 4를 포함하면 위에서 설명한 9/30 조기 발사 리스크에 다시 노출되기
- * 때문이다. 세 taxonomy를 같은 집합으로 통일하려 하지 말 것(의미가 다르다) — 수정 시 이 상수와
- * 저 둘을 혼동하지 않도록 반드시 교차 확인한다.
+ * #3057 — position 확정 신선창. `recptnMs`(Seoul 수신 시각)가 `now` 기준 이 창 안이어야 "지금
+ * anchor 역에 있다"로 인정한다. trainSttus=2(DEPARTED)는 다음 역 도착까지 ~2분 지속되므로 3분 —
+ * 그 이상 묵은 DEPARTED는 이미 다음 역을 지났을 수 있어 확정이 아니다(거부 케이스 ⓔ).
  */
-export const APPROACHING_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
-  ARRIVAL_CODE.PREV_DEPARTED, // 3
-  ARRIVAL_CODE.PREV_ARRIVED, // 5
+export const PROMPT_POSITION_FRESH_MS = 3 * 60 * 1000;
+
+/** #3057 — 도착 확정으로 인정하는 realtimePosition trainSttus (1 도착, 2 출발). */
+const POSITION_CONFIRMED_STATUS: ReadonlySet<number> = new Set([
+  TRAIN_STATUS.ARRIVED,
+  TRAIN_STATUS.DEPARTED,
 ]);
 
 export type BoardingFireDecision =
   | { fire: true; decision: 'imminent' }
-  | { fire: true; decision: 'approaching' }
+  | { fire: true; decision: 'position-confirmed' }
   | { fire: true; decision: 'fallback-unobservable' }
   | { fire: false; decision: 'suppressed-not-imminent' };
 
 /**
- * OR-fallback 판정 — **arvlCd 하드 필터가 아니다** (caller가 candidateTrains payload에 이
+ * #3057 — anchor 역에서 지금 도착이 확정된 열차를 realtimePosition에서 고른다.
+ *
+ * 조건(전부): station 일치 + trainSttus in {1,2} + `recptnMs` 신선(`PROMPT_POSITION_FRESH_MS`) +
+ * 방향 일치. direction===null이면 fail-closed(빈 배열) — 단 `directionUnavailable`(구조적 null,
+ * ⓖ류)은 line 전체 유지(fire 판정 `fireBoardingPromptForAnchor`의 decisionPool 정책과 동일,
+ * #2944 H-6 — 반대 방향 열차를 확정으로 세는 10/9 사고 계열 차단).
+ */
+export function selectPositionConfirmedTrains(
+  positions: readonly PositionEntry[],
+  inputs: {
+    station: string;
+    direction: 'up' | 'down' | null;
+    directionUnavailable: boolean;
+    now: number;
+  },
+): PositionEntry[] {
+  const { station, direction, directionUnavailable, now } = inputs;
+  if (direction === null && !directionUnavailable) return [];
+  return positions.filter(
+    (p) =>
+      p.stationName === station &&
+      p.trainSttus !== null &&
+      POSITION_CONFIRMED_STATUS.has(p.trainSttus) &&
+      now - p.recptnMs <= PROMPT_POSITION_FRESH_MS &&
+      (direction === null || (direction === 'up') === p.isUp),
+  );
+}
+
+/**
+ * #3057 — position이 확정한 열차를 arrival pool에 합친다(payload candidateTrains/lock 대상 선택용 —
+ * 발사 판정 `decideBoardingPromptFire`는 합치기 전 feed pool + 확정 여부를 따로 받는다).
+ * arrival에 같은 trainCode가 있으면 arvlCd를 position trainSttus(1/2)로 교정하고(더 정확한 실측),
+ * 없으면 합성 entry를 추가한다. 신규 fetch 없음 — 이미 읽은 self-poll snapshot 재사용.
+ */
+export function mergePositionConfirmedIntoPool(
+  pool: readonly ArrivalEntry[],
+  confirmed: readonly PositionEntry[],
+  line: string,
+): ArrivalEntry[] {
+  const subwayNm = canonicalLineName(line) ?? line;
+  const merged = [...pool];
+  for (const train of confirmed) {
+    const arvlCd = train.trainSttus;
+    const idx = merged.findIndex((entry) => entry.trainCode === train.trainCode);
+    if (idx >= 0) {
+      merged[idx] = { ...merged[idx], arvlCd, arrivalSeconds: 0 };
+      continue;
+    }
+    merged.push({
+      destination: train.terminus ?? '',
+      arrivalSeconds: 0,
+      trainCode: train.trainCode,
+      isUp: train.isUp,
+      subwayNm,
+      arvlCd,
+      synthesized: true,
+      terminus: train.terminus ?? null,
+    });
+  }
+  return merged;
+}
+
+/**
+ * 도착 확정 판정 (#3057) — **arvlCd 하드 필터가 아니다** (caller가 candidateTrains payload에 이
  * 함수의 pool을 그대로 쓴다는 전제로 설계됨, 이슈 §4 금지사항).
  *
- * 1. 임박(§ IMMINENT_BOARDING_ARVLCD) 열차가 하나라도 있으면 발사.
- * 2. 임박이 없어도 approaching(§ APPROACHING_BOARDING_ARVLCD) 열차가 하나라도 있으면 발사
- *    (#2801 3차 reopen) — 관측된 결정적 신호이므로 null-fallback(3)보다 우선 판정한다.
- * 3. 임박/approaching이 둘 다 없어도, 관측 불가(arvlCd===null) 후보가 하나라도 있으면
- *    "임박이 아니다"를 확정할 수 없으므로 발사(fallback) — 지하/API 부재에서 기존 동작(발사)을
- *    보존해 miss 재발을 막는다(equal-protection).
- * 4. 모든 후보가 관측됐는데(non-null) 임박/approaching이 하나도 없을 때만 억제.
+ * 1. arrival 피드 도착 확정(§ IMMINENT_BOARDING_ARVLCD {1,2}) 열차가 있으면 발사('imminent').
+ * 2. 없어도 `positionConfirmed`(anchor 역 position trainSttus 1/2 fresh)면 발사('position-confirmed').
+ * 3. 둘 다 아니어도 관측 불가(arvlCd===null) 후보가 있으면 "확정 아님"을 단정할 수 없으므로 발사
+ *    (fallback) — 지하/API 부재에서 기존 동작(발사)을 보존해 miss를 막는다(equal-protection).
+ * 4. 모든 후보가 관측됐는데(non-null) 확정이 없을 때만 억제 — 진입(0)/전역출발(3)/전역진입(4)/
+ *    전역도착(5)/운행중(99)은 도착 확정이 아니다.
  */
 export function decideBoardingPromptFire(
   pool: readonly { arvlCd: number | null }[],
+  positionConfirmed = false,
 ): BoardingFireDecision {
-  const imminent = pool.filter(
-    (a) => a.arvlCd !== null && IMMINENT_BOARDING_ARVLCD.has(a.arvlCd),
-  );
-  if (imminent.length > 0) return { fire: true, decision: 'imminent' };
-  const approaching = pool.filter(
-    (a) => a.arvlCd !== null && APPROACHING_BOARDING_ARVLCD.has(a.arvlCd),
-  );
-  if (approaching.length > 0) return { fire: true, decision: 'approaching' };
+  const arrived = pool.some((a) => a.arvlCd !== null && IMMINENT_BOARDING_ARVLCD.has(a.arvlCd));
+  if (arrived) return { fire: true, decision: 'imminent' };
+  if (positionConfirmed) return { fire: true, decision: 'position-confirmed' };
   if (pool.some((a) => a.arvlCd === null)) {
     return { fire: true, decision: 'fallback-unobservable' };
   }
@@ -316,11 +370,14 @@ export function isExactDuplicateFire(
 
 /**
  * #2898 (사용자 2회 지적 — 탑승 전엔 프롬프트가 뜨고 정작 실제 도착 시엔 아무것도 안 옴) — 같은
- * trainCode에 대해 phase(approaching/imminent 등)를 불문하고 허용하는 최대 발사 횟수.
- * approaching 1회 + 실제 도착(arrival) 재확인 1회까지만 — 그 열차에 대해 3번째 발사는 하지
- * 않는다(스펙 ③, 거부 케이스 ⓑ).
+ * trainCode에 대해 phase를 불문하고 허용하는 최대 발사 횟수.
+ *
+ * #3057 — 2→1. 구 상한 2는 "approaching 1회 + arrival 재확인 1회"가 근거였다. approaching 발사가
+ * 제거돼 열차 1대는 도착 확정 때 1회만 발사되므로 상한 1이 "arrival 1회로 수렴"의 파생이다. 2를
+ * 유지하면 열차가 영원히 "소진"되지 않아 #2898 ④(새 열차 bypass)가 열리지 않고, 단배차(2분)
+ * 역에서 다음 열차(사용자 실열차) 프롬프트가 5분 게이트에 막힌다(9/18 건대입구 7254→7256 실측).
  */
-export const MAX_FIRES_PER_TRAIN_CODE = 2;
+export const MAX_FIRES_PER_TRAIN_CODE = 1;
 
 /** `boardingPromptDedupKey`가 만든 `${trainCode}:${decision}` 키에서 trainCode 토큰만 추출. */
 function trainCodeTokenOf(dedupKey: string): string {
@@ -345,7 +402,7 @@ export function trainCodeFireCount(
   return (firedTrainCodes ?? []).filter((key) => trainCodeTokenOf(key) === token).length;
 }
 
-/** #2898 — 같은 trainCode에 대해 `MAX_FIRES_PER_TRAIN_CODE`(2) 미만이면 발사 가능. */
+/** #2898 — 같은 trainCode에 대해 `MAX_FIRES_PER_TRAIN_CODE`(1) 미만이면 발사 가능. */
 export function canFireForTrainCode(
   firedTrainCodes: readonly string[] | undefined,
   selectedTrainCode: string | null,

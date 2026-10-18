@@ -13,7 +13,10 @@ import {
   markPromptFired,
   markPromptSilenced,
   MAX_FIRES_PER_TRAIN_CODE,
+  mergePositionConfirmedIntoPool,
   pickAutoTrainCode,
+  PROMPT_POSITION_FRESH_MS,
+  selectPositionConfirmedTrains,
   trainCodeFireCount,
 } from '../boardingPrompt';
 import type { ArrivalEntry } from '../seoul';
@@ -113,18 +116,18 @@ describe('markPromptFired / markPromptSilenced', () => {
 // dedup에 막히지 않으려면 phase까지 키에 포함해야 한다.
 describe('boardingPromptDedupKey (#2880)', () => {
   it('selectedTrainCode가 non-null이면 "trainCode:decision" 형식(#2898 — phase도 키에 포함)', () => {
-    expect(boardingPromptDedupKey('U1', 'approaching')).toBe('U1:approaching');
+    expect(boardingPromptDedupKey('U1', 'position-confirmed')).toBe('U1:position-confirmed');
     expect(boardingPromptDedupKey('U1', 'imminent')).toBe('U1:imminent');
   });
 
   it('#2898 — 같은 trainCode라도 phase가 다르면 다른 키(재발사 허용의 입력)', () => {
-    expect(boardingPromptDedupKey('U1', 'approaching')).not.toBe(
+    expect(boardingPromptDedupKey('U1', 'position-confirmed')).not.toBe(
       boardingPromptDedupKey('U1', 'imminent'),
     );
   });
 
   it('selectedTrainCode=null이면 phase(decision)를 포함한 fallback 키 반환', () => {
-    expect(boardingPromptDedupKey(null, 'approaching')).toBe('null-trainCode:approaching');
+    expect(boardingPromptDedupKey(null, 'position-confirmed')).toBe('null-trainCode:position-confirmed');
     expect(boardingPromptDedupKey(null, 'imminent')).toBe('null-trainCode:imminent');
     expect(boardingPromptDedupKey(null, 'fallback-unobservable')).toBe(
       'null-trainCode:fallback-unobservable',
@@ -132,88 +135,80 @@ describe('boardingPromptDedupKey (#2880)', () => {
   });
 
   it('null이어도 phase가 다르면 다른 키 — 과차단 방지(phase 전환은 재발사 허용)', () => {
-    expect(boardingPromptDedupKey(null, 'approaching')).not.toBe(
+    expect(boardingPromptDedupKey(null, 'position-confirmed')).not.toBe(
       boardingPromptDedupKey(null, 'imminent'),
     );
   });
 });
 
-// #2898 — 같은 trainCode에 대해 phase 무관 최대 2회(approaching+arrival)까지만 허용하는 하드 캡.
-describe('trainCodeFireCount / canFireForTrainCode (#2898)', () => {
+// #2898 -> #3057 — 같은 trainCode에 대해 phase 무관 최대 1회(도착 확정 1회)만 허용하는 하드 캡.
+// (구 2회 = approaching 1 + arrival 1. approaching 발사가 제거돼 1로 수렴.)
+describe('trainCodeFireCount / canFireForTrainCode (#2898, #3057 상한 1)', () => {
+  it('상한은 1(#3057 — approaching 발사 제거로 arrival 1회로 수렴)', () => {
+    expect(MAX_FIRES_PER_TRAIN_CODE).toBe(1);
+  });
+
   it('firedTrainCodes가 비어있으면 count=0, canFire=true', () => {
     expect(trainCodeFireCount(undefined, 'U1')).toBe(0);
     expect(canFireForTrainCode(undefined, 'U1')).toBe(true);
   });
 
   it('같은 trainCode의 phase별 키가 섞여 있어도 trainCode 기준으로 센다', () => {
-    const firedTrainCodes = ['U1:approaching', 'U2:imminent'];
+    const firedTrainCodes = ['U1:position-confirmed', 'U2:imminent'];
     expect(trainCodeFireCount(firedTrainCodes, 'U1')).toBe(1);
     expect(trainCodeFireCount(firedTrainCodes, 'U2')).toBe(1);
     expect(trainCodeFireCount(firedTrainCodes, 'U3')).toBe(0);
   });
 
-  it(`MAX_FIRES_PER_TRAIN_CODE(${MAX_FIRES_PER_TRAIN_CODE}) 도달 시 canFireForTrainCode=false`, () => {
-    const firedTrainCodes = ['U1:approaching', 'U1:imminent'];
+  it('상한 도달 시 canFireForTrainCode=false — 같은 열차가 position->arrival로 두 번 확정돼도 1회', () => {
+    const firedTrainCodes = ['U1:position-confirmed'];
     expect(trainCodeFireCount(firedTrainCodes, 'U1')).toBe(MAX_FIRES_PER_TRAIN_CODE);
     expect(canFireForTrainCode(firedTrainCodes, 'U1')).toBe(false);
+    expect(canFireForTrainCode(firedTrainCodes, 'U2')).toBe(true);
   });
 
   it('selectedTrainCode=null이면 null-trainCode 토큰으로 센다(#2880 fallback과 정합)', () => {
-    const firedTrainCodes = ['null-trainCode:approaching'];
+    const firedTrainCodes = ['null-trainCode:position-confirmed'];
     expect(trainCodeFireCount(firedTrainCodes, null)).toBe(1);
-    expect(canFireForTrainCode(firedTrainCodes, null)).toBe(true);
+    expect(canFireForTrainCode(firedTrainCodes, null)).toBe(false);
   });
 
-  // #2898 배포 경계 — 이 fix 이전에는 dedup 키가 phase 없이 trainCode 그대로였다(':' 없음).
-  // 배포 시점에 in-flight인 trip의 firedTrainCodes가 구형식으로 남아있을 수 있으므로, ':' 없는
-  // 키도 트레인코드 전체를 토큰으로 안전하게 인식해야 한다(하위 호환).
+  // #2898 배포 경계 — 구형식(':' 없는 bare trainCode) 키도 토큰 전체로 안전하게 인식(하위 호환).
   it('구형식 키(":" 없는 bare trainCode)도 토큰 전체로 안전하게 인식한다(배포 경계 하위 호환)', () => {
     const firedTrainCodes = ['U1'];
     expect(trainCodeFireCount(firedTrainCodes, 'U1')).toBe(1);
-    expect(canFireForTrainCode(firedTrainCodes, 'U1')).toBe(true);
+    expect(canFireForTrainCode(firedTrainCodes, 'U1')).toBe(false);
   });
 });
 
-// #2898 — 'fired-too-recently'(5분 간격) 소프트 블록의 same-train bypass 최종 판정.
-describe('canBypassRepeatIntervalForTrainTransition (#2898)', () => {
+// #2898 -> #3057 — 'fired-too-recently'(5분 간격) 소프트 블록의 새 열차 bypass 최종 판정.
+describe('canBypassRepeatIntervalForTrainTransition (#2898, #3057 상한 1)', () => {
   it('firedTrainCodes가 비어있으면(발사 이력 없음) bypass 불가(false) — 호출 전제 위반 방어', () => {
     expect(canBypassRepeatIntervalForTrainTransition(undefined, 'U1')).toBe(false);
     expect(canBypassRepeatIntervalForTrainTransition([], 'U1')).toBe(false);
   });
 
-  it('스펙 ① — 같은 trainCode(U1) 재확인, 직전 발사 1회뿐(소진 전) → bypass 허용', () => {
-    expect(canBypassRepeatIntervalForTrainTransition(['U1:approaching'], 'U1')).toBe(true);
-  });
-
-  it('스펙 ③(거부 ⓑ) — 같은 trainCode(U1)가 이미 2회(소진) → bypass 거부', () => {
+  it('거부 — 같은 trainCode(U1)는 이미 1회(소진) -> bypass 거부(같은 열차 재발사 금지)', () => {
+    expect(canBypassRepeatIntervalForTrainTransition(['U1:position-confirmed'], 'U1')).toBe(false);
     expect(
-      canBypassRepeatIntervalForTrainTransition(['U1:approaching', 'U1:imminent'], 'U1'),
+      canBypassRepeatIntervalForTrainTransition(['U1:position-confirmed', 'U1:imminent'], 'U1'),
     ).toBe(false);
   });
 
-  it('스펙 ④ — 직전 trainCode(U1)가 2회 소진된 뒤 다른 trainCode(U3) → bypass 허용(새 cycle)', () => {
-    expect(
-      canBypassRepeatIntervalForTrainTransition(['U1:approaching', 'U1:imminent'], 'U3'),
-    ).toBe(true);
+  it('스펙 ④ — 직전 trainCode(U1)가 소진된 뒤 다른 trainCode(U3) -> bypass 허용(9/18 건대입구 7254->7256 단배차)', () => {
+    expect(canBypassRepeatIntervalForTrainTransition(['U1:position-confirmed'], 'U3')).toBe(true);
   });
 
-  it('거부 케이스 ⓒ — 직전 trainCode(U1)가 1회뿐(소진 전)인데 다른 trainCode(U5) → bypass 거부(단배차 스팸 방지)', () => {
-    expect(canBypassRepeatIntervalForTrainTransition(['U1:approaching'], 'U5')).toBe(false);
+  it('selectedTrainCode=null은 null-trainCode 토큰으로 판정(같은 토큰 거부 / 실 열차로 바뀌면 허용)', () => {
+    expect(canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed'], null)).toBe(false);
+    expect(canBypassRepeatIntervalForTrainTransition(['U1:position-confirmed'], null)).toBe(true);
+    expect(canBypassRepeatIntervalForTrainTransition(['null-trainCode:position-confirmed'], 'U1')).toBe(true);
   });
 
-  it('거부 케이스 ⓓ — selectedTrainCode=null이어도 동일 로직(null-trainCode 토큰)으로 판정', () => {
-    expect(
-      canBypassRepeatIntervalForTrainTransition(['null-trainCode:approaching'], null),
-    ).toBe(true);
-    expect(
-      canBypassRepeatIntervalForTrainTransition(['U1:approaching'], null),
-    ).toBe(false);
-  });
-
-  // #2898 배포 경계 — 구형식 키(':' 없음)가 마지막 발사로 남아있어도 토큰 비교가 안전하게
-  // 동작한다(trainCodeFireCount와 동일 하위 호환).
+  // #2898 배포 경계 — 구형식 마지막 키(':' 없음)도 토큰 전체로 비교한다.
   it('구형식 마지막 키(":" 없음)도 토큰 전체로 비교한다(배포 경계 하위 호환)', () => {
-    expect(canBypassRepeatIntervalForTrainTransition(['U1'], 'U1')).toBe(true);
+    expect(canBypassRepeatIntervalForTrainTransition(['U1'], 'U1')).toBe(false);
+    expect(canBypassRepeatIntervalForTrainTransition(['U1'], 'U2')).toBe(true);
   });
 });
 
@@ -229,7 +224,7 @@ describe('isExactDuplicateFire (#2898, 배포 경계 하위호환)', () => {
   });
 
   it('신형식 — 같은 trainCode라도 phase가 다르면 중복 아님(재확인 허용, 스펙 ①)', () => {
-    expect(isExactDuplicateFire(['U1:approaching'], 'U1', 'imminent')).toBe(false);
+    expect(isExactDuplicateFire(['U1:position-confirmed'], 'U1', 'imminent')).toBe(false);
   });
 
   it('신형식 — trainCode+phase가 완전히 같으면 중복', () => {
@@ -240,7 +235,7 @@ describe('isExactDuplicateFire (#2898, 배포 경계 하위호환)', () => {
     // 구코드는 trainCode만 보고 차단했다 — 구형식 항목을 만나면 phase가 뭐였는지 알 수 없으니
     // 지금 phase와 무관하게 "이미 이 trainCode로 쐈다"로 보고 차단한다(과차단이 안전).
     expect(isExactDuplicateFire(['U1'], 'U1', 'imminent')).toBe(true);
-    expect(isExactDuplicateFire(['U1'], 'U1', 'approaching')).toBe(true);
+    expect(isExactDuplicateFire(['U1'], 'U1', 'position-confirmed')).toBe(true);
   });
 
   it('구형식(":" 없음) — trainCode 자체가 다르면 중복 아님', () => {
@@ -249,7 +244,7 @@ describe('isExactDuplicateFire (#2898, 배포 경계 하위호환)', () => {
 
   it('selectedTrainCode=null — null-trainCode 토큰 기준으로 신/구형식 동일 로직 적용', () => {
     expect(isExactDuplicateFire(['null-trainCode:imminent'], null, 'imminent')).toBe(true);
-    expect(isExactDuplicateFire(['null-trainCode:approaching'], null, 'imminent')).toBe(false);
+    expect(isExactDuplicateFire(['null-trainCode:position-confirmed'], null, 'imminent')).toBe(false);
   });
 });
 
@@ -441,92 +436,162 @@ describe('evaluateHopEndPromptGates (#2034)', () => {
 });
 
 /**
- * #2801 (REOPENED 2026-09-30 정정 스펙 §2/§5) — 조기 발사 봉합 OR-fallback 게이트.
- *
- * 9/30 실측 트립(e25e1158) D1 RCA: leg-2 boarding-prompt가 열차(3056)가 아직 도착 전인데
- * (candidateTrains에 먼 열차만 있는데도) 발사됐다(06:42/06:44, 열차는 06:46 도착).
- * `fireBoardingPromptForAnchor`의 유일 게이트가 `candidateTrains.length===0`뿐이라 "아무 열차나
- * pool에 있으면" 발사되는 구조 — arvlCd(임박 여부) 검사가 아예 없었다.
- *
- * RED(fix 전): `decideBoardingPromptFire`가 아직 export되지 않아 이 파일 자체가 컴파일 실패.
- * GREEN(fix 후): 아래 케이스가 전부 통과.
+ * #3057 (2026-10-19 사용자 결정) — 도착 확정 게이트. #2801 임박집합{0,1,2}과 3차 reopen
+ * approaching{3,5} 타이밍 결정을 대체한다: arvlCd {1,2} 또는 position 확정일 때만 발사,
+ * 진입(0)/전역출발(3)/전역진입(4)/전역도착(5)/운행중(99)은 확정이 아니다.
  */
-describe('#2801 — decideBoardingPromptFire (조기 발사 OR-fallback 게이트)', () => {
-  it('지상 임박(arvlCd=1 ARRIVED 존재) → fire:true, decision=imminent', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.ARRIVED }, { arvlCd: 99 }]);
-    expect(result).toEqual({ fire: true, decision: 'imminent' });
+describe('#3057 — decideBoardingPromptFire (도착 확정 게이트)', () => {
+  it('도착(arvlCd=1) 존재 → fire:true, decision=imminent', () => {
+    expect(decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.ARRIVED }, { arvlCd: 99 }])).toEqual({
+      fire: true,
+      decision: 'imminent',
+    });
   });
 
-  it('지상 먼 열차만(arvlCd=[4,99], 전부 관측됨) → fire:false, decision=suppressed-not-imminent (9/30 조기 발사 회귀 재현 — 4는 APPROACHING에서 의도적 제외)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 4 }, { arvlCd: 99 }]);
-    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  it('출발(arvlCd=2) → fire:true, decision=imminent (회고형 정합)', () => {
+    expect(decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.DEPARTED }])).toEqual({
+      fire: true,
+      decision: 'imminent',
+    });
   });
 
-  it('지하 전부 null → fire:true, decision=fallback-unobservable (miss 재발 방지)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: null }, { arvlCd: null }]);
-    expect(result).toEqual({ fire: true, decision: 'fallback-unobservable' });
+  it.each([0, 3, 4, 5, 99])('arvlCd=%i만(전부 관측됨) → fire:false, suppressed-not-imminent', (arvlCd) => {
+    expect(decideBoardingPromptFire([{ arvlCd }])).toEqual({
+      fire: false,
+      decision: 'suppressed-not-imminent',
+    });
   });
 
-  it('혼합(arvlCd=[99, null]) → fire:true, decision=fallback-unobservable (관측 불가 우선, miss 방지)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 99 }, { arvlCd: null }]);
-    expect(result).toEqual({ fire: true, decision: 'fallback-unobservable' });
+  it('pool 빈 배열 + position 확정 없음 → fire:false', () => {
+    expect(decideBoardingPromptFire([])).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
   });
 
-  it('출발만(arvlCd=[2] DEPARTED) → fire:true, decision=imminent (회고형 정합 — 폴링 갭에 진입→도착→출발이 한 tick에 지나갈 수 있음)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.DEPARTED }]);
-    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  it('position 확정(positionConfirmed=true)이면 arvlCd가 3이어도 fire:true, decision=position-confirmed', () => {
+    expect(decideBoardingPromptFire([{ arvlCd: 3 }], true)).toEqual({
+      fire: true,
+      decision: 'position-confirmed',
+    });
   });
 
-  it('진입(arvlCd=0 ENTERING) → fire:true, decision=imminent', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: ARRIVAL_CODE.ENTERING }]);
-    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  it('position 확정 + 빈 pool → fire:true, decision=position-confirmed', () => {
+    expect(decideBoardingPromptFire([], true)).toEqual({ fire: true, decision: 'position-confirmed' });
   });
 
-  it('pool 빈 배열 → fire:false, decision=suppressed-not-imminent (imminent 0건 & null 0건 = "전부 관측되고 임박 없음"에 해당)', () => {
-    const result = decideBoardingPromptFire([]);
-    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  it('arrival 도착(1)과 position 확정이 같이 있으면 imminent가 우선(라벨 안정)', () => {
+    expect(decideBoardingPromptFire([{ arvlCd: 1 }], true)).toEqual({ fire: true, decision: 'imminent' });
+  });
+
+  it('지하 전부 null → fire:true, decision=fallback-unobservable (miss 재발 방지, equal-protection)', () => {
+    expect(decideBoardingPromptFire([{ arvlCd: null }, { arvlCd: null }])).toEqual({
+      fire: true,
+      decision: 'fallback-unobservable',
+    });
+  });
+
+  it('혼합(arvlCd=[99, null]) → fallback-unobservable (관측 불가 우선, miss 방지)', () => {
+    expect(decideBoardingPromptFire([{ arvlCd: 99 }, { arvlCd: null }])).toEqual({
+      fire: true,
+      decision: 'fallback-unobservable',
+    });
+  });
+
+  it('혼합(arvlCd=[5, null]) → 5는 확정이 아니므로 fallback-unobservable', () => {
+    expect(decideBoardingPromptFire([{ arvlCd: 5 }, { arvlCd: null }])).toEqual({
+      fire: true,
+      decision: 'fallback-unobservable',
+    });
   });
 });
 
-/**
- * #2801 (3차 reopen, 2026-10-03) — approaching 게이트.
- *
- * 10/2 실측 트립 D1 RCA: leg-2 boarding-prompt 시도 9회 전부 `suppressed-not-imminent` —
- * arvlCd∈{0,1,2}(imminent)가 cron 60s 샘플에 한 번도 안 걸리고, 가장 근접한 관측은
- * 5(전역도착)/3(전역출발)였다. 이 둘을 발사 집합에 추가(decision='approaching'으로 분리),
- * 4(전역진입)는 9/30 조기 발사 창(≈2~3분 전)에 근접해 의도적으로 제외한다.
- *
- * RED(fix 전): 아래 [5]/[3] 케이스는 현행 코드에서 decision='suppressed-not-imminent'로
- * 나와 실패한다(IMMINENT_BOARDING_ARVLCD에 3/5가 없음).
- */
-describe('#2801 (3차 reopen) — decideBoardingPromptFire approaching(전역출발/전역도착) 게이트', () => {
-  it('전역도착(arvlCd=5)만 → fire:true, decision=approaching', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 5 }]);
-    expect(result).toEqual({ fire: true, decision: 'approaching' });
+describe('#3057 — selectPositionConfirmedTrains', () => {
+  const NOW = 1_700_000_000_000;
+  const base = { trainCode: 'T1', stationName: '용마산', trainSttus: 1, isUp: false, recptnMs: NOW - 10_000 };
+  const inputs = { station: '용마산', direction: 'down' as const, directionUnavailable: false, now: NOW };
+
+  it('anchor 역 + trainSttus 1/2 + fresh + 방향 일치만 통과', () => {
+    const positions = [
+      base,
+      { ...base, trainCode: 'T2', trainSttus: 2 },
+      { ...base, trainCode: 'T3', trainSttus: 0 },
+      { ...base, trainCode: 'T4', trainSttus: null },
+      { ...base, trainCode: 'T5', stationName: '중곡' },
+      { ...base, trainCode: 'T6', isUp: true },
+      { ...base, trainCode: 'T7', recptnMs: NOW - PROMPT_POSITION_FRESH_MS - 1 },
+      { ...base, trainCode: 'T8', recptnMs: 0 },
+    ];
+    expect(selectPositionConfirmedTrains(positions, inputs).map((p) => p.trainCode)).toEqual(['T1', 'T2']);
   });
 
-  it('전역출발(arvlCd=3)만 → fire:true, decision=approaching', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 3 }]);
-    expect(result).toEqual({ fire: true, decision: 'approaching' });
+  it('direction=up이면 isUp 열차만', () => {
+    const positions = [base, { ...base, trainCode: 'T9', isUp: true }];
+    expect(
+      selectPositionConfirmedTrains(positions, { ...inputs, direction: 'up' }).map((p) => p.trainCode),
+    ).toEqual(['T9']);
   });
 
-  it('전역진입(arvlCd=4)만 → fire:false, decision=suppressed-not-imminent (의도적 제외, 거부 케이스)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 4 }]);
-    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  it('direction=null: 추론 실패(fail-closed)면 빈 배열, 구조적 unavailable이면 방향 무관 유지', () => {
+    const positions = [base, { ...base, trainCode: 'T9', isUp: true }];
+    expect(selectPositionConfirmedTrains(positions, { ...inputs, direction: null })).toEqual([]);
+    expect(
+      selectPositionConfirmedTrains(positions, { ...inputs, direction: null, directionUnavailable: true }).map(
+        (p) => p.trainCode,
+      ),
+    ).toEqual(['T1', 'T9']);
+  });
+});
+
+describe('#3057 — mergePositionConfirmedIntoPool', () => {
+  const feed = (trainCode: string, arvlCd: number | null): ArrivalEntry =>
+    ({
+      destination: '신풍',
+      arrivalSeconds: 120,
+      trainCode,
+      isUp: false,
+      subwayNm: '지하철7호선',
+      arvlCd,
+    }) as ArrivalEntry;
+  const confirmed = (trainCode: string, trainSttus: number, terminus?: string | null) => ({
+    trainCode,
+    stationName: '용마산',
+    trainSttus,
+    isUp: false,
+    recptnMs: 1,
+    ...(terminus === undefined ? {} : { terminus }),
   });
 
-  it('운행중만(arvlCd=99) → fire:false, decision=suppressed-not-imminent', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 99 }]);
-    expect(result).toEqual({ fire: false, decision: 'suppressed-not-imminent' });
+  it('확정 열차가 없으면 pool 그대로', () => {
+    const pool = [feed('A', 3)];
+    expect(mergePositionConfirmedIntoPool(pool, [], '7')).toEqual(pool);
   });
 
-  it('임박(arvlCd=2 DEPARTED)이 있으면 approaching 후보가 섞여도 imminent가 우선 (기존 유지)', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 2 }, { arvlCd: 5 }]);
-    expect(result).toEqual({ fire: true, decision: 'imminent' });
+  it('같은 trainCode면 arvlCd를 position trainSttus로 교정하고 ETA를 0으로', () => {
+    const merged = mergePositionConfirmedIntoPool([feed('A', 3), feed('B', 99)], [confirmed('A', 2)], '7');
+    expect(merged.map((e) => [e.trainCode, e.arvlCd, e.arrivalSeconds])).toEqual([
+      ['A', 2, 0],
+      ['B', 99, 120],
+    ]);
   });
 
-  it('혼합(arvlCd=[5, null]) → approaching이 결정적 신호이므로 null-fallback보다 우선', () => {
-    const result = decideBoardingPromptFire([{ arvlCd: 5 }, { arvlCd: null }]);
-    expect(result).toEqual({ fire: true, decision: 'approaching' });
+  it('arrival 피드에 없는 확정 열차는 합성 entry로 추가(terminus 전달)', () => {
+    const merged = mergePositionConfirmedIntoPool([], [confirmed('P', 1, '신풍')], '7');
+    expect(merged).toEqual([
+      {
+        destination: '신풍',
+        arrivalSeconds: 0,
+        trainCode: 'P',
+        isUp: false,
+        subwayNm: '7호선',
+        arvlCd: 1,
+        synthesized: true,
+        terminus: '신풍',
+      },
+    ]);
+  });
+
+  it('terminus 부재면 빈 destination + terminus=null, 매핑 없는 line은 입력 line 그대로', () => {
+    const [entry] = mergePositionConfirmedIntoPool([], [confirmed('P', 2)], 'zz');
+    expect(entry.destination).toBe('');
+    expect(entry.terminus).toBeNull();
+    expect(entry.subwayNm).toBe('zz');
   });
 });

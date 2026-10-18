@@ -224,9 +224,9 @@ describe('#3057 red 3 — position(self-poll) trainSttus 도착 확정 배선', 
       selfPollPositions: [position('P1', { now: NOW, trainSttus: 2 })],
     });
     const [, init] = pushFetch.mock.calls[0] as unknown as [string, { body: string }];
-    const body = JSON.parse(init.body) as { data?: { trainCode?: string; candidateTrains?: { trainCode: string }[] } };
-    expect(body.data?.trainCode).toBe('P1');
-    expect(body.data?.candidateTrains?.map((c) => c.trainCode)).toContain('P1');
+    const body = JSON.parse(init.body) as { body?: { trainCode?: string; candidateTrains?: { trainCode: string }[] } };
+    expect(body.body?.trainCode).toBe('P1');
+    expect(body.body?.candidateTrains?.map((c) => c.trainCode)).toContain('P1');
   });
 
   it('거부 ⓔ: 신선창 밖의 stale DEPARTED는 도착 확정이 아니다', async () => {
@@ -299,7 +299,30 @@ describe('#3057 red 4 — 10/18 23:25 용마산 7325 DEPARTED 실캡처 replay',
     const fired = log.mock.calls.filter(([m]) => String(m).endsWith(': fired'));
     expect((fired[0][1] as { gateDecision?: string }).gateDecision).toBe('position-confirmed');
     const [, init] = pushFetch.mock.calls[0] as unknown as [string, { body: string }];
-    const body = JSON.parse(init.body) as { data?: { trainCode?: string } };
-    expect(body.data?.trainCode).toBe('7325');
+    const body = JSON.parse(init.body) as { body?: { trainCode?: string } };
+    expect(body.body?.trainCode).toBe('7325');
+  });
+});
+
+describe('#3057 — self-poll KV 장애는 position 확정 없음으로 degrade(arrival 피드 판정 단독)', () => {
+  it('KV get이 throw해도 발사 평가는 중단되지 않고 arvlCd=1 도착 확정으로 발사한다', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const realGet = kv.get.bind(kv);
+    (kv as unknown as { get: (key: string, ...rest: unknown[]) => Promise<unknown> }).get = async (key, ...rest) => {
+      if (key.startsWith('realtime-position:')) throw new Error('kv down');
+      return (realGet as (k: string, ...r: unknown[]) => Promise<unknown>)(key, ...rest);
+    };
+    const trip = makeTrip('trip-kv-down', NOW);
+    const stats = makeStats();
+    const pushFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const deps = {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: pushFetch as unknown as typeof fetch,
+      seoul: makeSeoul(() => [arrival('T1', 1)]),
+      archFlag: 'off',
+    } as unknown as ScheduledDeps;
+    await maybeFireLegBoardingPrompt(trip, makeEnv(kv), deps, stats, NOW, vi.fn(), () => 'push-kv');
+    expect(stats.legBoardingPromptFired).toBe(1);
   });
 });

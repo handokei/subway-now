@@ -48,6 +48,7 @@ import app from '../index';
 import { runCaptureReplay, type CapturedPush } from './helpers/replayHarness';
 import { makeDesk20260913LockTrip } from './helpers/desk20260913Trip';
 import { parseReplayFixture } from '../replayFixture';
+import { injectPrevDepartedTrainArrived } from './helpers/injectArrivalConfirmation';
 import fixtureJson from './fixtures/replayLibrary/capture_20260913T1249Z_b00dd879.fixture.json';
 import { getTrip } from '../trips';
 import type { Env, Trip } from '../types';
@@ -230,6 +231,17 @@ async function runTransferChain(
             currentLegAnchor?.boardingStation === transferStation &&
             currentLegAnchor?.line === leg2Line,
         };
+      }
+
+      // #3057 — `helpers/injectArrivalConfirmation.ts` 주석 참고(실캡처 arvlCd=3 열차의 도착 position만 합성 주입). leg-2 anchor가 선 뒤 lock이 아직
+      // 없는 tick에서만 주입한다(lock 부착 후엔 프롬프트가 lock-already-attached로 막힌다).
+      if (
+        confirmStatus === undefined &&
+        currentLegAnchor?.boardingStation === transferStation &&
+        currentLegAnchor.line === leg2Line &&
+        trip.boardingLock === undefined
+      ) {
+        await injectPrevDepartedTrainArrived(fixture, env, tick, transferStation, leg2Line);
       }
 
       // ── 3·4단 — leg-2 프롬프트가 떴으면 그 payload의 열차를 꺼내 바로 confirm한다.

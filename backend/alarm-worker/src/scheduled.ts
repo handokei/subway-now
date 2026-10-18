@@ -42,7 +42,9 @@ import {
   isExactDuplicateFire,
   isNearOrigin,
   markPromptFired,
+  mergePositionConfirmedIntoPool,
   pickAutoTrainCode,
+  selectPositionConfirmedTrains,
   shouldStampOriginProximity,
 } from './boardingPrompt';
 import { isBoardingPromptFireOnceBlocked, stampBoardingPromptFireOnce } from './boardingPromptFireOnce';
@@ -7735,6 +7737,28 @@ async function logBoardingPromptPushFailure(
  * 차단: dedup/후보 0건 → `stats.originGpsFreeBoardingPromptBlocked += 1`.
  */
 /**
+ * #3057 — self-poll(realtimePosition) snapshot에서 anchor 역 도착 확정 열차를 읽는다. KV 장애는
+ * "확정 없음"으로 degrade(arrival 피드 판정이 단독으로 남는다 — 기존 동작).
+ */
+async function readPositionConfirmedTrains(
+  env: Env,
+  line: string,
+  inputs: {
+    station: string;
+    direction: 'up' | 'down' | null;
+    directionUnavailable: boolean;
+    now: number;
+  },
+): Promise<PositionEntry[]> {
+  try {
+    const snapshot = await readFreshSelfPollPosition(env.TRIPS, line, inputs.now);
+    return snapshot ? selectPositionConfirmedTrains(snapshot.positions, inputs) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * #2531 (SonarCloud 중복 제거) — leg-1 `maybeFireOriginBoardingPromptGpsFree`와 leg-2
  * `maybeFireLegBoardingPrompt`가 각자 고유 게이트를 통과한 뒤 공유하는 발사 본체:
  * `deps.seoul.fetchArrivals(station)` → line/direction 필터 → directional 0건 시 line-only
@@ -7863,6 +7887,9 @@ async function fireBoardingPromptForAnchor(inputs: {
   // 배선해 이 함수 뒤쪽의 모든 `pool` 참조(gate/selectedTrainCode/onFired 등)가 자동으로
   // fail-closed 판정 풀을 쓴다 — 호출부를 추가로 고칠 필요 없음.
   let pool: readonly ArrivalEntry[] = [];
+  // #3057 — 발사 판정(`decideBoardingPromptFire`)은 arrival 피드 원본(feedPool)과 position 확정
+  // 여부를 따로 받는다. `pool`(payload/lock 대상 선택)은 position이 확정한 열차를 합친 것이다.
+  let feedPool: readonly ArrivalEntry[] = [];
   // #2944 (H-6) — candidateTrains가 0건일 때 "방향을 몰라서"(matchingLine은 있었는데
   // direction===null이라 decisionPool을 fail-closed로 비움)인지 구분하기 위한 플래그.
   let emptiedByDirectionUnknown = false;
@@ -7884,23 +7911,34 @@ async function fireBoardingPromptForAnchor(inputs: {
     // 표시용(ETA) — 구 pool 폴백과 100% 동일(ⓐ 거부 케이스, #1739 목적 보존): 판정용이
     // 0건이면(방향 불명 포함) line-only 전체로 되돌아간다.
     const displayPool = decisionPool.length > 0 ? decisionPool : matchingLine;
-    pool = decisionPool;
+    feedPool = decisionPool;
     if (displayPool.length > 0) {
       const best = displayPool.reduce((min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min), displayPool[0]);
       etaSeconds = best.arrivalSeconds;
     }
-    candidateTrains = [...pool]
-      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
-      .slice(0, 5)
-      .map<BoardingPromptCandidate>((entry) => ({
-        trainCode: entry.trainCode,
-        line,
-        direction: entry.isUp ? 'up' : 'down',
-        nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
-      }));
   } catch {
     // Seoul API 장애 — ETA 없이 push 발사 (leg-1/leg-2 동일 degradation 정책).
   }
+
+  // #3057 — 도착 확정 position 배선. cron이 매 cycle 활성 trip 노선을 self-poll(#1614)해 KV에
+  // stamp하므로 신규 Seoul 호출 없이 재사용한다(API 호출 수 불변). arrival 피드가 비었거나
+  // 전역출발(3) 등을 말해도, anchor 역 trainSttus 1/2(fresh)면 도착 확정 + 그 열차가 lock 대상.
+  const positionConfirmedTrains = await readPositionConfirmedTrains(env, line, {
+    station,
+    direction,
+    directionUnavailable,
+    now,
+  });
+  pool = mergePositionConfirmedIntoPool(feedPool, positionConfirmedTrains, line);
+  candidateTrains = [...pool]
+    .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+    .slice(0, 5)
+    .map<BoardingPromptCandidate>((entry) => ({
+      trainCode: entry.trainCode,
+      line,
+      direction: entry.isUp ? 'up' : 'down',
+      nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
+    }));
 
   if (candidateTrains.length === 0) {
     onEmptyCandidates(emptiedByDirectionUnknown ? 'direction-unknown' : undefined);
@@ -7909,7 +7947,7 @@ async function fireBoardingPromptForAnchor(inputs: {
 
   // #2801 (REOPENED 2026-09-30 정정 스펙 §2/§3.2) — 임박 게이트. candidateTrains(payload)는
   // 위에서 이미 pool 그대로 구성됐다 — 여기서는 fire 여부만 판정(하드 필터 아님, §4 금지사항).
-  const gate = decideBoardingPromptFire(pool);
+  const gate = decideBoardingPromptFire(feedPool, positionConfirmedTrains.length > 0);
   if (!gate.fire) {
     onSuppressedNotImminent(
       gate.decision,
