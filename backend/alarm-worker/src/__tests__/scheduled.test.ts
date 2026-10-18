@@ -13958,6 +13958,215 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
   });
 });
 
+// #3019 — "의향 축 × 프롬프트 단계" 사슬 고정. #3012(#2997)가 `trackingOptIn`(목적지만 설정)을
+// 출발역 탑승(`maybeFireOriginBoardingPromptGpsFree`)에만 열었다. 환승 leg-2 탑승
+// (`maybeFireLegBoardingPrompt`)과 하차(`maybeFireHopEndPrompt`)는 여전히
+// `promptOptIn === true || infoModeEnabled === true`만 보고 trackingOptIn은 평가하지 않는다
+// (scheduled.ts:8526, scheduled.ts:8833 — grep 확정, trackingOptIn 토큰 없음). 이 describe는
+// 프로덕션 코드를 고치지 않고 9칸 매트릭스(3단계 × 3의향축)를 테스트로 고정한다 — 채워진 7칸은
+// 실제 발사를 assert, 빈 2칸(leg-2×trackingOptIn, 하차×trackingOptIn)은 `it.fails`로 고정해
+// 후속 fix가 들어오면 역으로 실패해 승격을 강제한다(#2926/#2905 선례).
+//
+// 매트릭스 (9칸 — 2026-10-18 기준):
+//
+// | 단계 \ 의향          | promptOptIn | infoModeEnabled | trackingOptIn |
+// |----------------------|-------------|------------------|---------------|
+// | 출발역 탑승          | 기존 커버   | 기존 커버        | 기존 커버     |
+// | 환승 leg-2 탑승      | 기존 커버   | 본 describe(신규)| 본 describe(it.fails) |
+// | 하차                 | 기존 커버   | 본 describe(신규)| 본 describe(it.fails) |
+//
+// 출발역 행(3칸) — 재작성하지 않고 참조만 한다(이슈 본문 "기존 테스트" 절 + 이 파일 "기존
+// 테스트 (중복 작성 방지)"):
+//   - promptOptIn: `describe('maybeFireOriginBoardingPromptGpsFree (#2531)')`의
+//     '지하(GPS 부재) — arvlCd 임박 열차 있으면 GPS 없이 발사(RED→GREEN 핵심)' (makeTrip()
+//     기본값 promptOptIn:true로 발사).
+//   - infoModeEnabled: 같은 describe, '#2651 (PR #2772 리뷰) — infoModeEnabled=true(응답/탭
+//     이력) + promptOptIn=undefined → 발사 (동급 보장)'.
+//   - trackingOptIn: `describe('#2997 — trackingOptIn(목적지만 설정) 축: 열지만 근접 실측
+//     필수')`의 '① trackingOptIn만 있는 trip + 근접(80m) + 살아있는 GPS → 발사'.
+//
+// 환승 leg-2 탑승 행 — promptOptIn 칸은 재작성하지 않고 참조만 한다: 같은 파일
+// `describe('maybeFireLegBoardingPrompt (#2515, #2511 supersede)')`의 '도보시간 경과
+// (now === legBoardingEligibleAt, 경계) + 후보 있음 → 발사, legBoardingPromptState.fired=true'
+// (makeTrip() 기본값 promptOptIn:true로 발사). infoModeEnabled 칸은 이 축만 단독으로 발사를
+// assert하는 기존 테스트가 없어 아래에서 신규 작성한다.
+//
+// 하차 행 — promptOptIn 칸은 재작성하지 않고 참조만 한다: 같은 파일
+// `describe('maybeFireHopEndPrompt (#2034)')`의 'promptState 없음 + APNs 200 → fired 카운터
+// 증가 + hopEndPromptState[legKey] set' (makeTrip() 기본값 promptOptIn:true로 발사).
+// infoModeEnabled 칸은 이 축만 단독으로 발사를 assert하는 기존 테스트가 없어 아래에서 신규
+// 작성한다.
+describe('#3019 — 의향 축 × 프롬프트 단계 사슬 고정 (trackingOptIn, #3012 편측)', () => {
+  function makeLegStats(): ScheduledStats {
+    return makeFullEmptyStats();
+  }
+
+  function makeLegArrivalsSeoul(fetchImpl: typeof fetch): SeoulArrivalClient {
+    return new SeoulArrivalClient({ host: 'seoul.api', apiKey: 'KEY', fetchImpl });
+  }
+
+  function makeLegDeps(fetchImpl: typeof fetch): ScheduledDeps {
+    return {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl,
+      seoul: makeLegArrivalsSeoul(fetchImpl),
+      archFlag: 'off',
+    };
+  }
+
+  function makeLegArrivalsResponse(rows: Array<Partial<ArrivalEntry> & { btrainNo: string }>): typeof fetch {
+    return (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: rows.map((r) => ({
+            barvlDt: String(Math.round(r.arrivalSeconds ?? 120)),
+            recptnDt: '',
+            updnLine: r.isUp === false ? '하행' : '상행',
+            trainLineNm: '건대입구',
+            btrainNo: r.btrainNo,
+            subwayNm: '지하철7호선',
+            arvlCd: r.arvlCd ?? 0,
+          })),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+  }
+
+  // `maybeFireLegBoardingPrompt (#2515, #2511 supersede)` describe의 makeTrip과 동일한
+  // leg-2 trip 모양(currentLegAnchor 설정, waypoints=[목적지]) — 의향 필드만 describe별로
+  // override한다.
+  function makeLeg2Trip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'trip-3019-leg2',
+      createdAt: NOW - 20 * 60_000,
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      apnsEnv: 'production',
+      registeredAt: NOW,
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      legBoardingEligibleAt: NOW,
+      promptOptIn: false,
+      infoModeEnabled: false,
+      trackingOptIn: false,
+      ...overrides,
+    } as unknown as Trip;
+  }
+
+  const hopEndTransferWaypoint: Waypoint = {
+    stationName: '성수',
+    line: '2',
+    kind: 'transfer',
+  };
+
+  // `maybeFireHopEndPrompt (#2034)` describe의 makeTrip과 동일한 hop-end trip 모양 — 의향
+  // 필드만 describe별로 override한다.
+  function makeHopEndTrip(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: 'trip-3019-hop-end',
+      createdAt: NOW,
+      waypoints: [
+        { stationName: '왕십리', line: 'K', kind: 'intermediate' },
+        { stationName: '수원', line: 'K', kind: 'destination' },
+      ],
+      apnsEnv: 'production',
+      registeredAt: NOW,
+      promptOptIn: false,
+      infoModeEnabled: false,
+      trackingOptIn: false,
+      ...overrides,
+    } as unknown as Trip;
+  }
+
+  describe('채워진 칸 — 신규 (infoModeEnabled 단독, promptOptIn/trackingOptIn은 false)', () => {
+    it('환승 leg-2 탑승 × infoModeEnabled — promptOptIn=false/trackingOptIn=false여도 infoModeEnabled=true 단독으로 발사', async () => {
+      const fetchImpl = vi.fn(makeLegArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeLeg2Trip({ infoModeEnabled: true });
+      const stats = makeLegStats();
+      await maybeFireLegBoardingPrompt(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeLegDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-3019-leg2-infomode',
+      );
+      expect(stats.legBoardingPromptFired).toBe(1);
+      expect(stats.legBoardingPromptSkippedNoOptIn).toBe(0);
+      expect(trip.legBoardingPromptState?.fired).toBe(true);
+    });
+
+    it('하차 × infoModeEnabled — promptOptIn=false/trackingOptIn=false여도 infoModeEnabled=true 단독으로 발사', async () => {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+      const trip = makeHopEndTrip({ infoModeEnabled: true });
+      const stats = makeLegStats();
+      await maybeFireHopEndPrompt({
+        trip,
+        transferWaypoint: hopEndTransferWaypoint,
+        deps: makeLegDeps(fetchImpl as unknown as typeof fetch),
+        stats,
+        now: NOW,
+        log: () => {},
+        generatePushId: () => 'pid-3019-hopend-infomode',
+        env: makeEnv(new InMemoryKV()),
+      });
+      expect(stats.hopEndPromptFired).toBe(1);
+      expect(stats.hopEndPromptSkippedNoOptIn).toBe(0);
+      expect(trip.hopEndPromptState?.['성수|K']?.fired).toBe(true);
+    });
+  });
+
+  // 빈 2칸 — #3012가 선언한 "환승/하차는 범위 밖"이 실제로 침묵임을 고정한다. 후속 fix로
+  // trackingOptIn OR 항이 두 함수에 추가되면 아래 두 assert가 뒤집혀 `it.fails`가 역으로
+  // 실패하고, 그 실패가 일반 `it`으로의 승격을 강제한다(#2926/#2905 선례, lessons.md L18).
+  describe('빈 칸 — trackingOptIn 축이 아직 환승/하차에 열리지 않음 (#3012 편측, 후속 fix 전까지 it.fails)', () => {
+    it.fails(
+      '(알려진 빈 칸, #3019) 환승 leg-2 탑승 × trackingOptIn — 목적지만 설정(trackingOptIn=true, 나머지 false)해도 leg-2 프롬프트는 발사되지 않아야 할 이상적 동작과 반대로, 지금도 발사되지 않는다 — 단 이 skip은 trackingOptIn 평가가 아니라 OR 게이트 자체가 trackingOptIn을 보지 않아서다(scheduled.ts:8526). 이 테스트는 "열려야 한다"는 이상적 동작을 고정한다.',
+      async () => {
+        const fetchImpl = vi.fn(makeLegArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+        const trip = makeLeg2Trip({ trackingOptIn: true });
+        const stats = makeLegStats();
+        await maybeFireLegBoardingPrompt(
+          trip,
+          makeEnv(new InMemoryKV()),
+          makeLegDeps(fetchImpl),
+          stats,
+          NOW,
+          () => {},
+          () => 'pid-3019-leg2-tracking',
+        );
+        // 이상적 동작(미구현) — trackingOptIn만 있어도 leg-2 탑승 프롬프트가 발사돼야 한다.
+        // 지금은 발사되지 않는다(legBoardingPromptSkippedNoOptIn===1) — 이 assertion은 지금
+        // 실패하고, it.fails가 그 실패를 "예상대로"로 받아들인다.
+        expect(stats.legBoardingPromptFired).toBe(1);
+      },
+    );
+
+    it.fails(
+      '(알려진 빈 칸, #3019) 하차 × trackingOptIn — 목적지만 설정(trackingOptIn=true, 나머지 false)해도 하차 프롬프트는 발사되지 않아야 할 이상적 동작과 반대로, 지금도 발사되지 않는다 — 단 이 skip은 trackingOptIn 평가가 아니라 OR 게이트 자체가 trackingOptIn을 보지 않아서다(scheduled.ts:8833). 이 테스트는 "열려야 한다"는 이상적 동작을 고정한다.',
+      async () => {
+        const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+        const trip = makeHopEndTrip({ trackingOptIn: true });
+        const stats = makeLegStats();
+        await maybeFireHopEndPrompt({
+          trip,
+          transferWaypoint: hopEndTransferWaypoint,
+          deps: makeLegDeps(fetchImpl as unknown as typeof fetch),
+          stats,
+          now: NOW,
+          log: () => {},
+          generatePushId: () => 'pid-3019-hopend-tracking',
+          env: makeEnv(new InMemoryKV()),
+        });
+        // 이상적 동작(미구현) — trackingOptIn만 있어도 하차 프롬프트가 발사돼야 한다. 지금은
+        // 발사되지 않는다(hopEndPromptSkippedNoOptIn===1) — 이 assertion은 지금 실패하고,
+        // it.fails가 그 실패를 "예상대로"로 받아들인다.
+        expect(stats.hopEndPromptFired).toBe(1);
+      },
+    );
+  });
+});
+
 // #2844 — subsumption 증명(이슈 본문)의 유일 반례: 은퇴 전 GPS 9단 경로는 `originProximityAt`의
 // 15분 freshness만 재검사하고 5분 anchor renewal을 요구하지 않았다 — 근접을 1회라도 관측한
 // trip은 그 뒤 origin을 실제로 떠나도(신선한 GPS가 800m 이탈을 확인해도) "이미 stamp됨"이라는
