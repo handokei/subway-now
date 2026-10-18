@@ -197,4 +197,21 @@ module.exports = {
       },
     ],
   },
+  overrides: [
+    {
+      // 테스트는 디렉토리 경계 룰에서 제외한다.
+      //
+      // 이 레포의 검증 철학상 가장 값비싼 테스트는 whole-trip chain/replay 테스트이고, 그것들은
+      // 본질적으로 슬라이스를 넘나든다 — 예: alarm의 trip 종료 시퀀스를 검증하려면 route의
+      // `useDestinationStore` 상태를 세팅해야 한다. 프로덕션 코드에서 같은 import를 하는
+      // cross-feature orchestrator(`useStationAlarm` 등)는 이미 파일 헤더 eslint-disable로
+      // 옵트인하고 있고, 테스트에 같은 보일러플레이트를 파일마다 요구하는 것은 실익이 없다.
+      //
+      // 이 룰의 목적은 **프로덕션** 슬라이스 간 결합 차단이며, 그 적용 범위는 좁아지지 않는다.
+      files: ['**/__tests__/**/*.{ts,tsx}', '**/*.test.{ts,tsx}', 'src/testUtils/**/*.{ts,tsx}'],
+      rules: {
+        'import/no-restricted-paths': 'off',
+      },
+    },
+  ],
 };

@@ -3677,7 +3677,6 @@ function DebugModalInner({
           >
             {computeCellularTechDistribution(rawSignalLog).map((line, idx) => (
               <Text
-                // eslint-disable-next-line react/no-array-index-key
                 key={idx}
                 style={[typography.mono, { color: colors.ink }]}
                 selectable
