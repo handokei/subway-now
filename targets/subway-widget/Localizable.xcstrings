@@ -407,6 +407,64 @@
         }
       }
     },
+    "widget.endPrompt.end.button" : {
+      "comment" : "Live Activity end-guidance confirm button label (#3007 S4-c)",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "End"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "終了"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "종료"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结束"
+          }
+        }
+      }
+    },
+    "widget.endPrompt.question" : {
+      "comment" : "Live Activity end-guidance prompt question (#3007 S4-c, stationary 15min)",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "End guidance?"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "案内を終了しますか?"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "안내를 종료할까요?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要结束导航吗?"
+          }
+        }
+      }
+    },
     "widget.la.eta.value" : {
       "comment" : "ETA text derived from backend etaMinutes when JS-built etaText is absent (#2747)",
       "localizations" : {

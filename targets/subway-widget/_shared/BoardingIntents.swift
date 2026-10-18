@@ -32,6 +32,9 @@ private let ACTION_BOARDING_BOARDED = "BOARDING_BOARDED"
 private let ACTION_DISEMBARK_DISEMBARKED = "DISEMBARK_DISEMBARKED"
 private let ACTION_BOARDING_NOT_BOARDED = "BOARDING_NOT_BOARDED"
 private let ACTION_DISEMBARK_NOT_YET = "DISEMBARK_NOT_YET"
+// #3007 S4-c — LA "안내를 종료할까요?" 버튼. JS가 앱 복귀 시 로컬 trip 상태를 정리하도록
+// pending marker에 쓰는 action (device `useAlarmEndTripResponder` 계열이 소비).
+private let ACTION_END_TRIP = "END_TRIP"
 
 // #2528 — backend 직결(BG, #2527 계약: POST /trips/:token/boarding-confirm,
 // body {action,station,line}). body의 `action`은 App Group의 ACTION_* 코드와 다른 어휘라
@@ -58,6 +61,41 @@ private let ALARM_BACKEND_URL_BASE = "https://subway-now-alarm-worker.handokei.w
 /// 네트워크 실패는 graceful — App Group write(FG sync)가 이미 완료됐으므로 다음 FG 진입 시
 /// `useLiveActivityIntentBridge`가 동일 처리를 재시도한다.
 @available(iOS 17.0, *)
+/// #3007 S4-c — LA "종료" 버튼이 backend에 **직접** trip 종료를 요청한다.
+///
+/// `openAppWhenRun: false`이므로 앱이 완전히 정지해도 동작해야 한다 → JS를 경유하지 않고
+/// `DELETE /trips/:token?reason=` 를 직접 호출한다. `reason`은 #3002가 배선한 쿼리로,
+/// backend가 `trip_metrics.end_reason` / `trip_events.meta.reason`에 그대로 적재한다 —
+/// 즉 "사용자가 LA에서 끝냈다"가 D1에 남는다(그 전까지 모든 종료가 `user-delete` 한 라벨이었다).
+///
+/// 빈 tripToken(좀비 LA) 처리는 `postBoardingConfirm`과 동일 — 무효 요청을 보내지 않고
+/// 배너만 즉시 닫아 최소 피드백을 준다(#2857 패턴 재사용).
+private func postTripEnd(tripToken: String) async {
+    guard !tripToken.isEmpty else {
+        intentLog.error("trip-end skipped — tripToken empty (stale/zombie LA button)")
+        await markCurrentActivity(boardingPhase: nil)
+        return
+    }
+    guard let encodedToken = tripToken.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+          let url = URL(string: "\(ALARM_BACKEND_URL_BASE)/trips/\(encodedToken)?reason=user-end-trip-button")
+    else {
+        intentLog.error("trip-end invalid URL")
+        return
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "DELETE"
+    request.timeoutInterval = 10
+
+    do {
+        let (_, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        intentLog.info("trip-end response status=\(status, privacy: .public)")
+    } catch {
+        intentLog.error("trip-end request failed: \(error.localizedDescription, privacy: .public)")
+    }
+}
+
 private func postBoardingConfirm(
     tripToken: String,
     action: String,
@@ -391,3 +429,45 @@ struct DisembarkNotYetIntent: LiveActivityIntent {
     }
 }
 #endif
+
+/// #3007 S4-c — LA "안내를 종료할까요?" 배너의 [종료] 버튼.
+///
+/// **자동 종료를 사용자 결정으로 바꾸는 축**이다. #2293은 정지 15분에 `runNavigationPauseBackstop`이
+/// 묻지 않고 종료했는데, 2026-10-15 사용자 결정으로 *"그 멘트는 내가 결정해야 하는 거고,
+/// 결정할 수 있도록 LA 알림 있어야 함"*이 됐다. 이 버튼이 그 결정을 받는다.
+///
+/// 기존 4개 Intent와 같은 패턴 — `openAppWhenRun: false` + backend 직접 호출이라 앱이 꺼져
+/// 있어도 동작한다. pending marker도 함께 써서 앱이 다음에 열릴 때 JS가 로컬 trip 상태를
+/// 정리할 수 있게 한다(backend만 지우면 device의 destination이 남아 재등록될 수 있다).
+@available(iOS 17.0, *)
+struct EndTripIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "안내 종료"
+    static var isDiscoverable: Bool = false
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "tripToken")
+    var tripToken: String
+
+    init() {
+        self.tripToken = ""
+    }
+
+    init(tripToken: String) {
+        self.tripToken = tripToken
+    }
+
+    func perform() async throws -> some IntentResult {
+        intentLog.info("perform END_TRIP tapped tripToken=\(tripToken, privacy: .public)")
+        // 배너를 즉시 닫는다 — 사용자가 누른 즉시 반응이 보여야 한다.
+        await markCurrentActivity(boardingPhase: nil)
+        writePendingBoardingIntent(
+            action: ACTION_END_TRIP,
+            tripToken: tripToken,
+            originStation: "",
+            line: "",
+            trainCode: nil
+        )
+        await postTripEnd(tripToken: tripToken)
+        return .result()
+    }
+}

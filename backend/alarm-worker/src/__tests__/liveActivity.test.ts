@@ -1626,3 +1626,129 @@ describe('cleanupTripWithLa', () => {
     });
   });
 });
+
+/**
+ * #3007 S4-c — 정지 15분이면 LA가 "안내를 종료할까요?"를 묻는다.
+ *
+ * ## 사용자 요구 (2026-10-15 원문)
+ *
+ * *"계속된다 하면 종료할까요/안내 마치냐 이런 느낌"* + *"그 결정이 그 이후에 **이동이 없으면**
+ * 이야. 근데 그 멘트는 **내가 결정해야 하는 거고**, 결정할 수 있도록 **LA 알림 있어야 함**"*.
+ * 2026-10-15 23:28 사용자 확인: *"가만히 역만 탭한 상태인데, 15분이 지나도 LA가 종료할까
+ * 안내가 없었어"* — `EndTripIntent`/"종료할까요" grep 0건으로 미구현 확정.
+ *
+ * ## 왜 인프라 문제이기도 한가 (#3006)
+ *
+ * 10/15 14:04 트립이 `trip-end {reason:"expired"}`로 **2시간 좀비**로 살며 KV write 쿼터의
+ * 60~72%를 먹었고, 21:17부터 backend가 500으로 사망했다. 15분 종료 제안이 있었다면 그날
+ * 소비가 ~27%로 끝나 사고 자체가 없었다. **사용자 경험과 인프라 한도가 같은 fix로 해결된다.**
+ *
+ * ## 설계 — 새 content 필드를 만들지 않는다
+ *
+ * `boardingPhase`에 **세 번째 값 `'end-prompt'`**를 쓴다. 그러면 Swift의 기존 alert 메커니즘이
+ * 그대로 재사용된다:
+ *  - `resolveAlertConfiguration`(`LiveActivityManager.swift:155`)이 `boardingAlertTitle/Body`로
+ *    배너+소리를 만든다 → 사용자 요구("LA 알림 있어야 함") 충족
+ *  - `lastAlertedBoardingPhase` dedup이 **phase 전이당 1회**만 울리게 보장한다 → 90초 heartbeat
+ *    마다 배너가 반복되는 회귀가 구조적으로 불가능
+ *  - 위젯은 phase별 행을 그리므로 종료 버튼(`EndTripIntent`)을 그 행에 붙인다
+ *
+ * `boardingPhase`는 단일 필드라 `'pre-boarding'`과 **상호배타**다 — 정지 15분이면 "탑승
+ * 하셨나요?"보다 "종료할까요?"가 맞으므로 end-prompt가 **override**한다(정지 상태면 탑승하지
+ * 않았을 개연성이 높다).
+ *
+ * ## 전제
+ *
+ * 판정(`isEndPromptDue`)은 #3008이 이미 backend에 넣었다(`motionState.ts`, KV 쓰기 0).
+ * 이 PR은 그 판정 결과를 LA content로 **표시**하는 절반이다.
+ */
+describe('#3007 S4-c — 정지 15분 종료 제안 content', () => {
+  it('[red] endPromptDue면 boardingPhase=end-prompt + alert 문구가 채워진다', () => {
+    const trip = makeTrip({ locale: 'ko' });
+
+    const state = buildLiveActivityContentState(WAYPOINT, 120, 3, trip, undefined, undefined, {
+      endPromptDue: true,
+    });
+
+    expect(state.boardingPhase).toBe('end-prompt');
+    // 배너+소리는 `resolveAlertConfiguration`이 이 두 필드로만 만든다 — 비면 무음이다.
+    expect(state.boardingAlertTitle).toBeTruthy();
+    expect(state.boardingAlertBody).toBeTruthy();
+    // 버튼이 어느 trip을 끝낼지 알아야 한다(위젯 → backend 직접 POST).
+    expect(state.boardingPromptTripToken).toBe(trip.token);
+  });
+
+  it('[red] end-prompt는 pre-boarding을 override한다 (단일 필드 — 상호배타)', () => {
+    // anchor가 있어 S1이 평소 pre-boarding을 산출하는 조건.
+    const trip = makeTrip({
+      locale: 'ko',
+      promptDisplay: { originStation: '용마산', line: '7' },
+    });
+
+    const state = buildLiveActivityContentState(WAYPOINT, 120, 3, trip, undefined, undefined, {
+      endPromptDue: true,
+    });
+
+    expect(state.boardingPhase).toBe('end-prompt');
+  });
+
+  it('[red] locale별 문구를 쓴다 (en)', () => {
+    const trip = makeTrip({ locale: 'en' });
+
+    const state = buildLiveActivityContentState(WAYPOINT, 120, 3, trip, undefined, undefined, {
+      endPromptDue: true,
+    });
+
+    expect(state.boardingAlertTitle).toMatch(/[A-Za-z]/);
+  });
+
+  // ── 거부 케이스 ─────────────────────────────────────────────────────────────
+  // #2854가 막은 "트립 시작부터 유령 배너"를 재발시키지 않는다: due가 아니면 alert 필드는
+  // 비어 있어야 하고, 그래야 `resolveAlertConfiguration`이 nil을 반환해 무음으로 지나간다.
+  it('[거부] endPromptDue 미전달이면 end-prompt도 alert 필드도 설정되지 않는다 (무음 보장)', () => {
+    const trip = makeTrip({ locale: 'ko' });
+
+    const state = buildLiveActivityContentState(WAYPOINT, 120, 3, trip);
+
+    expect(state.boardingPhase).not.toBe('end-prompt');
+    expect(state.boardingAlertTitle).toBeUndefined();
+    expect(state.boardingAlertBody).toBeUndefined();
+  });
+
+  it('[거부] endPromptDue=false면 기존 S1 동작(pre-boarding)이 그대로다', () => {
+    const trip = makeTrip({
+      locale: 'ko',
+      promptDisplay: { originStation: '용마산', line: '7' },
+    });
+
+    const state = buildLiveActivityContentState(WAYPOINT, 120, 3, trip, undefined, undefined, {
+      endPromptDue: false,
+    });
+
+    expect(state.boardingPhase).toBe('pre-boarding');
+    expect(state.boardingAlertTitle).toBeUndefined();
+  });
+
+  // lock 활성 trip은 열차를 이미 아는 상태다. 그 구간의 정지는 도착 후 하차일 수 있고 종료
+  // 판정은 destination arrival 경로가 담당하므로, 여기서 종료를 제안하면 이중 권위가 된다.
+  it('[거부] lock 활성 trip에는 end-prompt를 설정하지 않는다', () => {
+    const trip = makeTrip({
+      locale: 'ko',
+      boardingLock: {
+        trainCode: '7246',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['용마산', '중곡'],
+        expiresAt: NOW + 3_600_000,
+      },
+    });
+
+    const state = buildLiveActivityContentState(WAYPOINT, 120, 3, trip, undefined, undefined, {
+      endPromptDue: true,
+    });
+
+    expect(state.boardingPhase).not.toBe('end-prompt');
+    expect(state.boardingAlertTitle).toBeUndefined();
+  });
+});

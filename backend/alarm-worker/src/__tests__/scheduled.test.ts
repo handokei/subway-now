@@ -75,7 +75,9 @@ import {
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
 import { putTrip, waypointSignatureKey } from '../trips';
 import { pendingKey, putPending } from '../pendingPushes';
-import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
+import { readSsot, seedSsot, ssotKey, writeSsot, type MotionEvidence, type TripPositionSSoT } from '../tripPositionSsot';
+// #3007 S4-c — 정지 15분 임계(device PAUSE_AUTO_END_MS의 backend 미러).
+import { END_PROMPT_STATIONARY_MS } from '../motionState';
 import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Route, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -4495,6 +4497,130 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
       expect(contentState.trainCode).toBe('2701');
       expect(contentState.trainCode).not.toBe('5559');
+    });
+
+    // #3007 S4-c 배선 사슬 — 판정(#3008 `isEndPromptDue`)이 실제로 heartbeat content에
+    // 도달하는지. 이 테스트가 없으면 `buildLiveActivityContentState` 단위 테스트만 green이고
+    // 배선이 inert여도 통과한다(`lesson_parts_green_whole_inert_last_consumer`).
+    describe('#3007 S4-c — 정지 15분 판정이 heartbeat content-state에 도달한다', () => {
+      /** 같은 좌표 샘플로 `spanMs` 구간을 덮는다(최신이 NOW). */
+      function stationaryEvidence(count: number, spanMs: number): MotionEvidence[] {
+        const spacing = spanMs / (count - 1);
+        const out: MotionEvidence[] = [];
+        for (let i = count - 1; i >= 0; i--) {
+          out.push({
+            source: 'device-position',
+            ts: NOW - i * spacing,
+            signal: { lat: 37.5, lng: 127.0, motion: 'unknown' },
+          });
+        }
+        return out;
+      }
+
+      function makeSsot(evidence: MotionEvidence[]): TripPositionSSoT {
+        return {
+          tripToken: 'devtoken',
+          currentStationId: '0228',
+          motionState: 'unknown',
+          motionEvidence: evidence,
+          lastAdvanceAt: 0,
+          lastAdvanceEvidence: 'seed-override',
+          passedStations: [],
+          userIntentDeclared: false,
+          schemaVersion: 1,
+        };
+      }
+
+      /** lock 없는 LA 발사 대상 trip(= end-prompt 대상). LA 전제는 makeLockedLaTrip과 동일. */
+      function makeNoLockLaTrip(overrides: Partial<Trip> = {}): Trip {
+        return makeTrip({
+          token: 'la-tok-endprompt',
+          locale: 'ko',
+          route: { type: 'direct', line: '2', stops: 1 },
+          waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+          activityPushToken: 'la-token',
+          activityState: 'live',
+          apnsEnv: 'sandbox',
+          originStationName: '역삼',
+          ...overrides,
+        });
+      }
+
+      it('[red] 정지 15분 due면 content-state.boardingPhase가 end-prompt로 간다', async () => {
+        // lock 없는 trip(= end-prompt 대상). makeLockedLaTrip은 lock이 있어 거부되므로 쓰지 않는다.
+        // lock 없는 LA 발사 대상 trip — makeLockedLaTrip은 lock이 있어 end-prompt가 거부된다.
+        const trip = makeNoLockLaTrip();
+        const fetchImpl = makeOkFetch();
+        const stats = createEmptyScheduledStats(NOW);
+
+        await maybeFireLiveActivityUpdate(
+          trip,
+          trip.waypoints[0],
+          NOW + 120_000,
+          makeHeartbeatDeps(fetchImpl),
+          stats,
+          NOW,
+          () => {},
+          makeSsot(stationaryEvidence(40, END_PROMPT_STATIONARY_MS)),
+        );
+
+        const laCalls = getLaCalls(fetchImpl);
+        expect(laCalls).toHaveLength(1);
+        const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
+        expect(contentState.boardingPhase).toBe('end-prompt');
+        // 배너+소리는 이 두 필드로만 만들어진다 — 비면 무음이라 사용자가 결정할 기회가 없다.
+        expect(contentState.boardingAlertTitle).toBeTruthy();
+        expect(contentState.boardingAlertBody).toBeTruthy();
+      });
+
+      it('[거부] 이동 중(변위 큼)이면 end-prompt가 가지 않는다', async () => {
+        // lock 없는 LA 발사 대상 trip — makeLockedLaTrip은 lock이 있어 end-prompt가 거부된다.
+        const trip = makeNoLockLaTrip();
+        const moving = stationaryEvidence(40, END_PROMPT_STATIONARY_MS).map((e, i) => ({
+          ...e,
+          signal: { lat: 37.5 + i * 5 * 9e-6, lng: 127.0, motion: 'unknown' },
+        }));
+        const fetchImpl = makeOkFetch();
+        const stats = createEmptyScheduledStats(NOW);
+
+        await maybeFireLiveActivityUpdate(
+          trip,
+          trip.waypoints[0],
+          NOW + 120_000,
+          makeHeartbeatDeps(fetchImpl),
+          stats,
+          NOW,
+          () => {},
+          makeSsot(moving),
+        );
+
+        const laCalls = getLaCalls(fetchImpl);
+        expect(laCalls).toHaveLength(1);
+        const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
+        expect(contentState.boardingPhase).not.toBe('end-prompt');
+        expect(contentState.boardingAlertTitle).toBeUndefined();
+      });
+
+      it('[거부] ssot 미전달(legacy 호출자)이면 end-prompt가 가지 않는다', async () => {
+        // lock 없는 LA 발사 대상 trip — makeLockedLaTrip은 lock이 있어 end-prompt가 거부된다.
+        const trip = makeNoLockLaTrip();
+        const fetchImpl = makeOkFetch();
+        const stats = createEmptyScheduledStats(NOW);
+
+        await maybeFireLiveActivityUpdate(
+          trip,
+          trip.waypoints[0],
+          NOW + 120_000,
+          makeHeartbeatDeps(fetchImpl),
+          stats,
+          NOW,
+          () => {},
+        );
+
+        const laCalls = getLaCalls(fetchImpl);
+        const contentState = parseLaBody(laCalls[0]).aps['content-state'] as Record<string, unknown>;
+        expect(contentState.boardingPhase).not.toBe('end-prompt');
+      });
     });
 
     // ② 회귀 가드 — stamp 없음 + lock 활성 → 기존 동작(boardingLock.trainCode) 유지.

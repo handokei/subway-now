@@ -104,8 +104,11 @@ private struct LockScreenView: View {
 
 
     /// #2439 — pre-boarding/hop-end 단계는 "탑승/하차 확인" 프롬프트를 최우선 표시.
+    /// #3007 S4-c — `end-prompt`(정지 15분 "안내를 종료할까요?")도 같은 보조 행을 쓴다.
     var isBoardingPrompt: Bool {
-        state.boardingPhase == "pre-boarding" || state.boardingPhase == "hop-end"
+        state.boardingPhase == "pre-boarding"
+            || state.boardingPhase == "hop-end"
+            || state.boardingPhase == "end-prompt"
     }
 
     /// #2997 S2 — 상태 뷰(주)와 탑승/하차 버튼 행(보조)을 **합성**한다.
@@ -264,6 +267,10 @@ private struct BoardingPromptRow: View {
         if isAutoLockedTracking {
             return "widget.boardingPrompt.autoLocked.tracking"
         }
+        // #3007 S4-c — 정지 15분 종료 제안.
+        if phase == "end-prompt" {
+            return "widget.endPrompt.question"
+        }
         return phase == "pre-boarding"
             ? "widget.boardingPrompt.boarded.question"
             : "widget.boardingPrompt.disembark.question"
@@ -307,7 +314,16 @@ private struct BoardingPromptButton: View {
     var autoLockedTracking: Bool = false
 
     var body: some View {
-        if autoLockedTracking {
+        if phase == "end-prompt" {
+            // #3007 S4-c — 종료는 사용자 결정이므로 버튼 하나만 둔다. "계속"은 **버튼이 아니라
+            // 무응답**이다(아무것도 누르지 않으면 트립이 그대로 유지된다) — 선택을 강요하지 않는다.
+            Button(intent: EndTripIntent(tripToken: state.boardingPromptTripToken ?? "")) {
+                Text(NSLocalizedString("widget.endPrompt.end.button", comment: "End guidance button label"))
+                    .font(.subheadline)
+                    .fontWeight(.bold)
+            }
+            .tint(.white)
+        } else if autoLockedTracking {
             Button(intent: NotBoardedIntent(
                 tripToken: state.boardingPromptTripToken ?? "",
                 originStation: state.boardingPromptOriginStation ?? "",
