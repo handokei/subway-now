@@ -17,9 +17,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { handleResponse } from '../useBoardingPromptResponder';
 import { BOARDING_PROMPT_ACTION_BOARDED, BOARDING_PROMPT_ACTION_NOT_BOARDED } from '../../utils/notificationCategory';
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
+import { clearLockLifecycleEntries, getLockLifecycleEntries } from '../../utils/boardingLockLifecycleBuffer';
 import * as positionUpload from '../../../nearest-station/api/positionUpload';
 import { isPendingTrainCode, isRealBoardingLock, PENDING_TRAIN_CODE } from '../../../../shared/constants/boardingLock';
 import type { StationArrival } from '../../../../shared/types/arrival';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
@@ -141,7 +143,7 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
     expect(isRealBoardingLock(lock)).toBe(true);
   });
 
-  it('boardedAt(원 표명 시각)·boardingEvidence·역/노선은 보존하고 trainCode+resolveTier만 교체한다', async () => {
+  it('boardedAt(원 표명 시각)·boardingEvidence·역/노선은 보존하고 trainCode만 교체한다(resolveTier는 저장 안 함)', async () => {
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     postBoardingConfirmMock.mockImplementation(async () => {
       // 응답이 늦게 도착(PENDING 생성 후 시간 경과) — 교체가 boardedAt을 지금으로 덮으면 안 된다.
@@ -154,7 +156,6 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
     expect(useBoardingLockStore.getState().lock).toEqual(
       expect.objectContaining({
         trainCode: '7325',
-        resolveTier: 'assertion-departed',
         boardedAt: 1_700_000_000_000,
         boardingEvidence: false,
         boardingStationId: 'S1',
@@ -162,6 +163,22 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
         destinationId: 'dst',
       }),
     );
+    expect(useBoardingLockStore.getState().lock).not.toHaveProperty('resolveTier');
+  });
+
+  it('승격은 생성과 구분되는 lifecycle source로 남고 resolveTier는 telemetry entry에만 실린다', async () => {
+    clearLockLifecycleEntries();
+    postBoardingConfirmMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      resolvedTrainCode: '7325',
+      resolveTier: 'assertion-departed',
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps());
+    const creates = getLockLifecycleEntries().filter((e) => e.event === 'create');
+    expect(creates.map((e) => e.source)).toEqual(['boarding-prompt-response', 'boarding-confirm-response']);
+    expect(creates[1]).toEqual(expect.objectContaining({ trainCode: '7325', resolveTier: 'assertion-departed' }));
+    expect(creates[0]).not.toHaveProperty('resolveTier');
   });
 
   it('ⓑ 응답에 resolvedTrainCode 없음(lock 미성립) → PENDING 유지', async () => {
@@ -220,6 +237,63 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
     const deps = { ...pendingDeps(), fetchArrivalsForStation: jest.fn(async () => arrivalWith(['T1'])) };
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(postBoardingConfirmMock).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', 'T1');
+  });
+
+  // P1-1 소유권 — skip 분기에서 이전 탭의 stale PENDING이 남아 있으면 이번 응답으로 덮지 않는다.
+  const STALE_PENDING: BoardingLock = {
+    destinationId: 'dst',
+    trainCode: PENDING_TRAIN_CODE,
+    boardingStationId: 'S0',
+    boardingLine: '1' as const,
+    boardedAt: 1_000,
+    expectedDurationMs: 600_000,
+    boardingEvidence: false,
+  };
+
+  it('[거부] 이전 탭의 stale PENDING + 이번 탭 skip(position 모순) + 응답 resolvedTrainCode → lock 불변', async () => {
+    useBoardingLockStore.setState({ lock: STALE_PENDING });
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(
+      JSON.stringify({
+        station: { id: 'BG1', line: '7', name: '용마산' },
+        distanceKm: 0.1,
+        timestamp: Date.now(),
+      }),
+    );
+    (findStationByNameAndLine as jest.Mock).mockImplementation((name: string, line: string) =>
+      name === '강남' && line === '2' ? { id: 'S1', line: '2', name: '강남' } : null,
+    );
+    postBoardingConfirmMock.mockResolvedValue({ ok: true, status: 200, resolvedTrainCode: '7325' });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps());
+    expect(useBoardingLockStore.getState().lock).toEqual(STALE_PENDING);
+  });
+
+  it('[거부] 이전 탭의 stale PENDING + 이번 탭 station lookup 실패 skip → lock 불변', async () => {
+    useBoardingLockStore.setState({ lock: STALE_PENDING });
+    (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+    postBoardingConfirmMock.mockResolvedValue({ ok: true, status: 200, resolvedTrainCode: '7325' });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps());
+    expect(useBoardingLockStore.getState().lock).toEqual(STALE_PENDING);
+  });
+
+  it('[거부] createLock이 조용히 skip(immutability 모사)돼 이번 PENDING이 안 올라오면 stale PENDING 불변', async () => {
+    useBoardingLockStore.setState({ lock: STALE_PENDING });
+    postBoardingConfirmMock.mockResolvedValue({ ok: true, status: 200, resolvedTrainCode: '7325' });
+    const deps = { ...pendingDeps(), createLock: jest.fn(async () => undefined) };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(deps.createLock).toHaveBeenCalledTimes(1); // PENDING 생성 시도만, 승격 호출 없음
+    expect(useBoardingLockStore.getState().lock).toEqual(STALE_PENDING);
+  });
+
+  it('[거부] createLock 예외 → createdPending=false, 승격 시도 없음', async () => {
+    postBoardingConfirmMock.mockResolvedValue({ ok: true, status: 200, resolvedTrainCode: '7325' });
+    const deps = {
+      ...pendingDeps(),
+      createLock: jest.fn(async () => {
+        throw new Error('storage down');
+      }),
+    };
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(deps.createLock).toHaveBeenCalledTimes(1);
   });
 
   // ⓖ 상호작용(스펙 선언): PENDING 상태에서 브릿지 재진입(LA 버튼 → FG)하면 `tryAutoLock`이 PENDING을

@@ -36,6 +36,18 @@ describe('boardingLockStorage', () => {
     jest.clearAllMocks();
   });
 
+  // #3055 — PENDING→실 열차 승격 lock(boardingEvidence=false, 원 boardedAt 보존)이 저장→복원 왕복에서
+  // 파싱 가드(isBoardingLock)에 걸려 null이 되지 않는다. tapRoundtrip은 storage를 mock으로 끊어
+  // 이 공백을 못 본다.
+  it('승격된 lock(실 trainCode + boardingEvidence=false)이 setBoardingLock→getBoardingLock 왕복에서 보존된다', async () => {
+    const promoted: BoardingLock = { ...sample, trainCode: '7325', boardingEvidence: false };
+    (AsyncStorage.setItem as jest.Mock).mockResolvedValueOnce(undefined);
+    await setBoardingLock(promoted);
+    const [, serialized] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(serialized);
+    expect(await getBoardingLock()).toEqual(promoted);
+  });
+
   describe('getBoardingLock', () => {
     it('AsyncStorage가 null이면 null 반환', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);

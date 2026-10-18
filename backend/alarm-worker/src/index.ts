@@ -2454,7 +2454,7 @@ function markBoardingPromptResponded(trip: Trip): Trip {
  *     `boardingPromptState`를 `markPromptSilenced`로 갱신해 5분 재발사를 차단한다. 락 생성 없음.
  *
  * Response 200: `{ ok: true, lockState: 'leg1' | 'leg2' | 'released' | 'none',
- *   resolvedTrainCode?: string, resolveTier?: 'assertion-departed' }` — 후자 둘은 #3055
+ *   resolvedTrainCode?: string, resolvedLine?: string, resolveTier?: 'assertion-departed' }` — 후자 셋은 #3055
  *   (`buildBoardingConfirmResolution` 주석이 포함 조건·`resolveTier` 부재 계약을 정의).
  * Response 404: `{ error: 'trip_not_found' }`
  * Response 400: `{ error: 'invalid_json' | 'invalid_payload' | 'missing_token' }`
@@ -2762,17 +2762,32 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   return c.json({
     ok: true,
     lockState,
-    ...buildBoardingConfirmResolution(payload.action, working.boardingLock, keptLockReason, resolveTier),
+    ...buildBoardingConfirmResolution(
+      payload.action,
+      working.boardingLock,
+      keptLockReason,
+      resolveTier,
+      payload.line,
+    ),
   });
 });
 
 /**
- * 기존 lock을 유지한 채 응답하는 경우 중 그 lock이 **이번 탭의 leg 것이 아닐 수 있는** 사유.
- * `route-changed`/`stale-leg-stamp`만 이전 leg의 stale lock이 남은 상태일 수 있다(release 판정이
- * 거부한 이유 자체가 "stamp/route가 현재 leg와 어긋남"). `no-anchor`(leg-1 컨텍스트)와
- * `already-correct-leg`(현재 leg에 정확히 부착됨)는 기존 lock이 이번 탭의 leg 것이다.
+ * 기존 lock을 release하지 않고 응답하는 경우, 그 lock의 trainCode를 echo해도 되는 사유 전수 매핑.
+ * `Record<LegLockReleaseReason, boolean>`이라 **새 reason이 추가되면 컴파일 에러**(fail-closed —
+ * 허용 목록 누락 시 조용히 echo되는 일이 없다).
+ *  - `no-anchor`(leg-1 컨텍스트)·`already-correct-leg`(현재 leg에 정확히 부착됨): 이번 탭의 leg 것 -> 허용.
+ *  - `route-changed`·`stale-leg-stamp`: 이전 leg의 stale lock일 수 있다 -> 거부.
+ *  - release 판정 사유(`no-stamp-trust-anchor`·`stamp-valid`)는 kept 상태가 될 수 없지만 fail-closed로 false.
  */
-const STALE_LEG_KEPT_REASONS: readonly LegLockReleaseReason[] = ['route-changed', 'stale-leg-stamp'];
+const KEPT_LOCK_ECHO_ALLOWED: Record<LegLockReleaseReason, boolean> = {
+  'no-anchor': true,
+  'already-correct-leg': true,
+  'no-stamp-trust-anchor': false,
+  'route-changed': false,
+  'stale-leg-stamp': false,
+  'stamp-valid': false,
+};
 
 /**
  * #3055 B — boarding-confirm 응답의 해소 결과 필드(`resolvedTrainCode`, `resolveTier`).
@@ -2783,7 +2798,8 @@ const STALE_LEG_KEPT_REASONS: readonly LegLockReleaseReason[] = ['route-changed'
  * `resolvedTrainCode` 포함 조건 = action이 'boarded' AND 응답 시점 lock이 존재 AND 그 lock이
  * 이번 탭의 leg 것임이 보장될 때:
  *   - 이번 요청이 만든 lock(live resolve · body/stamp 승격): `keptLockReason`이 undefined — 구성상 현재 leg.
- *   - 기존 lock 유지: `keptLockReason`이 STALE_LEG_KEPT_REASONS에 속하지 **않을 때만**.
+ *   - 기존 lock 유지: `KEPT_LOCK_ECHO_ALLOWED[keptLockReason]`가 true이고 lock.line이 탭의
+ *     line과 같을 때만.
  *     (stale일 수 있는 lock을 실어 보내면 device가 이전 leg 열차로 PENDING을 오승격한다 — 동결이 안전.)
  * lock이 끝내 없으면(none/ambiguous/release 후 미재생성) 두 필드 모두 생략.
  *
@@ -2797,12 +2813,20 @@ function buildBoardingConfirmResolution(
   lock: Trip['boardingLock'],
   keptLockReason: LegLockReleaseReason | undefined,
   resolveTier: BoardingResolveTier | undefined,
-): { resolvedTrainCode?: string; resolveTier?: BoardingResolveTier } {
+  tapLine: string,
+): { resolvedTrainCode?: string; resolvedLine?: string; resolveTier?: BoardingResolveTier } {
   if (action !== 'boarded' || lock === undefined) return {};
-  if (keptLockReason !== undefined && STALE_LEG_KEPT_REASONS.includes(keptLockReason)) return {};
-  const { trainCode } = lock;
+  if (keptLockReason !== undefined) {
+    if (!KEPT_LOCK_ECHO_ALLOWED[keptLockReason]) return {};
+    // 기존 lock은 이번 탭 산물이 아닐 수 있다(register-time/cron/이전 POST — 10/9 반대방향 lock
+    // 부류). 탭의 노선과 다른 노선의 lock이면 echo하지 않는다(device PENDING 동결).
+    if (lock.line !== tapLine) return {};
+  }
+  const { trainCode, line } = lock;
   return {
     resolvedTrainCode: trainCode,
+    // 방어 심층: device가 PENDING.boardingLine과 대조해 불일치 시 교체를 거부한다.
+    resolvedLine: line,
     ...(resolveTier !== undefined ? { resolveTier } : {}),
   };
 }

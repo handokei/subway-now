@@ -1,5 +1,6 @@
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 import type { LockReleaseReason } from '../store/useBoardingLockStore';
+import type { BoardingResolveTier } from '../../../shared/types/boardingLock';
 
 /**
  * #2152 — BoardingLock lifecycle breadcrumb 전용 ring buffer.
@@ -22,6 +23,9 @@ export const BOARDING_LOCK_LIFECYCLE_BUFFER_CAPACITY = 50;
 export type LockLifecycleCreateSource =
   | 'user-tap'
   | 'boarding-prompt-response'
+  // #3055 — PENDING lock을 boarding-confirm 응답으로 실 열차에 승격한 건. 생성('boarding-prompt-response')
+  // 과 덤프에서 구분하기 위한 전용 라벨.
+  | 'boarding-confirm-response'
   | 'other';
 
 export interface LockLifecycleCreateEntry {
@@ -32,6 +36,8 @@ export interface LockLifecycleCreateEntry {
   trainCode: string;
   line: string;
   stationId: string;
+  /** #3055 — 승격 건에서 backend가 최후 tier로 수용했다면 그 라벨(오수용 감시). 부재 = 일반 tier. */
+  resolveTier?: BoardingResolveTier;
 }
 
 export interface LockLifecycleReleaseEntry {

@@ -55,8 +55,9 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var boardingAutoLocked: Bool?
         // #2962 — LA가 추적/프롬프트 중인 열차(Seoul API btrainNo). backend가 trip.boardingLock
         // (lock 활성 중) 또는 이 특정 프롬프트 발사가 고른 열차(pre-boarding, lock 없음)로 채운다.
-        // LA [탑승] 버튼(BoardingIntents.swift)이 이 값을 그대로 /boarding-confirm body에
-        // forward해 backend가 "어느 열차인지" 알 수 있게 한다. optional — 구 backend/값 없음
+        // #3055 A — LA [탑승] 버튼(BoardingIntents.swift)은 더 이상 이 값을 /boarding-confirm body에
+        // forward하지 않는다(늦은 탭에서 stale일 수 있음, #3044 ⓑ) — 열차 해소는 backend가 탭 시각
+        // 기준으로 한다. 버튼 intent는 값을 캡처만 하고 미전송. optional — 구 backend/값 없음
         // 모두 nil로 안전 decode(기존 LA 세션 호환).
         var trainCode: String?
     }

@@ -217,9 +217,7 @@ struct BoardingConfirmIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — 버튼 렌더 시점(ContentState.trainCode)의 값을 그대로 캡처. perform()이 나중에
-    // 실행돼도(위젯 프로세스) @Parameter가 탭 시점이 아니라 버튼 생성 시점 값을 들고 있다 —
-    // "LA가 들고 있던 그 값을 그대로 보낸다"(R-5) 요구사항의 구현 지점.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 
@@ -272,7 +270,7 @@ struct DisembarkConfirmIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — BoardingConfirmIntent와 동일 패턴.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 
@@ -326,7 +324,7 @@ struct NotBoardedIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — BoardingConfirmIntent와 동일 패턴.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 
@@ -379,7 +377,7 @@ struct DisembarkNotYetIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — BoardingConfirmIntent와 동일 패턴.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { TripEndReason } from '../../../shared/types/tripEnd';
-import type { BoardingLock } from '../../../shared/types/boardingLock';
+import type { BoardingLock, BoardingResolveTier } from '../../../shared/types/boardingLock';
 import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
 import {
   clearBoardingLock,
@@ -118,6 +118,8 @@ export interface BoardingLockState {
     lock: BoardingLockInput,
     evidence: boolean,
     source?: LockLifecycleCreateSource,
+    /** #3055 — 승격 건의 backend 해소 tier. 저장 필드가 아니라 lifecycle/승격 telemetry에만 실린다. */
+    resolveTier?: BoardingResolveTier,
   ) => Promise<void>;
   /**
    * 사용자가 "하차" 탭하거나 trip 종료 시 호출.
@@ -143,6 +145,7 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
     lockInput: BoardingLockInput,
     evidence: boolean,
     source: LockLifecycleCreateSource = 'other',
+    resolveTier?: BoardingResolveTier,
   ) => {
     // #2290 P1 — evidence를 별도 필수 인자로 받아 여기서 한 곳에서만 lock 객체에 합성한다.
     // 호출부가 lock 객체 리터럴 안에 산발적으로 boardingEvidence를 stamp하던 방식(P1-1)은
@@ -187,7 +190,7 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
     // 실 trainCode" 승격을 감지해 telemetry를 적재한다. 어떤 호출자(수동 탭 / 향후 backend
     // lockSuggestion 승격 경로)를 거쳤는지와 무관하게 한 곳에서 전부 포착한다.
     if (prev && !isRealBoardingLock(prev) && lock.trainCode.length > 0 && !isPendingTrainCode(lock.trainCode)) {
-      recordPendingLockPromotion(lock.trainCode);
+      recordPendingLockPromotion(lock.trainCode, resolveTier);
     }
     await setBoardingLock(lock);
     // #746: 새 lock 생성 = 사용자가 새 leg에 탑승 의사 명시 → 이전 dismiss silence는 무효.
@@ -207,6 +210,7 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
       trainCode: lock.trainCode,
       line: lock.boardingLine,
       stationId: lock.boardingStationId,
+      ...(resolveTier !== undefined ? { resolveTier } : {}),
     });
   },
 

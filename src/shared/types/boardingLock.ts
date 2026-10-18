@@ -74,11 +74,6 @@ export interface BoardingLock {
    * graceful하게 처리된다.
    */
   boardingEvidence?: boolean;
-  /**
-   * #3055 C — PENDING lock이 boarding-confirm 응답으로 실 열차에 승격될 때, backend가 live resolve에서
-   * 최후 tier로 수용했다면 그 라벨을 보존한다(오수용 감시 연동). 부재 = 일반 tier 또는 승격 아님.
-   */
-  resolveTier?: BoardingResolveTier;
 }
 
 /** 자동 만료 안전 계수 — 예상 소요시간이 50% 초과되면 잘못된 Lock으로 보고 해제. */

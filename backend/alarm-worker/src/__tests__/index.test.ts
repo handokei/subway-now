@@ -3008,7 +3008,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246', resolvedLine: '7' });
 
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
       expect(stored.boardingLock?.trainCode).toBe('7246');
@@ -3083,7 +3083,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       );
       expect(res.status).toBe(200);
       // leg-1이므로 lockState는 'leg1' (currentLegAnchor 부재 → attachBoardedLock 판정).
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '2701' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '2701', resolvedLine: '7' });
 
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
       expect(stored.boardingLock?.trainCode).toBe('2701');
@@ -3210,7 +3210,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(), env);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '9999' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '9999', resolvedLine: '7' });
       expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
@@ -3526,7 +3526,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         env,
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7256' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7256', resolvedLine: '7' });
 
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
       expect(stored.boardingLock?.trainCode).toBe('7256');
@@ -3588,7 +3588,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         env,
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7246' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7246', resolvedLine: '7' });
 
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
       expect(stored.boardingLock?.trainCode).toBe('7246');
@@ -3687,7 +3687,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '9000' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '9000', resolvedLine: '7' });
       // 핵심 — stamp가 trainCode를 담고 있으므로 live Seoul 재조회 자체가 일어나지 않는다.
       expect(fetchSpy).not.toHaveBeenCalled();
 
@@ -3728,7 +3728,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '9000' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '9000', resolvedLine: '7' });
       expect(fetchSpy).not.toHaveBeenCalled();
 
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -3777,7 +3777,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구' }), env);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7246' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7246', resolvedLine: '7' });
       expect(fetchSpy).not.toHaveBeenCalled();
 
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -3831,7 +3831,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
           env,
         );
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '2701' });
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '2701', resolvedLine: '7' });
         expect(fetchSpy).not.toHaveBeenCalled();
 
         const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -3854,7 +3854,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
           env,
         );
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001' });
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001', resolvedLine: '7' });
         expect(fetchSpy).not.toHaveBeenCalled();
 
         const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -3876,7 +3876,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
           env,
         );
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001' });
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001', resolvedLine: '7' });
         expect(fetchSpy).not.toHaveBeenCalled();
 
         const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -3906,7 +3906,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
           env,
         );
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001' });
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001', resolvedLine: '7' });
         expect(fetchSpy).not.toHaveBeenCalled();
 
         const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -3931,7 +3931,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
           env,
         );
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001' });
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '3001', resolvedLine: '7' });
         expect(fetchSpy).not.toHaveBeenCalled();
 
         const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -4098,7 +4098,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         env,
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '5554' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '5554', resolvedLine: '5' });
       // 핵심 — live Seoul 재조회(POSITIONS) 자체를 타지 않는다. 호출됐다면 이 테스트가 재현한
       // 물리 상태(상행 후보 0건)에서 none이 나와야 정상이므로, trainCode가 일치한다는 것 자체가
       // 이 fetch 호출 여부와 독립적임을 보장하기 위해 미호출까지 함께 확인한다.
@@ -4138,7 +4138,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         confirmBody({ station: '군자(능동)', line: '5' }),
         env,
       );
-      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '5554' });
+      expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '5554', resolvedLine: '5' });
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
       expect(stored.boardingLock?.trainCode).not.toBe('5559');
       expect(stored.boardingLock?.trainCode).toBe('5554');
@@ -4241,7 +4241,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         new Response(JSON.stringify({ realtimePositionList: [positionEntry()] }), { status: 200 }),
       );
       const { json } = await confirm(confirmBody(), tripBody());
-      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
+      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246', resolvedLine: '7' });
       expect(json).not.toHaveProperty('resolveTier');
     });
 
@@ -4256,7 +4256,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(json).toEqual({
         ok: true,
         lockState: 'leg1',
-        resolvedTrainCode: '7325',
+        resolvedTrainCode: '7325', resolvedLine: '7',
         resolveTier: 'assertion-departed',
       });
     });
@@ -4282,7 +4282,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         confirmBody({ trainCode: '2701' }),
         tripBody({ recentPromptCandidates: { trainCodes: ['2701', '3001'], firedAt: CREATED - 1000 } }),
       );
-      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '2701' });
+      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '2701', resolvedLine: '7' });
     });
 
     it('ⓕ-2 leg-2 stamp 경로 — trainCode 미동봉이어도 stamp 열차로 lock + 응답 포함(#2975 stamp 신뢰 유지의 문서화 테스트, 합성 — 추정)', async () => {
@@ -4292,7 +4292,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         legBoardingFireStamp: stamp(trip),
       });
       expect(fetchSpy).not.toHaveBeenCalled(); // 사유: stamp 직접 승격, live 재조회 없음
-      expect(json).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '9000' });
+      expect(json).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '9000', resolvedLine: '7' });
       expect(json).not.toHaveProperty('resolveTier');
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
       expect(stored.boardingLock?.trainCode).toBe('9000');
@@ -4305,14 +4305,30 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         { ...trip, legBoardingFireStamp: stamp(trip, { trainCode: '7246' }) },
       );
       expect(fetchSpy).not.toHaveBeenCalled();
-      expect(json).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7246' });
+      expect(json).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '7246', resolvedLine: '7' });
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
       expect(stored.boardingLock?.trainCode).toBe('7246'); // ⓐ 재POST가 기존 lock을 덮지 않는다
     });
 
     it('기존-lock 분기 no-anchor(leg-1 FG 재POST) → 응답에 기존 lock trainCode 포함', async () => {
       const { json } = await confirm(confirmBody(), tripBody({ boardingLock: lockOf('7246'), infoModeEnabled: true }));
-      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
+      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246', resolvedLine: '7' });
+    });
+
+    it('[거부] 기존-lock 분기 no-anchor인데 lock.line ≠ 탭 line(register-time/cron/이전 POST 산물) → echo 없음(PENDING 동결)', async () => {
+      const { json, env } = await confirm(
+        confirmBody({ line: '7' }),
+        tripBody({ boardingLock: lockOf('2222', { line: '2', subwayId: '1002' }), infoModeEnabled: true }),
+      );
+      expect(json).toEqual({ ok: true, lockState: 'leg1' });
+      for (const k of [...KEYS, 'resolvedLine']) expect(json).not.toHaveProperty(k);
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('2222'); // lock 자체는 불변
+    });
+
+    it('line 일치 echo는 resolvedLine을 함께 싣는다(device 대조용 방어 심층)', async () => {
+      const { json } = await confirm(confirmBody(), tripBody({ boardingLock: lockOf('7246'), infoModeEnabled: true }));
+      expect(json).toMatchObject({ resolvedTrainCode: '7246', resolvedLine: '7' });
     });
 
     it('[거부] 기존-lock 분기 route-changed → stale일 수 있어 resolvedTrainCode 미포함(PENDING 동결)', async () => {

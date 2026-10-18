@@ -1,6 +1,9 @@
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import type { BoardingResolveTier } from '../../../shared/types/boardingLock';
+import { createLogger } from '../../../shared/utils/logger';
+
+const log = createLogger('promotePendingLock');
 
 type BoardingLockState = ReturnType<typeof useBoardingLockStore.getState>;
 
@@ -25,7 +28,8 @@ export interface BoardingConfirmResolution {
  *  - 응답에 trainCode가 없거나(lock 미성립) 비실체(빈 문자열/sentinel)면 PENDING 유지.
  *
  * 보존: `boardedAt`(원 표명 시각)·`boardingEvidence`·역/노선/목적지는 PENDING 생성분 그대로,
- * `trainCode`(+`resolveTier`)만 교체한다. immutability 가드는 `prev.trainCode !== lock.trainCode`라
+ * `trainCode`만 교체한다. `resolveTier`는 저장하지 않고 승격 telemetry에만 싣는다(소비자 0·D1 meta가 SSoT).
+ * 소유권(이번 사이클이 만든 PENDING인가)은 caller(`handleResponse`의 createdPending)가 보장한다. immutability 가드는 `prev.trainCode !== lock.trainCode`라
  * 통과하고, `createLock`의 `recordPendingLockPromotion`이 이 승격을 기존 telemetry로 잡는다.
  *
  * `createLock`은 caller(responder)의 deps를 그대로 받는다 — 테스트/주입 경로 일관성.
@@ -41,13 +45,24 @@ export async function promotePendingLockFromConfirm(
   if (isPendingTrainCode(resolvedTrainCode)) return false;
 
   const { lock } = useBoardingLockStore.getState();
-  if (lock === null || !isPendingTrainCode(lock.trainCode)) return false;
+  if (lock === null) return false;
+  if (!isPendingTrainCode(lock.trainCode)) {
+    // 실 lock과 backend 해소가 다른 열차 — 교체하지 않되 관측은 남긴다(무음 폐기 금지).
+    if (lock.trainCode !== resolvedTrainCode) {
+      log.info(
+        `confirm response ignored — real lock differs local=${lock.trainCode} backend=${resolvedTrainCode}`,
+      );
+    }
+    return false;
+  }
 
   const { boardingEvidence, ...lockInput } = lock;
+  // resolveTier는 저장 필드가 아니라 승격 telemetry(lifecycle entry/recordPendingLockPromotion)로만 전달.
   await createLock(
-    { ...lockInput, trainCode: resolvedTrainCode, ...(resolveTier !== undefined ? { resolveTier } : {}) },
+    { ...lockInput, trainCode: resolvedTrainCode },
     boardingEvidence ?? false,
-    'boarding-prompt-response',
+    'boarding-confirm-response',
+    resolveTier,
   );
   return true;
 }
