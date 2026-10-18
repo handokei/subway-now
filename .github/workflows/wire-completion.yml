@@ -31,6 +31,31 @@ jobs:
       - name: Orphan export 검사 (ts-prune)
         run: npm run lint:orphan
 
+  # CLAUDE.md "디렉토리 경계 룰"은 `import/no-restricted-paths` enforce(error)를
+  # "`npm run lint` 또는 CI에서 검증"한다고 적고 있었지만, 실제로는 어느 워크플로도
+  # `npm run lint`를 돌리지 않아 dev에 error 12건이 쌓인 채 방치돼 있었다. 선언된 게이트를
+  # 실제 게이트로 만든다 — 경계 위반이 프로덕션 코드에 들어오면 여기서 막힌다.
+  eslint-boundary:
+    name: ESLint Boundary Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # `--ignore-scripts` — lint는 lifecycle script 산출물이 필요 없다. 선례: e2e.yml:32.
+      - name: 의존성 설치
+        run: npm ci --legacy-peer-deps --ignore-scripts
+
+      - name: ESLint (디렉토리 경계 + import 룰)
+        run: npm run lint
+
   adr-conflict-section:
     name: ADR Conflict Declaration Check
     runs-on: ubuntu-latest
