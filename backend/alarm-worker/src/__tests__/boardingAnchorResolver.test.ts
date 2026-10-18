@@ -833,6 +833,23 @@ describe('resolveActiveLegOrigin (#2515, #2511 supersede)', () => {
     const trip = makeTrip({ promptDisplay: undefined });
     expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
   });
+
+  // #3046 (10/18 편측 감사 F1) — 이슈는 `resolveActiveLegOrigin`도 `resolvePromptAnchor`로
+  // 수렴시켜 promptDisplay 유실 trip의 backend auto-lock을 가능하게 하자고 제안했다. 구현해
+  // 전체 테스트 스위트(whole-trip replay 포함)로 검증한 결과 **배선하지 않기로 결정**했다 —
+  // 실측(#2754/#2754-wrong-lock, #2801, #2900) 재생 테스트 6개가 전부 다른 trainCode를
+  // lock하거나 다른 역에서 발사하는 실패로 돌아섰다(`replay_20260918_leg2_wrong_lock.test.ts`
+  // 등). 원인: 이 함수는 cron(`scheduled.ts`)이 `{allowLegTransfer:true}`(tapAnchor 없음)로
+  // 매 tick 반복 호출하는데, `currentLegAnchor`가 undefined인 상태가 "아직 leg 1"만을
+  // 의미하지 않는다 — 환승을 이미 지났지만 `currentLegAnchor`가 아직 stamp되지 않은 tick도
+  // 포함한다. 그 tick에서 `originStationName`(leg-1 SSoT, 예: '뚝섬')+`waypoints[0].line`으로
+  // 파생하면 이미 지난 leg-1 역/노선으로 되돌아가 **엉뚱한 열차를 lock**한다(실측 7260 오탑승
+  // 방지 테스트가 정확히 이 위험을 고정해 둔 바로 그 함수). 반면 ①`maybeFireOriginBoardingPromptGpsFree`
+  // (scheduled.ts)는 이 함수가 아예 `if (trip.currentLegAnchor) return`으로 leg-2 전체를
+  // 배제하므로 같은 위험이 없고, ②`computeBoardingContext`(liveActivity.ts)는 LA 표시용이라
+  // 틀려도 안전 위험(오탑승 lock)이 아니다 — 세 소비자가 안전상 동급이 아니었다. F1은
+  // 미착수로 남기고 이 사실을 PR 본문에 명시한다(별도 이슈로 재스펙 필요 — "아직 leg 1"을
+  // 안전하게 판정할 추가 조건 없이는 이 함수에 파생 fallback을 넣을 수 없다).
 });
 
 describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', () => {

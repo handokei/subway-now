@@ -142,6 +142,71 @@ describe('#2997 S1 — boarding content 상시 산출 (프롬프트 발사 무�
   });
 });
 
+/**
+ * #3046 (10/18 편측 감사 G1) — `promptDisplay` 유실(#3038 등록 race) trip도 `originStationName`
+ * + waypoint line으로 파생된 anchor를 받아야 한다. 이전에는 `maybeFireOriginBoardingPromptGpsFree`
+ * (scheduled.ts)만 지역 변수로 파생했고 `computeBoardingContext`는 `trip.promptDisplay`만 읽어
+ * `{}`로 포기했다 — 같은 trip이 푸시는 받는데 LA 버튼은 비는 잔존 증상의 절반.
+ */
+describe('#3046 — resolvePromptAnchor 수렴: promptDisplay 유실 + originStationName 파생 fallback', () => {
+  it('[red ①] promptDisplay 없음 + originStationName 있음 → boardingPhase + 버튼 컨텍스트가 파생된 anchor로 채워진다', () => {
+    const trip = makeTrip({
+      token: 'tok-3046',
+      promptDisplay: undefined,
+      originStationName: '용마산',
+      waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+    });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingPhase).toBe('pre-boarding');
+    expect(cs.boardingPromptTripToken).toBe('tok-3046');
+    expect(cs.boardingPromptOriginStation).toBe('용마산');
+    expect(cs.boardingPromptLine).toBe('7');
+  });
+
+  it('[거부 ③] promptDisplay·originStationName 둘 다 없음 → boardingPhase 미설정 (기존 {} 유지)', () => {
+    const trip = makeTrip({ token: 'tok-3046', promptDisplay: undefined, originStationName: undefined });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingPhase).toBeUndefined();
+    expect(cs.boardingPromptTripToken).toBeUndefined();
+  });
+
+  it('[거부] lock 활성이면 파생 anchor가 있어도 질문 phase를 싣지 않는다(#2939 계보 불변)', () => {
+    const trip = makeTrip({
+      token: 'tok-3046',
+      promptDisplay: undefined,
+      originStationName: '용마산',
+      waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+      boardingLock: {
+        trainCode: '7301',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['용마산', '중곡'],
+        expiresAt: NOW + 3_600_000,
+      },
+    });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingPhase).not.toBe('pre-boarding');
+  });
+
+  it('currentLegAnchor가 있으면 여전히 최우선(파생보다 먼저) — 우선순위 불변', () => {
+    const trip = makeTrip({
+      token: 'tok-3046',
+      promptDisplay: undefined,
+      originStationName: '용마산',
+      waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+      currentLegAnchor: { boardingStation: '건대입구', line: '2' },
+    });
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, trip);
+
+    expect(cs.boardingPromptOriginStation).toBe('건대입구');
+    expect(cs.boardingPromptLine).toBe('2');
+  });
+});
+
 describe('buildLiveActivityContentState (#613)', () => {
   it('emits widget-aligned schema (stationName/lineName/lineColorHex/stopsRemaining/etaMinutes)', () => {
     const cs = buildLiveActivityContentState(WAYPOINT, 90, 3);

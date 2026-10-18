@@ -13658,6 +13658,101 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     });
   });
 
+  // #3046 (G2) — #3038 fix의 display 파생 블록이 의향 게이트(hasExplicitIntent/trackingOptIn)
+  // **앞**에 있어, 애초에 어떤 의향도 없는(promptOptIn/infoModeEnabled/trackingOptIn 전부
+  // false) trip도 파생 카운터를 집계해 측정 해석을 오염시켰다 — 어차피 바로 다음 줄에서
+  // 차단될 trip인데 "파생 성공"으로 찍힌다. fix: `resolvePromptAnchor` 호출을 의향 게이트
+  // **뒤**로 옮긴다. 이 describe는 그 역전(현재 1 → 수정 후 0)을 red로 고정한다.
+  describe('#3046 (G2) — display 파생 집계는 의향 게이트 뒤에서만', () => {
+    it('[red, 역전] 무의향(promptOptIn/infoModeEnabled/trackingOptIn 전부 false) + display 유실 + 파생 재료 있음 → 파생 카운터가 증가하면 안 된다', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptOptIn: false,
+        infoModeEnabled: false,
+        trackingOptIn: false,
+        promptDisplay: undefined,
+        originStationName: '군자',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      // 무의향 trip은 애초에 발사 후보가 아니다 — 의향 게이트에서 즉시 반환돼야 한다.
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      // 핵심 — 의향 게이트 통과 전이므로 파생 시도 자체가 없어야 한다(둘 다 0).
+      expect(stats.originGpsFreeDisplayDerived).toBe(0);
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(0);
+    });
+
+    it('[대조] trackingOptIn만 true(약한 의향) + display 유실 → 의향 게이트를 통과해 파생이 진행된다', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptOptIn: false,
+        infoModeEnabled: false,
+        trackingOptIn: true,
+        promptDisplay: undefined,
+        originStationName: '군자',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeDisplayDerived).toBe(1);
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(0);
+    });
+  });
+
+  // #3046 (E1, #3037 흡수) — `findStationCoordsByNameAndLine`가 null을 반환해도(역/노선
+  // 매핑 실패) 기존 코드는 무카운터 silent였다. trackingOptIn-only trip이 이 분기를 타면
+  // 근접을 영구 인정받지 못하는데 그 사유가 관측 불가능했다 — 파생 실패 카운터
+  // (`originGpsFreeDisplayDerivationFailed`)로 흡수해 관측 가능하게 만든다.
+  describe('#3046 (E1) — origin coords lookup 실패도 카운터로 흡수(#3037)', () => {
+    it('[red] trackingOptIn-only + 스냅샷 부재 + 신선 series + 존재하지 않는 역/노선 → 좌표 조회 실패가 카운터에 찍힌다', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({
+        promptOptIn: false,
+        infoModeEnabled: false,
+        trackingOptIn: true,
+        promptDisplay: { originStation: '존재하지않는역', line: '99' },
+        promptGeoContext: undefined,
+      });
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 10,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(stats.trackingOptInProximityMissingBlocked).toBe(1);
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(1);
+    });
+  });
+
   // #2854 — 프롬프트 발사 성공 순간 LA도 alert(소리·배너)로 함께 갱신한다. 공유 발사 본체
   // (`fireBoardingPromptForAnchor`)에서 처리하므로 leg-1(GPS-free)이 대표로 검증한다 — leg-2도
   // 같은 본체를 거치므로 자동 적용(아래 leg-2 describe의 대조 테스트로 audit).

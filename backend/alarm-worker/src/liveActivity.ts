@@ -31,6 +31,7 @@ import { readDeviceContact } from './deviceContact';
 import { t } from './i18n';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
+import { resolvePromptAnchor } from './promptAnchor';
 import { logPushFailure } from './pushFailureLog';
 import { hashTripToken } from './sentry';
 import { computeMultiHopContext } from './tripMultiHop';
@@ -251,11 +252,13 @@ export function buildLiveActivityContentState(
 function computeBoardingContext(trip: Trip): LiveActivityContentState {
   // lock이 활성이면 질문하지 않는다(#2939).
   if (trip.boardingLock !== undefined) return {};
-  // anchor = "어느 역에서 탑승을 묻는가". leg-1은 promptDisplay, 환승 후는 currentLegAnchor.
+  // anchor = "어느 역에서 탑승을 묻는가". leg-1은 promptDisplay(유실 시 resolvePromptAnchor로
+  // originStationName+waypoint 파생, #3046), 환승 후는 currentLegAnchor가 그대로 우선.
+  const promptAnchor = trip.currentLegAnchor ? null : resolvePromptAnchor(trip).anchor;
   const anchor = trip.currentLegAnchor
     ? { station: trip.currentLegAnchor.boardingStation, line: trip.currentLegAnchor.line }
-    : trip.promptDisplay
-      ? { station: trip.promptDisplay.originStation, line: trip.promptDisplay.line }
+    : promptAnchor
+      ? { station: promptAnchor.originStation, line: promptAnchor.line }
       : undefined;
   if (anchor === undefined) return {};
   return {
