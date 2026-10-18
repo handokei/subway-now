@@ -41,6 +41,7 @@ import {
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
   isExactDuplicateFire,
+  isArrivalConfirmedDecision,
   isNearOrigin,
   markPromptFired,
   mergePositionConfirmedIntoPool,
@@ -8523,12 +8524,17 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       // #2898 — 위 early 게이트가 'fired-too-recently'로 소프트 블록했던 경우에만 여기서 최종
       // 판정(#3057 사용자 결정: 도착 확정된 새 열차마다 즉시 1회, 간격 하한 없음). 직전 열차가 소진된
       // 뒤의 새 열차는 5분 이내여도 허용 — 5분 게이트는 null-token 발사에만 실질적으로 남는다.
+      // 새 열차 bypass 특권은 **도착 확정** 발사(imminent/position-confirmed)에만 — fallback-unobservable
+      // (arvlCd 미관측)은 5분 게이트를 그대로 탄다(미확정 열차 순회 발사 방지, 사용자 결정은 "도착 확정된 새 열차").
       if (
         intervalSoftBlocked &&
-        !canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+        !(
+          isArrivalConfirmedDecision(decision) &&
+          canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+        )
       ) {
         stats.originGpsFreeBoardingPromptBlocked += 1;
-        log('origin-boarding-prompt-gps-free: skipped interval (different train still active)', {
+        log('origin-boarding-prompt-gps-free: skipped interval (5분 게이트: fallback 미확정 또는 직전 열차 미소진)', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
           firedTrainCodes,
@@ -8911,12 +8917,17 @@ export async function maybeFireLegBoardingPrompt(
       // #2898 — 위 early 게이트가 'fired-too-recently'로 소프트 블록했던 경우에만 여기서 최종
       // 판정(#3057 사용자 결정: 도착 확정된 새 열차마다 즉시 1회, 간격 하한 없음). 직전 열차가 소진된
       // 뒤의 새 열차(스펙 ④)는 5분 이내여도 허용 — 5분 게이트는 null-token 발사에만 실질적으로 남는다.
+      // 새 열차 bypass 특권은 **도착 확정** 발사(imminent/position-confirmed)에만 — fallback-unobservable
+      // (arvlCd 미관측)은 5분 게이트를 그대로 탄다(미확정 열차 순회 발사 방지, 사용자 결정은 "도착 확정된 새 열차").
       if (
         intervalSoftBlocked &&
-        !canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+        !(
+          isArrivalConfirmedDecision(decision) &&
+          canBypassRepeatIntervalForTrainTransition(firedTrainCodes, selectedTrainCode)
+        )
       ) {
         stats.legBoardingPromptBlocked += 1;
-        log('leg-boarding-prompt: skipped interval (null-token 또는 직전 열차 미소진)', {
+        log('leg-boarding-prompt: skipped interval (5분 게이트: fallback 미확정 또는 직전 열차 미소진)', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
           firedTrainCodes,

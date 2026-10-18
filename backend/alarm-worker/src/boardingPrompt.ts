@@ -218,6 +218,11 @@ export function mergePositionConfirmedIntoPool(
   return merged;
 }
 
+/** #3057 — 도착 확정 발사(imminent/position-confirmed)인가. fallback-unobservable은 미확정이다. */
+export function isArrivalConfirmedDecision(decision: BoardingFireDecision['decision']): boolean {
+  return decision === 'imminent' || decision === 'position-confirmed';
+}
+
 /**
  * 도착 확정 판정 (#3057) — **arvlCd 하드 필터가 아니다** (caller가 candidateTrains payload에 이
  * 함수의 pool을 그대로 쓴다는 전제로 설계됨, 이슈 §4 금지사항).

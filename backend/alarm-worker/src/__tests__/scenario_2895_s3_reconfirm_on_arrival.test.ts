@@ -223,7 +223,7 @@ describe('#2895 — S3: 미응답 상태에서 실제 도착 시 재확인 프�
     expect(persisted?.legBoardingPromptState?.fireCount ?? 0).toBe(2);
   });
 
-  // #2898 거부 케이스 — 5분 게이트/상한은 제거가 아니라 (trainCode, phase) 축으로 세분화됐을 뿐이다.
+  // #2898 → #3057 거부 케이스 — 열차당 상한 1(null-token 2)과 leg cap 3, 미확정(fallback) 발사의 5분 게이트는 유지된다.
 
   it('ⓐ 도착 확정 발사 후 사용자가 응답(boardingLock 부착)하면 실제 도착해도 재확인 재발사하지 않는다', async () => {
     const kv = new InMemoryKV(() => now);
@@ -377,4 +377,35 @@ describe('#2895 — S3: 미응답 상태에서 실제 도착 시 재확인 프�
     const stats3 = await tick(kv, seoul, asFetch, now);
     expect(stats3.legBoardingPromptFired).toBe(0);
   });
+
+  // 리뷰어 probe — arvlCd=null(fallback-unobservable) 미확정 열차 3대를 60s 간격 4 tick. 소진 제외 + 새 열차
+  // bypass가 결합해 U1->U2->U3를 순회 발사하던 결함. 새 열차 bypass는 도착 확정 발사에만 허용된다.
+  it('arvlCd=null 미확정 열차 3대를 60초 간격으로 관측해도 fallback 발사는 5분 게이트로 1회만 나간다', async () => {
+    const kv = new InMemoryKV(() => now);
+    let now = NOW;
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    let pool: readonly ArrivalEntry[] = [];
+    const seoul = makeControllableSeoul(() => pool);
+    const pushFetch = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
+    const log = vi.fn();
+    const fired: number[] = [];
+    for (const codes of [['U1'], ['U1', 'U2'], ['U2', 'U3'], ['U3']]) {
+      pool = codes.map((code) => arrival(code, false, null));
+      const stats = await tick(kv, seoul, pushFetch as unknown as ReturnType<typeof vi.fn>, now, log);
+      fired.push(stats.legBoardingPromptFired);
+      now += 60_000;
+    }
+    expect(fired).toEqual([1, 0, 0, 0]);
+    // 실패 사유: 5분 간격 게이트 (bypass 거부)
+    expect(
+      log.mock.calls.some(
+        ([message, meta]) =>
+          message === 'leg-boarding-prompt: gate blocked' &&
+          (meta as { reason?: string }).reason === 'fired-too-recently',
+      ),
+    ).toBe(true);
+  });
 });
+
