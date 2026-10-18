@@ -4,6 +4,7 @@ import { DISEMBARK_PROMPT_CATEGORY, resetApnsJwtCache, type ApnsConfig } from '.
 import { computeNextRetryAt, isRetryableApnsError } from '../apnsHost';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
 import { appendPositionPoint, type WindowedMetrics } from '../positionSeries';
+import { findStationCoordsByNameAndLine } from '../stationsLookup';
 import {
   ARVLCD_FIRE_DEDUP_TTL_SEC,
   ARVLCD_FIRE_ONCE_ENTERING_BUCKET,
@@ -13330,6 +13331,101 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
       expect(fetchImpl).not.toHaveBeenCalled();
       expect(stats.trackingOptInProximityMissingBlocked).toBe(1);
+    });
+
+    it('⑤ [#3036] 스냅샷 부재 + 신선·근접 series → series 단독으로 근접 인정, 발사된다', async () => {
+      // 10/18 저녁 실측 재현: device가 promptGeoContext를 등록에 싣지 못했지만(유실),
+      // POST /position은 성공해 series에 출발역 좌표의 신선 실측이 쌓인 상태. 기존 코드는
+      // `if (staticSnapshotPresent)` 안에서만 series를 읽어 이 실측을 완전히 무시했다 —
+      // trackingOptIn-only trip이 영구 차단되던 root (R2 8 cycle 재생으로 확정).
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const originName = '군자(능동)';
+      const trip = makeTrackingOptInOnlyTrip({
+        promptDisplay: { originStation: originName, line: '7' },
+        // promptGeoContext 없음 — 등록 유실 상태
+      });
+      const coords = findStationCoordsByNameAndLine(originName, '7');
+      expect(coords).not.toBeNull(); // 좌표 lookup 실패면 테스트 전제 자체가 무효
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: coords!.lat,
+        lng: coords!.lng,
+        accuracy: 10,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.trackingOptInProximityMissingBlocked).toBe(0);
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+
+    it('⑥ [#3036 거부] 스냅샷 부재 + series는 있으나 stale(10분 전) → 기존대로 fail-closed 차단', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const originName = '군자(능동)';
+      const trip = makeTrackingOptInOnlyTrip({
+        promptDisplay: { originStation: originName, line: '7' },
+      });
+      const coords = findStationCoordsByNameAndLine(originName, '7');
+      const kv = new InMemoryKV();
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: coords!.lat,
+        lng: coords!.lng,
+        accuracy: 10,
+        ts: NOW - 10 * 60 * 1000, // stale — 신선도 창(5분) 밖
+        motion: 'stationary',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.trackingOptInProximityMissingBlocked).toBe(1);
+    });
+
+    it('⑦ [#3036 거부] 스냅샷 부재 + 신선 series지만 출발역에서 멀다(수 km) → 차단 (series 단독 인정은 근접일 때만)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const originName = '군자(능동)';
+      const trip = makeTrackingOptInOnlyTrip({
+        promptDisplay: { originStation: originName, line: '7' },
+      });
+      const kv = new InMemoryKV();
+      // 좌표 (0,0) — 출발역에서 수천 km. 신선·고정확이어도 "근접"이 아니다.
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 10,
+        ts: NOW,
+        motion: 'stationary',
+      });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
     });
 
     it('③ trackingOptIn만 있는 trip + reading 있지만 멀다(5000m) → 발사되지 않는다(기존 거리 게이트 유지)', async () => {

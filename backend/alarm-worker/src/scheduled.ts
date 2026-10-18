@@ -8158,16 +8158,25 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   const originAccuracyM = geo?.originAccuracyM;
   const staticSnapshotPresent = originDistanceM !== undefined && originAccuracyM !== undefined;
 
+  // #3036 — series는 스냅샷 존재 여부와 무관하게 읽는다. 스냅샷은 등록 시점 1회 값이라
+  // 유실될 수 있고(10/18 저녁 실측 — 등록 geo 유실로 trackingOptIn trip이 영구 차단, R2
+  // 8 cycle 재생으로 확정), 살아있는 실측(positionSeries)이 죽은 스냅샷에 종속되면 안 된다.
+  const series = await readSeries(env.TRIPS, trip.token);
+  const newest = series.length > 0 ? series[series.length - 1] : undefined;
+  const seriesFresh = hasFreshOriginProximityCorroboration(
+    newest,
+    now,
+    DEVICE_SYNC_STALE_THRESHOLD_MS,
+    ACCURACY_CUTOFF_M,
+  );
+  // isNearOrigin 입력 — 스냅샷이 있으면 그 값(기존 동작 100% 불변), 스냅샷 부재 시에만
+  // series에서 파생(#3036 아래 분기).
+  let effOriginDistanceM = originDistanceM;
+  let effOriginAccuracyM = originAccuracyM;
+
   let hasProximityReading = false;
   if (staticSnapshotPresent) {
-    const series = await readSeries(env.TRIPS, trip.token);
-    const newest = series.length > 0 ? series[series.length - 1] : undefined;
-    hasProximityReading = hasFreshOriginProximityCorroboration(
-      newest,
-      now,
-      DEVICE_SYNC_STALE_THRESHOLD_MS,
-      ACCURACY_CUTOFF_M,
-    );
+    hasProximityReading = seriesFresh;
     if (!hasProximityReading) {
       stats.originGpsFreeSnapshotDistrusted += 1;
       log('origin-boarding-prompt-gps-free: distance snapshot distrusted (no fresh live GPS corroboration)', {
@@ -8177,6 +8186,28 @@ export async function maybeFireOriginBoardingPromptGpsFree(
         newestSeriesAgeMs: newest !== undefined ? now - newest.ts : null,
         newestSeriesAccuracyM: newest?.accuracy ?? null,
       });
+    }
+  } else if (!hasExplicitIntent && seriesFresh && newest !== undefined) {
+    // #3036 — 스냅샷 유실 + trackingOptIn-only: 신선 series 좌표 ↔ 출발역 좌표 거리로 근접을
+    // 직접 파생한다. 근접일 때만 인정(⑦ 거부 케이스 — 원거리 신선 series는 인정 안 함).
+    // 명시 의향 trip은 이 분기를 타지 않는다 — 스냅샷 부재 시 기존 fail-open(발사 허용,
+    // #2653 "함정 고정" 테스트 고정 동작)을 100% 보존하기 위함. 이 분기가 명시 의향에도
+    // 적용되면 "신선하지만 먼 series"가 기존 fail-open을 차단으로 뒤집는 동작 변경이 된다.
+    const originCoords = findStationCoordsByNameAndLine(display.originStation, display.line);
+    if (originCoords !== null) {
+      const derivedDistanceM =
+        haversineKm(newest.lat, newest.lng, originCoords.lat, originCoords.lng) * 1000;
+      if (isNearOrigin(derivedDistanceM, newest.accuracy)) {
+        hasProximityReading = true;
+        effOriginDistanceM = derivedDistanceM;
+        effOriginAccuracyM = newest.accuracy;
+        log('origin-boarding-prompt-gps-free: proximity derived from live series (snapshot absent, #3036)', {
+          token: trip.token.slice(0, 8),
+          derivedDistanceM: Math.round(derivedDistanceM),
+          seriesAccuracyM: newest.accuracy,
+          seriesAgeMs: now - newest.ts,
+        });
+      }
     }
   }
 
@@ -8198,8 +8229,11 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   const anchorFresh =
     trip.originProximityAt !== undefined &&
     !shouldStampOriginProximity(trip.originProximityAt, now);
+  // #3036 — eff*는 스냅샷 존재 시 스냅샷 값 그대로(기존 동작 불변), 스냅샷 부재 +
+  // series 파생 경로에서만 파생값. 파생 경로는 isNearOrigin 통과가 인정 조건이었으므로
+  // 여기서 다시 false가 될 수 없다(정의상 일관).
   const isTooFarFromOrigin =
-    hasProximityReading && !isNearOrigin(originDistanceM, originAccuracyM) && !anchorFresh;
+    hasProximityReading && !isNearOrigin(effOriginDistanceM, effOriginAccuracyM) && !anchorFresh;
   if (isTooFarFromOrigin) {
     const reason =
       trip.originProximityAt === undefined ? 'origin-too-far' : 'origin-too-far-stale-anchor';
