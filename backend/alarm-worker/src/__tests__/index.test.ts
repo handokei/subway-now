@@ -2044,6 +2044,67 @@ describe('Live Activity endpoints (#586 C)', () => {
   });
 });
 
+// #3042 — same-session merge(index.ts ~1324)가 backend-authoritative 필드(boardingPromptState 등)는
+// 전부 existing으로 명시 보존하는데 promptGeoContext/promptDisplay만 그 목록에서 빠져 `...incoming`으로
+// 흘러간다. 10/18 실측: device register effect의 cancelled 가드 부재로 같은 세션이 1초 내 2연발 등록될
+// 수 있고, "context 있는 발 → context 없는 발" 순서면 100% 소실한다. fix는 두 필드도 다른
+// backend-authoritative 필드와 같은 패턴(incoming에 있으면 incoming 채택 — 최신 우선 유지, 없으면
+// existing 보존)으로 맞춘다. 범위 제한: new-session(else) 분기는 변경하지 않는다 — 최초 등록이
+// context 없으면 비는 것이 맞고 그건 Tier1/2 heal + #3040 파생의 영역.
+describe('POST /trips — promptGeoContext/promptDisplay 보존 (same-session merge, #3042)', () => {
+  const CREATED = 1_700_000_000_000;
+  function tripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { ...base(), token: 'tok-3042', createdAt: CREATED, ...overrides };
+  }
+  const geoContext = {
+    origin: { lat: 37.1, lng: 127.1 },
+    nextStation: { lat: 37.2, lng: 127.2 },
+    direction: 'up' as const,
+  };
+  const display = { originStation: '군자(능동)', line: '7' };
+
+  it('① red — same-session 재등록 incoming에 context 없음 → existing context 보존돼야 한다', async () => {
+    const env = makeKvEnv();
+    // 1차: context 있는 등록
+    await post('/trips', tripBody({ promptGeoContext: geoContext, promptDisplay: display }), env);
+    // 2차: 같은 세션(createdAt 동일) re-register, incoming에는 context 없음 (device 2연발
+    // race의 context-null 후발 요청 재현)
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-3042')) as string);
+    expect(stored.promptGeoContext).toEqual(geoContext);
+    expect(stored.promptDisplay).toEqual(display);
+  });
+
+  it('② 거부 — incoming에 context 있으면 incoming을 채택한다(최신 우선 유지)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ promptGeoContext: geoContext, promptDisplay: display }), env);
+    const newerGeoContext = {
+      origin: { lat: 38.1, lng: 128.1 },
+      nextStation: { lat: 38.2, lng: 128.2 },
+      direction: 'down' as const,
+    };
+    const newerDisplay = { originStation: '중곡', line: '7' };
+    await post(
+      '/trips',
+      tripBody({ promptGeoContext: newerGeoContext, promptDisplay: newerDisplay }),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-3042')) as string);
+    expect(stored.promptGeoContext).toEqual(newerGeoContext);
+    expect(stored.promptDisplay).toEqual(newerDisplay);
+  });
+
+  it('③ 거부 — new-session(다른 createdAt) incoming에 context 없으면 비는 채로 저장된다(범위 제한 고정)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ promptGeoContext: geoContext, promptDisplay: display }), env);
+    // 다른 createdAt → !isSameSession → else 분기(...incoming만) — 이 fix의 범위 밖
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-3042')) as string);
+    expect(stored.promptGeoContext).toBeUndefined();
+    expect(stored.promptDisplay).toBeUndefined();
+  });
+});
+
 describe('POST /position (#819)', () => {
   it('valid payload → KV에 series append + 200', async () => {
     const env = makeKvEnv();
