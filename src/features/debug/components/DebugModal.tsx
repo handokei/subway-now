@@ -3675,9 +3675,15 @@ function DebugModalInner({
             colors={colors}
             testID="debug-cellular-tech-distribution"
           >
-            {computeCellularTechDistribution(rawSignalLog).map((line, idx) => (
+            {/*
+              key는 line 문자열 자체 — `computeCellularTechDistribution`의 각 줄은 techKey
+              (Map 키라 유니크) 1줄 + 선택적 `legacy(no field)` 1줄 + `total=` 1줄로 전부
+              서로 다르다. 종전 `key={idx}`는 목록이 재정렬될 때(정렬 기준이 count 내림차순이라
+              관측에 따라 순서가 바뀐다) 엉뚱한 행에 상태가 붙을 수 있었다.
+            */}
+            {computeCellularTechDistribution(rawSignalLog).map((line) => (
               <Text
-                key={idx}
+                key={line}
                 style={[typography.mono, { color: colors.ink }]}
                 selectable
                 testID="debug-cellular-tech-entry"

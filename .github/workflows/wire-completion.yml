@@ -49,8 +49,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      # `--ignore-scripts` — lint는 lifecycle script 산출물이 필요 없다. 선례: e2e.yml:32.
       - name: 의존성 설치
-        run: npm ci --legacy-peer-deps
+        run: npm ci --legacy-peer-deps --ignore-scripts
 
       - name: ESLint (디렉토리 경계 + import 룰)
         run: npm run lint
