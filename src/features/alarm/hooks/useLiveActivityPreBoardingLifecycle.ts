@@ -49,11 +49,13 @@ import * as LiveActivity from 'live-activity';
 import type { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
 import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
+import { getStationById, type Route } from '../../../shared/utils/stationRoute';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { clearStationNotification } from '../utils/stationNotification';
 import { startAmbientLiveActivityTokenRegistration } from '../utils/liveActivityPushChannel';
+import { resolveGpsFreeOrigin } from '../utils/gpsFreeOrigin';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('useLiveActivityPreBoardingLifecycle');
@@ -93,32 +95,65 @@ function buildPreBoardingLiveActivityData(
  * 전환 시 pre-boarding 배너를 "추적중" 안내로 갱신하기 위한 content. 질문형 문구는 이미 확정된
  * 상태에 어울리지 않아 alert 필드는 채우지 않는다(native가 boardingAutoLocked=true를 보고
  * 알림 없이 조용히 처리) — [아니에요] 탈출구만 유지.
+ *
+ * #2782 (요구 2) — origin이 null(GPS 무관 후보 전부 null)이어도 boardingPhase/boardingAutoLocked
+ * 버튼 필드는 생략하지 않는다. "어느 역인지 모름"과 "탑승을 물을 수 없음"은 다른 문제 — 역명은
+ * widget.detecting placeholder로, boardingPromptOriginStation/boardingPromptLine은 생략(undefined)
+ * 한다. Swift 위젯(`BoardingPromptButton`)은 두 필드 모두 `?? ""` 폴백을 이미 갖고 있어 버튼은
+ * phase만 보고 그대로 렌더된다(네이티브 변경 불필요, PR 본문 "요구 2 검토" 참조).
  */
 function buildAutoLockedPreBoardingLiveActivityData(
   destination: Station,
-  origin: Station,
+  origin: Station | null,
   tripToken: string | null,
 ): LiveActivity.LiveActivityData {
   const data: LiveActivity.LiveActivityData = {
-    stationName: getStationDisplayName(origin),
-    lineName: LINE_NAMES[origin.line],
-    lineColorHex: LINE_COLORS[origin.line],
+    stationName: origin ? getStationDisplayName(origin) : i18next.t('widget.detecting'),
+    lineName: origin ? LINE_NAMES[origin.line] : '',
+    lineColorHex: origin ? LINE_COLORS[origin.line] : PRE_BOARDING_UNKNOWN_LINE_COLOR_HEX,
     distanceM: 0,
     destinationName: getStationDisplayName(destination),
     boardingPhase: 'pre-boarding',
-    boardingPromptOriginStation: getStationDisplayName(origin),
-    boardingPromptLine: origin.line,
     boardingAutoLocked: true,
   };
+  if (origin) {
+    data.boardingPromptOriginStation = getStationDisplayName(origin);
+    data.boardingPromptLine = origin.line;
+  }
   if (tripToken) {
     data.boardingPromptTripToken = tripToken;
   }
   return data;
 }
 
-export function useLiveActivityPreBoardingLifecycle(): void {
+/**
+ * #2782 — origin 해석 결과의 출처(custom/lock/trip/none)를 관측용으로 라벨링한다.
+ * `resolveGpsFreeOrigin`은 `[customOrigin, boardingLockStation, tripOrigin]` 우선순위 순으로
+ * 첫 매치만 반환하므로, resolvedOrigin이 custom/lock 어느 쪽도 아니면 남은 유일한 가능성은
+ * tripOrigin이다(그 외 출처는 resolveGpsFreeOrigin이 만들어낼 수 없다) — 그래서 tripOrigin
+ * 자체를 인자로 받지 않아도 라벨링이 정확하다.
+ */
+function describeOriginSource(
+  customOrigin: Station | null,
+  boardingLockStation: Station | null,
+  resolvedOrigin: Station | null,
+): 'custom' | 'lock' | 'trip' | 'none' {
+  if (!resolvedOrigin) return 'none';
+  if (customOrigin && customOrigin.id === resolvedOrigin.id) return 'custom';
+  if (boardingLockStation && boardingLockStation.id === resolvedOrigin.id) return 'lock';
+  return 'trip';
+}
+
+/**
+ * #2782 — `route`는 호출자(HomeScreen)가 이미 계산해둔 값을 그대로 받는다(`useApnsTripRegistration`/
+ * `buildBoardingPromptContext`와 동일 패턴 — 이 훅은 GPS currentStation을 아예 보지 않으므로
+ * 자체적으로 route를 재계산할 입력이 없다). `resolveGpsFreeOrigin`의 R-3(route 밖 노선 후보
+ * 필터)에 필요.
+ */
+export function useLiveActivityPreBoardingLifecycle(route: Route): void {
   const destination = useDestinationStore((s) => s.destination);
   const tripOrigin = useDestinationStore((s) => s.tripOrigin);
+  const customOrigin = useDestinationStore((s) => s.customOrigin);
   const lock = useBoardingLockStore((s) => s.lock);
 
   // 이 훅이 직접 시작한 pre-boarding 세션인지 추적 — lock 전환/GPS 파이프라인이 소유하게 된
@@ -138,15 +173,30 @@ export function useLiveActivityPreBoardingLifecycle(): void {
       return;
     }
 
+    // #2782 — GPS 무관 origin 후보(우선순위: customOrigin > boardingLockStation > tripOrigin).
+    // 이 훅은 GPS currentStation을 보지 않으므로 1번 인자는 항상 null — R-2(currentStation 있으면
+    // 그대로 반환) 분기는 여기서 트리거되지 않고 항상 후보 체인이 평가된다. 등록 경로
+    // (`useApnsTripRegistration.ts`)·boarding-prompt context(`boardingPromptContext.ts`)와
+    // 동일 해석기·동일 후보 — 사본 금지(L21).
+    const boardingLockStation = lock ? getStationById(lock.boardingStationId) ?? null : null;
+    const resolvedOrigin = resolveGpsFreeOrigin(null, [customOrigin, boardingLockStation, tripOrigin], route);
+    const originSource = describeOriginSource(customOrigin, boardingLockStation, resolvedOrigin);
+    log.info(
+      `origin 해석: source=${originSource}${resolvedOrigin ? ` station=${resolvedOrigin.name}` : ''}`,
+    );
+
     if (lock) {
       // #2528 — 이 훅이 이미 pre-boarding 배너를 노출 중이었고, 그 lock이 사용자 명시 응답 없이
       // device evidence(`boardingEvidence`)로 자동 확정됐다면, 질문형 배너를 "추적중"으로 한 번
       // 더 갱신해 사용자 혼란("확정됐는데 왜 아직도 물어봐?")을 막는다. evidence 없는 auto-lock
       // (fallback 후보/boardingPrompt 응답)이나 사용자 tap 확정은 애초에 이 배너가 아닌 다른
       // 채널(BoardingTrainList/알림 응답)로 confirm된 것이라 재알림이 불필요 — 조용히 넘긴다.
-      if (preBoardingActiveRef.current && lock.boardingEvidence === true && tripOrigin) {
+      // #2782 (요구 2) — origin이 null이어도(GPS-free 후보 전부 미해소) boardingPhase/버튼은
+      // 유지한다(`&& tripOrigin` 가드 제거 — buildAutoLockedPreBoardingLiveActivityData가 null을
+      // placeholder로 흡수).
+      if (preBoardingActiveRef.current && lock.boardingEvidence === true) {
         const tripToken = getCurrentTripCorrIdSync();
-        const data = buildAutoLockedPreBoardingLiveActivityData(destination, tripOrigin, tripToken);
+        const data = buildAutoLockedPreBoardingLiveActivityData(destination, resolvedOrigin, tripToken);
         LiveActivity.updateLiveActivity(data).catch((e) => {
           log.warn('auto-locked pre-boarding LA 갱신 실패', e);
         });
@@ -158,7 +208,7 @@ export function useLiveActivityPreBoardingLifecycle(): void {
 
     if (!LiveActivity.isLiveActivityEnabled()) return;
 
-    const data = buildPreBoardingLiveActivityData(destination, tripOrigin);
+    const data = buildPreBoardingLiveActivityData(destination, resolvedOrigin);
     preBoardingActiveRef.current = true;
     // #2667 — 이 update가 native `start()`로 fall-through해 Activity를 만들면 push token이
     // emit된다. 구독이 없으면 그 token이 버려져 backend가 LA push를 영영 못 보낸다(실측
@@ -167,5 +217,5 @@ export function useLiveActivityPreBoardingLifecycle(): void {
     LiveActivity.updateLiveActivity(data).catch((e) => {
       log.warn('pre-boarding LA 갱신 실패', e);
     });
-  }, [destination, tripOrigin, lock]);
+  }, [destination, tripOrigin, customOrigin, lock, route]);
 }

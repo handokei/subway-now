@@ -6,6 +6,7 @@ import { Platform } from 'react-native';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
+import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
 const mockIsLiveActivityEnabled = jest.fn();
@@ -35,18 +36,30 @@ jest.mock('../../../observability/utils/tripCorrId', () => ({
 }));
 
 const mockWarn = jest.fn();
+const mockInfo = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
-    info: jest.fn(),
+    info: (...args: unknown[]) => mockInfo(...args),
     warn: (...args: unknown[]) => mockWarn(...args),
     error: jest.fn(),
   }),
 }));
 
+// #2782 — getStationById만 제어, isStationOnRoute 등 나머지는 실제 구현을 통과시킨다
+// (resolveGpsFreeOrigin의 R-3 route 필터 정확성을 그대로 검증하기 위함).
+const mockGetStationById = jest.fn<ReturnType<typeof import('../../../../shared/utils/stationRoute').getStationById>, [string]>();
+jest.mock('../../../../shared/utils/stationRoute', () => {
+  const actual = jest.requireActual('../../../../shared/utils/stationRoute');
+  return {
+    ...actual,
+    getStationById: (...args: [string]) => mockGetStationById(...args),
+  };
+});
+
 import { useLiveActivityPreBoardingLifecycle } from '../useLiveActivityPreBoardingLifecycle';
 
-const { gangnam, chungmuro } = MOCK_STATIONS;
+const { gangnam, chungmuro, hyochang } = MOCK_STATIONS;
 
 const LOCK: BoardingLock = {
   trainCode: 'T001',
@@ -64,19 +77,21 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     mockIsLiveActivityEnabled.mockReturnValue(true);
     mockUpdateLiveActivity.mockResolvedValue(undefined);
     mockClearStationNotification.mockResolvedValue(undefined);
-    useDestinationStore.setState({ destination: null, tripOrigin: null });
+    // 기본값: lock.boardingStationId로 resolve 안 됨(미기재 테스트는 tripOrigin fallback으로 귀결).
+    mockGetStationById.mockReturnValue(undefined);
+    useDestinationStore.setState({ destination: null, tripOrigin: null, customOrigin: null });
     useBoardingLockStore.setState({ lock: null });
   });
 
   it('destination 없음 + lock 없음 → 아무 것도 하지 않는다', () => {
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    renderHook(() => useLiveActivityPreBoardingLifecycle(null));
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     expect(mockClearStationNotification).not.toHaveBeenCalled();
   });
 
   it('destination 설정(lock 없음) → #2854 평범한 추적 content만 update(boardingPhase 미설정 — 유령 배너 제거)', () => {
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(null));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     const data = mockUpdateLiveActivity.mock.calls[0][0];
     expect(data.boardingPhase).toBeUndefined();
@@ -87,8 +102,8 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
   });
 
   it('tripOrigin 확보돼도 #2854 — boardingPhase 미설정이므로 #2434 버튼 컨텍스트 필드도 싣지 않는다', () => {
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     const data = mockUpdateLiveActivity.mock.calls[0][0];
     expect(data.stationName).toBe(gangnam.name);
     expect(data.lineColorHex).toBe(gangnam.lineColor);
@@ -101,30 +116,30 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
 
   it('#2854 — tripToken이 있어도 시작 시 content엔 boardingPromptTripToken을 싣지 않는다(phase 없는 content는 버튼 컨텍스트 무의미)', () => {
     mockGetCurrentTripCorrIdSync.mockReturnValue('corr-123');
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(null));
     const data = mockUpdateLiveActivity.mock.calls[0][0];
     expect(data.boardingPromptTripToken).toBeUndefined();
   });
 
   it('이미 GPS 경로로 LA가 떠 있어도(활성 세션 판단 불가) 이 훅은 native update만 호출한다 — start 이중 호출 없음', () => {
     // ensureLiveActivityRegistered/startLiveActivity 경로를 타지 않는지 — updateLiveActivity만 호출됐는지 검증.
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
   });
 
   it('lock 생성됨 → 콘텐츠 소유권을 넘기고 이 훅은 native 호출을 하지 않는다', () => {
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
     useBoardingLockStore.setState({ lock: LOCK });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     expect(mockClearStationNotification).not.toHaveBeenCalled();
   });
 
   it('pre-boarding 세션을 스스로 시작한 뒤 lock이 생성되고, 이후 destination이 해제돼도 종료 호출을 하지 않는다(GPS 파이프라인 책임)', () => {
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
 
     act(() => {
@@ -133,7 +148,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     rerender({});
 
     act(() => {
-      useDestinationStore.setState({ destination: null, tripOrigin: null });
+      useDestinationStore.setState({ destination: null, tripOrigin: null, customOrigin: null });
     });
     rerender({});
 
@@ -141,12 +156,12 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
   });
 
   it('스스로 시작한 pre-boarding 세션 중 destination이 해제되면 clearStationNotification으로 종료', () => {
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
 
     act(() => {
-      useDestinationStore.setState({ destination: null, tripOrigin: null });
+      useDestinationStore.setState({ destination: null, tripOrigin: null, customOrigin: null });
     });
     rerender({});
 
@@ -155,8 +170,8 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
 
   it('#2528 — evidence 있는 lock으로 전환 시 추적중(auto-locked) 배너로 한 번 더 update한다', () => {
     mockGetCurrentTripCorrIdSync.mockReturnValue('corr-999');
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
 
     act(() => {
@@ -174,8 +189,8 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
 
   it('#2528 — tripToken 없이 evidence 있는 lock으로 전환되면 boardingPromptTripToken 없이 추적중 배너를 갱신한다', () => {
     mockGetCurrentTripCorrIdSync.mockReturnValue(null);
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
 
     act(() => {
@@ -189,8 +204,8 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
   });
 
   it('#2528 — evidence 없는(사용자 tap/응답) lock으로 전환되면 추가 update 없이 조용히 소유권만 넘긴다', () => {
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
 
     act(() => {
@@ -202,8 +217,8 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
   });
 
   it('#2528 — auto-locked LA 갱신이 throw하면 logger.warn으로 흡수', async () => {
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     mockUpdateLiveActivity.mockRejectedValueOnce(new Error('auto-lock update fail'));
 
     act(() => {
@@ -219,23 +234,23 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
   it('Android — 아무 것도 하지 않는다', () => {
     const originalOS = Platform.OS;
     Object.defineProperty(Platform, 'OS', { get: () => 'android' });
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     Object.defineProperty(Platform, 'OS', { get: () => originalOS });
   });
 
   it('Live Activity 비활성이면 update를 호출하지 않는다', () => {
     mockIsLiveActivityEnabled.mockReturnValue(false);
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(null));
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
   });
 
   it('updateLiveActivity가 throw하면 logger.warn으로 흡수', async () => {
     mockUpdateLiveActivity.mockRejectedValueOnce(new Error('native fail'));
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null });
-    renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(null));
     await Promise.resolve();
     await Promise.resolve();
     expect(mockWarn).toHaveBeenCalledWith('pre-boarding LA 갱신 실패', expect.any(Error));
@@ -243,14 +258,82 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
 
   it('clearStationNotification이 throw하면 logger.warn으로 흡수', async () => {
     mockClearStationNotification.mockRejectedValueOnce(new Error('end fail'));
-    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam });
-    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle());
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
     act(() => {
-      useDestinationStore.setState({ destination: null, tripOrigin: null });
+      useDestinationStore.setState({ destination: null, tripOrigin: null, customOrigin: null });
     });
     rerender({});
     await Promise.resolve();
     await Promise.resolve();
     expect(mockWarn).toHaveBeenCalledWith('pre-boarding LA 종료 실패', expect.any(Error));
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // #2782 — resolveGpsFreeOrigin 연결 (갱신된 요구사항 1~3)
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('(#2782 red①) tripOrigin=null + customOrigin=hyochang → resolveGpsFreeOrigin으로 customOrigin이 pre-boarding 표시에 반영된다', () => {
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: hyochang });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(3, hyochang.line)));
+
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    const data = mockUpdateLiveActivity.mock.calls[0][0];
+    expect(data.stationName).toBe(hyochang.name);
+    expect(data.lineColorHex).toBe(hyochang.lineColor);
+    expect(mockInfo).toHaveBeenCalledWith(expect.stringContaining('source=custom'));
+  });
+
+  it('(#2782) customOrigin이 route 밖 노선이면(R-3) 건너뛰고 다음 후보(tripOrigin)로 fallback한다', () => {
+    // customOrigin(hyochang, line 6)은 route(line 2)에 없어 걸러지고, tripOrigin(gangnam, line 2)이 채택된다.
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: hyochang });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+
+    const data = mockUpdateLiveActivity.mock.calls[0][0];
+    expect(data.stationName).toBe(gangnam.name);
+    expect(mockInfo).toHaveBeenCalledWith(expect.stringContaining('source=trip'));
+  });
+
+  it('(#2782) boardingLockStation이 resolve되면(customOrigin 없음) lock 후보가 tripOrigin보다 우선한다', () => {
+    mockGetStationById.mockImplementation((id: string) => (id === LOCK.boardingStationId ? gangnam : undefined));
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: null });
+    useBoardingLockStore.setState({ lock: LOCK });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+
+    // lock이 이미 활성이라 이 훅 자체는 콘텐츠를 발사하지 않지만(소유권 이전), 해석 로그는 남는다.
+    expect(mockInfo).toHaveBeenCalledWith(expect.stringContaining('source=lock'));
+  });
+
+  it('(#2782 거부) tripOrigin만 있을 때는 기존 동작 100% 불변(R-2 동형) — customOrigin/lock 후보가 없어도 동일 결과', () => {
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+    renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+
+    const data = mockUpdateLiveActivity.mock.calls[0][0];
+    expect(data.stationName).toBe(gangnam.name);
+    expect(data.lineName).toBeTruthy();
+    expect(data.lineColorHex).toBe(gangnam.lineColor);
+  });
+
+  it('(#2782 red②) 후보 전부 null(route도 없음)이어도 auto-locked 전환 시 boardingPhase/boardingAutoLocked 버튼 필드는 유지된다', () => {
+    useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: null });
+    const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(null));
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    const initial = mockUpdateLiveActivity.mock.calls[0][0];
+    // 요구 2 — "어느 역인지 모름"은 widget.detecting 표시로 유지.
+    expect(initial.stationName).toBe('감지 중');
+
+    act(() => {
+      useBoardingLockStore.setState({ lock: LOCK }); // LOCK.boardingEvidence === true
+    });
+    rerender({});
+
+    expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
+    const autoLockedData = mockUpdateLiveActivity.mock.calls[1][0];
+    expect(autoLockedData.boardingPhase).toBe('pre-boarding');
+    expect(autoLockedData.boardingAutoLocked).toBe(true);
+    expect(autoLockedData.boardingPromptOriginStation).toBeUndefined();
+    expect(autoLockedData.boardingPromptLine).toBeUndefined();
+    expect(autoLockedData.stationName).toBe('감지 중');
+    expect(mockInfo).toHaveBeenLastCalledWith(expect.stringContaining('source=none'));
   });
 });
