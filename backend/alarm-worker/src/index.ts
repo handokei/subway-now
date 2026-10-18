@@ -2454,7 +2454,7 @@ function markBoardingPromptResponded(trip: Trip): Trip {
  *     `boardingPromptState`를 `markPromptSilenced`로 갱신해 5분 재발사를 차단한다. 락 생성 없음.
  *
  * Response 200: `{ ok: true, lockState: 'leg1' | 'leg2' | 'released' | 'none',
- *   resolvedTrainCode?: string, resolvedLine?: string, resolveTier?: 'assertion-departed' }` — 후자 셋은 #3055
+ *   resolvedTrainCode?: string, resolveTier?: 'assertion-departed' }` — 후자 둘은 #3055
  *   (`buildBoardingConfirmResolution` 주석이 포함 조건·`resolveTier` 부재 계약을 정의).
  * Response 404: `{ error: 'trip_not_found' }`
  * Response 400: `{ error: 'invalid_json' | 'invalid_payload' | 'missing_token' }`
@@ -2814,7 +2814,7 @@ function buildBoardingConfirmResolution(
   keptLockReason: LegLockReleaseReason | undefined,
   resolveTier: BoardingResolveTier | undefined,
   tapLine: string,
-): { resolvedTrainCode?: string; resolvedLine?: string; resolveTier?: BoardingResolveTier } {
+): { resolvedTrainCode?: string; resolveTier?: BoardingResolveTier } {
   if (action !== 'boarded' || lock === undefined) return {};
   if (keptLockReason !== undefined) {
     if (!KEPT_LOCK_ECHO_ALLOWED[keptLockReason]) return {};
@@ -2822,11 +2822,9 @@ function buildBoardingConfirmResolution(
     // 부류). 탭의 노선과 다른 노선의 lock이면 echo하지 않는다(device PENDING 동결).
     if (lock.line !== tapLine) return {};
   }
-  const { trainCode, line } = lock;
+  const { trainCode } = lock;
   return {
     resolvedTrainCode: trainCode,
-    // 방어 심층: device가 PENDING.boardingLine과 대조해 불일치 시 교체를 거부한다.
-    resolvedLine: line,
     ...(resolveTier !== undefined ? { resolveTier } : {}),
   };
 }

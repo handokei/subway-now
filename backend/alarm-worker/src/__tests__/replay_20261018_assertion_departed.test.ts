@@ -395,12 +395,11 @@ describe('#3056 ⓙ 등뼈(#3041 S-C 세그먼트) — HTTP boarding-confirm "�
 
   it('LA 버튼 모양(trainCode 미동봉) 응답 → live 재조회가 탭 시각에 방금 떠난 7325를 lock', async () => {
     expect(await confirmAndGetLock('s-c-3056-la', {})).toBe(DEPARTED_TRAIN);
-    // #3055 — 같은 실측 탭의 응답 body가 device 승격의 입력이다(resolvedTrainCode/resolvedLine/resolveTier).
+    // #3055 — 같은 실측 탭의 응답 body가 device 승격의 입력이다(resolvedTrainCode/resolveTier).
     expect(lastResponseBody).toEqual({
       ok: true,
       lockState: 'leg1',
       resolvedTrainCode: DEPARTED_TRAIN,
-      resolvedLine: '7',
       resolveTier: 'assertion-departed',
     });
   }, 60_000);
