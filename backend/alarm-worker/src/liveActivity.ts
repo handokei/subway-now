@@ -27,6 +27,7 @@ import {
 } from './apns';
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { extractOriginStation, recordTripMetrics } from './d1TripMetrics';
+import { readDeviceContact } from './deviceContact';
 import { t } from './i18n';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
@@ -512,6 +513,14 @@ function tripEndedAlertDedupKey(tripToken: string, createdAt: number): string {
  * 종료시켰는지 구분 불가능했다(10/7 조기종료 재현 불가, PR #2890). 값이 있으면 D1
  * `trip_events`(kind='trip-end') meta에 그대로 싣는다 — 발사/cleanup 로직에는 관여하지 않는다.
  * 생략 시(과도기 호출처) meta에 필드 자체를 싣지 않아 기존 row 형태 불변.
+ *
+ * #3023 요구 2번 (진단 계측 only) — 종료 사유(`metricsReason ?? reason ?? 'user-delete'`)가
+ * `'expired'`일 때만 meta에 `expiresAt`/`createdAt`/`lastSyncAt`/`ageMs`/`hadLock`을 추가로
+ * 싣는다. 10/15 RCA가 `reason=expired`까지만 보고 "왜 그 시점에 만료됐는지" 판정할 입력이 없어
+ * 막혔던 지점을 메운다. `lastSyncAt`은 Trip에 전용 필드가 없어 가장 가까운 대체인
+ * `deviceContact.ts`의 `readDeviceContact`(KV `deviceContact:{tokenHash}`, `/position`·
+ * `/boarding-lock/sync` FG 접촉 stamp, TTL 10분)를 쓴다 — 10분 이상 침묵했으면 null이 남는다.
+ * 발사/판정 로직에는 관여하지 않으며, 수집 실패는 graceful(로그만, cleanup 흐름 차단 없음).
  */
 export async function cleanupTripWithLa(
   trip: Trip,
@@ -584,13 +593,36 @@ export async function cleanupTripWithLa(
   await recordTripMetrics(env.DB, trip, metricsReason ?? reason, now);
   // #2283 — D1 append-only 관측. KV trip 객체(위 deleteTrip)가 삭제된 후에도 trip-end 이벤트는
   // 독립 보존된다 — trip_metrics(집계 스냅샷)와 달리 trip_events는 타임라인 재구성이 목적.
+  const effectiveReason = metricsReason ?? reason ?? 'user-delete';
+  const tokenHash = hashTripToken(trip.token);
+  // #3023 요구 2번 — 만료 종료일 때만 진단 필드 수집. KV read 실패(TTL 외 장애 포함)는
+  // graceful — cleanup 흐름을 차단하지 않고 필드 자체를 생략한다(위 헤더 주석).
+  let expiryDiagnostics: Record<string, unknown> | undefined;
+  if (effectiveReason === 'expired') {
+    try {
+      const lastSyncAt = await readDeviceContact(env.TRIPS, tokenHash);
+      expiryDiagnostics = {
+        expiresAt: trip.expiresAt,
+        createdAt: trip.createdAt,
+        lastSyncAt,
+        ageMs: now - trip.createdAt,
+        hadLock: trip.boardingLock !== undefined || trip.lockEverAttached === true,
+      };
+    } catch (e) {
+      log('expiry diagnostics collection failed', {
+        token: trip.token.slice(0, 8),
+        error: String(e),
+      });
+    }
+  }
   await recordTripEvent(env.DB, {
-    tokenHash: hashTripToken(trip.token),
+    tokenHash,
     kind: 'trip-end',
     station: trip.destination ?? undefined,
     meta: {
-      reason: metricsReason ?? reason ?? 'user-delete',
+      reason: effectiveReason,
       ...(endPath !== undefined ? { endPath } : {}),
+      ...(expiryDiagnostics ?? {}),
     },
   });
 }
