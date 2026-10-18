@@ -24,7 +24,7 @@
 | trips.ts:472 | 한계 | register-lock 큐는 같은 isolate 내만 직렬화 — cross-isolate 무방비(DO 미도입) | 없음(구조) |
 | trips.ts:39-53 | 함정 | cron read cacheTtl 30s = KV 최소값 — putTrip 직후 read stale 창 구조적 존재. lock만 read-after-write 보호. boarding-prompt(leg-1 GPS-free/leg-2/GPS 9단 3경로 전부, #2838)·hop-end(#2672)는 trip 객체 무관 독립 fire-once KV 마커로 방어됨. 그 외 SSoT 마커는 여전히 무방비 | 부분(boarding-prompt만, boardingPromptFireOnce.test.ts) |
 | index.ts:289 | 불변식 | cron은 allowLegTransfer 없이 호출 — leg-2 조용한 승격 금지(answer-driven) | 있음 |
-| index.ts:1196 | 불변식 | POST /position에서 마커 stamp 금지(#2450 throttle 보호) | **없음** |
+| index.ts:1389 | 불변식 | POST /position에서 **마커**(`markTripRegistered` 등 관측 신호) stamp 금지(#2450 throttle 보호) — **TTL(수명) 연장과는 다른 축**: #3047이 `extendTripExpiryViaPosition`(index.ts, `stampOriginProximityIfNeeded` 다음 정의)으로 /position에서도 조건부(잔여 TTL<`TRIP_ACTIVITY_MIN_REMAINING_MS`) 1회 putTrip을 허용했다 — BG-only 라이드(화면 꺼짐)의 유일 채널이 sliding TTL 연장에서 빠져있던 미보호를 해소. 마커 무조건 stamp 금지는 여전히 유효, TTL 조건부 연장만 예외 | 있음(positionTtlExtension.test.ts 쿼터 산술 케이스) |
 | index.ts:2864 | 함정 | KV read-modify-write는 CAS 없음 — 동시 갱신 stale 덮어쓰기 race 창 | 없음(구조) |
 | tripPositionSsot.ts:186 | 불변식 | 이 모듈은 lock 승격 절대 안 함 — device useLockSuggestion만 소비 | 부분 |
 | boardingAnchorResolver.ts:36 | 불변식 | 틀린 열차 lock 절대 금지 — 이 모듈의 존재 이유 | 부분 |
