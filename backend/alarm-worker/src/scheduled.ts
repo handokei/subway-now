@@ -933,6 +933,20 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   trackingOptInNoBoardingEvidenceBlocked: number;
   /**
+   * #3038 — 등록 race(1초 간격 2연발, context-null인 쪽이 last-write)로 `trip.promptDisplay`가
+   * 유실됐지만 `maybeFireOriginBoardingPromptGpsFree`가 `originStationName`(#2280 SSoT 출발역)
+   * + `waypoints[0].line`으로 display를 파생해 평가를 진행한 누적 횟수. 신규 데이터 아님 —
+   * 등록이 이미 저장한 값의 재사용. 이 카운터가 오르는 것은 과거엔 무카운터 silent return으로
+   * 완전 침묵했을 trip이 관측 가능하게 복구됐다는 증거다.
+   */
+  originGpsFreeDisplayDerived: number;
+  /**
+   * #3038 — 위 파생 시도가 실패한(`originStationName` 또는 `waypoints[0]` 둘 중 하나라도
+   * 없어 display를 만들 재료가 없는) 누적 횟수. 이 경우 기존처럼 평가를 skip하지만, 이전과
+   * 달리 무카운터가 아니다 — "같은 침묵이 다시 발생 중"을 1주 측정에서 구분하기 위함.
+   */
+  originGpsFreeDisplayDerivationFailed: number;
+  /**
    * #2323 rework (break #1) — lockless leg-1이 kind:'transfer' waypoint를 arvlCd(ENTERING/ARRIVED)
    * ground truth로 통과(anchor stamp + hop-end prompt + waypoint slice)한 누적 횟수. 종전에는
    * `runLocklessIntermediate`/`tryFireConsensusTrainLeg` 둘 다 kind==='intermediate'에만 반응해
@@ -1505,6 +1519,8 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     originGpsFreeSnapshotDistrusted: 0,
     trackingOptInProximityMissingBlocked: 0,
     trackingOptInNoBoardingEvidenceBlocked: 0,
+    originGpsFreeDisplayDerived: 0,
+    originGpsFreeDisplayDerivationFailed: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -8094,8 +8110,33 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   // leg-2(환승 후)는 `maybeFireLegBoardingPrompt` 전담 — 이 함수는 leg-1(origin) 전용.
   if (trip.currentLegAnchor) return;
 
-  const display = trip.promptDisplay;
-  if (!display) return;
+  // #3038 — 등록 race(1초 간격 2연발, context-null인 쪽이 last-write)로 `promptDisplay`가
+  // 유실돼도 trip에는 이미 `originStationName`(#2280 SSoT 출발역) + `waypoints[0].line`이
+  // 저장돼 있다 — 신규 데이터 아님, 등록이 저장한 값의 재사용. 둘 다 있으면 파생해 평가를
+  // 계속하고, 하나라도 없으면 기존처럼 skip하되 카운터를 남긴다(이 게이트가 다른 모든
+  // 게이트처럼 관측 가능해야 한다 — 과거엔 `if (!display) return`이 무카운터 silent
+  // return이었다, 10/18 18:37 실라이드 R2 8cycle 재생으로 확정).
+  let display = trip.promptDisplay;
+  if (!display) {
+    const derivedOriginStation = trip.originStationName;
+    const derivedLine = trip.waypoints[0]?.line;
+    if (derivedOriginStation === undefined || derivedLine === undefined) {
+      stats.originGpsFreeDisplayDerivationFailed += 1;
+      log('origin-boarding-prompt-gps-free: display derivation failed (no originStationName/waypoint)', {
+        token: trip.token.slice(0, 8),
+        hasOriginStationName: derivedOriginStation !== undefined,
+        hasWaypoint: derivedLine !== undefined,
+      });
+      return;
+    }
+    display = { originStation: derivedOriginStation, line: derivedLine };
+    stats.originGpsFreeDisplayDerived += 1;
+    log('origin-boarding-prompt-gps-free: display derived from originStationName+waypoint (#3038)', {
+      token: trip.token.slice(0, 8),
+      originStation: derivedOriginStation,
+      line: derivedLine,
+    });
+  }
 
   // #2651 — boarding-prompt opt-in(안내 시작) trip만 대상. infoModeEnabled(응답/직접 탭 stamp)는
   // "매역 통과 알림" 대상 판정이라 목적이 다르다 — 안내 시작만 하고 아직 응답 전인 trip도
