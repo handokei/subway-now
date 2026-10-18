@@ -81,6 +81,7 @@ import {
   wasBoardingPromptDisplayed,
 } from './useBoardingPromptDisplayLogger';
 import { handleAlarmEndTripResponse } from './useAlarmEndTripResponder';
+import { promotePendingLockFromConfirm } from '../utils/promotePendingLockFromConfirm';
 
 const log = createLogger('boardingPromptResponder');
 
@@ -316,17 +317,19 @@ export async function handleResponse(
     // trainCode 없이 forward — 로컬 lock과 backend lock이 같은 값을 보게 된다(RCA 9/11·9/21·10/7).
     const forwardTrainCode = reconfirmedTrainCode ?? payload.trainCode;
     try {
-      if (forwardTrainCode !== undefined) {
-        await postBoardingConfirm(
-          payload.tripToken,
-          'boarded',
-          payload.originStation,
-          payload.line,
-          forwardTrainCode,
-        );
-      } else {
-        await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
-      }
+      const confirmResult =
+        forwardTrainCode !== undefined
+          ? await postBoardingConfirm(
+              payload.tripToken,
+              'boarded',
+              payload.originStation,
+              payload.line,
+              forwardTrainCode,
+            )
+          : await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
+      // #3055 C — backend가 탭 시각 기준으로 해소한 열차를 응답으로 받아 PENDING lock을 교체한다
+      // (device 자신의 표명에 대한 권위적 회신). 실 lock/lock 부재/응답 없음은 no-op.
+      await promotePendingLockFromConfirm(confirmResult, deps.createLock);
     } catch (err) {
       log.warn('boarding-confirm forward failed — non-critical', err as Error);
     }

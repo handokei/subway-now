@@ -2453,7 +2453,9 @@ function markBoardingPromptResponded(trip: Trip): Trip {
  *   - `not-boarded` — `POST /boarding-prompt/dismiss`와 완전히 동일한 의미(재현) —
  *     `boardingPromptState`를 `markPromptSilenced`로 갱신해 5분 재발사를 차단한다. 락 생성 없음.
  *
- * Response 200: `{ ok: true, lockState: 'leg1' | 'leg2' | 'released' | 'none' }`
+ * Response 200: `{ ok: true, lockState: 'leg1' | 'leg2' | 'released' | 'none',
+ *   resolvedTrainCode?: string, resolveTier?: 'assertion-departed' }` — 후자 둘은 #3055
+ *   (`buildBoardingConfirmResolution` 주석이 포함 조건·`resolveTier` 부재 계약을 정의).
  * Response 404: `{ error: 'trip_not_found' }`
  * Response 400: `{ error: 'invalid_json' | 'invalid_payload' | 'missing_token' }`
  */
@@ -2489,6 +2491,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // body(device가 탭한 알림)인지 stamp(backend 마지막 발사 기록)인지 D1 meta에 남긴다. 둘 다
   // 일어나지 않은 경로(live 재해소/이미 active lock/disembarked 등)는 undefined로 생략.
   let trainCodeSource: 'body' | 'stamp' | undefined;
+  // #3055 B — 기존 lock을 release하지 않고 유지한 판정 사유(`decideLegLockReleaseForBoardedTap`).
+  // 응답에 기존 lock의 trainCode를 실어도 되는지(`buildBoardingConfirmResolution`) 가르는 입력이다.
+  // lock이 없었거나 이번 요청이 release했으면 undefined.
+  let keptLockReason: LegLockReleaseReason | undefined;
   let working: Trip = existing;
   // #2920 — destinationConfirmPendingSince 유예 trip의 즉시 종료 분기(아래 'disembarked')가
   // completeWaypointAdvance로 trip을 이미 KV에서 삭제했을 때 true. 공통 경로의 putTrip이
@@ -2518,6 +2524,8 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       if (releaseDecision.release) {
         working = { ...working, boardingLock: undefined };
         releasedForLegSwitch = true;
+      } else {
+        keptLockReason = releaseDecision.reason;
       }
     }
     // #1729 — 이미 active lock이 있으면 재평가하지 않는다(register-time과 동일 가드). #2957이
@@ -2751,8 +2759,53 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       resolveTier,
     ),
   });
-  return c.json({ ok: true, lockState });
+  return c.json({
+    ok: true,
+    lockState,
+    ...buildBoardingConfirmResolution(payload.action, working.boardingLock, keptLockReason, resolveTier),
+  });
 });
+
+/**
+ * 기존 lock을 유지한 채 응답하는 경우 중 그 lock이 **이번 탭의 leg 것이 아닐 수 있는** 사유.
+ * `route-changed`/`stale-leg-stamp`만 이전 leg의 stale lock이 남은 상태일 수 있다(release 판정이
+ * 거부한 이유 자체가 "stamp/route가 현재 leg와 어긋남"). `no-anchor`(leg-1 컨텍스트)와
+ * `already-correct-leg`(현재 leg에 정확히 부착됨)는 기존 lock이 이번 탭의 leg 것이다.
+ */
+const STALE_LEG_KEPT_REASONS: readonly LegLockReleaseReason[] = ['route-changed', 'stale-leg-stamp'];
+
+/**
+ * #3055 B — boarding-confirm 응답의 해소 결과 필드(`resolvedTrainCode`, `resolveTier`).
+ *
+ * device가 자신의 탑승 표명에 대한 **권위적 회신**으로 소비해 PENDING lock을 실 열차로 교체한다
+ * (invariants: lockSuggestion 채널은 관찰 유래·polling, 이 응답은 표명 유래 — 별개 채널).
+ *
+ * `resolvedTrainCode` 포함 조건 = action이 'boarded' AND 응답 시점 lock이 존재 AND 그 lock이
+ * 이번 탭의 leg 것임이 보장될 때:
+ *   - 이번 요청이 만든 lock(live resolve · body/stamp 승격): `keptLockReason`이 undefined — 구성상 현재 leg.
+ *   - 기존 lock 유지: `keptLockReason`이 STALE_LEG_KEPT_REASONS에 속하지 **않을 때만**.
+ *     (stale일 수 있는 lock을 실어 보내면 device가 이전 leg 열차로 PENDING을 오승격한다 — 동결이 안전.)
+ * lock이 끝내 없으면(none/ambiguous/release 후 미재생성) 두 필드 모두 생략.
+ *
+ * `resolveTier` 계약: **부재 = 일반 tier**(ARRIVED/APPROACHING 등 기존 tier). 유일한 값은
+ * `'assertion-departed'`(`boardingAnchorResolver.ts` `BoardingResolveTier`). tier는 live resolve
+ * 응답에만 실린다 — body/stamp 승격·기존-lock 분기 응답에는 해소 tier 개념이 없어 생략된다
+ * (D1 오수용 감시가 live resolve 건에만 해당하는 이유).
+ */
+function buildBoardingConfirmResolution(
+  action: 'boarded' | 'disembarked' | 'not-boarded',
+  lock: Trip['boardingLock'],
+  keptLockReason: LegLockReleaseReason | undefined,
+  resolveTier: BoardingResolveTier | undefined,
+): { resolvedTrainCode?: string; resolveTier?: BoardingResolveTier } {
+  if (action !== 'boarded' || lock === undefined) return {};
+  if (keptLockReason !== undefined && STALE_LEG_KEPT_REASONS.includes(keptLockReason)) return {};
+  const { trainCode } = lock;
+  return {
+    resolvedTrainCode: trainCode,
+    ...(resolveTier !== undefined ? { resolveTier } : {}),
+  };
+}
 
 /**
  * ADR-037 D2b (#2535, 진단 계측 only) — `boarding-confirm-result` D1 이벤트 meta 빌더(순수 함수,

@@ -222,6 +222,27 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
     expect(postBoardingConfirmMock).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', 'T1');
   });
 
+  // ⓖ 상호작용(스펙 선언): PENDING 상태에서 브릿지 재진입(LA 버튼 → FG)하면 `tryAutoLock`이 PENDING을
+  // **재생성**해 boardedAt이 갱신된다(createPendingFallbackLock 불변). U1 보존 규칙은 "응답 시점의
+  // PENDING이 가진 boardedAt을 유지"이므로 최종 boardedAt = 마지막 표명 시각(두 표명 모두 5분 stale
+  // 게이트 안의 사용자 명시 표명). 이 동작을 고정한다 — 의도 변경 시 이 테스트가 먼저 깨진다.
+  it('ⓖ 재진입으로 PENDING이 재생성된 뒤 승격 → boardedAt은 마지막 표명 시각(선언된 동작)', async () => {
+    const nowSpy = jest.spyOn(Date, 'now');
+    postBoardingConfirmMock.mockResolvedValueOnce({ ok: true, status: 200 }); // 1차: 미해소
+    nowSpy.mockReturnValue(1_700_000_000_000);
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps());
+    expect(useBoardingLockStore.getState().lock?.boardedAt).toBe(1_700_000_000_000);
+
+    postBoardingConfirmMock.mockResolvedValueOnce({ ok: true, status: 200, resolvedTrainCode: '7325' });
+    nowSpy.mockReturnValue(1_700_000_120_000);
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps());
+    nowSpy.mockRestore();
+
+    expect(useBoardingLockStore.getState().lock).toEqual(
+      expect.objectContaining({ trainCode: '7325', boardedAt: 1_700_000_120_000 }),
+    );
+  });
+
   it('postBoardingConfirm이 undefined를 돌려줘도(mock/예외 경로) throw 없이 PENDING 유지', async () => {
     postBoardingConfirmMock.mockResolvedValue(undefined);
     await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps())).resolves.toBeUndefined();

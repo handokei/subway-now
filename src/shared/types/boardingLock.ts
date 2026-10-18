@@ -1,6 +1,14 @@
 import type { LineNumber } from './station';
 
 /**
+ * backend `BoardingResolveTier`(`boardingAnchorResolver.ts`)의 device 미러 — boarding-confirm
+ * 응답의 `resolveTier` 검증용. **부재 = 일반 tier**(ARRIVED/APPROACHING 등 기존 해소)이고
+ * 여기 나열된 값만 "최후 tier로 수용된 건"을 뜻한다(오수용률 D1 backfill 라벨과 동일 어휘).
+ */
+export const BOARDING_RESOLVE_TIERS = ['assertion-departed'] as const;
+export type BoardingResolveTier = (typeof BOARDING_RESOLVE_TIERS)[number];
+
+/**
  * BoardingLock — 사용자가 명시적으로 탑승한 열차/노선/시각을 확정 (#584).
  *
  * GPS 추정의 본질적 부정확성을 보완: 환승역에서 어느 노선/방향인지 불명확한 문제를
@@ -66,6 +74,11 @@ export interface BoardingLock {
    * graceful하게 처리된다.
    */
   boardingEvidence?: boolean;
+  /**
+   * #3055 C — PENDING lock이 boarding-confirm 응답으로 실 열차에 승격될 때, backend가 live resolve에서
+   * 최후 tier로 수용했다면 그 라벨을 보존한다(오수용 감시 연동). 부재 = 일반 tier 또는 승격 아님.
+   */
+  resolveTier?: BoardingResolveTier;
 }
 
 /** 자동 만료 안전 계수 — 예상 소요시간이 50% 초과되면 잘못된 Lock으로 보고 해제. */

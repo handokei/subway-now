@@ -31,6 +31,7 @@ import { snapToLinePolyline } from '../../route/utils/linePolyline';
 import { isLineNumber } from '../../route/utils/lineGuard';
 import { findNearestStation } from '../utils/findNearestStation';
 import type { LineNumber } from '../../../shared/types/station';
+import { BOARDING_RESOLVE_TIERS, type BoardingResolveTier } from '../../../shared/types/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 import { haversine } from '../../../shared/utils/haversine';
 import type { AccelSummary } from '../utils/accelMotion';
@@ -166,6 +167,13 @@ export interface PositionUploadResult {
   ok: boolean;
   skipped?: boolean;
   status?: number;
+  /**
+   * #3055 — boarding-confirm('boarded') 응답에서 backend가 해소한 열차. device가 PENDING lock을
+   * 교체하는 근거(탑승 표명에 대한 권위적 회신). 다른 엔드포인트/action에서는 항상 부재.
+   */
+  resolvedTrainCode?: string;
+  /** #3055 — 위 해소가 최후 tier로 수용된 건이면 그 라벨. 부재 = 일반 tier. */
+  resolveTier?: BoardingResolveTier;
 }
 
 // Seam E (#901) — getBackendUrl/fetchWithTimeout은 backendHttp.ts로 추출 (boardingLockSync도 재사용).
@@ -481,11 +489,34 @@ export async function postBoardingConfirm(
       log.warn(`boarding-confirm failed status=${res.status}`);
       return { ok: false, status: res.status };
     }
-    return { ok: true, status: res.status };
+    // #3055 — 'boarded' 응답만 해소 결과를 소비한다(하차/미탑승 응답에는 의미 없음).
+    const resolution = action === 'boarded' ? await parseBoardingConfirmResolution(res) : {};
+    return { ok: true, status: res.status, ...resolution };
   } catch (e) {
     log.warn('boarding-confirm error', e);
     return { ok: false };
   }
+}
+
+/**
+ * #3055 — boarding-confirm 응답 body에서 `resolvedTrainCode`/`resolveTier`를 꺼낸다.
+ * body 파싱 실패·형식 불일치는 전부 "해소 없음"({})으로 흡수한다 — 응답 소비는 부가 경로이고
+ * 기존 ok/status 계약(fire-and-forget, throw 금지)을 깨면 안 된다. 알 수 없는 tier 값은 버린다.
+ */
+async function parseBoardingConfirmResolution(
+  res: Response,
+): Promise<Pick<PositionUploadResult, 'resolvedTrainCode' | 'resolveTier'>> {
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return {};
+  }
+  if (!body || typeof body !== 'object') return {};
+  const { resolvedTrainCode, resolveTier } = body as Record<string, unknown>;
+  if (typeof resolvedTrainCode !== 'string' || resolvedTrainCode.length === 0) return {};
+  const tier = BOARDING_RESOLVE_TIERS.find((t) => t === resolveTier);
+  return { resolvedTrainCode, ...(tier !== undefined ? { resolveTier: tier } : {}) };
 }
 
 /**
