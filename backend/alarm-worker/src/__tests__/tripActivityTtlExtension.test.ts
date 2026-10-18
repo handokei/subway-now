@@ -22,7 +22,7 @@ import {
 import { runScheduled, type ScheduledDeps } from '../scheduled';
 import { SeoulArrivalClient } from '../seoul';
 import { InMemoryKV } from './inMemoryKv';
-import type { D1Database, Env } from '../types';
+import type { Env } from '../types';
 
 async function post(path: string, body: unknown, env: Env): Promise<Response> {
   return app.fetch(
@@ -111,7 +111,8 @@ beforeAll(async () => {
 });
 
 const T0 = 1_700_000_000_000;
-const SHORT_TTL_MS = 10 * 60 * 1000; // 임계(30분) 미달 — sync 없이는 라이드 중간에 만료.
+// 임계(TRIP_ACTIVITY_MIN_REMAINING_MS) 미달 — sync 없이는 라이드 중간에 만료.
+const SHORT_TTL_MS = TRIP_ACTIVITY_MIN_REMAINING_MS / 3;
 const LONG_TTL_MS = 2 * 60 * 60 * 1000; // device DEFAULT_TRIP_TTL_MS와 동일(임계 훨씬 위).
 
 describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
@@ -124,18 +125,20 @@ describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
     vi.setSystemTime(T0);
     const env = makeKvEnv();
 
-    await post('/trips', tripBody({ expiresAt: T0 + SHORT_TTL_MS }), env);
+    // 등록은 device 기본 TTL(2h, 임계 30분보다 훨씬 위) — register-time 연장이 끼지 않게
+    // 분리해, 이 테스트가 오직 sync의 연장 효과만 isolate해서 검증한다.
+    await post('/trips', tripBody({ expiresAt: T0 + LONG_TTL_MS }), env);
 
-    // 5분 후 sync 수신 — 잔여 5분 < TRIP_ACTIVITY_MIN_REMAINING_MS(30분).
-    const syncAt = T0 + 5 * 60 * 1000;
+    // 만료 5분 전 sync 수신 — 잔여 5분 < TRIP_ACTIVITY_MIN_REMAINING_MS(30분).
+    const syncAt = T0 + LONG_TTL_MS - 5 * 60 * 1000;
     vi.setSystemTime(syncAt);
     const res = await post('/boarding-lock/sync', syncBody({ observedAtMs: syncAt }), env);
     expect(res.status).toBe(200);
 
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-ttl')) as string);
-    // 현재 구현은 연장 로직이 없어 expiresAt이 원래 짧은 값(T0+10min)에 고정 → red.
+    // 현재 구현은 연장 로직이 없어 expiresAt이 원래 등록 값(T0+2h)에 고정 → red.
     expect(stored.expiresAt).toBe(syncAt + TRIP_ACTIVITY_EXTENSION_MS);
-    expect(stored.expiresAt).toBeGreaterThan(T0 + SHORT_TTL_MS);
+    expect(stored.expiresAt).toBeGreaterThan(T0 + LONG_TTL_MS);
   });
 
   it('red ② — 연장 후 cron tick에서 trip-end reason=expired D1 이벤트가 발생하지 않는다', async () => {
@@ -180,7 +183,12 @@ describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
     const kv = new InMemoryKV();
     const env = makeKvEnv({}, kv);
 
-    await post('/trips', tripBody({ expiresAt: T0 + SHORT_TTL_MS }), env);
+    // 등록은 임계(30분) 위 TTL(2h) — register-time 연장이 끼지 않게 분리.
+    await post('/trips', tripBody({ expiresAt: T0 + LONG_TTL_MS }), env);
+
+    // 만료 5분 전(잔여 5분 < 임계)까지 시간을 보내 — 이 시점에 /position만 온다.
+    const positionAt = T0 + LONG_TTL_MS - 5 * 60 * 1000;
+    vi.setSystemTime(positionAt);
 
     const putSpy = vi.spyOn(kv, 'put');
     putSpy.mockClear();
@@ -193,7 +201,7 @@ describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
         lat: 1,
         lng: 2,
         accuracy: 10,
-        ts: T0,
+        ts: positionAt,
         motion: 'walking',
         originDistanceM: 50,
         originAccuracyM: 10,
@@ -206,8 +214,8 @@ describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
     expect(tripWrites).toHaveLength(1);
 
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-ttl')) as string);
-    // /position 경로는 활동성 연장 대상에서 제외 — expiresAt은 원래 짧은 값 그대로.
-    expect(stored.expiresAt).toBe(T0 + SHORT_TTL_MS);
+    // /position 경로는 활동성 연장 대상에서 제외 — 잔여 TTL이 임계 미달이어도 원래 값 그대로.
+    expect(stored.expiresAt).toBe(T0 + LONG_TTL_MS);
     putSpy.mockRestore();
   });
 
