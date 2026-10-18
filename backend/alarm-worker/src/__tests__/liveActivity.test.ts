@@ -1625,6 +1625,252 @@ describe('cleanupTripWithLa', () => {
       expect(capturedMeta && 'endPath' in capturedMeta).toBe(false);
     });
   });
+
+  /**
+   * #3023 요구 2번 (계측 only) — `trip-end {reason:'expired'}`에는 "왜 그 시점에 만료됐는지"를
+   * 판정할 입력이 없었다(10/15 RCA가 여기서 막혔다). 만료 종료일 때만 meta에 진단 필드
+   * (`expiresAt`/`createdAt`/`lastSyncAt`/`ageMs`/`hadLock`)를 추가로 싣는다 — 발사/판정
+   * 로직에는 관여하지 않는 순수 관측(기존 #2893 endPath와 동일 원칙).
+   *
+   * `lastSyncAt`은 Trip에 "마지막 device 신호 수신 시각" 전용 필드가 없어 가장 가까운 대체로
+   * `deviceContact.ts`의 `readDeviceContact`(KV `deviceContact:{tokenHash}`, `/position`·
+   * `/boarding-lock/sync` 처리부가 FG 접촉 시 stamp)를 쓴다. TTL 10분이라 그보다 오래 침묵한
+   * trip은 null로 남는다 — 이 또한 "마지막 접촉이 10분 이상 전"이라는 유의미한 신호다.
+   */
+  describe('#3023 요구 2번 — 만료 trip-end meta 진단 필드 (계측 only)', () => {
+    it('reason=expired → meta에 expiresAt/createdAt/lastSyncAt/ageMs/hadLock이 실린다', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined, createdAt: NOW - 1_000_000 });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        { reason: 'expired', endPath: 'trip-expired' },
+      );
+      expect(capturedMeta).toBeDefined();
+      expect(capturedMeta?.expiresAt).toBe(trip.expiresAt);
+      expect(capturedMeta?.createdAt).toBe(trip.createdAt);
+      // device contact stamp 없음 → null (사유까지 명시: "접촉 기록 없음", throw 아님).
+      expect(capturedMeta?.lastSyncAt).toBeNull();
+      expect(capturedMeta?.ageMs).toBe(NOW - trip.createdAt);
+      expect(capturedMeta?.hadLock).toBe(false);
+    });
+
+    it('device contact stamp가 있으면 lastSyncAt에 그 시각이 실린다', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const contactAt = NOW - 5_000;
+      await kv.put(`deviceContact:${hashTripToken(trip.token)}`, String(contactAt));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        { reason: 'expired', endPath: 'trip-expired' },
+      );
+      expect(capturedMeta?.lastSyncAt).toBe(contactAt);
+    });
+
+    it('boardingLock이 부착돼 있으면 hadLock=true', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({
+        activityPushToken: undefined,
+        boardingLock: { trainCode: 'T1', line: '2', stationName: '강남', lockedAt: NOW },
+      });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        { reason: 'expired', endPath: 'trip-expired' },
+      );
+      expect(capturedMeta?.hadLock).toBe(true);
+    });
+
+    it('boardingLock은 없지만 lockEverAttached=true면 hadLock=true (lock 해제 후 만료)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined, lockEverAttached: true });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        { reason: 'expired', endPath: 'trip-expired' },
+      );
+      expect(capturedMeta?.hadLock).toBe(true);
+    });
+
+    it('[거부] reason=user-delete(HTTP DELETE, reason 미지정) → 신규 진단 필드가 없다', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      // HTTP DELETE 경로 — reason 미지정(기존 #4008 계약). metricsReason도 없음 → 'user-delete'.
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+      );
+      expect(capturedMeta).toBeDefined();
+      expect(capturedMeta?.reason).toBe('user-delete');
+      for (const key of ['expiresAt', 'createdAt', 'lastSyncAt', 'ageMs', 'hadLock']) {
+        expect(capturedMeta && key in capturedMeta).toBe(false);
+      }
+    });
+
+    it('[거부] metricsReason=lockless-trip-end(만료 아님) → 신규 진단 필드가 없다', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        { metricsReason: 'lockless-trip-end' },
+      );
+      expect(capturedMeta).toBeDefined();
+      for (const key of ['expiresAt', 'createdAt', 'lastSyncAt', 'ageMs', 'hadLock']) {
+        expect(capturedMeta && key in capturedMeta).toBe(false);
+      }
+    });
+
+    it('[거부] 진단 필드 수집 중 예외 → cleanup은 정상 완료되고 예외가 전파되지 않는다', async () => {
+      const kv = new InMemoryKV();
+      const originalGet = kv.get.bind(kv);
+      // deviceContact 조회(`deviceContact:` 키 read)만 throw하도록 KV.get을 선택적으로 오염시킨다
+      // — readDeviceContact 내부 catch를 우회하기 위해 KV 레벨에서 던진다.
+      vi.spyOn(kv, 'get').mockImplementation(async (key: string, ...rest: unknown[]) => {
+        if (key.startsWith('deviceContact:')) throw new Error('kv read boom');
+        return (originalGet as (k: string, ...r: unknown[]) => Promise<unknown>)(key, ...rest);
+      });
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      let capturedMeta: Record<string, unknown> | undefined;
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) {
+            const metaJson = args[5] as string | null;
+            capturedMeta = metaJson ? JSON.parse(metaJson) : undefined;
+          }
+          return { run };
+        },
+      }));
+      const db = { prepare } as unknown as D1Database;
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as unknown as Env;
+      await expect(
+        cleanupTripWithLa(
+          trip,
+          env,
+          makeDeps(vi.fn() as unknown as typeof fetch),
+          makeStats(),
+          NOW,
+          () => undefined,
+          { reason: 'expired', endPath: 'trip-expired' },
+        ),
+      ).resolves.toBeUndefined();
+      // 기존 필드(reason/endPath)는 그대로 — 진단 필드 수집 실패가 cleanup 자체를 깨지 않는다.
+      expect(capturedMeta?.reason).toBe('expired');
+      expect(capturedMeta?.endPath).toBe('trip-expired');
+      expect(await kv.get('trip:devtoken')).toBeNull();
+    });
+  });
 });
 
 /**
