@@ -195,7 +195,7 @@ function makeFullEmptyStats(): ScheduledStats {
     autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
     boardingPromptSkippedEmpty: 0, boardingPromptSkippedLockActive: 0, boardingPromptSkippedNoOptIn: 0, boardingPromptSkippedLegAnchorActive: 0, boardingPromptSkippedNoContext: 0, boardingPromptSkippedStale: 0, boardingPromptSkippedTooFar: 0,
     boardingPromptSkippedMinInterval: 0, boardingPromptSkippedMaxFires: 0, boardingPromptSkippedTrainDuplicate: 0,
-    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legAdvanceDirectionUnknownBlocked: 0, promptDirectionUnknownBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0, trackingOptInProximityMissingBlocked: 0,
+    hopEndPromptFired: 0, hopEndPromptBlocked: 0, hopEndPromptSkippedNoOptIn: 0, locklessTransferAdvanced: 0, locklessDestinationAdvanced: 0, destinationConfirmFired: 0, destinationConfirmTimedOut: 0, legAdvanceWindowBlocked: 0, legAdvanceAmbiguous: 0, legAdvanceDirectionUnknownBlocked: 0, promptDirectionUnknownBlocked: 0, legBoardingPromptFired: 0, legBoardingPromptSkippedWalking: 0, legBoardingPromptBlocked: 0, legBoardingPromptSkippedNoOptIn: 0, originGpsFreeBoardingPromptFired: 0, originGpsFreeBoardingPromptBlocked: 0, originGpsFreeSnapshotDistrusted: 0, trackingOptInProximityMissingBlocked: 0, trackingOptInNoBoardingEvidenceBlocked: 0,
     arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0, arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
@@ -13967,13 +13967,16 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
 // 실제 발사를 assert, 빈 2칸(leg-2×trackingOptIn, 하차×trackingOptIn)은 `it.fails`로 고정해
 // 후속 fix가 들어오면 역으로 실패해 승격을 강제한다(#2926/#2905 선례).
 //
-// 매트릭스 (9칸 — 2026-10-18 기준):
+// #3025 — 위 빈 2칸은 `it.fails` → 일반 `it`으로 승격됐다(아래 `describe('#3025 — ...')`,
+// lock 이력 가드 포함). 매트릭스는 이제 9/9 커버.
+//
+// 매트릭스 (9칸 — 2026-10-18 기준, #3025로 전칸 커버):
 //
 // | 단계 \ 의향          | promptOptIn | infoModeEnabled | trackingOptIn |
 // |----------------------|-------------|------------------|---------------|
 // | 출발역 탑승          | 기존 커버   | 기존 커버        | 기존 커버     |
-// | 환승 leg-2 탑승      | 기존 커버   | 본 describe(신규)| 본 describe(it.fails) |
-// | 하차                 | 기존 커버   | 본 describe(신규)| 본 describe(it.fails) |
+// | 환승 leg-2 탑승      | 기존 커버   | 본 describe(신규)| #3025 describe(승격) |
+// | 하차                 | 기존 커버   | 본 describe(신규)| #3025 describe(승격) |
 //
 // 출발역 행(3칸) — 재작성하지 않고 참조만 한다(이슈 본문 "기존 테스트" 절 + 이 파일 "기존
 // 테스트 (중복 작성 방지)"):
@@ -14116,54 +14119,129 @@ describe('#3019 — 의향 축 × 프롬프트 단계 사슬 고정 (trackingOpt
     });
   });
 
-  // 빈 2칸 — #3012가 선언한 "환승/하차는 범위 밖"이 실제로 침묵임을 고정한다. 후속 fix로
-  // trackingOptIn OR 항이 두 함수에 추가되면 아래 두 assert가 뒤집혀 `it.fails`가 역으로
-  // 실패하고, 그 실패가 일반 `it`으로의 승격을 강제한다(#2926/#2905 선례, lessons.md L18).
-  describe('빈 칸 — trackingOptIn 축이 아직 환승/하차에 열리지 않음 (#3012 편측, 후속 fix 전까지 it.fails)', () => {
-    it.fails(
-      '(알려진 빈 칸, #3019) 환승 leg-2 탑승 × trackingOptIn — 목적지만 설정(trackingOptIn=true, 나머지 false)해도 leg-2 프롬프트는 발사되지 않아야 할 이상적 동작과 반대로, 지금도 발사되지 않는다 — 단 이 skip은 trackingOptIn 평가가 아니라 OR 게이트 자체가 trackingOptIn을 보지 않아서다(scheduled.ts:8526). 이 테스트는 "열려야 한다"는 이상적 동작을 고정한다.',
-      async () => {
-        const fetchImpl = vi.fn(makeLegArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
-        const trip = makeLeg2Trip({ trackingOptIn: true });
-        const stats = makeLegStats();
-        await maybeFireLegBoardingPrompt(
-          trip,
-          makeEnv(new InMemoryKV()),
-          makeLegDeps(fetchImpl),
-          stats,
-          NOW,
-          () => {},
-          () => 'pid-3019-leg2-tracking',
-        );
-        // 이상적 동작(미구현) — trackingOptIn만 있어도 leg-2 탑승 프롬프트가 발사돼야 한다.
-        // 지금은 발사되지 않는다(legBoardingPromptSkippedNoOptIn===1) — 이 assertion은 지금
-        // 실패하고, it.fails가 그 실패를 "예상대로"로 받아들인다.
-        expect(stats.legBoardingPromptFired).toBe(1);
-      },
-    );
+  // #3025 — 위 2칸은 #3019가 `it.fails`로 고정했던 빈 칸이다. OR항 + 약한축 가드(lock 이력)
+  // 추가로 여기서 일반 `it`으로 승격한다. 거부 케이스 ③④⑤⑥을 함께 고정 — ⑤는 #2926
+  // (legResolveStreak false positive)이 이 새 가드에 상속되지 않음을 고정하는 핵심 케이스다.
+  describe('#3025 — trackingOptIn 축이 환승 leg-2·하차에 열림 (lock 이력 가드, #3012 편측 해소)', () => {
+    it('① 환승 leg-2 탑승 × trackingOptIn만 + lockEverAttached=true → 발사', async () => {
+      const fetchImpl = vi.fn(makeLegArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeLeg2Trip({ trackingOptIn: true, lockEverAttached: true });
+      const stats = makeLegStats();
+      await maybeFireLegBoardingPrompt(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeLegDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-3025-leg2-tracking-lockever',
+      );
+      expect(stats.legBoardingPromptFired).toBe(1);
+      expect(stats.legBoardingPromptSkippedNoOptIn).toBe(0);
+      expect(stats.trackingOptInNoBoardingEvidenceBlocked).toBe(0);
+      expect(trip.legBoardingPromptState?.fired).toBe(true);
+    });
 
-    it.fails(
-      '(알려진 빈 칸, #3019) 하차 × trackingOptIn — 목적지만 설정(trackingOptIn=true, 나머지 false)해도 하차 프롬프트는 발사되지 않아야 할 이상적 동작과 반대로, 지금도 발사되지 않는다 — 단 이 skip은 trackingOptIn 평가가 아니라 OR 게이트 자체가 trackingOptIn을 보지 않아서다(scheduled.ts:8833). 이 테스트는 "열려야 한다"는 이상적 동작을 고정한다.',
-      async () => {
-        const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-        const trip = makeHopEndTrip({ trackingOptIn: true });
-        const stats = makeLegStats();
-        await maybeFireHopEndPrompt({
-          trip,
-          transferWaypoint: hopEndTransferWaypoint,
-          deps: makeLegDeps(fetchImpl as unknown as typeof fetch),
-          stats,
-          now: NOW,
-          log: () => {},
-          generatePushId: () => 'pid-3019-hopend-tracking',
-          env: makeEnv(new InMemoryKV()),
-        });
-        // 이상적 동작(미구현) — trackingOptIn만 있어도 하차 프롬프트가 발사돼야 한다. 지금은
-        // 발사되지 않는다(hopEndPromptSkippedNoOptIn===1) — 이 assertion은 지금 실패하고,
-        // it.fails가 그 실패를 "예상대로"로 받아들인다.
-        expect(stats.hopEndPromptFired).toBe(1);
-      },
-    );
+    it('② 하차 × trackingOptIn만 + boardingCommitted=true → 발사', async () => {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+      const trip = makeHopEndTrip({ trackingOptIn: true, boardingCommitted: true });
+      const stats = makeLegStats();
+      await maybeFireHopEndPrompt({
+        trip,
+        transferWaypoint: hopEndTransferWaypoint,
+        deps: makeLegDeps(fetchImpl as unknown as typeof fetch),
+        stats,
+        now: NOW,
+        log: () => {},
+        generatePushId: () => 'pid-3025-hopend-tracking-committed',
+        env: makeEnv(new InMemoryKV()),
+      });
+      expect(stats.hopEndPromptFired).toBe(1);
+      expect(stats.hopEndPromptSkippedNoOptIn).toBe(0);
+      expect(stats.trackingOptInNoBoardingEvidenceBlocked).toBe(0);
+      expect(trip.hopEndPromptState?.['성수|K']?.fired).toBe(true);
+    });
+
+    it('③ [거부] 환승 leg-2 탑승 × trackingOptIn만 + lock 이력 전무 → 미발사 + trackingOptInNoBoardingEvidenceBlocked +1', async () => {
+      const fetchImpl = vi.fn(makeLegArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeLeg2Trip({ trackingOptIn: true });
+      const stats = makeLegStats();
+      await maybeFireLegBoardingPrompt(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeLegDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-3025-leg2-tracking-noevidence',
+      );
+      expect(stats.legBoardingPromptFired).toBe(0);
+      expect(stats.legBoardingPromptSkippedNoOptIn).toBe(0);
+      expect(stats.trackingOptInNoBoardingEvidenceBlocked).toBe(1);
+      expect(trip.legBoardingPromptState?.fired).not.toBe(true);
+    });
+
+    it('④ [거부] 하차 × trackingOptIn만 + lock 이력 전무 → 미발사 + trackingOptInNoBoardingEvidenceBlocked +1', async () => {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+      const trip = makeHopEndTrip({ trackingOptIn: true });
+      const stats = makeLegStats();
+      await maybeFireHopEndPrompt({
+        trip,
+        transferWaypoint: hopEndTransferWaypoint,
+        deps: makeLegDeps(fetchImpl as unknown as typeof fetch),
+        stats,
+        now: NOW,
+        log: () => {},
+        generatePushId: () => 'pid-3025-hopend-tracking-noevidence',
+        env: makeEnv(new InMemoryKV()),
+      });
+      expect(stats.hopEndPromptFired).toBe(0);
+      expect(stats.hopEndPromptSkippedNoOptIn).toBe(0);
+      expect(stats.trackingOptInNoBoardingEvidenceBlocked).toBe(1);
+      expect(trip.hopEndPromptState?.['성수|K']?.fired).not.toBe(true);
+    });
+
+    it('⑤ [거부] 환승 leg-2 탑승 × trackingOptIn만 + legResolveStreak만 있음 → 미발사 (#2926 FP 비상속 고정)', async () => {
+      const fetchImpl = vi.fn(makeLegArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeLeg2Trip({
+        trackingOptIn: true,
+        legResolveStreak: { trainCode: '7246', count: 3 },
+      });
+      const stats = makeLegStats();
+      await maybeFireLegBoardingPrompt(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeLegDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-3025-leg2-tracking-streak-only',
+      );
+      // legResolveStreak은 hasBoardingEvidence가 인정하는 증거이지만, 이 가드는
+      // hasBoardingEvidence를 재사용하지 않고 lockEverAttached/boardingCommitted만 직접
+      // 체크한다(#2926 false positive 전력 — 이슈 본문 설계 결정) — 따라서 미발사여야 한다.
+      expect(stats.legBoardingPromptFired).toBe(0);
+      expect(stats.trackingOptInNoBoardingEvidenceBlocked).toBe(1);
+      expect(trip.legBoardingPromptState?.fired).not.toBe(true);
+    });
+
+    it('⑥ [거부] 의향 축 전무 → 기존대로 legBoardingPromptSkippedNoOptIn +1 (trackingOptInNoBoardingEvidenceBlocked는 0)', async () => {
+      const fetchImpl = vi.fn(makeLegArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeLeg2Trip();
+      const stats = makeLegStats();
+      await maybeFireLegBoardingPrompt(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeLegDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-3025-leg2-no-intent',
+      );
+      expect(stats.legBoardingPromptFired).toBe(0);
+      expect(stats.legBoardingPromptSkippedNoOptIn).toBe(1);
+      expect(stats.trackingOptInNoBoardingEvidenceBlocked).toBe(0);
+    });
   });
 });
 
