@@ -155,7 +155,13 @@ actor LiveActivityManager {
     private func resolveAlertConfiguration(
         for state: SubwayActivityAttributes.ContentState
     ) -> AlertConfiguration? {
-        guard let phase = state.boardingPhase, phase == "pre-boarding" || phase == "hop-end" else {
+        // #3007 S4-c — `end-prompt`(정지 15분 "안내를 종료할까요?")도 배너+소리 대상이다.
+        // 사용자 요구: *"결정할 수 있도록 LA 알림 있어야 함"* — content만 교체하면 잠금화면을
+        // 보고 있지 않은 사용자에게 도달하지 않는다. 아래 `lastAlertedBoardingPhase` dedup이
+        // phase 전이당 1회를 보장하므로 90초 heartbeat마다 반복 울리지 않는다.
+        guard let phase = state.boardingPhase,
+              phase == "pre-boarding" || phase == "hop-end" || phase == "end-prompt"
+        else {
             lastAlertedBoardingPhase = nil
             return nil
         }
