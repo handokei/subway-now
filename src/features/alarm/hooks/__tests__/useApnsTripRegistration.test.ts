@@ -186,6 +186,85 @@ describe('useApnsTripRegistration', () => {
     );
   });
 
+  // #3043 — main effect run()의 `!token` 체크(cancelled 가드 無)부터 registerFromLatestInputs
+  // 호출 직전까지 cancelled 가드가 빠져 있어, deps 변화로 cleanup→재실행돼도 선행 run이 멈추지
+  // 않고 자기 POST까지 완주했다(10/18 18:37:30/31 1초 2연발 실측).
+  describe('#3043 — register effect run() cancelled 가드 (선행 run이 cleanup 후 미완주)', () => {
+    it('① red — run이 await 중 cleanup되면 선행 run은 registerFromLatestInputs를 호출하지 않는다 (총 1회)', async () => {
+      // clearBackendSsotMirror를 선행 run의 await 지점으로 삼아 cleanup 시점을 제어한다 —
+      // !token 체크(:1327) 통과 후, registerFromLatestInputs(:1379) 호출 전 유일한 await.
+      let resolveClear!: () => void;
+      const clearPromise = new Promise<void>((resolve) => {
+        resolveClear = resolve;
+      });
+      mockClearBackendSsotMirror.mockReturnValueOnce(clearPromise);
+
+      const otherStation: Station = { ...station, id: '2-999', name: '뚝섬' };
+      const { rerender } = renderHook(
+        ({ dest }: { dest: Station }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+          }),
+        { initialProps: { dest: station } },
+      );
+
+      // 선행 run이 clearBackendSsotMirror await에서 멈춘 상태 — registerFromLatestInputs(→
+      // registerActiveTrip) 호출 전.
+      await waitFor(() => expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1));
+      expect(mockRegister).not.toHaveBeenCalled();
+
+      // deps(destination) 변화 → effect cleanup(cancelled=true) 후 신규 run 즉시 발사
+      // (아직 성공 등록 없는 trip이라 #2197 debounce 미적용).
+      rerender({ dest: otherStation });
+
+      // 선행 run의 await를 재개한다 — cancelled 가드가 없으면 여기서 선행 run이
+      // registerFromLatestInputs까지 완주해 2연발 POST가 재현된다.
+      resolveClear();
+
+      // 신규 run이 완료될 때까지 대기.
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      // 선행 run의 재개 후 추가 호출이 없어야 총 1회로 유지된다 — 실패하면(2회) 선행 run이
+      // cancelled 가드 없이 완주했다는 뜻(회귀 재현).
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('② 거부 — cleanup 없는 정상 run은 기존대로 1회 호출된다', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('③ 거부 — 재실행된 신규 run은 가드 추가 후에도 정상 1회 호출(총 1회) 유지', async () => {
+      const { rerender } = renderHook(
+        ({ route, dest }: { route: Route | null; dest: Station | null }) =>
+          useApnsTripRegistration({ route, destination: dest, nextStationEtaSeconds: 120 }),
+        { initialProps: { route: null as Route | null, dest: null as Station | null } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
+
+      // deps 변화 — 이전 run(트립 없음, no-op)의 cleanup 후 신규 run이 정상 완주해야 한다.
+      rerender({ route: directRoute, dest: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // R11-a (#1612) — POST /trips 직전 backend SSoT mirror 강제 clean (cross-trip 잔재 root).
   describe('R11-a (#1612) — POST /trips 직전 clearBackendSsotMirror', () => {
     it('register 호출 직전 clearBackendSsotMirror가 1회 호출된다 (호출 순서: clear → register)', async () => {
