@@ -833,6 +833,37 @@ describe('resolveActiveLegOrigin (#2515, #2511 supersede)', () => {
     const trip = makeTrip({ promptDisplay: undefined });
     expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
   });
+
+  // #3046 (10/18 편측 감사 F1) — promptDisplay 유실(#3038 등록 race) + originStationName 존재
+  // 시에도 anchor를 산출해야 auto-lock(attemptBoardingAnchorResolution)이 가능해진다. 이전에는
+  // `trip.promptDisplay`만 읽어 null을 반환했다 — 명시 의향(infoModeEnabled) trip이 race를
+  // 맞으면 backend auto-lock 자체가 불가능해지는 잔존 증상.
+  it('[red ②] promptDisplay 없음 + originStationName + waypoint → originStationName+waypoint line으로 파생된 anchor 반환', () => {
+    const trip = makeTrip({
+      promptDisplay: undefined,
+      originStationName: '중곡',
+      waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+    });
+    expect(resolveActiveLegOrigin(trip, NOW)).toEqual({ originStation: '중곡', line: '7' });
+  });
+
+  it('[거부 ③] promptDisplay·originStationName 둘 다 없음 → null (파생 재료 없음, 기존과 동일 결과)', () => {
+    const trip = makeTrip({ promptDisplay: undefined, originStationName: undefined });
+    expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
+  });
+
+  it('currentLegAnchor가 있고 조건 충족이면 파생보다 우선(기존 우선순위 불변)', () => {
+    const trip = makeTrip({
+      promptDisplay: undefined,
+      originStationName: '중곡',
+      currentLegAnchor: { boardingStation: '건대입구', line: '2' },
+      legBoardingEligibleAt: NOW,
+    });
+    expect(resolveActiveLegOrigin(trip, NOW, { allowLegTransfer: true })).toEqual({
+      originStation: '건대입구',
+      line: '2',
+    });
+  });
 });
 
 describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', () => {
