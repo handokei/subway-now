@@ -13496,6 +13496,103 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
     });
   });
 
+  // #3038 — `trip.promptDisplay`가 등록 race(1초 간격 2연발, context-null인 쪽이 last-write)로
+  // 유실되면 두 번째 게이트(`if (!display) return`)가 무카운터 silent return을 낸다(10/18 18:37
+  // 실라이드, R2 8cycle 재생으로 확정 — 군자 arrivals 조회 0회와 유일하게 정합). fix: trip에
+  // 이미 저장된 `originStationName`(#2280 SSoT 출발역) + `waypoints[0].line`으로 display를
+  // 파생해 진행한다. 파생 재료가 하나라도 없으면 기존처럼 return하되 카운터를 증가시킨다
+  // (이 게이트가 다른 모든 게이트처럼 관측 가능해야 한다).
+  describe('#3038 — promptDisplay 유실 시 originStationName+waypoint로 파생 fallback', () => {
+    it('① [RED] promptOptIn=true + display 없음 + originStationName=군자 + 임박 열차 → 발사(기존 0 → 수정 1)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: '군자' });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+
+    it('② [RED] 같은 상태에서 파생 성공 카운터(originGpsFreeDisplayDerived)가 +1 된다(기존엔 카운터 자체가 없음)', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: '군자' });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeDisplayDerived).toBe(1);
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(0);
+    });
+
+    it('③ [거부] display·originStationName 둘 다 없음 → 미발사 + 파생실패 카운터(originGpsFreeDisplayDerivationFailed) +1', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: undefined });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(1);
+      expect(stats.originGpsFreeDisplayDerived).toBe(0);
+    });
+
+    it('③-b [거부] display 없음 + originStationName은 있으나 waypoints가 비어 line을 파생할 수 없음 → 미발사 + 파생실패 카운터 +1', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip({ promptDisplay: undefined, originStationName: '군자', waypoints: [] });
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(1);
+    });
+
+    it('④ [동작 불변] display 있으면 파생 분기 미진입 — 기존 경로 100% 불변', async () => {
+      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+      const trip = makeTrip(); // default promptDisplay 존재(originStation:'군자', line:'7')
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(new InMemoryKV()),
+        makeDeps(fetchImpl),
+        stats,
+        NOW,
+        () => {},
+        () => 'pid-origin',
+      );
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(stats.originGpsFreeDisplayDerived).toBe(0);
+      expect(stats.originGpsFreeDisplayDerivationFailed).toBe(0);
+    });
+  });
+
   // #2854 — 프롬프트 발사 성공 순간 LA도 alert(소리·배너)로 함께 갱신한다. 공유 발사 본체
   // (`fireBoardingPromptForAnchor`)에서 처리하므로 leg-1(GPS-free)이 대표로 검증한다 — leg-2도
   // 같은 본체를 거치므로 자동 적용(아래 leg-2 describe의 대조 테스트로 audit).
