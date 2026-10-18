@@ -1321,8 +1321,15 @@ app.post('/trips', async (c) => {
           consecutiveEtaMissing: existing.consecutiveEtaMissing,
           // #819: boarding-prompt 발사 카운터는 backend-only state — 디바이스가 같은 세션으로
           // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
-          // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.
+          // reset되면 spam 회귀).
           boardingPromptState: existing.boardingPromptState,
+          // #3042 (10/18 race root) — "incoming이 항상 최신이라 그대로 받는다"는 전제가 깨졌다:
+          // device register effect의 재실행(cancelled 가드 부재)으로 같은 세션이 1초 내 2연발
+          // 등록될 수 있고, "context 있는 발 → context 없는 발" 순서면 100% 소실한다. 다른
+          // backend-authoritative 필드와 같은 패턴으로 — incoming에 있으면 incoming 채택(최신
+          // 우선 유지), 없으면 existing 보존.
+          promptGeoContext: incoming.promptGeoContext ?? existing.promptGeoContext,
+          promptDisplay: incoming.promptDisplay ?? existing.promptDisplay,
           // #916 follow-up B — same session에선 같은 trip이므로 그대로 보존.
           lastAutoPromptedAt: existing.lastAutoPromptedAt,
           // #2153 — 신선도 게이트 anchor도 backend-only state. re-register마다 incoming(항상
