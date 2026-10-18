@@ -423,13 +423,20 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       line: '2',
     });
     // #2852 — tryAutoLock 성공 경로에서도 backend boarding-confirm은 무조건 forward.
-    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+    // #3028 (case ①) — fresh 재확정(chosen='T1')이 성공했으면 그 값을 5번째 인자로 forward한다.
+    // payload.trainCode가 없다는 이유로 trainCode 없이 보내던 기존 동작이 이 RCA의 결함
+    // (device 로컬 lock과 backend forward가 분리됨)이었다.
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', 'T1');
   });
 
-  // #2961 — payload.trainCode(#2819 push payload embed 값, 발사 시점 backend가 단일 확정한
-  // 열차)가 있으면 postBoardingConfirm의 5번째 인자로 그대로 forward한다. backend가 "어느
-  // 알림을 탭했는지" 알아야 2회 발사 시 올바른 열차를 lock한다(이슈 본문 핵심 시나리오).
-  it('#2961 — payload.trainCode 있으면 postBoardingConfirm 5번째 인자로 forward', async () => {
+  // #2961 (→ #3028로 재확정) — payload.trainCode(#2819 push payload embed 값, 발사 시점
+  // backend가 단일 확정한 열차)가 있으면 postBoardingConfirm의 5번째 인자로 forward한다 —
+  // 단, device의 fresh 재조회(tryAutoLock)가 성공해 chosen을 재확정하면 그 값이 우선한다
+  // (#3028 RCA: fire-시점 stale embed가 아니라 응답-시점 fresh 재확정이 backend로 가야
+  // 9/11·9/21·10/7처럼 "미리 온 프롬프트 → 늦게 응답 → 앞차 lock"이 재발하지 않는다).
+  // 이 테스트의 fetchArrivalsForStation 기본 mock(`makeArrival()`)은 chosen=T1로 fresh 재조회가
+  // 성공하므로, payload.trainCode('2701', 가짜 embed)가 아니라 T1이 forward돼야 한다.
+  it('#2961/#3028 — payload.trainCode 있어도 fresh 재조회 성공(chosen) 시 그 값이 5번째 인자로 forward', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps();
     const payload = { ...PAYLOAD, trainCode: '2701' };
@@ -439,7 +446,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       'boarded',
       '강남',
       '2',
-      '2701',
+      'T1',
     );
   });
 
@@ -1157,9 +1164,14 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       expectAutoLockLogged('autolock-ambiguity');
     });
 
-    // 재조회 성공(chosen 있음) 경로는 절대 무변경 — payload.trainCode가 실려 있어도 device가
-    // 방금 fresh 재조회한 chosen.trainCode가 이긴다(embed는 재조회 실패 fallback 전용).
-    it('재조회 성공(chosen 있음) → payload.trainCode 있어도 device fresh pick 우선(무시)', async () => {
+    // 재조회 성공(chosen 있음) 경로는 로컬 lock의 trainCode 선택 자체는 절대 무변경 —
+    // payload.trainCode가 실려 있어도 device가 방금 fresh 재조회한 chosen.trainCode가 이긴다
+    // (embed는 재조회 실패 fallback 전용).
+    //
+    // #3028 (case ②) — 하지만 기존에는 backend forward(postBoardingConfirm)가 payload.trainCode
+    // ('SHOULD-BE-IGNORED', fire 시점 stale embed = 9/11·9/21·10/7 RCA의 "앞차 X")를 그대로
+    // 보내 로컬 lock(Y='T1')과 backend forward가 분기했다 — 이 테스트가 그 분기를 고정한다.
+    it('재조회 성공(chosen 있음) → payload.trainCode 있어도 device fresh pick 우선(무시) — 로컬 lock과 backend forward 둘 다', async () => {
       (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
       const deps = makeDeps();
       await handleResponse(
@@ -1177,6 +1189,88 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         expect.anything(),
         expect.anything(),
       );
+      // #3028 — backend forward도 로컬 lock과 같은 trainCode('T1')여야 한다. 'SHOULD-BE-IGNORED'
+      // (stale payload.trainCode)가 아니다.
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+        'tok',
+        'boarded',
+        '강남',
+        '2',
+        'T1',
+      );
+      expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalledWith(
+        'tok',
+        'boarded',
+        '강남',
+        '2',
+        'SHOULD-BE-IGNORED',
+      );
+    });
+  });
+
+  // #3028 — "프롬프트 응답이 로컬 fresh 재확정 열차를 버리고 fire-시점 stale trainCode를
+  // backend로 보낸다" RCA의 TDD 케이스 ③~⑤(①②는 위 #2819 describe 블록에 통합됨). 신규
+  // 판정 로직은 추가하지 않는다 — 이미 존재하는 `tryAutoLock`의 fresh 재조회 결과를
+  // `postBoardingConfirm` 호출부로 전달만 한다(이슈 본문 "수정" 절).
+  describe('#3028 — fresh 재확정 트레인코드를 backend forward에도 사용', () => {
+    // 케이스 ③ (거부) — fresh 재조회 자체가 실패(arrivals null)하고 embed도 없으면(구버전
+    // backend 등) 기존대로 payload.trainCode(undefined) fallback — trainCode 없이 forward.
+    it('케이스 ③ — fresh 재조회 실패 + payload.trainCode 없음 → 기존 fallback(trainCode 없이 forward) 유지', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+    });
+
+    // 케이스 ③′ — fresh 재조회 실패하지만 embed(payload.trainCode)가 있으면 그 값이 재확정
+    // 결과로 취급돼 forward된다(embed 성공 = backend가 발사 시점에 단일 확정한 값).
+    it('케이스 ③′ — fresh 재조회 실패 + embed 성공 → embed trainCode가 forward됨', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, { ...PAYLOAD, trainCode: 'EMB1' }, deps);
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+        'tok',
+        'boarded',
+        '강남',
+        '2',
+        'EMB1',
+      );
+    });
+
+    // 케이스 ④ (거부) — hop-end(환승역 하차) 분기는 `tryAutoLock`을 전혀 거치지 않는다 — 이
+    // 함수 시그니처 변경이 hop-end의 `postBoardingConfirm('disembarked')` 호출(trainCode
+    // 미동봉)에 영향을 주지 않아야 한다.
+    it('케이스 ④ — hop-end destination 분기는 trainCode 미동봉 그대로(무변경)', async () => {
+      readWidgetRefreshContextMock.mockResolvedValueOnce({
+        destination: { id: 'S1', name: '강남', line: '2' },
+        route: null,
+        bgContext: null,
+      });
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      await handleResponse(
+        DISEMBARK_ACTION_DISEMBARKED,
+        { ...PAYLOAD, hopEndKind: 'disembark' as const },
+        makeDeps(),
+      );
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith(
+        'tok',
+        'disembarked',
+        '강남',
+        '2',
+      );
+    });
+
+    // 케이스 ⑤ (거부) — 재조회 결과가 모호(ambiguity, 동률 2+)하면 chosen=null → fail-closed가
+    // 아니라 기존 PENDING fallback으로 흐른다. payload.trainCode도 없으면(구버전 backend)
+    // forward도 trainCode 없이(기존 동작 그대로, fail-closed로 forward 자체를 막지 않음).
+    it('케이스 ⑤ — ambiguity(동률) + payload.trainCode 없음 → fail-closed 아님, 기존 fallback forward 유지', async () => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+      const deps = makeDeps({
+        fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+      });
+      await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+      expectPendingFallbackLockCalled('2');
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
     });
   });
 });
