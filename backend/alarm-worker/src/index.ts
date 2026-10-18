@@ -22,6 +22,7 @@ import {
   resolveActiveLegOrigin,
   type BoardingResolveNoneReason,
   type BoardingResolveOutcome,
+  type BoardingResolveTier,
 } from './boardingAnchorResolver';
 import {
   isNearOrigin,
@@ -2434,9 +2435,11 @@ function markBoardingPromptResponded(trip: Trip): Trip {
  * 판정 근거 자체가 없는 것과 같다(#2739).
  *
  * 의미 매핑(#2527 이슈 본문):
- *   - `boarded` — register-time resolver(`index.ts` `resolveBoardingAnchorAtRegister`)와 동일한
+ *   - `boarded` — register-time resolver(`index.ts` `resolveBoardingAnchorAtRegister`)와 같은
  *     `attemptBoardingAnchorResolution(trip, seoul, now, { allowLegTransfer: true, tapAnchor })`를
- *     재사용. 이미 `boardingLock`이 있으면 재평가하지 않는다(#1729 active lock 재평가 금지와
+ *     재사용하되, `tapAnchor` 존재로 #3056 `assertionMode`(탑승 표명 = 회고 시제)가 켜져 앵커 정위치
+ *     fresh DEPARTED를 최후 tier로 추가 수용한다 — register-time(전향 시제)과 **동일하지 않다**
+ *     (수용 시 D1 meta `resolveTier:'assertion-departed'`). 이미 `boardingLock`이 있으면 재평가하지 않는다(#1729 active lock 재평가 금지와
  *     동일 원칙, POST /trips register-time 가드 재현). 정확히 1개 resolve되면 lock 승격 + 해당
  *     leg의 prompt state를 `markPromptFired`로 갱신(재발사 dedup 목적 — 새 필드 없이 기존 함수
  *     재사용). ambiguous/none/invalid-route면 락 생성 금지(#1729) — `infoModeEnabled=true`
@@ -2476,6 +2479,8 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // #2893 — outcome:'none'이 3개 독립 원인(후보0/subwayId 매핑 실패/legSegment 산출 실패)을
   // 한 값으로 뭉개 D1만으로 원인 구분이 불가했다(PR #2890 재현 시 수작업 코드 추적 필요).
   let resolveNoneReason: BoardingResolveNoneReason | undefined;
+  // #3056 — assertion-departed tier 수용 건 D1 구분(오수용률 backfill 측정용).
+  let resolveTier: BoardingResolveTier | undefined;
   // #2739 요구사항 4 — anchor 출처(D1 meta용). activeOrigin(currentLegAnchor/promptDisplay)이
   // 있으면 그 출처, 없고 walk-gate도 아니면 탭이 시도된 것 — resolve 성공 여부와 무관하게
   // "무엇을 근거로 시도했는지"를 남긴다(invalid-route 거부도 anchorSource:'tap'으로 남는다).
@@ -2618,6 +2623,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           (outcome, detail) => {
             resolveOutcome = outcome;
             resolveNoneReason = detail?.noneReason;
+            resolveTier = detail?.resolveTier;
           },
           // #2739 — 탭이 leg 2+(환승 지점) 경유로 채택되면 waypoints가 그 leg부터 다시 시작하도록
           // advance 정보를 받는다. 아래에서 lock과 함께 반영해야 다음 cron이 올바른 정거장
@@ -2742,6 +2748,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       anchorSource,
       resolveNoneReason,
       trainCodeSource,
+      resolveTier,
     ),
   });
   return c.json({ ok: true, lockState });
@@ -2771,12 +2778,14 @@ export function buildBoardingConfirmEventMeta(
   anchorSource: 'tap' | 'currentLegAnchor' | 'promptDisplay' | undefined,
   noneReason?: BoardingResolveNoneReason,
   trainCodeSource?: 'body' | 'stamp',
+  resolveTier?: BoardingResolveTier,
 ): {
   lockState: 'leg1' | 'leg2' | 'released' | 'none';
   outcome?: BoardingResolveOutcome;
   anchorSource?: 'tap' | 'currentLegAnchor' | 'promptDisplay';
   noneReason?: BoardingResolveNoneReason;
   trainCodeSource?: 'body' | 'stamp';
+  resolveTier?: BoardingResolveTier;
 } {
   return {
     lockState,
@@ -2784,6 +2793,8 @@ export function buildBoardingConfirmEventMeta(
     ...(resolveOutcome === 'none' && noneReason !== undefined ? { noneReason } : {}),
     ...(anchorSource !== undefined ? { anchorSource } : {}),
     ...(trainCodeSource !== undefined ? { trainCodeSource } : {}),
+    // #3056 — resolved일 때만. assertion-departed(탑승 표명 최후 tier) 수용 건 구분자.
+    ...(resolveOutcome === 'resolved' && resolveTier !== undefined ? { resolveTier } : {}),
   };
 }
 

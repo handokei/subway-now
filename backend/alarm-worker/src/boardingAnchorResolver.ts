@@ -51,16 +51,31 @@
  *   1. `isUp` 이 anchor.direction과 일치 (direction=null이면 **fail-closed**, 후보 0건 — #2944 H-6)
  *   2. `stationName` 이 anchor.boardingStation과 정확히 일치
  *   3. `recptnMs` 신선(POSITION_FRESHNESS_MS 이내) — 0(누락)은 신뢰 불가로 제외
- *   4. `trainSttus` ∈ {ARRIVED(1), APPROACHING(0)} — DEPARTED(2)는 제외(이미 그 역을 떠난
- *      열차는 사용자가 방금 탑승한 대상일 수 없다는 실측 신뢰도 기준, 사전 검증 완료)
+ *   4. `trainSttus` ∈ {ARRIVED(1), APPROACHING(0)} — 기본 모드에서 DEPARTED(2)는 제외한다.
+ *      **단 `assertionMode`(탑승 표명 = 회고 시제, #3056)에서는 예외** — ARRIVED/APPROACHING/
+ *      passed(#2892) 후보가 모두 없을 때만 앵커 정위치 fresh DEPARTED를 최후 tier로 수용한다
+ *      (아래 "assertionMode"). 구 근거("이미 떠난 열차는 방금 탑승한 대상일 수 없다, 사전 검증
+ *      완료")는 10/18 R2(7325 trainSttus=2, 탭 +29s)로 반증됐다 — "탔다"는 과거 사건이다(#2696 WHOLE).
  * 우선순위 ARRIVED > APPROACHING 타이 안에서 정확히 1개만 남으면 resolved, 2개+ 는 ambiguous,
  * 0개는 none.
  *
  * 이 우선순위(ARRIVED가 최우선)는 `pickAutoTrainCode`(arrivals API, DEPARTED=2가 최우선)와
  * 의도적으로 다르다 — arrivals API는 "곧 도착 예측"이 목적이라 "방금 출발"이 가장 강한 신호지만,
- * realtimePosition 기반 탑승 확정은 "지금 이 역에 있는 열차"가 목적이라 이미 DEPARTED한 열차는
- * 애초에 후보에서 배제한다. 같은 `pickAutoTrainCode`를 재사용하면 정반대 우선순위가 뒤섞여
- * 잘못된 열차를 고를 위험이 있어 별도 함수로 분리했다 (재사용 대신 의도적 비-중복).
+ * realtimePosition 기반 탑승 확정은 "지금 이 역에 있는 열차"가 목적이라 기본 모드에서는 이미
+ * DEPARTED한 열차를 후보에서 배제한다(`assertionMode`에서만 **최후** tier로 수용 — DEPARTED를
+ * 최우선으로 두지 않으므로 "정반대 우선순위 뒤섞임"은 발생하지 않는다). 같은 `pickAutoTrainCode`를
+ * 재사용하면 정반대 우선순위가 뒤섞여 잘못된 열차를 고를 위험이 있어 별도 함수로 분리했다
+ * (재사용 대신 의도적 비-중복).
+ *
+ * assertionMode (#3056) — 탑승 표명(회고 시제)
+ * ============================================
+ * `POST /trips/:token/boarding-confirm`(프롬프트 응답·LA 버튼)은 "탔다"는 과거 사건의 표명이라
+ * 탭 시점엔 사용자 열차가 이미 앵커 역을 막 떠나 있을 수 있다(10/18 7325, 탭 +29s). 이 경로에서만
+ * (`attemptBoardingAnchorResolution`이 `options.tapAnchor` 존재로 유도) 앵커 정위치 fresh DEPARTED를
+ * 수용한다. 기존 두 경로(priority 루프 · `passedAnchorCandidates`)가 **둘 다 none일 때만** 개입하는
+ * 최후 tier라 기존 결과는 100% 무변경이다. 같은 방향 후보 2개+ 는 `ambiguous`(틀린 열차 lock 금지).
+ * 신선도는 기존 `POSITION_FRESHNESS_MS`(120s) 재사용 — 신규 임계값 없음. register-time(전향 시제)·
+ * cron legTransition·`evaluateLegBoardingTransition` 내부 호출은 기본값 false로 불변.
  *
  * express 타이브레이크 (design decision — PR 리뷰 요청)
  * ======================================================
@@ -158,8 +173,14 @@ export interface BoardingAnchor {
   direction: 'up' | 'down' | null;
 }
 
+/**
+ * #3056 — D1 계측용 resolve tier 라벨. `assertion-departed` = 탑승 표명(assertionMode) 최후 tier로
+ * 수용된 건(배포 후 24h backfill로 오수용률을 측정하기 위한 구분자). 기존 경로는 미설정.
+ */
+export type BoardingResolveTier = 'assertion-departed';
+
 export type BoardingResolution =
-  | { status: 'resolved'; trainCode: string }
+  | { status: 'resolved'; trainCode: string; tier?: BoardingResolveTier }
   | { status: 'ambiguous' }
   | { status: 'none' };
 
@@ -283,17 +304,23 @@ function passedAnchorCandidates(
  * 역명 배열(`attemptBoardingAnchorResolution`의 segmentStations와 동일 구성). 앵커 "정위치"
  * 매칭이 0건일 때만 `passedAnchorCandidates`로 확장 평가한다 — 기존 "앵커 정위치 ARRIVED/
  * APPROACHING" 매칭 결과(1개 또는 2개+)는 이 매개변수와 무관하게 100% 무변경이다.
+ *
+ * `assertionMode`(optional, #3056, 기본 false) — 탑승 표명 경로 전용. priority·passed 둘 다 none일
+ * 때만 앵커 정위치 fresh DEPARTED를 최후 tier로 수용한다(파일 헤더 "assertionMode" 참고). 기존
+ * 매칭 결과는 이 옵션과 무관하게 100% 무변경이다.
  */
 export function resolveTrainCodeFromPositions(
   anchor: BoardingAnchor,
   positions: readonly PositionEntry[],
   now: number,
   forwardSegment?: readonly string[],
+  assertionMode = false,
 ): BoardingResolution {
   const fresh = freshCandidatesAtAnchor(anchor, positions, now);
 
   // ARRIVED(1) 우선 — "지금 이 역에 서 있음" 확정 신호. APPROACHING(0)은 차선.
-  // DEPARTED(2)/그 외는 priority list 밖이라 자연히 후보에서 배제된다.
+  // DEPARTED(2)/그 외는 priority list 밖이다 — 기본 모드에선 자연히 배제되고, assertionMode에서만
+  // 아래 최후 tier가 수용한다.
   const priority: readonly number[] = [TRAIN_STATUS.ARRIVED, TRAIN_STATUS.APPROACHING];
   for (const trainSttus of priority) {
     const tier = fresh.filter((p) => p.trainSttus === trainSttus);
@@ -305,6 +332,15 @@ export function resolveTrainCodeFromPositions(
   const passed = passedAnchorCandidates(anchor, positions, now, forwardSegment);
   if (passed.length === 1) return { status: 'resolved', trainCode: passed[0].trainCode };
   if (passed.length > 1) return { status: 'ambiguous' };
+
+  // #3056 — 탑승 표명(회고 시제) 최후 tier: 위 두 경로가 모두 none일 때만 앵커 정위치 fresh DEPARTED.
+  if (assertionMode) {
+    const departed = fresh.filter((p) => p.trainSttus === TRAIN_STATUS.DEPARTED);
+    if (departed.length === 1) {
+      return { status: 'resolved', trainCode: departed[0].trainCode, tier: 'assertion-departed' };
+    }
+    if (departed.length > 1) return { status: 'ambiguous' };
+  }
   return { status: 'none' };
 }
 
@@ -358,7 +394,9 @@ export type LegBoardingConfirmation =
  *      없었다면 `none`.
  *
  * Pure — KV/네트워크 의존 없음. `attemptBoardingAnchorResolution`이 leg-2 cron 경로에서만
- * 호출한다(register-time/boarding-confirm 탭 경로는 무변경, 1회 resolved 즉시 승격).
+ * 호출한다(register-time은 무변경. boarding-confirm 탭 경로는 이 함수를 쓰지 않고 1회 resolved 즉시
+ * 승격하되, 판정은 #3056 `assertionMode`로 DEPARTED 최후 tier를 수용한다 — 이 함수 내부 호출은
+ * 기본값 false라 영향 없음).
  *
  * #2780 — 전이 단독 확증의 결함 (옵션 ⓑ "증거 AND", 2026-10-18 사용자 결정)
  * ================================================================================
@@ -640,7 +678,8 @@ export function resolveActiveLegOrigin(
  * `evaluateLegBoardingTransition`으로 대체한다 — `confirmed`일 때만 아래 lock 합성으로
  * 이어지고, 그 외(`pending`/`rejected`/`none`)는 `onLegTransition` 콜백으로 caller
  * (`scheduled.ts`)에 전체 판정을 통지한 뒤 null을 반환한다. 이 옵션을 전달하지 않는 기존
- * 3개 호출자(index.ts register-time/boarding-confirm)는 100% 무변경.
+ * 3개 호출자(index.ts register-time/boarding-confirm)는 100% 무변경 — 단 boarding-confirm은
+ * `tapAnchor` 존재로 #3056 `assertionMode`(DEPARTED 최후 tier)가 별도로 켜진다(legTransition 분기와 무관).
  */
 export async function attemptBoardingAnchorResolution(
   trip: Trip,
@@ -649,7 +688,10 @@ export async function attemptBoardingAnchorResolution(
   options?: LegOriginResolutionOptions,
   // #2893 — 2번째 선택 인자(detail)는 outcome==='none'일 때만 noneReason을 싣는다. 기존
   // 호출자(1개 인자만 받는 콜백)는 완전 무영향.
-  onOutcome?: (outcome: BoardingResolveOutcome, detail?: { noneReason?: BoardingResolveNoneReason }) => void,
+  onOutcome?: (
+    outcome: BoardingResolveOutcome,
+    detail?: { noneReason?: BoardingResolveNoneReason; resolveTier?: BoardingResolveTier },
+  ) => void,
   onTapLegAdvance?: (advance: TapLegAdvance) => void,
   onLegTransition?: (confirmation: LegBoardingConfirmation) => void,
 ): Promise<BoardingLockMeta | null> {
@@ -724,6 +766,7 @@ export async function attemptBoardingAnchorResolution(
   const resolutionAnchor = { line: anchor.line, boardingStation: anchor.originStation, direction };
 
   let resolvedTrainCode: string;
+  let resolveTier: BoardingResolveTier | undefined;
   if (options?.legTransition) {
     const confirmation = evaluateLegBoardingTransition(
       resolutionAnchor,
@@ -740,7 +783,14 @@ export async function attemptBoardingAnchorResolution(
     }
     resolvedTrainCode = confirmation.trainCode;
   } else {
-    const resolution = resolveTrainCodeFromPositions(resolutionAnchor, positions, now, segmentStations);
+    // #3056 — tapAnchor 존재 = boarding-confirm(탑승 표명, 회고 시제) 유일 전달자 → assertionMode.
+    const resolution = resolveTrainCodeFromPositions(
+      resolutionAnchor,
+      positions,
+      now,
+      segmentStations,
+      options?.tapAnchor !== undefined,
+    );
     if (resolution.status !== 'resolved') {
       // #2944 (H-6) — direction===null이면 fail-closed로 'none'이 결정적이다(실제 열차
       // 유무와 무관) — 'position-resolve-none'과 구분해 'direction-unknown'으로 기록한다.
@@ -750,9 +800,11 @@ export async function attemptBoardingAnchorResolution(
       return null;
     }
     resolvedTrainCode = resolution.trainCode;
+    resolveTier = resolution.tier;
   }
 
-  onOutcome?.('resolved');
+  // #3056 — assertion-departed tier로 수용된 건만 D1에서 구분 가능하도록 detail에 싣는다.
+  onOutcome?.('resolved', resolveTier !== undefined ? { resolveTier } : undefined);
   return {
     trainCode: resolvedTrainCode,
     line: anchor.line,
