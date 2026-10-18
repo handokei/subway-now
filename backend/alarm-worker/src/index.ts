@@ -1361,9 +1361,12 @@ app.post('/trips', async (c) => {
 
     // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
     // existing trip이 사라졌더라도(KV TTL 만료 등) progress가 살아 있으면 진행분을 그대로 복원.
-    const trip = progressApplies
+    const mergedTrip = progressApplies
       ? applyProgress(baseTrip, incoming, progress)
       : baseTrip;
+    // #3023 — 재등록도 활동성 핸들러. same-session 재등록이 짧은 잔여 TTL로 들어와도
+    // 여기서 sliding 연장을 적용한다(대부분은 incoming.expiresAt이 이미 새 값이라 no-op).
+    const trip = extendTripExpiryOnActivity(mergedTrip, Date.now());
 
       // #3006 D — KV 쓰기 실패 시 **503 + Retry-After**. 500이 아닌 이유: 등록이 실제로
       // 실패했으므로 200은 거짓말이지만, 500은 device 재시도 로직(#1960 `scheduleRegisterRetry`)이
@@ -2324,10 +2327,14 @@ app.post('/boarding-prompt/dismiss', async (c) => {
   const existing = await getTrip(c.env.TRIPS, payload.token);
   if (!existing) return c.json({ ok: true, applied: false });
 
-  const updated: Trip = markBoardingPromptResponded({
-    ...existing,
-    boardingPromptState: markPromptSilenced(existing.boardingPromptState, Date.now()),
-  });
+  // #3023 — 사용자 응답(dismiss)도 활동성 핸들러. sliding TTL 연장 적용.
+  const updated: Trip = extendTripExpiryOnActivity(
+    markBoardingPromptResponded({
+      ...existing,
+      boardingPromptState: markPromptSilenced(existing.boardingPromptState, Date.now()),
+    }),
+    Date.now(),
+  );
   await putTrip(c.env.TRIPS, updated);
   return c.json({ ok: true, applied: true });
 });
@@ -2653,7 +2660,11 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // completeWaypointAdvance가 이미 trip을 KV에서 삭제했다. 여기서 putTrip을 또 호출하면
   // 삭제된 trip을 그대로 재생성하는 회귀가 되므로 이 경로에서만 stamp write를 skip한다.
   if (!tripFinalized) {
-    await putTrip(c.env.TRIPS, markBoardingPromptResponded(working));
+    // #3023 — 탑승 응답(탭)도 활동성 핸들러. sliding TTL 연장 적용.
+    await putTrip(
+      c.env.TRIPS,
+      extendTripExpiryOnActivity(markBoardingPromptResponded(working), now),
+    );
   }
 
   // SonarCloud S5145 — token(URL param)/station/line/action은 전부 요청에서 유래한
@@ -3472,6 +3483,9 @@ app.post('/boarding-lock/sync', async (c) => {
     };
   }
 
+  // #3023 — sync도 활동성 핸들러(spec 예시). sliding TTL 연장 적용. 아래 read-after-write
+  // retry(3486 인근)는 같은 `working` 객체를 재사용하므로 연장이 중복 적용되지 않는다.
+  working = extendTripExpiryOnActivity(working, now);
   await putTrip(c.env.TRIPS, working);
 
   // #1364 — read-after-write verification. Workers KV는 region간 eventually consistent —
@@ -3621,6 +3635,45 @@ export async function verifyBoardingLockPersisted(
 
 /** Seam E 정정으로 lock TTL을 연장하는 길이. cron 주기 60s × 30 cycles 마진. */
 export const LOCK_TTL_REFRESH_MS = 30 * 60 * 1000;
+
+/**
+ * #3023 — 활동성 trip TTL sliding extension 임계값.
+ *
+ * 2026-10-15 실측(`alarmBackend.ts:429-432`): 14:04:17 등록 → 16:04(등록 2h 후) TTL 만료 →
+ * 16:25~16:43 재등록 400×30. `trip.expiresAt`은 등록 시점 device가 보낸 값(#2998)으로
+ * 고정되고, 그 뒤 sync 등 활동이 계속 들어와도 연장되지 않아 라이드 중간에 KV가 그대로
+ * 만료됐다. 이 임계(잔여 TTL) 미달이면 활동성 핸들러가 `extendTripExpiryOnActivity`로
+ * expiresAt을 올린다.
+ */
+export const TRIP_ACTIVITY_MIN_REMAINING_MS = 30 * 60 * 1000;
+
+/**
+ * 연장 길이 — device 등록 기본 TTL(`DEFAULT_TRIP_TTL_MS`=2h,
+ * `src/features/alarm/api/alarmBackend.ts:237`)과 동일하게 맞춰 "활동이 있으면 등록
+ * 시점과 동등한 수명을 되돌려받는다"는 sliding window 불변식을 만든다. 상한은 별도로
+ * 두지 않는다 — lifecycle 9h force-end(`tripLifecyclePhase`, scheduled.ts)가 이미 무한
+ * 연장을 막는다.
+ */
+export const TRIP_ACTIVITY_EXTENSION_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * putTrip 직전 piggyback 호출 전용 헬퍼 — **새 KV write를 만들지 않는다**(#2450/#3006
+ * 쿼터 불변식). 잔여 TTL이 `TRIP_ACTIVITY_MIN_REMAINING_MS` 미만일 때만 expiresAt을
+ * `now + TRIP_ACTIVITY_EXTENSION_MS`로 올리고, 그 외는 trip을 그대로 반환한다(불필요
+ * 연장 금지).
+ *
+ * 호출부는 반드시 "device 활동이 실제로 이 요청을 트리거한" 핸들러로 한정한다 — cron
+ * (`scheduled.ts`)의 매 tick putTrip은 호출부에 포함하지 않는다. cron은 활성 trip이면
+ * 매 tick 실행되므로, 거기서 이 헬퍼를 타면 TTL이 "죽은 trip 정리" 목적을 잃고
+ * 무한정 연장돼버린다. `POST /position`도 제외한다 — 이 채널은 10초 주기 최고빈도
+ * 채널이라(#2450/#2073) 쓰기 증폭 위험이 가장 크고, 그 경로의 유일한 조건적 write
+ * (`stampOriginProximityIfNeeded`)는 근접 게이트 전용의 좁은 목적이라 TTL 연장과 무관하다.
+ */
+export function extendTripExpiryOnActivity(trip: Trip, now: number): Trip {
+  const remainingMs = trip.expiresAt - now;
+  if (remainingMs >= TRIP_ACTIVITY_MIN_REMAINING_MS) return trip;
+  return { ...trip, expiresAt: now + TRIP_ACTIVITY_EXTENSION_MS };
+}
 
 /**
  * #2824 — sync-promotion corroboration 게이트. `trip.recentPromptCandidates`(boarding-prompt
@@ -3856,11 +3909,15 @@ app.post('/live-activity/register', async (c) => {
     return c.json({ error: 'trip_not_found' }, 404);
   }
 
-  const updated: Trip = {
-    ...existing,
-    activityPushToken: payload.activityPushToken,
-    activityState: 'live',
-  };
+  // #3023 — LA 토큰 등록도 활동성 핸들러(spec 예시 la-token-register). sliding TTL 연장 적용.
+  const updated: Trip = extendTripExpiryOnActivity(
+    {
+      ...existing,
+      activityPushToken: payload.activityPushToken,
+      activityState: 'live',
+    },
+    Date.now(),
+  );
   await putTrip(c.env.TRIPS, updated);
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(payload.tripToken),
