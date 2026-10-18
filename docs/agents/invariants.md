@@ -27,7 +27,7 @@
 | index.ts:1389 | 불변식 | POST /position에서 **마커**(`markTripRegistered` 등 관측 신호) stamp 금지(#2450 throttle 보호) — **TTL(수명) 연장과는 다른 축**: #3047이 `extendTripExpiryViaPosition`(index.ts, `stampOriginProximityIfNeeded` 다음 정의)으로 /position에서도 조건부(잔여 TTL<`TRIP_ACTIVITY_MIN_REMAINING_MS`) 1회 putTrip을 허용했다 — BG-only 라이드(화면 꺼짐)의 유일 채널이 sliding TTL 연장에서 빠져있던 미보호를 해소. 마커 무조건 stamp 금지는 여전히 유효, TTL 조건부 연장만 예외 | 있음(positionTtlExtension.test.ts 쿼터 산술 케이스) |
 | index.ts:2864 | 함정 | KV read-modify-write는 CAS 없음 — 동시 갱신 stale 덮어쓰기 race 창 | 없음(구조) |
 | tripPositionSsot.ts:186 | 불변식 | 이 모듈은 lock 승격 절대 안 함 — device useLockSuggestion만 소비 | 부분 |
-| boardingAnchorResolver.ts:36 | 불변식 | 틀린 열차 lock 절대 금지 — 이 모듈의 존재 이유 | 부분 |
+| boardingAnchorResolver.ts:36 | 불변식 | 틀린 열차 lock 절대 금지 — 이 모듈의 존재 이유 | 있음(replay_20261018_assertion_departed.test.ts ⓓⓔⓕⓘ — stale/반대방향/ARRIVED 우선/복수 후보 ambiguous, #3056) |
 | boardingAnchorResolver.ts:126 | 갭 | staleness 상한 의도적 보류(N=1 편향 우려) | 없음(의도) |
 | liveActivity.ts:11 | 불변식 | ContentState 필수 3필드(stationName/lineName/lineColorHex) backend가 항상 채움 | 있음 |
 | liveActivity.ts:434 | 함정 | 'la-stale-backstop'은 backend 내부 식별자 — 외부 enum 노출 금지 | **없음** |
@@ -124,7 +124,7 @@ fix가 이 영역을 지나갈 때 해당 항목을 같은 PR에서 테스트로
 4. **scheduled.ts:5615 promptDisplay 불변경** — 깨지면 leg-1 프롬프트 조용히 사망(과거 실발생).
 5. **useFusedNearestStation/useNearestStation hydrate↔fresh-fix race** — 표시역 과거값 회귀 가능.
 6. **fallback.ts 평가 순서(stale-intermediate ≺ implicit-ACK)** — 순서 뒤집히면 회귀 관측 자체 불능.
-7. **boardingAnchorResolver "틀린 열차 lock 금지"** — 모듈 존재 이유인데 리졸버 레벨 직접 테스트 부재.
+7. ~~**boardingAnchorResolver "틀린 열차 lock 금지"** — 모듈 존재 이유인데 리졸버 레벨 직접 테스트 부재.~~ (승격 완료 #3056 — replay_20261018_assertion_departed.test.ts)
 8. **boardingLock App Group pull 신선도 게이트** — LA 버튼 회귀 이력 다수(#2805/#2806)인데 게이트 값 미고정.
 9. **tripEndedSentinel 소비 금지** — 어기면 trip 종료 오탐/이중 종료.
 10. **isNearOrigin "존재 AND 멀다" 분리 판정** — 합치면 #2532 조용히 무력화.
