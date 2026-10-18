@@ -2089,6 +2089,13 @@ app.post('/position', async (c) => {
       Date.now(),
     ),
   );
+  // #3047 — BG-only 라이드(화면 꺼짐)의 유일한 device→backend 채널이 이 경로다. 위
+  // `stampOriginProximityIfNeeded`는 origin 근접 관측시에만 조건적으로 putTrip하므로
+  // BG-only 구간(대부분 근접 관측 없음)에는 피기백 기회가 거의 없다 — 그래서 독립된 조건부
+  // write로 분리한다. 자세한 쿼터 산술·#2450과의 관계는 `extendTripExpiryViaPosition` 주석.
+  await degradeOnKvFailure('extendTripExpiryViaPosition', () =>
+    extendTripExpiryViaPosition(c.env.TRIPS, payload.token, Date.now()),
+  );
   // #823 Phase 3 E1 — 가속도 옵션 필드. 부재 또는 invalid 시 skip (positionSeries는 이미 적재됨).
   if (payload.accelSummary) {
     const accelSummary = payload.accelSummary;
@@ -2200,6 +2207,48 @@ export async function stampOriginProximityIfNeeded(
   if (!trip) return;
   if (!shouldStampOriginProximity(trip.originProximityAt, now)) return;
   await putTrip(kv, { ...trip, originProximityAt: now });
+}
+
+/**
+ * #3047 — `extendTripExpiryOnActivity`를 `POST /position`에서 호출하는 전용 진입점.
+ *
+ * 10/18 편측 감사 D1: sliding TTL 연장이 적용된 5곳(index.ts:1369 재등록 / 그 외 4곳 sync·
+ * boarding-prompt 응답 등 putTrip 핸들러, `extendTripExpiryOnActivity` 정의부 참고)이 전부
+ * **FG 훅 또는 사용자 탭 트리거**다. BG-only 라이드(화면 꺼짐)에서 device→backend 유일 호출은
+ * `backgroundLocationTask.ts` → `POST /position`이고, 그 경로는 #3023 설계 당시 "쓰기 증폭
+ * 위험이 가장 크다"는 이유로 의도적으로 연장 대상에서 제외됐다 — 그 선언이 "그래서 BG-only
+ * 라이드는 중간 만료에 노출된다"는 결과를 적지 않았다.
+ *
+ * 바로 위 `stampOriginProximityIfNeeded`와의 차이 — 그 함수는 **근접 관측시에만** 조건부로
+ * putTrip한다. BG-only 구간은 origin에서 멀어진(또는 `originDistanceM`/`originAccuracyM`
+ * 자체가 안 오는) 경우가 대부분이라 그 write에 얹을(piggyback) 기회가 거의 없다 — 그래서
+ * 이 함수는 독립적으로 `getTrip`을 한 번 더 읽고, 잔여 TTL이 `TRIP_ACTIVITY_MIN_REMAINING_MS`
+ * 미달일 때만 **별도 조건부 putTrip 1회**를 한다(무조건 write가 아니다).
+ *
+ * **쿼터 산술**(#2450/#3006/#2073 불변식과 정합): `extendTripExpiryOnActivity`가 연장할 때
+ * `now + TRIP_ACTIVITY_EXTENSION_MS`(2h)로 세팅하고, 다음 연장이 필요해지는 시점은 잔여 TTL이
+ * 다시 `TRIP_ACTIVITY_MIN_REMAINING_MS`(30m) 미달로 떨어질 때다 — 즉 연장 1회당 최소
+ * `TRIP_ACTIVITY_EXTENSION_MS - TRIP_ACTIVITY_MIN_REMAINING_MS` = 1.5h 간격. `/position`은
+ * 10초 주기로 호출되지만 이 함수가 실제로 putTrip하는 건 그 1.5h마다 1회뿐이다 — 10초 주기
+ * 증폭은 발생하지 않는다. lifecycle 9h force-end 상한(`tripLifecyclePhase`) 기준 trip 생애
+ * 전체 최대 ~6회(9h / 1.5h) write.
+ *
+ * **#2450과의 관계(마커 vs 수명)**: #2450은 **마커류**(근접/활성 trip 목록 마커 등 관측 신호)를
+ * `/position`에서 무조건 stamp하는 패턴을 금지한 것이다(`markTripRegistered` 주석 참고). 이
+ * 함수는 **TTL(수명) 연장**이라 다른 축이다 — 관측 신호를 적재하는 게 아니라 cron이 trip을
+ * force-expire하지 않도록 생존을 보장하는 것이며, 조건(잔여 TTL<임계)이 있어 #2450이 막던
+ * "무조건 write" 패턴이 아니다. `docs/agents/invariants.md` backend 섹션에 이 구분을 반영.
+ */
+export async function extendTripExpiryViaPosition(
+  kv: KVNamespace,
+  token: string,
+  now: number,
+): Promise<void> {
+  const trip = await getTrip(kv, token);
+  if (!trip) return;
+  const extended = extendTripExpiryOnActivity(trip, now);
+  if (extended === trip) return;
+  await putTrip(kv, extended);
 }
 
 interface PositionUploadPayload {
@@ -3665,9 +3714,14 @@ export const TRIP_ACTIVITY_EXTENSION_MS = 2 * 60 * 60 * 1000;
  * 호출부는 반드시 "device 활동이 실제로 이 요청을 트리거한" 핸들러로 한정한다 — cron
  * (`scheduled.ts`)의 매 tick putTrip은 호출부에 포함하지 않는다. cron은 활성 trip이면
  * 매 tick 실행되므로, 거기서 이 헬퍼를 타면 TTL이 "죽은 trip 정리" 목적을 잃고
- * 무한정 연장돼버린다. `POST /position`도 제외한다 — 이 채널은 10초 주기 최고빈도
- * 채널이라(#2450/#2073) 쓰기 증폭 위험이 가장 크고, 그 경로의 유일한 조건적 write
- * (`stampOriginProximityIfNeeded`)는 근접 게이트 전용의 좁은 목적이라 TTL 연장과 무관하다.
+ * 무한정 연장돼버린다.
+ *
+ * `POST /position`은 **기존 putTrip에 piggyback하는 호출부 목록에는** 포함하지 않는다 —
+ * 그 경로는 10초 주기 최고빈도 채널이라(#2450/#2073) 매 호출 putTrip은 쓰기 증폭 위험이
+ * 가장 크다. 대신 #3047이 전용 조건부 1회 write 경로(`extendTripExpiryViaPosition`, 바로
+ * 위 `stampOriginProximityIfNeeded` 다음 정의)를 분리해 BG-only 라이드(화면 꺼짐, 이
+ * 채널이 유일한 device→backend 접촉)도 sliding TTL 연장을 받게 한다 — "매 호출 write"가
+ * 아니라 "잔여 TTL<임계일 때만 write"이므로 여기서 막는 쓰기 증폭 패턴과는 다르다.
  */
 export function extendTripExpiryOnActivity(trip: Trip, now: number): Trip {
   const remainingMs = trip.expiresAt - now;
