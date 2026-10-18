@@ -1331,6 +1331,11 @@ export function useApnsTripRegistration({
         scheduleRegisterRetry(`${routeSig}:${destination.id}`);
         return;
       }
+      // #3043 — 이 지점부터 registerFromLatestInputs 호출까지 cancelled 가드가 없어 deps
+      // 변화로 cleanup→재실행돼도 선행 run이 멈추지 않고 자기 POST까지 완주했다(10/18
+      // 18:37:30/31 1초 2연발 실측). token-refresh/Tier1/Tier2/retry는 독립 async 함수라
+      // 이 main effect 전용 closure의 run()에만 추가한다.
+      if (cancelled) return;
 
 
       // #1284 — buildBoardingPromptContext가 성공하면 캐시 갱신. 이후 currentStation이
@@ -1376,6 +1381,10 @@ export function useApnsTripRegistration({
       // ref는 이미 이번 render의 최신 값으로 동기화돼 있어(ref-sync effect가 이 effect보다 먼저
       // 실행) closure의 route/currentStation을 직접 쓰는 것과 결과가 같지만, 두 register 경로가
       // 구조적으로 같은 소스를 읽게 만들어 payload divergence를 원천 차단한다.
+      // #3043 — 바로 위 clearBackendSsotMirror await 중 cleanup될 수 있다. 가드 없으면
+      // 선행 run이 멈추지 않고 자기 POST(registerActiveTrip)까지 완주해 신규 run과 1초
+      // 2연발이 재현된다(10/18 18:37:30/31 실측).
+      if (cancelled) return;
       const result = await registerFromLatestInputs(token);
       // #1264 (N3) + #1704 (d) — POST 발사 직후 송신된 routeSig / destination.id / boardingLockSig
       // 를 기록. 다음 cycle이 trip 전환(어느 하나라도 변경) 시 cancel 트리거.
