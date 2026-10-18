@@ -8533,9 +8533,25 @@ export async function maybeFireLegBoardingPrompt(
   // 표명한 이력(infoModeEnabled) 중 하나라도 있어야 대상. 이 함수는 lock 활성 여부와 무관하게
   // 환승 leg마다 평가되므로, GPS 9단/GPS-free leg-1과 동일 OR 게이트 없이는 목적지-only
   // trip(둘 다 false)도 환승 경로를 타면 leg-2 "탑승하셨나요?"를 받는 구멍이 있었다.
-  if (trip.promptOptIn !== true && trip.infoModeEnabled !== true) {
+  //
+  // #3025 — `trackingOptIn`(목적지만 설정) 단독 trip도 대상에 포함한다(#3012가 출발역에만
+  // 열었던 것을 환승 leg-2까지 확장). leg-2에 도달했다는 것 자체가 트립 전진의 증거이지만,
+  // `runLocklessTransfer`/`runLocklessIntermediate`가 단일 오열차로 전진 가능한 알려진 갭
+  // (#2926)이 있어 전진이 곧 탑승은 아니다 — 약한 축 단독일 때는 lock 이력(`lockEverAttached`/
+  // `boardingCommitted`)을 추가로 요구한다. `hasBoardingEvidence`(6865)를 재사용하지 않는
+  // 이유는 그 술어의 `legResolveStreak` 포함이 #2926 실측에서 false positive 전력이 있어서다.
+  const hasExplicitIntent = trip.promptOptIn === true || trip.infoModeEnabled === true;
+  if (!hasExplicitIntent && trip.trackingOptIn !== true) {
     stats.legBoardingPromptSkippedNoOptIn += 1;
-    log('leg-boarding-prompt: skip (no promptOptIn/infoModeEnabled — 안내 시작 안 함 + 의향 이력 없음)', {
+    log('leg-boarding-prompt: skip (no promptOptIn/infoModeEnabled/trackingOptIn — 의향 이력 없음)', {
+      token: trip.token.slice(0, 8),
+    });
+    return;
+  }
+  const weakAxisOnly = !hasExplicitIntent && trip.trackingOptIn === true;
+  if (weakAxisOnly && trip.lockEverAttached !== true && trip.boardingCommitted !== true) {
+    stats.trackingOptInNoBoardingEvidenceBlocked += 1;
+    log('leg-boarding-prompt: skip (trackingOptIn-only, no lock history — fail-closed, #2926 FP not inherited)', {
       token: trip.token.slice(0, 8),
     });
     return;
@@ -8840,9 +8856,23 @@ export async function maybeFireHopEndPrompt(inputs: {
   // trip(둘 다 false)도 환승만 하면 "하차했나요?" 프롬프트를 받는 구멍이 있었다. 실제 lock
   // 형성 경로(BoardingTrainList 직접 탭/backend auto-lock)는 모두 infoModeEnabled를 함께
   // stamp하므로 이 게이트가 정상 lock trip을 침묵시키지 않는다.
-  if (trip.promptOptIn !== true && trip.infoModeEnabled !== true) {
+  //
+  // #3025 — `trackingOptIn`(목적지만 설정) 단독 trip도 대상에 포함한다(#3012가 출발역에만
+  // 열었던 것을 하차까지 확장). 설계·근거는 `maybeFireLegBoardingPrompt`(위)의 #3025 주석과
+  // 동일 — `hasBoardingEvidence`(6865)를 재사용하지 않고 lock 이력만 직접 체크해 #2926
+  // (legResolveStreak false positive)을 상속하지 않는다.
+  const hasExplicitIntent = trip.promptOptIn === true || trip.infoModeEnabled === true;
+  if (!hasExplicitIntent && trip.trackingOptIn !== true) {
     stats.hopEndPromptSkippedNoOptIn += 1;
-    log('hop-end-prompt: skip (no promptOptIn/infoModeEnabled — 안내 시작 안 함 + 의향 이력 없음)', {
+    log('hop-end-prompt: skip (no promptOptIn/infoModeEnabled/trackingOptIn — 의향 이력 없음)', {
+      token: trip.token.slice(0, 8),
+    });
+    return;
+  }
+  const weakAxisOnly = !hasExplicitIntent && trip.trackingOptIn === true;
+  if (weakAxisOnly && trip.lockEverAttached !== true && trip.boardingCommitted !== true) {
+    stats.trackingOptInNoBoardingEvidenceBlocked += 1;
+    log('hop-end-prompt: skip (trackingOptIn-only, no lock history — fail-closed, #2926 FP not inherited)', {
       token: trip.token.slice(0, 8),
     });
     return;
