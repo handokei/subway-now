@@ -17,7 +17,14 @@
  * epoch ms 숫자이므로 injection 위험이 없다(정수 검증은 caller의 `Number.isFinite` 책임).
  */
 
-import { buildRegressionSql } from './tripMetricsRegressionQuery';
+// ⚠️ 확장자 `.ts`가 load-bearing이다 — 지우면 런북이 실행 불가가 되고 vitest는 그대로 통과한다.
+// 이 모듈은 `scripts/checkTripMetricsRegression.mjs`가 **Node로 직접** 로드한다(번들러 경유 X).
+// Node ESM 해석기는 확장자를 추론하지 않으므로 값 import는 `.ts`를 명시해야 한다. 레포의 다른
+// 상대 import 278건이 확장자 없이 사는 것은 전부 번들러/vitest 경유라 해석기가 다르기 때문이다.
+// 같은 경로로 Node가 로드하는 `replayFixture.ts:9`가 확장자 없이도 되는 이유는 그게 `import type`
+// (타입 스트리핑에 지워져 해석 자체가 일어나지 않음)이기 때문 — 값 import에는 적용되지 않는다.
+// 이 파일/`fixtureFromTrip.ts`/`replayFixture.ts`에 **값** 상대 import를 새로 추가할 때도 동일.
+import { buildRegressionSql } from './tripMetricsRegressionQuery.ts';
 
 export interface RegressionCheckRow {
   trip_token_hash: string;
