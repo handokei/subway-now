@@ -1708,7 +1708,14 @@ describe('cleanupTripWithLa', () => {
       const kv = new InMemoryKV();
       const trip = makeTrip({
         activityPushToken: undefined,
-        boardingLock: { trainCode: 'T1', line: '2', stationName: '강남', lockedAt: NOW },
+        boardingLock: {
+          trainCode: 'T1',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['강남'],
+          expiresAt: NOW + 3_600_000,
+        },
       });
       await kv.put('trip:devtoken', JSON.stringify(trip));
       let capturedMeta: Record<string, unknown> | undefined;
@@ -1832,13 +1839,13 @@ describe('cleanupTripWithLa', () => {
 
     it('[거부] 진단 필드 수집 중 예외 → cleanup은 정상 완료되고 예외가 전파되지 않는다', async () => {
       const kv = new InMemoryKV();
-      const originalGet = kv.get.bind(kv);
-      // deviceContact 조회(`deviceContact:` 키 read)만 throw하도록 KV.get을 선택적으로 오염시킨다
-      // — readDeviceContact 내부 catch를 우회하기 위해 KV 레벨에서 던진다.
-      vi.spyOn(kv, 'get').mockImplementation(async (key: string, ...rest: unknown[]) => {
-        if (key.startsWith('deviceContact:')) throw new Error('kv read boom');
-        return (originalGet as (k: string, ...r: unknown[]) => Promise<unknown>)(key, ...rest);
-      });
+      // `readDeviceContact` 자체가 내부 try/catch로 모든 read 실패를 null로 삼키므로(설계상
+      // graceful), 바깥쪽(cleanupTripWithLa)의 진단 수집 try/catch를 실제로 타게 하려면
+      // 그 함수 자체가 reject하도록 모듈 export를 직접 spy해야 한다.
+      const deviceContactModule = await import('../deviceContact');
+      const spy = vi
+        .spyOn(deviceContactModule, 'readDeviceContact')
+        .mockRejectedValueOnce(new Error('readDeviceContact boom'));
       const trip = makeTrip({ activityPushToken: undefined });
       await kv.put('trip:devtoken', JSON.stringify(trip));
       let capturedMeta: Record<string, unknown> | undefined;
@@ -1868,7 +1875,12 @@ describe('cleanupTripWithLa', () => {
       // 기존 필드(reason/endPath)는 그대로 — 진단 필드 수집 실패가 cleanup 자체를 깨지 않는다.
       expect(capturedMeta?.reason).toBe('expired');
       expect(capturedMeta?.endPath).toBe('trip-expired');
+      // 수집이 던졌으므로 신규 진단 필드는 실리지 않는다(graceful 누락, throw 아님).
+      for (const key of ['expiresAt', 'createdAt', 'lastSyncAt', 'ageMs', 'hadLock']) {
+        expect(capturedMeta && key in capturedMeta).toBe(false);
+      }
       expect(await kv.get('trip:devtoken')).toBeNull();
+      spy.mockRestore();
     });
   });
 });
