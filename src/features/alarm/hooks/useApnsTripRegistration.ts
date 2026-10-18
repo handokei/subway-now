@@ -1335,6 +1335,12 @@ export function useApnsTripRegistration({
       // 변화로 cleanup→재실행돼도 선행 run이 멈추지 않고 자기 POST까지 완주했다(10/18
       // 18:37:30/31 1초 2연발 실측). token-refresh/Tier1/Tier2/retry는 독립 async 함수라
       // 이 main effect 전용 closure의 run()에만 추가한다.
+      /* istanbul ignore next -- token 체크(동기)와 다음 await(clearBackendSsotMirror) 사이는
+       * 동기 구간이라 React가 cleanup을 삽입할 창이 없다 → 이 지점에 cancelled=true로 도달하는
+       * 경로가 테스트로 재현 불가(선행 await인 cancelAllSafetyNetAlarms는 tripSwitched 분기
+       * 안에서 자체 cancelled 가드 :1323으로 이미 종료). clearBackendSsotMirror await 뒤
+       * 가드(아래)가 실질 방어선이며 ① 테스트가 그것을 커버한다. #2167/#1563 등 동형 방어
+       * 가드의 istanbul ignore 관행과 동일. */
       if (cancelled) return;
 
 
