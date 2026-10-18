@@ -1823,12 +1823,18 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         const legPending = trip.legResolveStreak
           ? { trainCode: trip.legResolveStreak.trainCode, firstObservedAt: trip.legResolveStreak.firstObservedAt ?? now }
           : undefined;
+        // #2780 (옵션 ⓑ, 2026-10-18 결정) — DEPARTED 전이 confirm에 탑승 증거 AND 조건.
+        // `trip.boardingCommitted===true`는 사용자가 leg boarding-prompt에 [탑승] 응답했지만
+        // device가 trainCode를 자체 확정하지 못해 PENDING fallback lock으로 흐른 상태만
+        // 가리킨다(`useBoardingPromptResponder.ts:827`) — 응답 자체가 없는 trip(9/21 실측
+        // 3056)은 이 값이 false로 남아 confirm이 보류되고 pending을 유지한다(`evaluateLegBoardingTransition`).
+        const hasUserBoardingResponse = trip.boardingCommitted === true;
         const anchorLock = await attemptBoardingAnchorResolution(
           trip,
           deps.seoul,
           now,
           isLeg2Candidate
-            ? { allowLegTransfer: true, legTransition: { pending: legPending } }
+            ? { allowLegTransfer: true, legTransition: { pending: legPending, hasUserBoardingResponse } }
             : { allowLegTransfer: true },
           undefined,
           undefined,

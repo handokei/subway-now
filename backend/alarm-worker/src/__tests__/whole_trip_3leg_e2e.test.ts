@@ -159,11 +159,15 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
   // 3번 강화 — device sync/재탭 없이 backend가 realtimePosition ARRIVED→DEPARTED 전이만으로
   // leg-N lock 부착. currentLegAnchor(leg-agnostic) + attemptBoardingAnchorResolution +
   // evaluateLegBoardingTransition(#2754 — "사용자가 탄 열차는 타자마자 출발한다" 확증).
-  it('device-독립: 환승 후 sync 없이 Seoul positions ARRIVED→DEPARTED 전이만으로 leg-2 lock 자동 부착', async () => {
+  it('device-독립(trainCode sync 없음): Seoul positions ARRIVED→DEPARTED 전이 + 탑승 증거(boardingCommitted=true)로 leg-2 lock 자동 부착', async () => {
     const kv = new InMemoryKV();
     const env = makeEnv(kv);
     const token = 'streak-leg2';
-    // leg-2 상태를 직접 구성: lock 해제됨 + currentLegAnchor{건대입구,2} + walk-gate 이미 통과 + infoMode.
+    // leg-2 상태를 직접 구성: lock 해제됨 + currentLegAnchor{건대입구,2} + walk-gate 이미 통과 +
+    // infoMode. #2780 (옵션 ⓑ) — DEPARTED 전이만으로는 confirm되지 않으므로, 사용자가 leg-2
+    // boarding-prompt에 [탑승] 응답은 했지만 device가 trainCode를 자체 확정(sync)하지 못한
+    // 상태(`boardingCommitted: true`, `useBoardingPromptResponder.ts:827`)를 명시적으로 심는다
+    // — trainCode sync 채널은 여전히 쓰지 않는다("device-독립"의 의미는 유지).
     await kv.put(
       `trip:${token}`,
       JSON.stringify({
@@ -180,6 +184,7 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
         infoModeEnabled: true,
         currentLegAnchor: { boardingStation: '건대입구', line: '2' },
         legBoardingEligibleAt: NOW - 60_000, // walk-gate 이미 통과
+        boardingCommitted: true,
       }),
     );
 

@@ -345,7 +345,10 @@ export type LegBoardingConfirmation =
  * APPROACHING → DEPARTED **전이**를 확증으로 쓴다:
  *
  *   1. `pending`(직전 cycle의 미확정 후보)이 있고, 이번 cycle에 같은 trainCode가 같은 anchor
- *      station에서 DEPARTED(2)로 관측되면 → `confirmed`("탑승 후 즉시 출발" 실측 신호).
+ *      station에서 DEPARTED(2)로 관측되고, **`hasUserBoardingResponse`가 true면** →
+ *      `confirmed`("탑승 후 즉시 출발" 실측 신호 + 사용자 탑승 증거). `hasUserBoardingResponse`가
+ *      false면 confirm을 보류하고 `pending`을 그대로 유지한다(firstObservedAt 보존) — 아래
+ *      "#2780 — 전이 단독 확증의 결함" 문단 참고.
  *   2. 그 외 이번 cycle이 resolved(ARRIVED/APPROACHING 유일 후보)면 → `pending`. 직전
  *      pending과 같은 trainCode면 `firstObservedAt`을 보존(연속 관찰), 다르면 교체(신규
  *      후보, `firstObservedAt`=now) — 같은 trainCode가 계속 ARRIVED/APPROACHING로 남아
@@ -356,12 +359,43 @@ export type LegBoardingConfirmation =
  *
  * Pure — KV/네트워크 의존 없음. `attemptBoardingAnchorResolution`이 leg-2 cron 경로에서만
  * 호출한다(register-time/boarding-confirm 탭 경로는 무변경, 1회 resolved 즉시 승격).
+ *
+ * #2780 — 전이 단독 확증의 결함 (옵션 ⓑ "증거 AND", 2026-10-18 사용자 결정)
+ * ================================================================================
+ * ARRIVED/APPROACHING→DEPARTED 전이는 "그 anchor station을 지나는 모든 열차"가 만족하는
+ * 신호다 — 사용자와의 연결 고리가 없다. 9/21 실측(건대입구 2호선): 3056이 06:47:18에 전이를
+ * 완성해 confirmed됐지만, 사용자는 06:48에 **그 다음 열차**를 탔다(`boarding_prompt_responded=0`
+ * — leg-2 boarding-prompt가 발사됐으나 응답 없음). 즉 결함은 "증거 없는 확신"이고, 이 전이
+ * 규칙만으로는 "walk-gate 개방 후 가장 먼저 전이를 완성하는 열차"(통상 사용자가 놓친 열차)가
+ * 잡힌다.
+ *
+ * `hasUserBoardingResponse`(caller 전달, `scheduled.ts`가 `trip.boardingCommitted===true`로
+ * 채운다)를 DEPARTED 전이 confirm 조건에 AND로 추가한다. `trip.boardingCommitted`는
+ * `useBoardingPromptResponder.ts:827`(`createPendingFallbackLock`)이 **사용자가 leg
+ * boarding-prompt에 [탑승] 응답했지만 device가 trainCode를 자체 확정하지 못해 PENDING
+ * sentinel lock으로 fallback한 시점에만** true로 stamp한다 — device가 trainCode를 스스로
+ * 확정한 성공 경로(`tryAutoLock`의 chosen 분기)는 실 lock을 즉시 만들어 backend로
+ * sync하므로 이 cron 경로(`evaluateLegBoardingTransition`) 자체에 도달하지 않는다(그
+ * trip은 이미 `isBoardingLockActive===true`). 즉 `hasUserBoardingResponse` AND 조건이 적용
+ * 대상으로 남기는 모집단은 정확히 "사용자가 응답은 했지만 아직 lockless인 trip" — 이
+ * 모듈(파일 헤더 "본 모듈은 이 gap을 메운다")이 원래 서비스하려던 바로 그 케이스이므로
+ * moot(무의미)하지 않다. 응답하지 않은 trip(9/21 3056처럼)은 영구 pending(=lockless 지속,
+ * 요구사항 4 "안전 실패 유지")으로 남는다 — 틀린 lock보다 miss가 낫다는 ADR-010 동급 원칙의
+ * 재확인.
+ *
+ * 거부: `trip.legResolveStreak`(=pending 그 자체) 존재는 증거가 아니다 — #2926(lockless
+ * intermediate가 단일 오열차로 전진 가능)과 동일한 "관측 지속 = 확증"의 오류를 leg-2 confirm에
+ * 재도입하지 않기 위해 `hasUserBoardingResponse`는 pending 객체와 완전히 독립된 입력으로
+ * 설계했다. `trip.lockEverAttached`(leg-1 lock 이력)도 채택하지 않았다 — leg-2 탑승의
+ * 증거가 아니라 leg-1이 한 번 탔었다는 과거 사실일 뿐이고, leg 경계를 넘어 재사용하면 leg-1만
+ * 응답한 trip의 leg-2 무응답 구간까지 오염시킬 위험이 있다(PR #2780 본문 "잔존 위험" 참고).
  */
 export function evaluateLegBoardingTransition(
   anchor: BoardingAnchor,
   positions: readonly PositionEntry[],
   now: number,
   pending: LegPendingCandidate | undefined,
+  hasUserBoardingResponse: boolean,
   forwardSegment?: readonly string[],
 ): LegBoardingConfirmation {
   const fresh = freshCandidatesAtAnchor(anchor, positions, now);
@@ -374,7 +408,25 @@ export function evaluateLegBoardingTransition(
     const departed = fresh.some(
       (p) => p.trainCode === pending.trainCode && p.trainSttus === TRAIN_STATUS.DEPARTED,
     );
-    if (departed) return { status: 'confirmed', trainCode: pending.trainCode, candidates };
+    if (departed) {
+      // #2780 (옵션 ⓑ, 2026-10-18 결정) — DEPARTED 전이 자체는 "그 역을 지나는 모든 열차"가
+      // 만족하는 약한 신호다(9/21 실측 3056 — 사용자보다 1분 앞서 떠난 열차가 이 전이만으로
+      // confirmed됐다). `hasUserBoardingResponse`(caller가 `trip.boardingCommitted===true`로
+      // 전달 — leg-boarding-prompt에 사용자가 [탑승] 응답했지만 device가 trainCode를 자체
+      // 확정 못 해 PENDING fallback lock을 만든 상태, `useBoardingPromptResponder.ts:827`)가
+      // 없으면 confirm을 보류한다 — pending을 리셋(rejected)하지 않고 그대로 유지해 다음
+      // cycle에도 계속 관찰한다(요구사항 3, "폐지가 아니라 confirm만 보류" — 사용자가 늦게
+      // 응답하거나 다른 채널로 증거가 생기면 그 다음 cycle에 confirm될 수 있다).
+      if (hasUserBoardingResponse) {
+        return { status: 'confirmed', trainCode: pending.trainCode, candidates };
+      }
+      return {
+        status: 'pending',
+        trainCode: pending.trainCode,
+        firstObservedAt: pending.firstObservedAt,
+        candidates,
+      };
+    }
   }
 
   const resolution = resolveTrainCodeFromPositions(anchor, positions, now, forwardSegment);
@@ -481,8 +533,14 @@ export interface LegOriginResolutionOptions {
    * `pending`은 직전 cycle에 저장된 미확정 후보(`trip.legResolveStreak`) — caller(`scheduled.ts`
    * cron)만 전달한다. register-time/boarding-confirm 탭 경로는 이 옵션을 전달하지 않아
    * 기존과 동일하게 1회 resolved 즉시 승격을 유지한다(무변경).
+   *
+   * `hasUserBoardingResponse`(#2780, 요구사항 — 필수 필드, 옵션 ⓑ "증거 AND") — DEPARTED
+   * 전이가 confirm으로 승격되려면 이 값이 true여야 한다(`evaluateLegBoardingTransition` 참고).
+   * caller(`scheduled.ts`)는 `trip.boardingCommitted===true`를 그대로 전달한다 — 사용자가
+   * leg boarding-prompt에 [탑승] 응답했지만 device가 trainCode를 자체 확정하지 못해 PENDING
+   * sentinel lock으로 fallback한 상태(`useBoardingPromptResponder.ts:827`)만을 가리킨다.
    */
-  legTransition?: { pending?: LegPendingCandidate };
+  legTransition?: { pending?: LegPendingCandidate; hasUserBoardingResponse: boolean };
   /**
    * #2957 (W2, P2-b 해소) — true면 `currentLegAnchor` 분기에서 `legBoardingEligibleAt` 도보시간
    * 게이트를 평가하지 않는다(`eligibleAt`이 아예 undefined인 비정상 상태는 여전히 null — anchor
@@ -672,6 +730,7 @@ export async function attemptBoardingAnchorResolution(
       positions,
       now,
       options.legTransition.pending,
+      options.legTransition.hasUserBoardingResponse,
       segmentStations,
     );
     onLegTransition?.(confirmation);
