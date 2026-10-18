@@ -834,36 +834,22 @@ describe('resolveActiveLegOrigin (#2515, #2511 supersede)', () => {
     expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
   });
 
-  // #3046 (10/18 편측 감사 F1) — promptDisplay 유실(#3038 등록 race) + originStationName 존재
-  // 시에도 anchor를 산출해야 auto-lock(attemptBoardingAnchorResolution)이 가능해진다. 이전에는
-  // `trip.promptDisplay`만 읽어 null을 반환했다 — 명시 의향(infoModeEnabled) trip이 race를
-  // 맞으면 backend auto-lock 자체가 불가능해지는 잔존 증상.
-  it('[red ②] promptDisplay 없음 + originStationName + waypoint → originStationName+waypoint line으로 파생된 anchor 반환', () => {
-    const trip = makeTrip({
-      promptDisplay: undefined,
-      originStationName: '중곡',
-      waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
-    });
-    expect(resolveActiveLegOrigin(trip, NOW)).toEqual({ originStation: '중곡', line: '7' });
-  });
-
-  it('[거부 ③] promptDisplay·originStationName 둘 다 없음 → null (파생 재료 없음, 기존과 동일 결과)', () => {
-    const trip = makeTrip({ promptDisplay: undefined, originStationName: undefined });
-    expect(resolveActiveLegOrigin(trip, NOW)).toBeNull();
-  });
-
-  it('currentLegAnchor가 있고 조건 충족이면 파생보다 우선(기존 우선순위 불변)', () => {
-    const trip = makeTrip({
-      promptDisplay: undefined,
-      originStationName: '중곡',
-      currentLegAnchor: { boardingStation: '건대입구', line: '2' },
-      legBoardingEligibleAt: NOW,
-    });
-    expect(resolveActiveLegOrigin(trip, NOW, { allowLegTransfer: true })).toEqual({
-      originStation: '건대입구',
-      line: '2',
-    });
-  });
+  // #3046 (10/18 편측 감사 F1) — 이슈는 `resolveActiveLegOrigin`도 `resolvePromptAnchor`로
+  // 수렴시켜 promptDisplay 유실 trip의 backend auto-lock을 가능하게 하자고 제안했다. 구현해
+  // 전체 테스트 스위트(whole-trip replay 포함)로 검증한 결과 **배선하지 않기로 결정**했다 —
+  // 실측(#2754/#2754-wrong-lock, #2801, #2900) 재생 테스트 6개가 전부 다른 trainCode를
+  // lock하거나 다른 역에서 발사하는 실패로 돌아섰다(`replay_20260918_leg2_wrong_lock.test.ts`
+  // 등). 원인: 이 함수는 cron(`scheduled.ts`)이 `{allowLegTransfer:true}`(tapAnchor 없음)로
+  // 매 tick 반복 호출하는데, `currentLegAnchor`가 undefined인 상태가 "아직 leg 1"만을
+  // 의미하지 않는다 — 환승을 이미 지났지만 `currentLegAnchor`가 아직 stamp되지 않은 tick도
+  // 포함한다. 그 tick에서 `originStationName`(leg-1 SSoT, 예: '뚝섬')+`waypoints[0].line`으로
+  // 파생하면 이미 지난 leg-1 역/노선으로 되돌아가 **엉뚱한 열차를 lock**한다(실측 7260 오탑승
+  // 방지 테스트가 정확히 이 위험을 고정해 둔 바로 그 함수). 반면 ①`maybeFireOriginBoardingPromptGpsFree`
+  // (scheduled.ts)는 이 함수가 아예 `if (trip.currentLegAnchor) return`으로 leg-2 전체를
+  // 배제하므로 같은 위험이 없고, ②`computeBoardingContext`(liveActivity.ts)는 LA 표시용이라
+  // 틀려도 안전 위험(오탑승 lock)이 아니다 — 세 소비자가 안전상 동급이 아니었다. F1은
+  // 미착수로 남기고 이 사실을 PR 본문에 명시한다(별도 이슈로 재스펙 필요 — "아직 leg 1"을
+  // 안전하게 판정할 추가 조건 없이는 이 함수에 파생 fallback을 넣을 수 없다).
 });
 
 describe('attemptBoardingAnchorResolution — leg 2 (#2515, #2511 supersede)', () => {

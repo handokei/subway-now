@@ -102,6 +102,7 @@ import {
   type WindowedMetrics,
 } from './positionSeries';
 import { deriveWaypointEnvironment, findStationCoordsByNameAndLine } from './stationsLookup';
+import { resolvePromptAnchor } from './promptAnchor';
 import { assertCronCacheTtl } from './kvConsistency';
 import { buildAlarmKey, putPending } from './pendingPushes';
 import { logPushFailure } from './pushFailureLog';
@@ -8110,34 +8111,6 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   // leg-2(환승 후)는 `maybeFireLegBoardingPrompt` 전담 — 이 함수는 leg-1(origin) 전용.
   if (trip.currentLegAnchor) return;
 
-  // #3038 — 등록 race(1초 간격 2연발, context-null인 쪽이 last-write)로 `promptDisplay`가
-  // 유실돼도 trip에는 이미 `originStationName`(#2280 SSoT 출발역) + `waypoints[0].line`이
-  // 저장돼 있다 — 신규 데이터 아님, 등록이 저장한 값의 재사용. 둘 다 있으면 파생해 평가를
-  // 계속하고, 하나라도 없으면 기존처럼 skip하되 카운터를 남긴다(이 게이트가 다른 모든
-  // 게이트처럼 관측 가능해야 한다 — 과거엔 `if (!display) return`이 무카운터 silent
-  // return이었다, 10/18 18:37 실라이드 R2 8cycle 재생으로 확정).
-  let display = trip.promptDisplay;
-  if (!display) {
-    const derivedOriginStation = trip.originStationName;
-    const derivedLine = trip.waypoints[0]?.line;
-    if (derivedOriginStation === undefined || derivedLine === undefined) {
-      stats.originGpsFreeDisplayDerivationFailed += 1;
-      log('origin-boarding-prompt-gps-free: display derivation failed (no originStationName/waypoint)', {
-        token: trip.token.slice(0, 8),
-        hasOriginStationName: derivedOriginStation !== undefined,
-        hasWaypoint: derivedLine !== undefined,
-      });
-      return;
-    }
-    display = { originStation: derivedOriginStation, line: derivedLine };
-    stats.originGpsFreeDisplayDerived += 1;
-    log('origin-boarding-prompt-gps-free: display derived from originStationName+waypoint (#3038)', {
-      token: trip.token.slice(0, 8),
-      originStation: derivedOriginStation,
-      line: derivedLine,
-    });
-  }
-
   // #2651 — boarding-prompt opt-in(안내 시작) trip만 대상. infoModeEnabled(응답/직접 탭 stamp)는
   // "매역 통과 알림" 대상 판정이라 목적이 다르다 — 안내 시작만 하고 아직 응답 전인 trip도
   // promptOptIn===true라 이 게이트를 통과해야 한다(그래야 애초에 응답할 프롬프트를 받는다).
@@ -8153,11 +8126,42 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   // 걸려 있어(바로 아래 hasProximityReading 판정부) `trackingOptIn` 단독 trip은 근접이 실측
   // 확인돼야만 실제 발사된다(#2651 "집에서 222m 발사" 구조적 재발 차단). 명시 의향 trip은
   // 이 OR 자체가 이미 true이므로 아래 추가 조건의 대상이 아니다(동작 불변).
+  //
+  // #3046 (G2) — 이 의향 게이트를 아래 display 파생(resolvePromptAnchor)보다 **앞**에 둔다.
+  // #3038이 처음 심었던 파생 블록은 이 게이트보다 앞에 있어, 어떤 의향도 없는(모두 false)
+  // trip도 "파생 성공"으로 카운터를 올리고 바로 다음 줄에서 차단됐다 — 측정 해석 오염
+  // (10/18 편측 감사 G2). 의향이 없으면 파생을 시도조차 하지 않아야 카운터가 "후보가 될 수
+  // 있는 trip만" 반영한다.
   const hasExplicitIntent = trip.promptOptIn === true || trip.infoModeEnabled === true;
   if (!hasExplicitIntent && trip.trackingOptIn !== true) return;
 
   // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
   if (trip.boardingLock !== undefined) return;
+
+  // #3046 — `promptDisplay ?? (originStationName+waypoint 파생)`을 공유 primitive
+  // (`resolvePromptAnchor`)로 수렴. #3038이 이 블록을 지역 변수로만 심어 다른 두 소비자
+  // (`liveActivity.ts computeBoardingContext` / `boardingAnchorResolver.ts
+  // resolveActiveLegOrigin`)가 같은 유실 상태에서 각자 포기했다(10/18 편측 감사 G1+F1) —
+  // 세 곳 전부 이 함수 하나로 수렴한다. G3(primitive 내부) — line은 `waypoints[0]` 고정이
+  // 아니라 `originStationName`과 일치하는 waypoint(순환선 재등장)를 우선 사용.
+  const resolved = resolvePromptAnchor(trip);
+  if (resolved.anchor === null) {
+    stats.originGpsFreeDisplayDerivationFailed += 1;
+    log('origin-boarding-prompt-gps-free: display derivation failed (no originStationName/waypoint)', {
+      token: trip.token.slice(0, 8),
+      failureReason: resolved.failureReason,
+    });
+    return;
+  }
+  if (resolved.derived) {
+    stats.originGpsFreeDisplayDerived += 1;
+    log('origin-boarding-prompt-gps-free: display derived from originStationName+waypoint (#3038)', {
+      token: trip.token.slice(0, 8),
+      originStation: resolved.anchor.originStation,
+      line: resolved.anchor.line,
+    });
+  }
+  const display = resolved.anchor;
 
   // #2851 (진단 계측 only) — 이 함수의 fire/suppress 사유를 SSoT 마커
   // (`originBoardingPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 아래
@@ -8249,6 +8253,16 @@ export async function maybeFireOriginBoardingPromptGpsFree(
           seriesAgeMs: now - newest.ts,
         });
       }
+    } else {
+      // #3046 (E1, #3037 흡수) — 역/노선 매핑 실패가 기존엔 무카운터 silent였다. 파생 실패와
+      // 같은 범주(이 분기 자체가 display 파생 재료로 근접을 추가 파생하려는 시도)이므로 같은
+      // 카운터(`originGpsFreeDisplayDerivationFailed`)로 흡수해 관측 가능하게 만든다.
+      stats.originGpsFreeDisplayDerivationFailed += 1;
+      log('origin-boarding-prompt-gps-free: origin coords lookup failed (#3037)', {
+        token: trip.token.slice(0, 8),
+        originStation: display.originStation,
+        line: display.line,
+      });
     }
   }
 
