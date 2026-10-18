@@ -6421,6 +6421,13 @@ export async function maybeFireLiveActivityUpdate(
       lastPushAt !== undefined && now - lastPushAt >= LA_HEARTBEAT_INTERVAL_MS;
     if (!heartbeatDue && !isImmediateTrigger) return false;
   }
+  // #3007 S4-c — 정지 15분 "종료할까요?" 제안. 판정은 #3008의 무상태 helper가 하고(KV 쓰기 0),
+  // 여기서는 그 결과를 content로 넘긴다. `ssot`는 이미 이 스코프에 있어 **추가 KV read 0**이다.
+  //
+  // heartbeat(90s)마다 이 분기를 지나지만 `isEndPromptDue`는 "하한 D 만족 && 하한 D+1tick
+  // 불만족"으로 **due tick 하나만** true가 되고, 그 뒤 Swift의 `lastAlertedBoardingPhase`
+  // dedup이 phase 전이당 1회로 한 번 더 좁힌다 — 배너 반복이 이중으로 차단된다.
+  const endPromptDue = ssot !== null && isEndPromptDue(ssot, now);
   const contentState = buildLiveActivityContentState(
     waypoint,
     etaSeconds,
@@ -6428,6 +6435,8 @@ export async function maybeFireLiveActivityUpdate(
     trip,
     // #2849 — waypoint.stationName(다음 추적 대상) 대신 SSoT 현재역(미정착 시 trip origin).
     resolveCurrentStationName(trip, ssot),
+    undefined,
+    { endPromptDue },
   );
   const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind);
   if (result.dirty) {

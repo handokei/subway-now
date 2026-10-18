@@ -27,6 +27,7 @@ import {
 } from './apns';
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { extractOriginStation, recordTripMetrics } from './d1TripMetrics';
+import { t } from './i18n';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { logPushFailure } from './pushFailureLog';
@@ -165,6 +166,10 @@ export function buildLiveActivityContentState(
   trip?: Trip,
   currentStationName?: string,
   trainCodeOverride?: string,
+  // #3007 S4-c — 정지 15분 "종료할까요?" 제안 여부. 판정은 호출부가 `isEndPromptDue(ssot, now)`
+  // (#3008, motionState.ts)로 하고 결과만 넘긴다 — content builder는 SSoT를 모른다(기존
+  // 시그니처가 trip만 받는 설계 유지).
+  options?: { endPromptDue?: boolean },
 ): LiveActivityContentState {
   // #1654 / #1658 — 환승 waypoint 추적 중에는 다음 leg의 line을 lineName/lineColorHex에 반영한다.
   // waypoint.kind==='transfer' + trip.waypoints[1]이 존재하면 새 leg의 line을 우선 사용.
@@ -194,7 +199,16 @@ export function buildLiveActivityContentState(
   // multi-hop optional 필드는 존재하는 것만 spread — undefined assignment를 피해 기존 5 필드
   // toEqual 단언과 ActivityKit content-state diff 모두 깔끔.
   const multiHop = computeMultiHopContext(trip);
-  return { ...base, ...multiHop, ...withTrainCode, ...computeBoardingContext(trip) };
+  // #3007 S4-c — end-prompt는 `computeBoardingContext`(pre-boarding) **뒤에** spread해
+  // `boardingPhase`를 override한다. 단일 필드이므로 둘은 상호배타이고, 정지 15분 상태에서는
+  // "탑승하셨나요?"보다 "종료할까요?"가 맞다(정지 중이면 탑승하지 않았을 개연성이 높다).
+  return {
+    ...base,
+    ...multiHop,
+    ...withTrainCode,
+    ...computeBoardingContext(trip),
+    ...computeEndPromptContext(trip, options?.endPromptDue === true),
+  };
 }
 
 /**
@@ -249,6 +263,42 @@ function computeBoardingContext(trip: Trip): LiveActivityContentState {
     boardingPromptOriginStation: anchor.station,
     boardingPromptLine: anchor.line,
     // boardingAlertTitle/Body는 의도적으로 생략 — 위 "무음 보장" 참고.
+  };
+}
+
+/**
+ * #3007 S4-c — 정지 15분 "안내를 종료할까요?" content.
+ *
+ * ## 새 content 필드를 만들지 않는 이유
+ *
+ * `boardingPhase`에 세 번째 값 `'end-prompt'`를 쓰면 Swift의 **기존 alert 메커니즘이 그대로
+ * 재사용**된다(`LiveActivityManager.swift:155 resolveAlertConfiguration`):
+ *  - `boardingAlertTitle`/`boardingAlertBody`가 배너+소리를 만든다 → 사용자 요구
+ *    (*"결정할 수 있도록 LA 알림 있어야 함"*) 충족
+ *  - `lastAlertedBoardingPhase` dedup이 **phase 전이당 1회**만 울리게 보장한다 → 90초 heartbeat
+ *    마다 배너가 반복되는 회귀가 **구조적으로** 불가능
+ *
+ * ## 자동 종료가 아니다
+ *
+ * 이 content는 **질문만** 한다. 종료는 사용자가 LA 버튼을 눌러야 일어난다 — #2293의 자동 종료를
+ * 사용자 결정으로 바꾸는 것이 S4-c의 핵심이다(plan에 #2293 충돌 선언 있음).
+ *
+ * ## 거부 조건
+ *
+ * - **lock 활성** → 미설정. 열차를 이미 아는 구간의 정지는 도착 후 하차일 수 있고 그 판정은
+ *   destination arrival 경로가 담당한다 — 여기서 종료를 제안하면 이중 권위가 된다.
+ * - **due 아님** → 미설정. alert 필드가 비면 `resolveAlertConfiguration`이 nil을 반환해 무음으로
+ *   지나간다(#2854가 막은 "트립 시작부터 유령 배너" 무회귀).
+ */
+function computeEndPromptContext(trip: Trip, due: boolean): LiveActivityContentState {
+  if (!due) return {};
+  if (trip.boardingLock !== undefined) return {};
+  const strings = t(trip.locale);
+  return {
+    boardingPhase: 'end-prompt',
+    boardingPromptTripToken: trip.token,
+    boardingAlertTitle: strings.endPromptTitle,
+    boardingAlertBody: strings.endPromptBody({ destinationStation: trip.destination }),
   };
 }
 

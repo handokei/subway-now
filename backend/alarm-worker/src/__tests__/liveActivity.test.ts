@@ -1741,10 +1741,6 @@ describe('#3007 S4-c — 정지 15분 종료 제안 content', () => {
         selectedDepartureTime: NOW,
         segmentStations: ['용마산', '중곡'],
         expiresAt: NOW + 3_600_000,
-        boardingStationId: '0724',
-        boardingLine: '7',
-        boardedAt: NOW,
-        destinationId: 'dst',
       },
     });
 

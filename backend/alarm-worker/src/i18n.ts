@@ -73,6 +73,15 @@ export interface StationNotifCounts {
 }
 
 interface I18nStrings {
+  /**
+   * #3007 S4-c — 정지 15분 "안내를 종료할까요?" LA 배너 title/body.
+   *
+   * **자동 종료가 아니라 질문이다.** 사용자 요구(2026-10-15): *"그 멘트는 내가 결정해야 하는
+   * 거고, 결정할 수 있도록 LA 알림 있어야 함"*. 그래서 문구는 단정("안내를 종료했습니다")이
+   * 아니라 선택을 묻는 형태여야 한다 — LA 버튼이 그 선택을 받는다.
+   */
+  endPromptTitle: string;
+  endPromptBody: (args: { destinationStation?: string }) => string;
   boardingPromptTitle: string;
   boardingPromptBody: (args: BoardingPromptArgs) => string;
   /** #2034 — hop-end (환승역 하차) 알림 title. */
@@ -117,6 +126,9 @@ interface I18nStrings {
  */
 const I18N: Record<SupportedLocale, I18nStrings> = {
   ko: {
+    endPromptTitle: '안내를 종료할까요?',
+    endPromptBody: ({ destinationStation }) =>
+      destinationStation ? `15분 동안 이동이 없었어요 · ${destinationStation}까지 안내 중` : '15분 동안 이동이 없었어요',
     boardingPromptTitle: '탑승하셨나요?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
@@ -155,6 +167,11 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     trainReconfirmBody: '다시 확인해주세요',
   },
   en: {
+    endPromptTitle: 'End guidance?',
+    endPromptBody: ({ destinationStation }) =>
+      destinationStation
+        ? `No movement for 15 minutes · Guiding to ${destinationStation}`
+        : 'No movement for 15 minutes',
     boardingPromptTitle: 'Are you on board?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
@@ -194,6 +211,11 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     trainReconfirmBody: 'Please check again',
   },
   ja: {
+    endPromptTitle: '案内を終了しますか?',
+    endPromptBody: ({ destinationStation }) =>
+      destinationStation
+        ? `15分間、移動がありませんでした · ${destinationStation}まで案内中`
+        : '15分間、移動がありませんでした',
     boardingPromptTitle: 'ご乗車されましたか?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
@@ -231,6 +253,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     trainReconfirmBody: 'もう一度ご確認ください',
   },
   zh: {
+    endPromptTitle: '要结束导航吗?',
+    endPromptBody: ({ destinationStation }) =>
+      destinationStation ? `15 分钟内没有移动 · 导航至 ${destinationStation}` : '15 分钟内没有移动',
     boardingPromptTitle: '您已乘车了吗?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
