@@ -60,7 +60,6 @@ private let ALARM_BACKEND_URL_BASE = "https://subway-now-alarm-worker.handokei.w
 /// fire-and-forget dataTask는 perform() 반환 후 프로세스가 정지되며 유실될 수 있다.
 /// 네트워크 실패는 graceful — App Group write(FG sync)가 이미 완료됐으므로 다음 FG 진입 시
 /// `useLiveActivityIntentBridge`가 동일 처리를 재시도한다.
-@available(iOS 17.0, *)
 /// #3007 S4-c — LA "종료" 버튼이 backend에 **직접** trip 종료를 요청한다.
 ///
 /// `openAppWhenRun: false`이므로 앱이 완전히 정지해도 동작해야 한다 → JS를 경유하지 않고
@@ -70,6 +69,12 @@ private let ALARM_BACKEND_URL_BASE = "https://subway-now-alarm-worker.handokei.w
 ///
 /// 빈 tripToken(좀비 LA) 처리는 `postBoardingConfirm`과 동일 — 무효 요청을 보내지 않고
 /// 배너만 즉시 닫아 최소 피드백을 준다(#2857 패턴 재사용).
+///
+/// `@available`은 `markCurrentActivity`(iOS 17+ ActivityKit)를 호출하기 때문에 필요하다.
+/// PR #3013에서 이 함수를 `postBoardingConfirm` **앞에** 삽입하면서 그 함수의
+/// `@available(iOS 17.0, *)`와 선언 사이를 갈라놓아 빌드가 깨졌다(`xcodebuild` 65) —
+/// 속성은 바로 다음 선언에만 붙으므로 **두 함수가 각자 명시**해야 한다.
+@available(iOS 17.0, *)
 private func postTripEnd(tripToken: String) async {
     guard !tripToken.isEmpty else {
         intentLog.error("trip-end skipped — tripToken empty (stale/zombie LA button)")
@@ -96,6 +101,7 @@ private func postTripEnd(tripToken: String) async {
     }
 }
 
+@available(iOS 17.0, *)
 private func postBoardingConfirm(
     tripToken: String,
     action: String,
