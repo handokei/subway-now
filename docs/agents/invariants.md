@@ -45,7 +45,8 @@
 | boardingAnchorResolver.ts `attemptBoardingAnchorResolution`(nextWaypoint.line !== anchor.line) | 확인됨(#2944 ⓖ 판정, 과차단 아님) | `nextWaypoint.line !== anchor.line`일 때 direction=null이 되지만, 그 이전에 `buildLegSegmentStations`가 첫 waypoint에서 line 불일치로 즉시 break해 `legSegment.length===0` → `noneReason:'leg-segment-empty'`로 **direction 계산에 도달하기 전에** 이미 종료된다. 즉 이 케이스는 H-6의 fail-closed 전환이 새로 만드는 과차단이 아니라 기존에 있던 별도(더 이른) 게이트 — direction 값과 무관하게 항상 후보 0 | 있음(boardingAnchorResolver.test.ts "waypoints[0].line이 promptDisplay.line과 다름" 기존 테스트가 이미 고정) |
 | scheduled.ts `runLocklessTransfer`/`runLocklessIntermediate` | 갭 | **#2926** (추적 이슈, #2921 PR #2924 `it.fails`의 추적처) — lockless leg 전진 candidate 제한(direction 필터ⓐ+모호후보 차단ⓒ)은 두 함수 모두에 적용했으나, 시간창 게이트(ⓑ, `legBoardingEligibleAt`)는 **destination에만** 적용했다(9/18 실측 재생이 transfer/intermediate 적용 시 정상 완주 트립 과차단을 반증). 그 결과 "leg가 막 시작된 직후, 같은 방향으로 가는 단일(틀린) trainCode"가 intermediate/transfer를 잘못 통과시킬 수 있는 잔존 위험이 남는다 — ⓒ는 **복수** 후보만 모호로 보고, 단일 틀린 후보는 걸러내지 못한다(audit-sides 감사, PR #2924 본문) | 부분(scheduled.test.ts `it.fails` — "(알려진 잔존 위험, 미해결) leg 시작 직후 단일 틀린 trainCode의 intermediate 통과를 ⓒ는 막지 못한다", S-2921 describe 하단, 주석에 **#2926** 링크 + ⓐ현재동작/ⓑ미해결 이유/ⓒ승격조건 명시. #2926 해결 후 이 테스트가 green(일반 `it`)으로 승격되면 갭이 해소됐다는 신호) |
 | index.ts:1331-1332 same-session merge(promptGeoContext/promptDisplay 보존) + device `useApnsTripRegistration.ts` Tier1/2 | 함정 | Tier1/2 context-heal은 로컬 GPS 휴리스틱(Tier1=currentStation 전환 필요, Tier2=null+지하 한정, 상호배타)으로만 트리거 — **backend 저장본의 실제 context 소실은 양쪽 트리거 밖**(register 응답이 저장 결과를 echo하지 않음: `{ok,token,confirmedEnv}`뿐). #3042가 same-session 재등록 소실 자체를 막아 노출 빈도를 줄였으나, new-session 첫 등록이 context-null이면 여전히 heal 휴리스틱만이 안전망이다(10/18 RCA) | 부분(#3042 테스트 — same-session만) |
-| boardingPrompt.ts `decideBoardingPromptFire` ↔ device `src/features/alarm/utils/localBoardingPromptGate.ts` | 갭(drift, #3057) | backend 발사 게이트는 #3057로 **도착 확정만**(arvlCd {1,2} 또는 anchor 역 position trainSttus {1,2} fresh)으로 바뀌었으나 device mirror `localBoardingPromptGate.ts`는 구 임박집합({0,1,2})+approaching({3,5}) 게이트를 그대로 유지한다. 현재는 `MINIMAL_ALARM`(device 발사 마스터스위치, debugFlags)이 꺼져 dead 경로라 무해 — device 발사를 되살리면 조기 발사가 되살아난다. 코드는 이번 PR에서 변경하지 않음(범위 밖). 같은 PR에서 `MAX_FIRES_PER_TRAIN_CODE` 2->1, null-trainCode 토큰 상한 2, fire-once 키 `station:trainCode`, 소진 열차 pool 제외가 함께 바뀌었다 | **없음** |
+| `MINIMAL_ALARM` 보류 소비자 (`useStationAlarm.ts:1114-1121` · `stationPipeline.ts:611`·`:733` · `stationNotification.ts` `fireLocalAlarmNotification` 본체 · `debugFlags.ts` 플래그 본체) | 함정 | ADR-040 결정 7=(b)로 dormant 발사 모듈은 #3063에서 철거됐으나, 이 소비자들은 #3035 결정(ⓐ/ⓑ/ⓒ)이 소비처 처분을 정하기 전까지 보류한다 — 플래그는 항상 false라 dead 경로이며, 해제 조건 = #3035 결정 후 PR-D2(보류 블록 + 플래그 본체 제거). 함께 남은 `stationNotification.ts` `isRecentLocalBoardingPromptDuplicate` 가드도 마킹 지점이 소멸해 항상 false인 **의도된 잔존**(`LOCAL_BOARDING_PROMPT_FIRE_KIND` 삭제 금지) — PR-D2에서 정리. 이 가드는 완전히 죽은 상태다 — presched `kind`는 transfer/destination/station-passed만(`stationPipeline`의 `PrescheduledKind`), `mapBackendKindToLocalFireKind` 키도 StationWaypointKind뿐이라 `'boarding-prompt'` 마킹 경로가 0이다. **반쪽 상태 경고**: `EXPO_PUBLIC_MINIMAL_ALARM`은 빌드타임 env라 로컬 빌드에서 켜면 보류 블록(`stationPipeline.ts:608`/`:728`, `useStationAlarm.ts:1114`)은 발사하는데 movement 우회(`:503/:636`)·LA 권위 override(`liveActivityPushChannel` flag 피연산자)는 #3063으로 사라진 반쪽 상태가 된다 — **PR-D2(#3035 결정 후) 완료까지 절대 켜지 말 것** | 없음 |
+| stationPipeline.ts `evaluateBgHopWindowGate`(#2478 G0-3c) | 갭 | 존재 이유가 철거된 발사 경로(#3063)였고, 유일한 whole-chain replay(`stationPipeline.hopWindowLockBypass.dumpReplay`)도 함께 삭제돼 **mock 단위 테스트만 남았다** — whole 커버 부재. PR-D2 철거 후보(코드 변경 없음, 이번 PR 범위 밖) | 부분 |
 
 ## 2. Device — alarm / Live Activity / Swift
 
@@ -73,7 +74,6 @@
 | isBoardableCandidate.ts:2-11 | 불변식 | "탑승 가능 후보"는 단일 함수만 — picker 독자구현 금지(9/16 실증) | 있음 |
 | boardingPromptContext.ts:16 | 전제 | 프롬프트는 leg 미시작(탑승 전)에서만 의미 | **없음** |
 | safetyNetScheduler.ts:77,261 | 불변식 | tripStart 미확인 시 절대 무장 안 함 | 부분 |
-| bgPositionTrainFire.ts:35 | 불변식 | accuracy 게이트보다 먼저 시도(지하 GPS garbage 오인 방지) | 부분 |
 | fgArvlCdFastPath.ts:13 / useStationAlarm.ts:1585 | 불변식 | #640 lock 부재 시 lockless 임의 fire 절대 금지 | 있음 |
 | useStationAlarm.ts:1237 | 함정 | GPS-fallback ETA의 `getRouteRemainingSeconds(route)` clamp 상한이 currentStation 기준으로 재앵커링되지 않음(#2811 편측 감사, #2848에서 발견·의도적 미배선) — `estimateTransitEtaSeconds(distM, speedMps, hopBasedSeconds)`가 `Math.min(distanceEstimate, hopBasedSeconds)`이므로 route가 트립 시작 시점 고정값(더 큰 상한)이면 clamp가 실제보다 느슨해진다. `anchorRouteToCurrentStation`으로 앵커링하면 상한이 작아져 `evaluateAlarmPhase`가 소비하는 `etaSeconds`가 달라지고, 이는 곧 early/transfer 알람이 **발사되는 시점 자체**를 바꾼다 — 표시 전용(LA 문구)이 아니라 alarm-critical 경로라 순수 "정거장 수 self-contradiction" fix와 동급 리스크로 취급할 수 없다. ADR-014 "사용자 명시 의향=lock 동급 보호" 원칙상 알람 타이밍 변경은 이 fix의 범위(#2811, ETA/정거장 표시 정합) 밖의 별도 회귀 검증(replay 영향 분석)이 선행돼야 한다. 배선 금지, 기록만 | **없음** |
 | backendSsotMirror.ts:134,186-197 | 불변식 | lastAdvanceAt 역행 push 거부(순서 비보장 APNs) — 단 새 trip의 작은 값은 거부 금지 | 있음 |
@@ -106,8 +106,6 @@
 | backendSsotRegressionGuard.ts:96-123 | 불변식 | gpsAhead stale 임계=60s(#2841), deviceAhead(지하)는 180s 그대로 — 두 경로 독립, 공통 임계로 재통합 금지(트립 꼬리 미보호 재발) | 있음 |
 | useTransferTrainList.ts:69-105 | 함정 | mirror entry 불변이면 180s 지나도 재평가 안 됨(memo dep에 시간 없음) | 있음 |
 | boardingLock.ts(constants):275-290 | 갭 | App Group은 pull 모델(push 없음) — 신선도 게이트+5s 지연이 주석에만 | **없음** |
-| bgUndergroundArrivalPoll.ts:12 | 불변식 | BG arrival 폴링은 지하+lock 조건부만 — always-on 금지(OS quota) | **없음** |
-| pollWithCooldown.ts:12 | 불변식 | 게이트는 호출자 책임(헬퍼가 안 걸음) — 새 폴링 소스는 게이트 필수 | 부분 |
 | findActiveTransferContext.ts:101 | 갭 | lockless trip에서 환승 context 영원히 null 가능(leg-2 회귀 직결) | **없음** |
 | useTransferAutoDetect.ts:14 | 불변식 | 사용자 직접 선택 시에만 onAutoLock — 자동 승격 금지 | 있음(추정) |
 | loopDirection.ts:7 / journeyAdapter.ts:58 | 불변식 | 순환선 토폴로지·역↔노선 정합 SSOT 단일 출처(재구현 금지, ADR-038) | 없음/부분 |
@@ -132,7 +130,7 @@ fix가 이 영역을 지나갈 때 해당 항목을 같은 PR에서 테스트로
 9. **tripEndedSentinel 소비 금지** — 어기면 trip 종료 오탐/이중 종료.
 10. **isNearOrigin "존재 AND 멀다" 분리 판정** — 합치면 #2532 조용히 무력화.
 11. **boardingPromptContext leg-전제** — leg 1+ 진입 시 침묵을 직접 assert하는 지점 부재.
-12. **pollWithCooldown 게이트 호출자 위임** — 새 폴링 소스 추가 시 quota 소진 재발 경로.
+12. **BG tick 편승 폴링은 게이트·쿨다운 필수** — 새 폴링 소스 추가 시 quota 소진 재발 경로. 살아있는 앵커: `tripDeathPullBackstop.ts:21`(BG location tick 편승, 같은 상수를 호출 쿨다운으로 사용) · `:95`(쿨다운 내 재호출 skip, 시도 자체 기록으로 hot-loop 방지). (구 앵커 pollWithCooldown은 #3063 철거)
 13. **useTripOrigin effect 선언 순서 의존** — 리팩터에 조용히 깨짐.
 14. **index.ts KV non-atomic RMW** — 구조적(DO 필요), 테스트 아닌 아키텍처 결정 대상.
 15. **findActiveTransferContext lockless null** — leg-2 회귀 계보와 직결.

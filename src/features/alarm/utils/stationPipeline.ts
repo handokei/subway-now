@@ -261,10 +261,10 @@ export interface ProcessLocationInputs {
  * 우회 조건 (#2373 방어 유지 — 아래 중 하나라도 미충족이면 기존 차단 그대로):
  *   1. lock 활성 (`lockForLineGuard`는 `processLocationUpdate`가 이미 fetch — 재조회 안 함)
  *   2. lock.trainCode가 실코드(`!isPendingTrainCode`) — fallback lock(미확정)은 신뢰 못 함(#2407과
- *      동일 취지, `evaluatePositionTrainFire`가 pending을 skip하는 것과 동일 가드)
+ *      동일 취지, 철거된 `evaluatePositionTrainFire`(#3063)가 pending을 skip하던 것과 동일 가드)
  *   3. lock.destinationId === destinationId — 다른 trip의 stale lock 오매칭 방지
  *   4. candidate가 locked 경로 forward 전진 — `computeRouteArc(route, origin, destination)`로
- *      route 방향대로 정렬된 arc(bgPositionTrainFire.ts와 동일 패턴, `getStationsOnLine`의
+ *      route 방향대로 정렬된 arc(철거된 bgPositionTrainFire.ts(#3063)와 동일 패턴이었음, `getStationsOnLine`의
  *      raw 노선 전체 순서와 달리 환승 포함 실제 trip 진행 방향)에서 prevStation → candidateStation
  *      인덱스가 감소하지 않아야 한다. off-route(arc 밖, 노선 이탈) 또는 역행(인덱스 감소)이면
  *      우회하지 않는다 — 이게 #2373 원취지(GPS drift 조기 발사) 방어의 핵심.
@@ -329,7 +329,7 @@ function isLockConfirmedForwardHop(
   destination: Station,
 ): boolean {
   // 방어적 가드 — lock.boardingStationId는 계약상 항상 실존 Station.id지만(BoardingLock 계약),
-  // station 데이터 drift/malformed route 대비로 명시 처리한다(#2478, bgPositionTrainFire.ts와
+  // station 데이터 drift/malformed route 대비로 명시 처리한다(#2478, 철거된 bgPositionTrainFire.ts(#3063)와
   // 동일 취지의 graceful degrade — 우회 실패 시 기존 #2373 차단 유지).
   const origin = getStationById(lock.boardingStationId);
   if (!origin) return false;
@@ -500,12 +500,9 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       sleepMode,
       isFirstHop,
     });
-    if (!movementSignal.reliable && !(isMinimalAlarmEnabled() && fusionSource === 'position-train')) {
+    if (!movementSignal.reliable) {
       // #2204 — FG와 동일 정적 misfire 가드. destination/transfer early가 정적 사용자에게
       // 발사되던 phantom fire(뚝섬 evidence)를 차단.
-      // #2379 — EXPO_PUBLIC_MINIMAL_ALARM ON일 때는 이 과억제 게이트를 우회한다(스펙 B).
-      // #2483 — 우회를 arvlCd/열차 확증(fusionSource=position-train)으로 좁힌다. flag ON만으로는
-      // 우회하지 않는다 — GPS-static 정적 phantom(fusionSource=gps 등)은 flag ON에서도 억제 유지.
       logSuppressedMovement({
         source,
         stationName: alarmEvent.stationName,
@@ -633,10 +630,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     // dedup(lastNotifiedStationId) 위에 위치 — sleep으로 차단되면 lastNotifiedStationId 갱신 안 함
     // → sleep OFF 토글 후 정상 첫 hop 알림이 재발사 가능.
     // Sleep rule 단일 gate (ADR-023). transfer/station-passed 첫 hop만 suppress. destination은 항상 fire.
-    if (!movementSignal.reliable && !(isMinimalAlarmEnabled() && fusionSource === 'position-train')) {
+    if (!movementSignal.reliable) {
       // #2204 — FG와 동일 정적 misfire 가드. 정적 사용자에게 station-passed가 발사되던 회귀 차단.
-      // #2379 — EXPO_PUBLIC_MINIMAL_ALARM ON일 때는 이 과억제 게이트를 우회한다(스펙 B).
-      // #2483 — 우회를 arvlCd/열차 확증(fusionSource=position-train)으로 좁힌다.
       logSuppressedMovement({
         source,
         stationName: nearest.station.name,

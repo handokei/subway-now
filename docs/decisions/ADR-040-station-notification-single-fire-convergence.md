@@ -40,9 +40,9 @@ ADR-036은 Phase 2(backend visible 퇴역)를 **"Phase 1 실증 후에만"** 으
 
 | 경로 | 역할 | 상태 |
 | --- | --- | --- |
-| `bgPositionTrainFire.ts:55` | #2383 position-train 발사 = ADR-036 Phase 0 축1 | `return false` |
-| `bgWaypointArvlcdFire.ts:73` | BG waypoint arvlCd 발사 | `return false` |
-| `undergroundConsensusFire.ts:64` | 지하 consensus 발사 | `return` |
+| `bgPositionTrainFire.ts:55` | #2383 position-train 발사 = ADR-036 Phase 0 축1 | `return false` (#3063 철거) |
+| `bgWaypointArvlcdFire.ts:73` | BG waypoint arvlCd 발사 | `return false` (#3063 철거) |
+| `undergroundConsensusFire.ts:64` | 지하 consensus 발사 | `return` (#3063 철거) |
 | `stationPipeline.ts:503/636` | **G0-3 게이트 arvlCd-우회**(ADR-036 critical path) | 우회 비활성 |
 | `useStationAlarm.ts:1127` | Phase 1 **D1** FG phase 발사 | 비활성 |
 
@@ -77,7 +77,7 @@ ADR-033 D1의 1순위 근거는 **"backend 경로(35~51s)는 거짓 문구 원�
 
 - **ADR-033 D1 근거 (b)(c)는 유효하다** — (b) device-local 발사는 `shouldSuppressBySleepRule` device 게이트가 작동 (c) BG/suspend에서 매역 미발사가 안전. 본 ADR은 (a)만 무효화한다.
 - **ADR-035 첫 줄 원칙은 유효하다** — "iOS 식별자 공간 분리상 **emitter가 2개면 이중발사를 물리적으로 못 막는다**". 10/9에 backend 13발 + 기기 2발이 **실제로 공존**해 이 예측이 관측됐다. 본 ADR의 "표시 책임자는 A 하나" 원칙은 이 논거를 **계승**한다 — 뒤집는 것은 "그 하나가 device여야 한다"는 부분뿐이다.
-- **ADR-036 Phase 0/1의 코드 자산은 폐기하지 않는다** — `MINIMAL_ALARM` 뒤 dormant 경로의 처분은 §열려있는 결정으로 미룬다.
+- ~~**ADR-036 Phase 0/1의 코드 자산은 폐기하지 않는다**~~ — **supersede (2026-10-19, 결정 7=(b), #3063)**: ADR-042 모라토리엄으로 그 발사 라인의 부활은 "해제 절차 + 재설계"가 됐으므로 dormant 코드를 보존할 실익이 소멸했다. 모라토리엄 해제 시 복원이 아니라 재설계한다.
 - **ADR-033 D2(문구 표준)·D3(취침/일반 경계)는 범위 밖** — 발사 Owner 축만 supersede한다.
 - ADR-010·ADR-014·ADR-023·ADR-026 인용은 기존 결정을 뒤집지 않는다(매역 무음 유지, false positive/miss 동급).
 
@@ -136,7 +136,8 @@ ADR-033 D1의 1순위 근거는 **"backend 경로(35~51s)는 거짓 문구 원�
 4. **lockless 대리 포함 여부** — 현재 `lock &&` 조건이라 제외. `feedback_user_intent_equal_protection`과 충돌 가능, 별도 확인.
 5. **C 완전 제거 재평가** (2026-10-10 신규) — §대안 1의 기각 근거가 소멸했다. 선행 조건: 지연 분포를 **상시 관측**할 수 있어야 한다(현재 KV TTL 2~5분으로 소급 불가). #2905 측정 설계에 "지연 p50/p95를 90일 보존처로 적재"를 포함한다.
 6. **`EXPO_PUBLIC_LOCAL_FIRE_DEFER` 활성 시점** (2026-10-10 신규) — 본 ADR의 "표시 책임자는 A 하나" 원칙을 실제로 달성하는 스위치가 이 flag다(#2928, 2단계). **현재 `.env`에 없어 OFF이므로 기기는 여전히 즉시 발사하고 emitter가 2개로 공존한다**(10/9 실측 backend 13 + 기기 2). ADR이 채택됐어도 **배선은 미완**이다. 켜는 시점·검증 방법을 결정해야 한다.
-7. **`MINIMAL_ALARM` 뒤 dormant 코드 처분** (2026-10-10 신규) — ADR-036 Phase 0/1 자산(`bgPositionTrainFire`·`bgWaypointArvlcdFire`·`undergroundConsensusFire`·G0-3 우회·D1 FG phase)이 flag 뒤에 남는다. 선택지: (a) 유지 — 되돌릴 여지 보존, 단 "코드 표면적" 문제 존속(본 ADR의 출발점) (b) 제거 — 표면적 축소, 단 device 권위 복귀 시 재구축 (c) 유지 + `docs/agents/invariants.md`에 "dormant, 승격 조건=Phase 1 D3" 기록. **결정 전 제거 금지.**
+7. **[결정됨 2026-10-19: (b) 제거 — #3063]** **`MINIMAL_ALARM` 뒤 dormant 코드 처분** (2026-10-10 신규) — ADR-036 Phase 0/1 자산(`bgPositionTrainFire`·`bgWaypointArvlcdFire`·`undergroundConsensusFire`·G0-3 우회·D1 FG phase)이 flag 뒤에 남는다. 선택지: (a) 유지 — 되돌릴 여지 보존, 단 "코드 표면적" 문제 존속(본 ADR의 출발점) (b) 제거 — 표면적 축소, 단 device 권위 복귀 시 재구축 (c) 유지 + `docs/agents/invariants.md`에 "dormant, 승격 조건=Phase 1 D3" 기록. ~~**결정 전 제거 금지.**~~
+   - **결정 기록 (2026-10-19, 사용자)**: (b) 제거. 철거 범위 = 발사 모듈 3종(`bgPositionTrainFire`·`bgWaypointArvlcdFire`·`undergroundConsensusFire`) + `useLocalBoardingPromptGate` + orphan 연쇄, live 파일의 flag 분기 단순화(`backgroundLocationTask`·`stationPipeline.ts:503/636`·`liveActivityPushChannel` flag 피연산자). #3035 결정 대기분(`useStationAlarm` FG 발사 블록·`stationPipeline.ts:611/:733`·`fireLocalAlarmNotification` 본체·`debugFlags` 플래그 본체)은 보류하고 PR-D2에서 처분한다.
 
 8. **AC4 판정 수단 신설** (2026-10-10 신규) — LA가 실제로 표시한 역/N정거장을 기록해야 AC4를 판정할 수 있다. 현재 `live-activity-updated | fired`뿐이다(`alarmLog.ts:1318`). 덤프 **빌드 식별자 부재**(build/commit/sha 0건)도 같은 묶음 — "어느 코드로 돌았나"를 덤프로 답할 수 없다.
 

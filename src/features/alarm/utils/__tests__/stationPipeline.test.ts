@@ -47,7 +47,7 @@ jest.mock('../../../../shared/utils/stationRoute', () => {
 });
 
 // #2478 — isLockConfirmedForwardHop이 route 방향대로 정렬된 arc를 얻기 위해 재사용하는 함수.
-// bgPositionTrainFire.test.ts와 동일하게 mock으로 arc 반환값을 직접 제어(null/빈 배열/정상 등).
+// (bgPositionTrainFire.test.ts는 #3063 철거) mock으로 arc 반환값을 직접 제어(null/빈 배열/정상 등).
 const mockComputeRouteArc = jest.fn();
 jest.mock('../../../route/utils/routeProgress', () => ({
   computeRouteArc: (...args: unknown[]) => mockComputeRouteArc(...args),
@@ -1818,30 +1818,6 @@ describe('processLocationUpdate', () => {
           mockDestination.name,
           mockStation.line,
         );
-      });
-
-      // #2483 — 우회는 arvlCd/열차 확증(fusionSource=position-train)일 때만. flag ON 단독으로는
-      // 더 이상 우회하지 않는다(GPS-static phantom 차단, 아래 "확증 없으면 억제" 테스트 참고).
-      it('정적 사용자(movement unreliable) + fusionSource=position-train(arvlCd 확증)이면 게이트를 우회해 phase 알람을 발사한다', async () => {
-        mockFindNearestStation.mockReturnValue(mockNearestResult);
-        mockFindRoute.mockReturnValue(mockRoute);
-        mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
-
-        await call({ speedMps: 0.1, fusionSource: 'position-train' });
-
-        expect(mockLogSuppressedMovement).not.toHaveBeenCalled();
-        expect(mockLogFiredAlarm).toHaveBeenCalled();
-        expect(mockFireLocalAlarmNotification).toHaveBeenCalled();
-      });
-
-      it('정적 사용자(movement unreliable) + fusionSource=position-train(arvlCd 확증)이면 게이트를 우회해 station-passed를 발사한다', async () => {
-        mockFindNearestStation.mockReturnValue(mockNearestResult);
-        mockFindRoute.mockReturnValue(mockRoute);
-
-        await call({ speedMps: 0.1, fusionSource: 'position-train' });
-
-        expect(mockLogSuppressedMovement).not.toHaveBeenCalled();
-        expect(mockFireFgAuxStationPassedNotification).toHaveBeenCalled();
       });
 
       // #2483 — flag ON이어도 fusionSource가 arvlCd 확증(position-train)이 아니면 정적 상태에서

@@ -21,13 +21,8 @@ jest.mock('live-activity', () => ({
 }));
 
 const mockClearStationNotification = jest.fn();
-const mockBuildBoardingPromptContent = jest.fn((originStation: string, line: string) => ({
-  title: '탑승하셨나요?',
-  body: `${line} ${originStation}역 근처예요.`,
-}));
 jest.mock('../../utils/stationNotification', () => ({
   clearStationNotification: (...args: unknown[]) => mockClearStationNotification(...args),
-  buildBoardingPromptContent: (...args: [string, string]) => mockBuildBoardingPromptContent(...args),
 }));
 
 const mockGetCurrentTripCorrIdSync = jest.fn<string | null, []>(() => null);

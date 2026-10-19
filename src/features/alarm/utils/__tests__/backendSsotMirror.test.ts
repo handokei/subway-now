@@ -526,8 +526,8 @@ describe('persistBackendSsotMirror TOCTOU 직렬화 (#2593)', () => {
 
 /**
  * #2591 (code review 7번) — freshness(≤180s) 단일 진입점. `useBackendSsotMirrorPoll`
- * (FG 5s 폴링) / `refreshLiveActivityFromBackgroundContext`(BG LA 갱신) / 로컬 boarding-prompt
- * 억제 게이트(`fireLocalBoardingPromptNotification`) 3곳이 공유한다.
+ * (FG 5s 폴링) / `refreshLiveActivityFromBackgroundContext`(BG LA 갱신) 등이 공유한다.
+ * (로컬 boarding-prompt 억제 게이트 소비처는 #3063 철거)
  */
 describe('isBackendSsotMirrorFresh (#2591 code review 7번)', () => {
   const baseEntry = {

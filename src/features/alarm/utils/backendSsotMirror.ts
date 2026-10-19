@@ -360,9 +360,9 @@ function parseLockSuggestion(raw: unknown): LockSuggestionMirror | null {
  * `BACKEND_SSOT_MIRROR_MAX_AGE_MS`) 단일 판정 진입점.
  *
  * 동일 `mirror !== null && Date.now() - mirror.receivedAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS` 식이
- * `useBackendSsotMirrorPoll`(FG 5s 폴링) / `refreshLiveActivityFromBackgroundContext`(BG LA 갱신) /
- * 로컬 boarding-prompt 억제 게이트(`fireLocalBoardingPromptNotification`) 3곳에 사본으로 존재해
- * 상한값 drift 위험이 있었다 — 이 함수로 통합해 세 소비처가 공유한다. `now` 파라미터는 테스트용
+ * `useBackendSsotMirrorPoll`(FG 5s 폴링) / `refreshLiveActivityFromBackgroundContext`(BG LA 갱신)
+ * 등에 사본으로 존재해 상한값 drift 위험이 있었다 — 이 함수로 통합해 소비처가 공유한다.
+ * (로컬 boarding-prompt 억제 게이트 사본은 #3063에서 철거됐다.) `now` 파라미터는 테스트용
  * (기본 `Date.now()`).
  */
 export function isBackendSsotMirrorFresh(
