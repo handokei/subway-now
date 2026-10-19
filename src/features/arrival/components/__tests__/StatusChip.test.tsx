@@ -5,6 +5,7 @@ import { StatusChip } from '../StatusChip';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { lightColors, darkColors } from '../../../../shared/theme';
 import { StyleSheet } from 'react-native';
+import { MIN_TOUCH_TARGET } from '../../../../shared/constants/touchTarget';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 
@@ -104,5 +105,14 @@ describe('StatusChip', () => {
       <StatusChip label="도착역" name="긴역이름이들어가는경우테스트" onClear={onClear} testID="chip-clear" />,
     );
     expect(screen.getByText('긴역이름이들어가는경우테스트').props.numberOfLines).toBe(1);
+  });
+
+  it('닫기 버튼 터치 영역이 최소 44pt이다 (#3093)', () => {
+    renderWithTheme(
+      <StatusChip label="도착역" name="강남" onClear={onClear} testID="chip-clear" />,
+    );
+    const flat = StyleSheet.flatten(screen.getByTestId('chip-clear').props.style);
+    expect(flat.minWidth).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
+    expect(flat.minHeight).toBeGreaterThanOrEqual(MIN_TOUCH_TARGET);
   });
 });
