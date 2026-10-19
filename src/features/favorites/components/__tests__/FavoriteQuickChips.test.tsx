@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent } from '@testing-library/react-native';
+import { fireEvent, within } from '@testing-library/react-native';
 import { FavoriteQuickChips } from '../FavoriteQuickChips';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
@@ -47,12 +47,39 @@ describe('FavoriteQuickChips', () => {
   });
 
   it('집/회사는 i18n 라벨, general은 라벨 없이 역명만 보인다', () => {
-    const { getByText, queryByText } = renderWithTheme(
+    const { getByText, getByTestId } = renderWithTheme(
       <FavoriteQuickChips favorites={favorites} onSelect={jest.fn()} onAdd={jest.fn()} />,
     );
     expect(getByText('집')).toBeTruthy();
     expect(getByText('회사')).toBeTruthy();
-    expect(queryByText('즐겨찾기')).toBeNull();
+    const generalChip = within(getByTestId(`home-favorite-chip-${gangnam.id}`));
+    expect(generalChip.getByText(canonicalStationName('강남', '2'))).toBeTruthy();
+    expect(generalChip.queryByText('집')).toBeNull();
+    expect(generalChip.queryByText('회사')).toBeNull();
+  });
+
+  it('사용자 지정 label이 있으면 역명 대신 label을 표시한다 (DestinationPicker와 동일)', () => {
+    const { getByText, queryByText } = renderWithTheme(
+      <FavoriteQuickChips
+        favorites={[{ station: gangnam, role: 'general', label: '헬스장' }]}
+        onSelect={jest.fn()}
+        onAdd={jest.fn()}
+      />,
+    );
+    expect(getByText('헬스장')).toBeTruthy();
+    expect(queryByText(canonicalStationName('강남', '2'))).toBeNull();
+  });
+
+  it('칩에 accessibilityLabel/Hint를 달고 이모지 아이콘은 스크린리더에서 숨긴다', () => {
+    const { getByTestId, getByText } = renderWithTheme(
+      <FavoriteQuickChips favorites={favorites} onSelect={jest.fn()} onAdd={jest.fn()} />,
+    );
+    const generalChip = getByTestId(`home-favorite-chip-${gangnam.id}`);
+    expect(generalChip.props.accessibilityLabel).toBe(canonicalStationName('강남', '2'));
+    expect(generalChip.props.accessibilityHint).toBe('탭하여 이 역을 목적지로 선택');
+    const homeChip = getByTestId(`home-favorite-chip-${seoul.id}`);
+    expect(homeChip.props.accessibilityLabel).toBe(`집 ${canonicalStationName('서울역', '1')}`);
+    expect(getByText('🏠').props.accessibilityElementsHidden).toBe(true);
   });
 
   it('칩 탭 시 해당 station으로 onSelect를 호출한다', () => {
