@@ -52,13 +52,15 @@ describe('StationSuggestionList', () => {
 
   // #3094: 긴 역명이 행 폭을 밀어 호선 배지가 박스 밖으로 잘리지 않도록 — 이름은 shrink, 배지는 고정.
   it('역명은 flexShrink 1 + 1줄, 호선 배지는 flexShrink 0, 컨테이너는 overflow hidden', () => {
-    const { getByText, getByTestId } = render(
+    const { getByText, getByTestId, getAllByText } = render(
       <StationSuggestionList suggestions={stations} onSelect={jest.fn()} listTestID="list" itemTestIDPrefix="item-" />,
     );
     const nameNode = getByText('강남');
     expect(StyleSheet.flatten(nameNode.props.style).flexShrink).toBe(1);
     expect(nameNode.props.numberOfLines).toBe(1);
-    const badge = StyleSheet.flatten(getByTestId('item-2-022-badge').props.style);
+    let node = getAllByText('2호선')[0].parent;
+    while (node && !StyleSheet.flatten(node.props.style)?.backgroundColor) node = node.parent;
+    const badge = StyleSheet.flatten(node!.props.style);
     expect(badge.flexShrink).toBe(0);
     expect(StyleSheet.flatten(getByTestId('list').props.style).overflow).toBe('hidden');
   });

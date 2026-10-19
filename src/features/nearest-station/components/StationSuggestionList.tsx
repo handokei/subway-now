@@ -29,7 +29,9 @@ export function StationSuggestionList({ suggestions, onSelect, listTestID, itemT
           accessibilityRole="button"
           accessibilityLabel={`${getStationDisplayName(s)} ${LINE_NAMES[s.line]}`}
         >
-          <Text style={[styles.name, { color: colors.ink }]}>{getStationDisplayName(s)}</Text>
+          <Text style={[styles.name, { color: colors.ink }]} numberOfLines={1}>
+            {getStationDisplayName(s)}
+          </Text>
           <View style={[styles.lineBadge, { backgroundColor: s.lineColor }]}>
             <Text style={styles.lineText}>{LINE_NAMES[s.line]}</Text>
           </View>
@@ -55,8 +57,11 @@ const styles = StyleSheet.create({
   },
   name: {
     ...typography.bodyBase,
+    flexShrink: 1,
   },
   lineBadge: {
+    flexShrink: 0,
+    marginLeft: spacing.sm,
     borderRadius: 4,
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
