@@ -17,7 +17,7 @@ module.exports = {
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'automatic',
-    newArchEnabled: false,
+    newArchEnabled: true,
     locales: {
       ko: './locales/ko.json',
       en: './locales/en.json',
