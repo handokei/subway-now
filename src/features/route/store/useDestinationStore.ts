@@ -77,6 +77,12 @@ export interface DestinationState {
    */
   recentDestinations: Station[];
   customOrigin: Station | null;
+  /**
+   * #3076 — 명시 출발역 지정 전용 카운터 (메모리 전용, 비영속, 초기 0).
+   * setCustomOriginExplicit(다른 id)만 증가시킨다. clear / SSOT override / hydration / rehydrate는 불변.
+   * HomeScreen route 재계산 가드(sessionKey)와 useTripOrigin 재캡처가 이 값으로 무효화된다.
+   */
+  originEpoch: number;
   // #700 — useTripOrigin이 destination set 시점에 캡처한 origin. cold restart 시
   // 첫 GPS fix가 진짜 출발역과 다른 회귀를 막기 위해 영속화한다 (TRIP_ORIGIN_KEY).
   tripOrigin: Station | null;
@@ -88,6 +94,11 @@ export interface DestinationState {
   removeRecentDestination: (stationId: string) => void;
   loadRecentDestinations: () => Promise<void>;
   setCustomOrigin: (station: Station | null) => void;
+  /**
+   * #3076 — 사용자 명시 출발역 지정. 같은 id 재지정은 완전 no-op, 다른 id면 customOrigin과
+   * originEpoch+1을 단일 set으로 원자 반영 + 영속화. clear(null)는 setCustomOrigin을 쓴다.
+   */
+  setCustomOriginExplicit: (station: Station) => void;
   /**
    * #1541 — backend SSOT consensus가 강 신호로 customOrigin과 다른 station을 가리킬 때
    * customOrigin을 unlock한다. customOrigin이 없거나 같은 station이면 no-op.
@@ -110,6 +121,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
   destination: null,
   recentDestinations: [],
   customOrigin: null,
+  originEpoch: 0,
   tripOrigin: null,
   routePreference: 'optimal' as RoutePreference,
 
@@ -323,6 +335,13 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     } else {
       AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
     }
+  },
+
+  setCustomOriginExplicit: (station: Station) => {
+    const { customOrigin, originEpoch } = get();
+    if (station.id === customOrigin?.id) return;
+    set({ customOrigin: station, originEpoch: originEpoch + 1 });
+    AsyncStorage.setItem(CUSTOM_ORIGIN_KEY, JSON.stringify(station)).catch(noop);
   },
 
   // #1541 — 강 SSOT consensus가 customOrigin과 다른 station을 가리키면 unlock.

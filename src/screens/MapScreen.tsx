@@ -51,6 +51,7 @@ export default function MapScreen() {
   const { colors } = useTheme();
   const customOrigin = useDestinationStore((s) => s.customOrigin);
   const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
+  const setCustomOriginExplicit = useDestinationStore((s) => s.setCustomOriginExplicit);
   const destination = useDestinationStore((s) => s.destination);
   const setDestination = useDestinationStore((s) => s.setDestination);
   const addRecentDestination = useDestinationStore((s) => s.addRecentDestination);
@@ -68,7 +69,8 @@ export default function MapScreen() {
   const { t } = useTranslation();
 
   // 홈 탭이 ROUTE_KEY에 저장한 경로를 화면 포커스 시 읽어 폴리라인 오버레이로 표시.
-  // destination/customOrigin이 바뀌면 홈 탭이 ROUTE_KEY를 갱신하므로 deps에 포함해 재로딩.
+  // destination / routePreference / 명시 출발역 지정(#3076 originEpoch)이 바뀌면 홈 탭이 ROUTE_KEY를 갱신한다.
+  // clear·hydration·GPS 변화는 홈 route를 재계산하지 않으므로 이 화면도 ROUTE_KEY를 그대로 읽는다.
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -196,7 +198,7 @@ export default function MapScreen() {
             <TouchableOpacity
               style={[styles.selectionButton, { backgroundColor: colors.fieldFill, borderWidth: 1, borderColor: colors.hair }]}
               onPress={() => {
-                setCustomOrigin(selectedStation);
+                setCustomOriginExplicit(selectedStation);
                 setSelectedStation(null);
                 // #1717 — destination이 이미 set이면 trip 시작 가능 → 현재역 탭 auto-navigate.
                 // setDestination 분기와 동일 UX 보장 (destination만 변경 시 자동 이동되는 패턴).

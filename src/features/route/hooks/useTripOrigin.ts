@@ -13,6 +13,8 @@ import type { Station } from '../../../shared/types/station';
  * - destination 변경(또는 첫 set) → 그 시점의 effectiveOrigin으로 캡처
  * - 첫 캡처 시 effectiveOrigin이 아직 null이면 다음 effect에서 lazily 캡처
  * - destination이 같은 동안 effectiveOrigin이 바뀌어도 tripOrigin은 유지
+ * - #3076 단 originEpoch(명시 출발역 지정 카운터)가 증가하면 새 effectiveOrigin으로 재캡처한다.
+ *   clear / hydration / GPS 변화는 epoch 불변이라 반응하지 않는다.
  * - #700 hydration: persistedTripOrigin이 있으면 첫 캡처를 그 값으로 갈음한다.
  *   cold restart(앱 강제종료 후 재실행) 시 GPS 첫 fix가 진짜 출발역과 다른 경우
  *   route가 잘못된 origin으로 계산되는 회귀를 막는다.
@@ -28,8 +30,10 @@ export function useTripOrigin(
   effectiveOrigin: Station | null,
   setTripOrigin: (origin: Station | null) => void,
   persistedTripOrigin?: Station | null,
+  originEpoch = 0,
 ): void {
   const tripDestIdRef = useRef<string | null>(null);
+  const capturedEpochRef = useRef(originEpoch);
   const tripOriginRef = useRef<Station | null>(null);
 
   // #700 — 영속화된 origin이 store에서 hydrate되는 시점은 비동기(loadTripOrigin)다.
@@ -49,6 +53,7 @@ export function useTripOrigin(
     const destId = destination?.id ?? null;
     if (destId !== tripDestIdRef.current) {
       tripDestIdRef.current = destId;
+      capturedEpochRef.current = originEpoch;
       const next = destination ? effectiveOrigin : null;
       tripOriginRef.current = next;
       // #700 — destination이 truthy로 첫 set되는 순간 effectiveOrigin이 null이면
@@ -59,9 +64,11 @@ export function useTripOrigin(
       }
       return;
     }
-    if (destination && !tripOriginRef.current && effectiveOrigin) {
+    const epochChanged = capturedEpochRef.current !== originEpoch;
+    if (destination && effectiveOrigin && (epochChanged || !tripOriginRef.current)) {
+      capturedEpochRef.current = originEpoch;
       tripOriginRef.current = effectiveOrigin;
       setTripOrigin(effectiveOrigin);
     }
-  }, [destination, effectiveOrigin, setTripOrigin]);
+  }, [destination, effectiveOrigin, setTripOrigin, originEpoch]);
 }
