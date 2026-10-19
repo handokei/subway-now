@@ -210,5 +210,8 @@ describe('useTripOrigin originEpoch (#3076)', () => {
     const { setter, rerender } = setup({ origin: stationA, epoch: 0 });
     rerender({ origin: null, epoch: 1 });
     expect(setter).toHaveBeenCalledTimes(1);
+    // latch 금지 — epoch는 동기화됐으므로 이후 GPS 기인 origin 도착은 재캡처가 아니다 (훅 불변식)
+    rerender({ origin: stationC, epoch: 1 });
+    expect(setter).toHaveBeenCalledTimes(1);
   });
 });

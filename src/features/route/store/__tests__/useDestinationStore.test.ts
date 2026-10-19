@@ -1358,20 +1358,42 @@ describe('useDestinationStore originEpoch (#3076)', () => {
     expect(state.originEpoch).toBe(2);
   });
 
-  it('setCustomOriginExplicit: 같은 id 재지정은 완전 no-op (epoch·값·영속화 모두 불변)', () => {
+  it('setCustomOriginExplicit: 같은 id 재지정도 항상 epoch+1 (hydration race 고착 복구 제스처, v5.1)', () => {
     const { setCustomOriginExplicit } = useDestinationStore.getState();
     setCustomOriginExplicit(mockStation);
-    const before = useDestinationStore.getState();
     jest.clearAllMocks();
     const listener = jest.fn();
     const unsub = useDestinationStore.subscribe(listener);
     setCustomOriginExplicit({ ...mockStation });
     unsub();
     const after = useDestinationStore.getState();
-    expect(after.originEpoch).toBe(before.originEpoch);
-    expect(after.customOrigin).toBe(before.customOrigin);
-    expect(listener).not.toHaveBeenCalled();
-    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    expect(after.originEpoch).toBe(2);
+    expect(after.customOrigin?.id).toBe('2-022');
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('loadCustomOrigin: 명시 지정 후 늦게 도착한 hydration은 값을 덮지 않는다 (epoch>0)', async () => {
+    let resolveRaw: (v: string) => void = () => {};
+    (AsyncStorage.getItem as jest.Mock).mockReturnValueOnce(
+      new Promise<string>((r) => {
+        resolveRaw = r;
+      }),
+    );
+    const pending = useDestinationStore.getState().loadCustomOrigin();
+    useDestinationStore.getState().setCustomOriginExplicit(mockStation2);
+    resolveRaw(JSON.stringify(mockStation));
+    await pending;
+    const state = useDestinationStore.getState();
+    expect(state.customOrigin?.id).toBe('2-021');
+    expect(state.originEpoch).toBe(1);
+  });
+
+  it('loadCustomOrigin: 이미 customOrigin이 있으면(epoch 0이어도) hydration을 skip한다', async () => {
+    useDestinationStore.setState({ customOrigin: mockStation2 });
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockStation));
+    await useDestinationStore.getState().loadCustomOrigin();
+    expect(useDestinationStore.getState().customOrigin?.id).toBe('2-021');
   });
 
   it('setCustomOrigin(null) clear는 epoch를 올리지 않는다', () => {
