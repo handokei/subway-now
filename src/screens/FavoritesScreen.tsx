@@ -23,7 +23,8 @@ import {
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../shared/utils/formatTime';
-import { getStationDisplayName, matchesStationQuery } from '../shared/utils/stationDisplay';
+import { getStationDisplayName } from '../shared/utils/stationDisplay';
+import { searchStations } from '../shared/utils/fuzzyStationSearch';
 import { useTheme, typography, withAlpha, type ThemeColors } from '../shared/theme';
 import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
 import { GLASS_SCREEN_BOTTOM_PADDING } from '../shared/ui/GlassTabBar';
@@ -76,8 +77,7 @@ export default function FavoritesScreen() {
   const searchResults = useMemo(() => {
     const trimmed = query.trim();
     if (!trimmed) return [];
-    const lower = trimmed.toLowerCase();
-    return allStations.filter((s) => matchesStationQuery(s, trimmed, lower)).slice(0, 20);
+    return searchStations(allStations, trimmed, 20);
   }, [query]);
 
   const isSearching = query.trim().length > 0;
@@ -394,8 +394,7 @@ function SlotPickerModal({
   const results = useMemo(() => {
     const trimmed = query.trim();
     if (!trimmed) return [];
-    const lower = trimmed.toLowerCase();
-    return allStations.filter((s) => matchesStationQuery(s, trimmed, lower)).slice(0, 20);
+    return searchStations(allStations, trimmed, 20);
   }, [query]);
   const visible = role != null;
   return (

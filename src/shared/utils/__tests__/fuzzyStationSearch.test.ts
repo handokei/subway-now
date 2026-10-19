@@ -50,6 +50,14 @@ describe('searchStations — 거부/회귀 금지', () => {
     ]);
   });
 
+  it('퍼지 단계는 편집거리 오름차순 (거리 2 입력이 앞에 있어도 거리 1이 먼저)', () => {
+    const stations = [
+      { name: '광회몬', nameEn: 'A' },
+      { name: '광화몬', nameEn: 'B' },
+    ] as Station[];
+    expect(searchStations(stations, '광화문', 10).map((s) => s.name)).toEqual(['광화몬', '광회몬']);
+  });
+
   it('영문 쿼리는 영문명 부분일치만, 퍼지 미적용', () => {
     const stations = [{ name: '강남', nameEn: 'Gangnam' }] as Station[];
     expect(searchStations(stations, 'gangn', 5)).toHaveLength(1);
