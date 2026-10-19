@@ -135,6 +135,7 @@ describe('theme', () => {
       // 디자인 결정(#3065): hero는 전역 소비자 보존, 64pt는 heroGlass로 분리
       expect(typography.heroGlass.fontSize).toBe(64);
       expect(typography.heroGlass.letterSpacing).toBe(-3);
+      expect(typography.heroGlass.fontWeight).toBe('800');
     });
 
     it('label은 대문자 변환 없는 작은 세미볼드 라벨이다', () => {
