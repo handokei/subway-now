@@ -138,6 +138,11 @@ describe('theme', () => {
       expect(typography.heroGlass.fontWeight).toBe('800');
     });
 
+    it('screen(탭 화면 제목)은 fontWeight 800이다 — 기본 400 렌더 방지(#3092)', () => {
+      expect(typography.screen.fontSize).toBe(34);
+      expect(typography.screen.fontWeight).toBe('800');
+    });
+
     it('label은 대문자 변환 없는 작은 세미볼드 라벨이다', () => {
       // 디자인 결정(#3065): 대문자 라벨 톤 폐기(한글에 어색)
       expect(typography.label).not.toHaveProperty('textTransform');
