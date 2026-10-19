@@ -126,7 +126,7 @@ export const typography = {
   title:     { fontFamily: font.bold,     fontSize: 28, letterSpacing: -0.8, lineHeight: 32 },
   titleSm:   { fontFamily: font.bold,     fontSize: 22, letterSpacing: -0.5 },
   titleXs:   { fontFamily: font.bold,     fontSize: 20 },
-  screen:    { fontFamily: font.bold,     fontSize: 34, letterSpacing: -1.2 },  // 탭 화면 제목
+  screen:    { fontFamily: font.bold,     fontWeight: '800' as const, fontSize: 34, letterSpacing: -1.2 },  // 탭 화면 제목
   etaBig:    { fontFamily: font.regular,  fontSize: 56, letterSpacing: -3, fontWeight: '300' as const },
   countMM:   { fontFamily: font.regular,  fontSize: 32, letterSpacing: -1.5, fontWeight: '300' as const },
   countSS:   { fontFamily: font.regular,  fontSize: 24, letterSpacing: -0.8, fontWeight: '300' as const },
