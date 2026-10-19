@@ -79,7 +79,7 @@ describe('FavoriteQuickChips', () => {
     expect(generalChip.props.accessibilityHint).toBe('탭하여 이 역을 목적지로 선택');
     const homeChip = getByTestId(`home-favorite-chip-${seoul.id}`);
     expect(homeChip.props.accessibilityLabel).toBe(`집 ${canonicalStationName('서울역', '1')}`);
-    expect(getByText('🏠').props.accessibilityElementsHidden).toBe(true);
+    expect(getByText('🏠', { includeHiddenElements: true }).props.accessibilityElementsHidden).toBe(true);
   });
 
   it('칩 탭 시 해당 station으로 onSelect를 호출한다', () => {

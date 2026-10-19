@@ -11,7 +11,8 @@ import { useStationMismatchDetector } from '../features/nearest-station/hooks/us
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo } from '../features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
-import { LINE_NAMES } from '../shared/constants/lineColors';
+import { FAVORITES_ROUTE } from '../shared/constants/routes';
+import { SolidLineBadge } from '../shared/ui/SolidLineBadge';
 import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { excludeFavoriteStations } from '../features/favorites/utils/excludeFavoriteStations';
@@ -2104,7 +2105,7 @@ export default function HomeScreen() {
                 <FavoriteQuickChips
                   favorites={favorites}
                   onSelect={handleSelectDestination}
-                  onAdd={() => router.push('/(tabs)/favorites')}
+                  onAdd={() => router.push(FAVORITES_ROUTE)}
                 />
                 {visibleRecentDestinations.length > 0 && (
                   <View testID="recent-destinations-list">
@@ -2123,9 +2124,7 @@ export default function HomeScreen() {
                         >
                           <View style={styles.recentDestinationRow}>
                             <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{getStationDisplayName(recent)}</Text>
-                            <View style={[styles.recentLineBadge, { backgroundColor: recent.lineColor }]}>
-                              <Text style={styles.recentLineText}>{LINE_NAMES[recent.line]}</Text>
-                            </View>
+                            <SolidLineBadge line={recent.line} color={recent.lineColor} />
                           </View>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -2534,16 +2533,6 @@ const styles = StyleSheet.create({
   recentDestinationName: {
     ...typography.bodyMd,
     fontWeight: '700',
-  },
-  recentLineBadge: {
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  recentLineText: {
-    color: '#fff', // 노선색(lineColor) 배경 위 텍스트 — 항상 흰색 유지
-    ...typography.micro,
-    fontWeight: 'bold',
   },
   destinationButton: {
     borderRadius: radiusGlass.pill,

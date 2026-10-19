@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing, radiusGlass } from '../../../shared/theme';
-import { LINE_NAMES } from '../../../shared/constants/lineColors';
+import { SolidLineBadge } from '../../../shared/ui/SolidLineBadge';
 import { FAVORITE_SLOT_ICONS, isFavoriteSlotRole } from '../../../shared/types/station';
 import type { FavoriteEntry, Station } from '../../../shared/types/station';
 import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
@@ -28,9 +28,11 @@ export function FavoriteQuickChips({ favorites, onSelect, onAdd }: Props) {
     <View style={styles.section} testID="home-favorite-chips">
       <Text style={[styles.label, { color: colors.muted }]}>{t('home.quickDeparture')}</Text>
       <View style={styles.row}>
-        {chips.map(({ station, role }) => {
+        {chips.map(({ station, role, label }) => {
           const { id, line, lineColor } = station;
           const isSlot = isFavoriteSlotRole(role);
+          const name = label ?? getStationDisplayName(station);
+          const a11yLabel = isSlot ? `${t(`favorites.${role}`)} ${name}` : name;
           return (
             <TouchableOpacity
               key={id}
@@ -38,13 +40,17 @@ export function FavoriteQuickChips({ favorites, onSelect, onAdd }: Props) {
               onPress={() => onSelect(station)}
               testID={`home-favorite-chip-${id}`}
               accessibilityRole="button"
+              accessibilityLabel={a11yLabel}
+              accessibilityHint={t('a11y.route.favoriteChipHint')}
             >
-              {isSlot && <Text style={styles.icon}>{FAVORITE_SLOT_ICONS[role]}</Text>}
+              {isSlot && (
+                <Text style={styles.icon} accessibilityElementsHidden importantForAccessibility="no">
+                  {FAVORITE_SLOT_ICONS[role]}
+                </Text>
+              )}
               {isSlot && <Text style={[styles.roleText, { color: colors.muted }]}>{t(`favorites.${role}`)}</Text>}
-              <Text style={[styles.name, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
-              <View style={[styles.lineBadge, { backgroundColor: lineColor }]}>
-                <Text style={styles.lineText}>{LINE_NAMES[line]}</Text>
-              </View>
+              <Text style={[styles.name, { color: colors.ink }]}>{name}</Text>
+              <SolidLineBadge line={line} color={lineColor} />
             </TouchableOpacity>
           );
         })}
@@ -77,6 +83,4 @@ const styles = StyleSheet.create({
   icon: { fontSize: 14 },
   roleText: { ...typography.micro, fontWeight: '600' },
   name: { ...typography.micro, fontWeight: '600' },
-  lineBadge: { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
-  lineText: { color: '#fff', ...typography.micro, fontWeight: 'bold' }, // 노선색 배경 위 — 항상 흰색
 });
