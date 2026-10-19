@@ -358,6 +358,9 @@ describe('#3056 ⓙ 등뼈(#3041 S-C 세그먼트) — HTTP boarding-confirm "�
     entries: sortedEntries,
   });
 
+  /** 마지막 boarding-confirm 응답 body(#3055 — device가 소비하는 왕복 계약의 실측 입력). */
+  let lastResponseBody: unknown;
+
   async function confirmAndGetLock(token: string, body: Record<string, unknown>): Promise<string | undefined> {
     const { tapMs } = await loadFixture();
     let capturedEnv: Env | undefined;
@@ -371,7 +374,7 @@ describe('#3056 ⓙ 등뼈(#3041 S-C 세그먼트) — HTTP boarding-confirm "�
         const spy = vi.spyOn(Date, 'now').mockReturnValue(tapMs);
         vi.stubGlobal('fetch', makeCaptureFetch(fixture, () => tapMs, { freshMs: 120_000, ceilingMs: lineEntry.tMs + 60_000 }));
         try {
-          await app.fetch(
+          const res = await app.fetch(
             new Request(`http://example.com/trips/${token}/boarding-confirm`, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -379,6 +382,7 @@ describe('#3056 ⓙ 등뼈(#3041 S-C 세그먼트) — HTTP boarding-confirm "�
             }),
             env,
           );
+          lastResponseBody = await res.json();
         } finally {
           spy.mockRestore();
           vi.unstubAllGlobals();
@@ -391,5 +395,12 @@ describe('#3056 ⓙ 등뼈(#3041 S-C 세그먼트) — HTTP boarding-confirm "�
 
   it('LA 버튼 모양(trainCode 미동봉) 응답 → live 재조회가 탭 시각에 방금 떠난 7325를 lock', async () => {
     expect(await confirmAndGetLock('s-c-3056-la', {})).toBe(DEPARTED_TRAIN);
+    // #3055 — 같은 실측 탭의 응답 body가 device 승격의 입력이다(resolvedTrainCode/resolveTier).
+    expect(lastResponseBody).toEqual({
+      ok: true,
+      lockState: 'leg1',
+      resolvedTrainCode: DEPARTED_TRAIN,
+      resolveTier: 'assertion-departed',
+    });
   }, 60_000);
 });

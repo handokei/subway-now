@@ -38,6 +38,7 @@ import { usePolling } from '../../../shared/hooks/usePolling';
 import {
   LIVE_ACTIVITY_INTENT_POLL_MS,
   LIVE_ACTIVITY_INTENT_STALE_MS,
+  isRealBoardingLock,
 } from '../../../shared/constants/boardingLock';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { isDuplicateBoardingLock } from '../utils/duplicateBoardingLock';
@@ -133,6 +134,13 @@ interface BridgeDeps extends UseBoardingPromptResponderDeps {
  * `null` 명시로 코드에 남긴다(타입이 필수라 생략은 컴파일 에러).
  */
 function isDuplicateBoardingIntent(intent: PendingBoardingIntent): boolean {
+  // #3055 ⓖ — 기존 lock이 PENDING sentinel이면 중복이 아니라 "재POST로 backend 해소 응답을 받아
+  // 승격할 기회"다(FG 진입 시 브릿지 재해소 → tryAutoLock → boarding-confirm → 응답 소비).
+  // 예외는 **이 어댑터에서만** 둔다 — 공유 predicate의 "null = trainCode 모르는 채널 → station+line
+  // dedup 유지" 의도(`duplicateBoardingLock.ts`)와 다른 호출처(`useTransferTrainList`·
+  // `useBoardingLockController`)는 불변.
+  const { lock } = useBoardingLockStore.getState();
+  if (lock !== null && !isRealBoardingLock(lock)) return false;
   return isDuplicateBoardingLock(intent.line, intent.originStation, null);
 }
 

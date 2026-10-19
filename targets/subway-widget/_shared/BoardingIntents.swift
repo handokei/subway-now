@@ -13,11 +13,11 @@ import os.log
 //   suite = "group.com.subwaynow.app" (modules/live-activity/ios/LiveActivityModule.swift의
 //           APP_GROUP과 동일 — 별도 pod 컴파일 단위라 리터럴을 미러링한다)
 //   key   = "pendingBoardingIntent" (LiveActivityModule.swift의 PENDING_BOARDING_INTENT_KEY와 동일)
-//   value(JSON) = { id, tripToken, action, originStation, line, atMs, trainCode? }
+//   value(JSON) = { id, tripToken, action, originStation, line, atMs }
 //     - id: "<tripToken>-<atMs>" — clear 시 대조용
 //     - action: "BOARDING_BOARDED" | "DISEMBARK_DISEMBARKED"
-//     - trainCode (#2962, optional): LA가 들고 있던 ContentState.trainCode. 현재 JS consumer가
-//       읽지 않는 forward-compat 필드(본 이슈 범위는 postBoardingConfirm 직결 경로)
+//     (#3055 A — #2962의 optional trainCode 필드는 제거: JS consumer가 읽지 않았고 stale 값
+//      전파 경로만 남겼다)
 //
 // 파일 위치 = `_shared/` (fix/#2444): @bacons/apple-targets는 이 디렉토리 파일을 main app
 // target과 widget extension target 양쪽에 자동 링크한다(SubwayActivityAttributes.swift와 동일
@@ -106,12 +106,12 @@ private func postBoardingConfirm(
     tripToken: String,
     action: String,
     station: String,
-    line: String,
-    // #2962 — LA가 들고 있는(ContentState.trainCode) 값을 그대로 forward. LA에서 신선도 판정
-    // 하지 않는다(R-4/R-5) — 검증은 backend `isPromotionCorroborated` 단일 지점(#2961/#2963).
-    // nil이면(구 backend가 보낸 content-state, 또는 ambiguity 발사라 애초에 값이 없음) body에
-    // 키 자체를 싣지 않아 기존 stamp 폴백 경로로 그대로 동작(R-1/R-3, byte-level 회귀 0).
-    trainCode: String?
+    // #3055 A — trainCode 파라미터 제거. LA 버튼 BG 경로는 "탔다" 표명(action/station/line)만
+    // 전송한다. 발사 시점에 임베드된 `state.trainCode`는 늦은 탭 시 stale일 수 있어(#3044),
+    // 열차 해소는 backend가 탭 시각 기준으로 한다(#3059 assertion tier / #2975 stamp 우선순위).
+    // backend 파서는 trainCode를 optional로 받으므로(`validateBoardingConfirmPayload`) 키 부재가
+    // 정상 계약이다. JS responder 경로(#3028 fresh 재확정 forward)는 이 파일과 무관하게 불변.
+    line: String
 ) async {
     // #2857 — tripToken이 빈 문자열이면(좀비 LA: state.boardingPromptTripToken ?? ""에서
     // trip이 이미 삭제돼 nil 대신 fallback "" 전달) addingPercentEncoding이 nil을 반환하지
@@ -137,12 +137,7 @@ private func postBoardingConfirm(
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.timeoutInterval = 10
 
-    var body: [String: Any] = ["action": action, "station": station, "line": line]
-    // #2962 — optional로만 추가. 필수 필드로 만들면 구 위젯/구 backend 조합에서 decode/의미
-    // 불일치가 생긴다(이슈 "반드시 지킬 것" 2) — nil일 때 키 자체를 안 보내는 것이 핵심.
-    if let trainCode = trainCode {
-        body["trainCode"] = trainCode
-    }
+    let body: [String: Any] = ["action": action, "station": station, "line": line]
     guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
         intentLog.error("boarding-confirm body encode failed")
         return
@@ -173,16 +168,13 @@ private func writePendingBoardingIntent(
     action: String,
     tripToken: String,
     originStation: String,
-    line: String,
-    // #2962 — FG 브릿지(App Group pull, ⑤-JS)도 같은 shape로 trainCode를 받을 수 있도록 중간
-    // 저장 값에도 싣는다. 현재 JS 파서(`parsePendingBoardingIntent`)는 모르는 필드를 무시하므로
-    // 즉시 소비자는 없다 — BoardingIntents의 주 경로는 `postBoardingConfirm`(BG 직결)이며, 이
-    // 필드는 그 값을 App Group 쪽에도 동일하게 노출해두는 forward-compat.
-    trainCode: String?
+    line: String
 ) {
     guard let defaults = UserDefaults(suiteName: APP_GROUP) else { return }
     let atMs = Date().timeIntervalSince1970 * 1000
-    var payload: [String: Any] = [
+    // #3055 A — trainCode 필드 제거: JS 소비부(`PendingBoardingIntent`)는 이 필드를 읽지 않았다
+    // (소비자 0건 forward-compat이었고, stale 값이 FG 브릿지로 흘러들 여지만 남겼다).
+    let payload: [String: Any] = [
         "id": "\(tripToken)-\(Int(atMs))",
         "tripToken": tripToken,
         "action": action,
@@ -190,9 +182,6 @@ private func writePendingBoardingIntent(
         "line": line,
         "atMs": atMs,
     ]
-    if let trainCode = trainCode {
-        payload["trainCode"] = trainCode
-    }
     guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
           let jsonString = String(data: jsonData, encoding: .utf8) else { return }
     defaults.set(jsonString, forKey: PENDING_BOARDING_INTENT_KEY)
@@ -228,9 +217,7 @@ struct BoardingConfirmIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — 버튼 렌더 시점(ContentState.trainCode)의 값을 그대로 캡처. perform()이 나중에
-    // 실행돼도(위젯 프로세스) @Parameter가 탭 시점이 아니라 버튼 생성 시점 값을 들고 있다 —
-    // "LA가 들고 있던 그 값을 그대로 보낸다"(R-5) 요구사항의 구현 지점.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 
@@ -255,15 +242,13 @@ struct BoardingConfirmIntent: LiveActivityIntent {
             action: ACTION_BOARDING_BOARDED,
             tripToken: tripToken,
             originStation: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         await postBoardingConfirm(
             tripToken: tripToken,
             action: CONFIRM_ACTION_BOARDED,
             station: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         return .result()
     }
@@ -285,7 +270,7 @@ struct DisembarkConfirmIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — BoardingConfirmIntent와 동일 패턴.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 
@@ -310,15 +295,13 @@ struct DisembarkConfirmIntent: LiveActivityIntent {
             action: ACTION_DISEMBARK_DISEMBARKED,
             tripToken: tripToken,
             originStation: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         await postBoardingConfirm(
             tripToken: tripToken,
             action: CONFIRM_ACTION_DISEMBARKED,
             station: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         return .result()
     }
@@ -341,7 +324,7 @@ struct NotBoardedIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — BoardingConfirmIntent와 동일 패턴.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 
@@ -366,15 +349,13 @@ struct NotBoardedIntent: LiveActivityIntent {
             action: ACTION_BOARDING_NOT_BOARDED,
             tripToken: tripToken,
             originStation: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         await postBoardingConfirm(
             tripToken: tripToken,
             action: CONFIRM_ACTION_NOT_BOARDED,
             station: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         return .result()
     }
@@ -396,7 +377,7 @@ struct DisembarkNotYetIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #2962 — BoardingConfirmIntent와 동일 패턴.
+    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
     @Parameter(title: "trainCode")
     var trainCode: String?
 
@@ -421,15 +402,13 @@ struct DisembarkNotYetIntent: LiveActivityIntent {
             action: ACTION_DISEMBARK_NOT_YET,
             tripToken: tripToken,
             originStation: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         await postBoardingConfirm(
             tripToken: tripToken,
             action: CONFIRM_ACTION_NOT_BOARDED,
             station: originStation,
-            line: line,
-            trainCode: trainCode
+            line: line
         )
         return .result()
     }
@@ -470,8 +449,7 @@ struct EndTripIntent: LiveActivityIntent {
             action: ACTION_END_TRIP,
             tripToken: tripToken,
             originStation: "",
-            line: "",
-            trainCode: nil
+            line: ""
         )
         await postTripEnd(tripToken: tripToken)
         return .result()

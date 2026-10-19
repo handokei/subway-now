@@ -69,7 +69,10 @@ import {
   DISEMBARK_ACTION_DISEMBARKED,
   DISEMBARK_ACTION_NOT_YET,
 } from '../../utils/notificationCategory';
-import { LIVE_ACTIVITY_INTENT_STALE_MS } from '../../../../shared/constants/boardingLock';
+import {
+  LIVE_ACTIVITY_INTENT_STALE_MS,
+  PENDING_TRAIN_CODE,
+} from '../../../../shared/constants/boardingLock';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const g = globalThis as any;
@@ -322,6 +325,32 @@ describe('useLiveActivityIntentBridge', () => {
       await Promise.resolve();
       expect(mockHandleResponse).not.toHaveBeenCalled();
       expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-1-100');
+    });
+
+    // #3055 ⓖ — 브릿지 어댑터 레벨 PENDING 예외. 기존 lock이 PENDING sentinel이면 중복이 아니라
+    // "재POST로 backend 응답을 받아 승격할 기회"다(FG 진입 시 브릿지 재해소 경로). 공유 predicate
+    // (`isDuplicateBoardingLock`)는 건드리지 않고 이 어댑터에서만 예외를 둔다.
+    it('ⓖ 같은 역/line의 lock이 PENDING sentinel → dedup 미적용, handleResponse 호출(재POST→승격 경로)', async () => {
+      setMockLock({ ...activeLock, trainCode: PENDING_TRAIN_CODE });
+      mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).toHaveBeenCalledTimes(1);
+      expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-1-100');
+    });
+
+    it('ⓖ 거부 — 실 trainCode lock이면 기존대로 중복 no-op(PENDING 예외가 실 lock으로 새지 않는다)', async () => {
+      setMockLock({ ...activeLock, trainCode: '7325' });
+      mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockHandleResponse).not.toHaveBeenCalled();
     });
 
     it('lock 만료됨 → dedup 미적용, handleResponse 호출', async () => {

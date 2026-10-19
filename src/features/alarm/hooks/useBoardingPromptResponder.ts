@@ -81,6 +81,7 @@ import {
   wasBoardingPromptDisplayed,
 } from './useBoardingPromptDisplayLogger';
 import { handleAlarmEndTripResponse } from './useAlarmEndTripResponder';
+import { promotePendingLockFromConfirm } from '../utils/promotePendingLockFromConfirm';
 
 const log = createLogger('boardingPromptResponder');
 
@@ -300,7 +301,7 @@ export async function handleResponse(
     // (clearNavigationPausedAt)를 함께 처리하는 재개 chokepoint다(#2293 S1) — infoMode를
     // 건드리지 않으므로 위 stamp와 중복되지 않는다.
     resumeNavigation();
-    const reconfirmedTrainCode = await tryAutoLock(payload, deps);
+    const { reconfirmedTrainCode, createdPending } = await tryAutoLock(payload, deps);
     // #2852 — tryAutoLock의 성공/실패(arrivals-null PENDING fallback, ambiguity, createLock
     // 예외, destinationId 부재로 인한 조기 dismiss 등 모든 내부 분기)와 무관하게, 사용자가 방금
     // [탑승] 응답을 했다는 사실 자체를 backend `POST /trips/:token/boarding-confirm`(#2527)로
@@ -316,16 +317,22 @@ export async function handleResponse(
     // trainCode 없이 forward — 로컬 lock과 backend lock이 같은 값을 보게 된다(RCA 9/11·9/21·10/7).
     const forwardTrainCode = reconfirmedTrainCode ?? payload.trainCode;
     try {
-      if (forwardTrainCode !== undefined) {
-        await postBoardingConfirm(
-          payload.tripToken,
-          'boarded',
-          payload.originStation,
-          payload.line,
-          forwardTrainCode,
-        );
-      } else {
-        await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
+      const confirmResult =
+        forwardTrainCode !== undefined
+          ? await postBoardingConfirm(
+              payload.tripToken,
+              'boarded',
+              payload.originStation,
+              payload.line,
+              forwardTrainCode,
+            )
+          : await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
+      // #3055 C — backend가 탭 시각 기준으로 해소한 열차를 응답으로 받아 PENDING lock을 교체한다
+      // (device 자신의 표명에 대한 권위적 회신). **이번 사이클이 만든 PENDING일 때만**(createdPending) —
+      // skip 분기에서 남은 이전 탭의 stale PENDING에 이번 탭 열차를 덮으면 혼합 lock이 된다.
+      // 실 lock/lock 부재/응답 없음은 승격 함수 안에서 no-op.
+      if (createdPending) {
+        await promotePendingLockFromConfirm(confirmResult, deps.createLock);
       }
     } catch (err) {
       log.warn('boarding-confirm forward failed — non-critical', err as Error);
@@ -506,7 +513,22 @@ async function resolveHopEndRouteContext(
 }
 
 /**
- * #3028 — 리턴값: 이 응답 사이클에서 **fresh 재조회로 재확정한** trainCode(chosen 성공 또는
+ * `tryAutoLock` 결과.
+ * - `reconfirmedTrainCode`: #3028 — fresh 재조회로 재확정한 trainCode(없으면 null).
+ * - `createdPending`: #3055 — **이번 응답 사이클이 PENDING lock을 실제로 만들었는가**. 응답의
+ *   resolvedTrainCode로 PENDING을 교체해도 되는 소유권 조건이다. skip 분기(position 모순·lookup
+ *   실패·immutability skip 등)에서는 이전 탭의 stale PENDING이 store에 남아 있을 수 있어 거기에
+ *   이번 탭 열차를 덮으면 혼합 lock이 된다.
+ */
+interface AutoLockOutcome {
+  reconfirmedTrainCode: string | null;
+  createdPending: boolean;
+}
+
+const NO_AUTO_LOCK: AutoLockOutcome = { reconfirmedTrainCode: null, createdPending: false };
+
+/**
+ * #3028 — 리턴값(`reconfirmedTrainCode`): 이 응답 사이클에서 **fresh 재조회로 재확정한** trainCode(chosen 성공 또는
  * embed 성공 시에만 non-null). PENDING fallback/skip/조기 return 등 재확정에 실패한 모든
  * 분기는 null — caller(`handleResponse`)가 `payload.trainCode`(stale embed)로 fallback한다.
  * PENDING_TRAIN_CODE sentinel은 절대 반환하지 않는다(그 자체가 "미확정" 상태 표시일 뿐
@@ -515,7 +537,7 @@ async function resolveHopEndRouteContext(
 async function tryAutoLock(
   payload: BoardingPromptPayload,
   deps: HandleDeps,
-): Promise<string | null> {
+): Promise<AutoLockOutcome> {
   const telemetry = { originStation: payload.originStation, line: payload.line };
 
   // #2696 — route/destination도 필요(다음 목표역 산출)해서 destinationId fallback read와
@@ -531,7 +553,7 @@ async function tryAutoLock(
     // storage에도 destination이 없음 — 진짜 trip 종료. lock 시도 안 함, dismiss로 backend silence.
     logBoardingPromptAutoLock({ reason: 'autolock-no-trip', ...telemetry });
     await dismissBoardingPrompt(payload.tripToken);
-    return null;
+    return NO_AUTO_LOCK;
   }
 
   const arrival = await deps.fetchArrivalsForStation(payload.originStation);
@@ -540,7 +562,7 @@ async function tryAutoLock(
     // 대신 실 lock을 시도한다. station lookup 실패 등으로 embed 시도가 실패하면 기존 PENDING
     // fallback으로 자연 흐른다(회귀 없음).
     const embeddedTrainCode = await tryEmbeddedTrainCodeLock(payload, deps, destinationId, telemetry);
-    if (embeddedTrainCode) return embeddedTrainCode;
+    if (embeddedTrainCode) return { reconfirmedTrainCode: embeddedTrainCode, createdPending: false };
     log.info('arrivals fetch returned null — creating pending fallback lock');
     logBoardingPromptAutoLock({ reason: 'autolock-arrivals-empty', ...telemetry });
     // #1888 (RC-13) — 빈 후보 graceful skip evidence. arrivals null = API fetch 실패 또는 응답 빈 케이스.
@@ -553,8 +575,8 @@ async function tryAutoLock(
     // #2407 (root fix) — train 확정 실패해도 사용자 명시 탭 = lock 활성과 동급(ADR-014).
     // trainCode는 PENDING sentinel로, downstream consumer가 arrival/realtimePosition 도착 시
     // 기존 lockSuggestion 채널(useBoardingLockController)로 async 확정한다.
-    await createPendingFallbackLock(payload, deps, destinationId);
-    return null;
+    const createdPending = await createPendingFallbackLock(payload, deps, destinationId);
+    return { reconfirmedTrainCode: null, createdPending };
   }
 
   // #1740 — backend가 forward하는 목적지 방향. #2696 — undefined(구버전 backend/미해결)는
@@ -601,7 +623,7 @@ async function tryAutoLock(
     // #2819 — device 자체 재조회가 ambiguity/빈 후보로 실패해도 backend가 발사 시점에 단일
     // 확정한 trainCode가 있으면 PENDING 대신 실 lock을 시도한다(정상 chosen 경로는 무변경).
     const embeddedTrainCode = await tryEmbeddedTrainCodeLock(payload, deps, destinationId, telemetry);
-    if (embeddedTrainCode) return embeddedTrainCode;
+    if (embeddedTrainCode) return { reconfirmedTrainCode: embeddedTrainCode, createdPending: false };
     log.info('ambiguity or empty — creating pending fallback lock');
     // 빈 후보와 ambiguity 구분: candidates가 1개 이상인데 chosen이 null이면 ambiguity.
     // 방향 미해결은 그 자체가 결정적 원인이므로 별도 reason으로 구분(#2696 요구사항5).
@@ -631,8 +653,8 @@ async function tryAutoLock(
     }
     // #2407 (root fix) — 무매칭/ambiguity 둘 다 "탭했는데 train을 못 골랐다"는 동일 실패 모드.
     // 두 경우 모두 lock 자체는 생성해 lockless cascade를 막는다 (async 확정은 후속 신호에 위임).
-    await createPendingFallbackLock(payload, deps, destinationId);
-    return null;
+    const createdPending = await createPendingFallbackLock(payload, deps, destinationId);
+    return { reconfirmedTrainCode: null, createdPending };
   }
 
   // #2889 (S5) — chosen(실 trainCode 확정) 경로. 기존에는 #2408 위치 모순 guard가
@@ -643,7 +665,7 @@ async function tryAutoLock(
   if (await hasPositionContradiction(payload)) {
     log.info('chosen lock skipped — position contradiction with fresh BG context');
     logBoardingPromptAutoLock({ reason: 'fallback-skipped-position-contradiction', ...telemetry });
-    return null;
+    return NO_AUTO_LOCK;
   }
 
   // boardingStationId — payload.originStation/line으로 정확 매칭. 매칭 실패는 manual fallback.
@@ -651,7 +673,7 @@ async function tryAutoLock(
   if (!station) {
     log.info('station lookup failed — auto lock skipped');
     logBoardingPromptAutoLock({ reason: 'autolock-station-lookup', ...telemetry });
-    return null;
+    return NO_AUTO_LOCK;
   }
 
   try {
@@ -679,7 +701,7 @@ async function tryAutoLock(
   }
   // #3028 — 로컬 lock 생성 시도(성공/예외)와 무관하게 fresh 재조회로 chosen을 재확정했다는
   // 사실 자체를 caller(handleResponse)에 노출한다 — backend forward가 이 값을 그대로 쓴다.
-  return chosen.trainCode;
+  return { reconfirmedTrainCode: chosen.trainCode, createdPending: false };
 }
 
 /**
@@ -809,7 +831,7 @@ async function createPendingFallbackLock(
   payload: BoardingPromptPayload,
   deps: HandleDeps,
   destinationId: string,
-): Promise<void> {
+): Promise<boolean> {
   const telemetry = { originStation: payload.originStation, line: payload.line };
 
   // #2408 (위험1 guard, #2889 S5 일반화) — stale prompt → 잘못된 lock 방지. BG_LAST_STATION이
@@ -822,19 +844,19 @@ async function createPendingFallbackLock(
       reason: 'fallback-skipped-position-contradiction',
       ...telemetry,
     });
-    return;
+    return false;
   }
 
   if (!isValidLineNumber(payload.line)) {
     log.warn('pending fallback lock skipped — invalid line', payload.line);
     logBoardingPromptAutoLock({ reason: 'autolock-station-lookup', ...telemetry });
-    return;
+    return false;
   }
   const station = findStationByNameAndLine(payload.originStation, payload.line);
   if (!station) {
     log.info('pending fallback lock skipped — station lookup failed');
     logBoardingPromptAutoLock({ reason: 'autolock-station-lookup', ...telemetry });
-    return;
+    return false;
   }
 
   // #2524 — 탑승 커밋 시그널. train 미확정 PENDING lock을 생성한다는 것 자체가 "사용자가
@@ -845,6 +867,7 @@ async function createPendingFallbackLock(
   // 유효하므로(다음 cycle 재시도 또는 manual fallback으로 이어짐).
   void useUserIntentStore.getState().setBoardingCommitted(true);
 
+  const boardedAt = Date.now();
   try {
     await deps.createLock(
       {
@@ -852,7 +875,7 @@ async function createPendingFallbackLock(
         trainCode: PENDING_TRAIN_CODE,
         boardingStationId: station.id,
         boardingLine: payload.line,
-        boardedAt: Date.now(),
+        boardedAt,
         expectedDurationMs: deps.expectedDurationMs,
         // train 미확정 — Seam A 지연 칩 기준치가 없다. undefined는 기존 legacy lock과 동일하게
         // graceful(지연 라벨 미노출).
@@ -865,5 +888,11 @@ async function createPendingFallbackLock(
   } catch (err) {
     log.warn('pending fallback createLock failed', err as Error);
     logBoardingPromptAutoLock({ reason: 'autolock-lock-failed', ...telemetry });
+    return false;
   }
+  // #3055 — createLock은 immutability skip(`lock-create-skip-immutable`)을 조용히 삼킨다(void).
+  // "이번 사이클이 만든 PENDING"인지는 store 재조회로 확인한다(이번에 stamp한 boardedAt이 그대로
+  // 올라와 있어야 한다) — 이전 탭의 PENDING이 남은 경우 boardedAt이 달라 false.
+  const { lock } = useBoardingLockStore.getState();
+  return lock?.boardedAt === boardedAt && lock.trainCode === PENDING_TRAIN_CODE;
 }

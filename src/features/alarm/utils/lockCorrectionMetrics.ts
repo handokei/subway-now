@@ -11,6 +11,7 @@
  * 동작 변경 없음 — 순수 측정. 호출 실패가 toast UX를 차단하지 않는다.
  */
 import { createLogger } from '../../../shared/utils/logger';
+import type { BoardingResolveTier } from '../../../shared/types/boardingLock';
 
 const log = createLogger('lockCorrection');
 
@@ -59,11 +60,14 @@ export function recordLockCorrection(
  *
  * @param confirmedTrainCode 승격된(확정) train code.
  */
-export function recordPendingLockPromotion(confirmedTrainCode: string): void {
+export function recordPendingLockPromotion(
+  confirmedTrainCode: string,
+  resolveTier?: BoardingResolveTier,
+): void {
   counters.promoted += 1;
   counters.lastPromotedAtMs = Date.now();
   log.info(
-    `pending lock promoted confirmed=${confirmedTrainCode} total=${counters.promoted}`,
+    `pending lock promoted confirmed=${confirmedTrainCode} tier=${resolveTier ?? 'normal'} total=${counters.promoted}`,
   );
 }
 
