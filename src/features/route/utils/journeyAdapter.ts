@@ -85,6 +85,10 @@ export function journeyDisplayToStops(
     const isCollapsedZeroFirstHop =
       isFirst && !isLast && isSameStationName(seg.fromName, seg.toName);
 
+    // #3073 — 이 segment로 타고 가는 노선(connector 색). 첫 segment는 #2556 교정된 origin line을 따라
+    // origin dot과 첫 connector가 어긋나지 않게 한다.
+    let connectorLine: LineNumber = seg.line;
+
     if (isFirst) {
       const nextSeg = segments[i + 1];
       // #2556 — collapse(환승역 흡수) 시 nextSeg.line은 이미 정합(흡수 조건이 fromName===toName).
@@ -92,6 +96,7 @@ export function journeyDisplayToStops(
       const originLine = isCollapsedZeroFirstHop
         ? nextSeg.line
         : resolveOriginLine(seg.fromName, seg.line);
+      connectorLine = originLine;
       stops.push({
         station: getStationDisplayNameByName(seg.fromName, allStations),
         line: originLine,
@@ -108,6 +113,7 @@ export function journeyDisplayToStops(
         stops.push({
           station: getStationDisplayName(mid),
           line: seg.line,
+          connectorLine,
           mark: 'intermediate',
         });
       }
@@ -128,6 +134,7 @@ export function journeyDisplayToStops(
         mark: 'transfer',
         note: i18next.t('journey.transferNote'),
         arrivalContext,
+        connectorLine,
         transferTarget: { toLine: nextSeg.line },
       });
     } else {
@@ -152,6 +159,7 @@ export function journeyDisplayToStops(
           mark: 'dest',
           note: i18next.t('journey.arrivalNote'),
           arrivalContext,
+          connectorLine,
         });
       }
     }

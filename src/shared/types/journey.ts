@@ -29,6 +29,8 @@ export interface Stop {
   mark: 'filled' | 'transfer' | 'dest' | 'intermediate';
   note?: string;
   arrivalContext?: StopArrivalContext;
+  /** #3073 — 이 stop으로 타고 들어온 노선. 직전 stop→이 stop connector 색. 출발역(filled)은 없음. */
+  connectorLine?: LineNumber;
   transferTarget?: StopTransferTarget;
 }
 

@@ -26,6 +26,8 @@ function expectedStop(
     mark,
     note,
     arrivalContext,
+    // #3073 — connectorLine = 그 stop으로 타고 들어온 노선 = arrivalContext.line
+    connectorLine: arrivalContext.line,
     ...(transferTargetToLine && { transferTarget: { toLine: transferTargetToLine } }),
   };
 }

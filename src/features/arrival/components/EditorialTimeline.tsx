@@ -87,13 +87,10 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
       {stops.map((s, i) => {
         const isLast = i === stops.length - 1;
         const lineC = s.line != null ? getLineColor(s.line) : colors.inkStrong;
-        // #3073 — 환승 경계 connector는 탑승 노선(arrivalContext.line=fromLine) 색.
-        // 환승 stop의 line은 to-line(배지용)이라 그대로 쓰면 leg-2 색으로 그려진다.
-        const nextStop = isLast ? null : stops[i + 1];
-        const nextConnectorLine = nextStop ? nextStop.arrivalContext?.line ?? nextStop.line : null;
-        const nextLineC = !isLast
-          ? (nextConnectorLine != null ? getLineColor(nextConnectorLine) : colors.inkStrong)
-          : lineC;
+        // #3073 — connector 색 = 다음 stop으로 타고 들어온 노선(adapter가 방출한 connectorLine).
+        const nextStop = stops[i + 1] ?? null;
+        const nextConnectorLine = nextStop?.connectorLine ?? nextStop?.line ?? null;
+        const nextLineC = nextConnectorLine != null ? getLineColor(nextConnectorLine) : colors.inkStrong;
         const quickExitDoor = doorFor(s, accessibilityMode);
         // #635 — 출발역(첫 mark='filled')에서 탑승 시 어느 칸·문에 타야 다음 hop(환승/도착)에서
         // 빠르게 내릴 수 있는지 표시. 같은 열차 = 같은 문 번호이므로 다음 hop stop의 도어를 그대로 재사용.
@@ -116,6 +113,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
           >
             {!isLast && (
               <View
+                testID={`timeline-connector-${i}`}
                 style={[
                   styles.connector,
                   { backgroundColor: nextLineC },
