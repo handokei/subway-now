@@ -347,11 +347,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
+    // 반투명 glassStrong 배경이라 legacy shadow 제거(픽셀 기반 번짐 방지) — 테두리로 경계 표현
   },
   recenterIcon: {
     ...typography.titleSm,
