@@ -14,6 +14,7 @@ import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdo
 import { LINE_NAMES } from '../shared/constants/lineColors';
 import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
+import { excludeFavoriteStations } from '../features/favorites/utils/excludeFavoriteStations';
 import { FavoriteQuickChips } from '../features/favorites/components/FavoriteQuickChips';
 import { useSettingsStore } from '../features/settings/store/useSettingsStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
@@ -155,6 +156,11 @@ export default function HomeScreen() {
   const setDestination = useDestinationStore((s) => s.setDestination);
   const loadDestination = useDestinationStore((s) => s.loadDestination);
   const recentDestinations = useDestinationStore((s) => s.recentDestinations);
+  // 즐겨찾기 칩과 중복 노출 방지 — 표시 필터만 (스토어 recentDestinations 불변)
+  const visibleRecentDestinations = useMemo(
+    () => excludeFavoriteStations(recentDestinations, favorites),
+    [recentDestinations, favorites],
+  );
   const addRecentDestination = useDestinationStore((s) => s.addRecentDestination);
   const removeRecentDestination = useDestinationStore((s) => s.removeRecentDestination);
   const loadRecentDestinations = useDestinationStore((s) => s.loadRecentDestinations);
@@ -2100,12 +2106,12 @@ export default function HomeScreen() {
                   onSelect={handleSelectDestination}
                   onAdd={() => router.push('/(tabs)/favorites')}
                 />
-                {recentDestinations.length > 0 && (
+                {visibleRecentDestinations.length > 0 && (
                   <View testID="recent-destinations-list">
                     <Text style={[styles.recentDestinationLabel, { color: colors.muted, paddingHorizontal: spacing.xs }]}>
                       {t('home.previousDestination')}
                     </Text>
-                    {recentDestinations.map((recent) => (
+                    {visibleRecentDestinations.map((recent) => (
                       <View
                         key={recent.id}
                         style={[styles.recentDestinationButton, styles.recentDestinationItemRow, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}
