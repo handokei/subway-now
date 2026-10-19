@@ -53,17 +53,6 @@ import { lookupStationBySsid } from '../utils/wifiSsidLookup';
 // 편승해 저빈도(내부 쿨다운)로 backend trip status를 확인한다. alarm 슬라이스 cross-feature
 // import는 본 파일 헤더 file-level disable로 이미 옵트인.
 import { checkTripDeathByPull, getBackendUrl as getTripDeathPullBackendUrl } from '../../alarm/utils/tripDeathPullBackstop';
-// #2381 (Gap A+B) — 지하(GPS dead) BG 자가감지. gate-accuracy 연속 실패로 'underground'
-// profile 강등 + lock 존재 tick에서 arvlCd+accel+cellular consensus로 device가 스스로 판정·발사.
-import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
-import { evaluateUndergroundConsensusFire } from '../../alarm/utils/undergroundConsensusFire';
-// #2383 (Part of #2381) — position-train-lock BG 발사 경로. 환경(지상/지하) 오분류·GPS accuracy
-// 상태에 독립적으로 lock.trainCode를 arvlCd로 직접 추적한다 (#2382 WiFi/consensus 경로보다 우선).
-import { evaluatePositionTrainFire } from '../../alarm/utils/bgPositionTrainFire';
-// #2480 — FG #396(useStationAlarm)의 waypoint arvlCd 직폴 발사를 BG spine으로 이식. GPS/WiFi/
-// 열차위치매칭 전부 무관 — "내 목적지(다음 waypoint)에 내 열차가 도착하나"만 셀룰러로 직접 폴한다.
-// #2383과 병행(대체 아님) — #2383이 실패(false)한 tick에서만 시도.
-import { evaluateWaypointArvlcdFire } from '../../alarm/utils/bgWaypointArvlcdFire';
 // #2514 — boardingLock 활성 시 GPS profile을 저전력으로 강등하기 위한 lock 존재 여부 조회.
 // backend가 realtimePosition으로 열차를 GPS-독립적으로 추적하는 동안 device GPS 고정밀 추적은
 // 불필요 — surface/stationary/underground 어떤 상태보다 이 강등이 우선한다.
@@ -188,31 +177,6 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     });
   }
 
-  // #2383 (Part of #2381) — position-train-lock 경로. lock 활성(trainCode 존재)이면 GPS
-  // accuracy 상태와 무관하게(환경/GPS/WiFi 독립이 핵심) arvlCd로 그 trainCode 열차의 현재
-  // 역을 직접 판정해 발사를 먼저 시도한다. 2026-08-26 덤프: GPS accuracy가 9~40m로 "정상"
-  // 판정돼 아래 gate-accuracy 강등 분기(→ #2382 evaluateUndergroundConsensusFire)에 도달조차
-  // 못 한 채 지하에서 위치가 틀린 채 방치됐다 — 그 실패 지점을 우회하는 것이 이 경로의 목적.
-  // 채택 성공(true) 시 이번 tick은 이미 처리되었으므로 GPS 파이프라인으로 fall through하지 않는다.
-  if (isMinimalAlarmEnabled()) {
-    try {
-      const fired = await evaluatePositionTrainFire();
-      if (fired) return;
-    } catch (e) {
-      logger.warn('position-train lock 처리 실패 (graceful)', e);
-    }
-
-    // #2480 — waypoint arvlCd 직폴 spine. #2383이 이번 tick에서 못 잡은 경우(열차위치 매칭
-    // 실패 등)에도, lock된 열차의 다음 waypoint 도착정보를 직접 폴링해 발사를 시도한다.
-    // GPS accuracy 게이트보다 먼저 — 지하에서도 셀룰러로 동작해야 하는 것이 이 경로의 핵심.
-    try {
-      const waypointFired = await evaluateWaypointArvlcdFire();
-      if (waypointFired) return;
-    } catch (e) {
-      logger.warn('waypoint arvlCd 처리 실패 (graceful)', e);
-    }
-  }
-
   // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단.
   // 측정용으로 게이트 drop을 알람 로그에 fire-and-forget 적재 (B2 인프라).
   const { latitude: lat, longitude: lng, accuracy } = latest.coords;
@@ -235,17 +199,6 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       void demoteToUndergroundIfNeeded(BACKGROUND_LOCATION_TASK).catch((e: unknown) => {
         logger.warn('underground 강등 처리 실패 (graceful)', e);
       });
-    }
-    // #2381 (Gap A+B) — GPS 좌표가 무효한 이 tick에서, 지하(profile='underground')+lock
-    // 조건이면 arvlCd+accel+cellular consensus로 device가 스스로 역 통과를 판정해 발사한다.
-    // 플래그 OFF(기본값)면 evaluateUndergroundConsensusFire 내부 첫 줄에서 즉시 no-op —
-    // 아래 조건 자체를 생략해 플래그 OFF 경로를 완전히 그대로 유지한다.
-    if (isMinimalAlarmEnabled()) {
-      try {
-        await evaluateUndergroundConsensusFire();
-      } catch (e) {
-        logger.warn('지하 consensus 처리 실패 (graceful)', e);
-      }
     }
     return;
   }

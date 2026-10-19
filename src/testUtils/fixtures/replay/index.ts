@@ -103,7 +103,7 @@ export const REPLAY_FIXTURE_LIBRARY: readonly ReplayFixtureLibraryEntry[] = [
     description:
       '2026-08-26 검증탑승 지하 미작동 실기기 evidence(E05A4F244EEB, 17:14:47~20:42:05). ' +
       '7-015(용마산)/7-019(건대입구 7호선) 지하 구간에서 surface 오분류 red 재현 — #2384가 ' +
-      '이 오분류를 뚫고 올바른 역을 발사하는지는 bgPositionTrainFire.dumpReplay.test.ts가 검증.',
+      '소비 테스트 없음 — 발사 경로 철거(ADR-040 결정7=(b), #3063). 재지정 후보: 지상/지하 분류 live 경로.',
     dumpText: RED_FIXTURE_20260826_UNDERGROUND_SURFACE_MISCLASSIFY_DUMP_TEXT,
     expectations: [{ invariant: 'surfaceInUnderground', expectViolations: true }],
   },

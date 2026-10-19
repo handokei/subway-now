@@ -31,7 +31,6 @@ import {
 } from '../api/alarmBackend';
 import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
-import { isMinimalAlarmEnabled } from '../../../shared/constants/debugFlags';
 import {
   logLiveActivityAuthorityState,
   logLiveActivityTokenRegister,
@@ -382,7 +381,7 @@ export function shouldSkipDeviceLiveActivityWrite(tripToken: string | null): boo
 function resolveLiveActivityAuthorityState(
   tripToken: string | null,
 ): LiveActivityAuthorityState {
-  if (isMinimalAlarmEnabled() || !tripToken) {
+  if (!tripToken) {
     return 'live-activity-authority-device-write';
   }
   if (backendConfirmed === null || backendConfirmed.tripToken !== tripToken) {

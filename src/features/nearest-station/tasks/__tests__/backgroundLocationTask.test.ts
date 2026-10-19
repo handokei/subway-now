@@ -128,34 +128,6 @@ jest.mock('../../../alarm/utils/tripDeathPullBackstop', () => ({
   checkTripDeathByPull: (...args: unknown[]) => mockCheckTripDeathByPull(...args),
 }));
 
-// ── #2381 지하 BG 자가감지 게이트 모킹 — 내부 판정은 undergroundConsensusFire.test.ts 전담,
-// 여기서는 backgroundLocationTask가 올바른 조건(플래그 ON)에서만 호출하는지만 검증 ──
-const mockIsMinimalAlarmEnabled = jest.fn<boolean, []>(() => false);
-jest.mock('../../../../shared/constants/debugFlags', () => ({
-  isMinimalAlarmEnabled: () => mockIsMinimalAlarmEnabled(),
-}));
-const mockEvaluateUndergroundConsensusFire = jest.fn().mockResolvedValue(undefined);
-jest.mock('../../../alarm/utils/undergroundConsensusFire', () => ({
-  evaluateUndergroundConsensusFire: (...args: unknown[]) =>
-    mockEvaluateUndergroundConsensusFire(...args),
-}));
-
-// #2383 (Part of #2381) — position-train-lock 경로 모킹. 내부 판정은 bgPositionTrainFire.test.ts
-// 전담, 여기서는 backgroundLocationTask가 플래그 상태·반환값에 따라 올바르게 호출/early-return
-// 하는지만 검증.
-const mockEvaluatePositionTrainFire = jest.fn().mockResolvedValue(false);
-jest.mock('../../../alarm/utils/bgPositionTrainFire', () => ({
-  evaluatePositionTrainFire: (...args: unknown[]) => mockEvaluatePositionTrainFire(...args),
-}));
-
-// #2480 — waypoint arvlCd 직폴 spine 경로 모킹. 내부 판정은 bgWaypointArvlcdFire.test.ts 전담,
-// 여기서는 backgroundLocationTask가 플래그 상태·호출 순서·반환값에 따라 올바르게 호출/
-// early-return하는지만 검증.
-const mockEvaluateWaypointArvlcdFire = jest.fn().mockResolvedValue(false);
-jest.mock('../../../alarm/utils/bgWaypointArvlcdFire', () => ({
-  evaluateWaypointArvlcdFire: (...args: unknown[]) => mockEvaluateWaypointArvlcdFire(...args),
-}));
-
 // #2514 — boardingLock 활성 시 GPS profile을 저전력 강등하기 위한 lock 존재 여부 조회 모킹.
 // 내부 파싱/CRUD 로직은 boardingLockStorage.test.ts 전담, 여기서는 backgroundLocationTask가
 // lock 존재 여부에 따라 profile 선택을 올바르게 분기하는지만 검증.
@@ -279,13 +251,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockApplyBgLocationProfile.mockResolvedValue(undefined);
     mockDemoteToUndergroundIfNeeded.mockResolvedValue(undefined);
     mockReleaseFromUndergroundIfNeeded.mockResolvedValue(false);
-    // #2381 — 기본: 플래그 OFF(현행 유지). 개별 테스트에서 override.
-    mockIsMinimalAlarmEnabled.mockReturnValue(false);
-    mockEvaluateUndergroundConsensusFire.mockResolvedValue(undefined);
-    // #2383 — 기본: false(미채택) — 기존 GPS/consensus 파이프라인이 그대로 이어진다.
-    mockEvaluatePositionTrainFire.mockResolvedValue(false);
-    // #2480 — 기본: false(미채택) — 기존 GPS/consensus 파이프라인이 그대로 이어진다.
-    mockEvaluateWaypointArvlcdFire.mockResolvedValue(false);
     // #2514 — 기본: lock 없음(null) — 기존 surface/stationary/underground 파이프라인이 그대로 이어진다.
     mockGetBoardingLock.mockResolvedValue(null);
   });
@@ -667,17 +632,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       );
     });
 
-    it('position-train-lock이 채택(fired=true)한 tick에서도 logBgTaskHeartbeat가 먼저 호출된다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockResolvedValueOnce(true);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: 12 }));
-
-      expect(mockLogBgTaskHeartbeat).toHaveBeenCalledTimes(1);
-      // position-train fire 채택 시 이후 GPS 파이프라인은 건너뛴다 (기존 동작 무변경 확인).
-      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
-    });
-
     it('error 분기에서는 logBgTaskHeartbeat를 호출하지 않는다', async () => {
       await taskCallback({ data: null, error: { message: '위치 오류' } });
       expect(mockLogBgTaskHeartbeat).not.toHaveBeenCalled();
@@ -707,186 +661,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     const accuracy = MAX_ACCURACY_M + 50;
 
     await expect(runWithLocation(makeLocation(37.498, 127.028, { accuracy }))).resolves.toBeUndefined();
-  });
-
-  // #2381 (Gap A+B) — 지하 BG 자가감지 게이트. 상세 판정 로직은 undergroundConsensusFire.test.ts
-  // 전담, 여기서는 backgroundLocationTask가 플래그 상태에 따라 올바르게 호출/미호출하는지만 검증.
-  describe('#2381 — 지하 consensus 자가감지 게이트 (EXPO_PUBLIC_MINIMAL_ALARM)', () => {
-    const accuracy = MAX_ACCURACY_M + 50;
-
-    it('플래그 OFF면 evaluateUndergroundConsensusFire를 호출하지 않는다(현행 완전 불변)', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(false);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
-
-      expect(mockEvaluateUndergroundConsensusFire).not.toHaveBeenCalled();
-    });
-
-    it('플래그 ON이면 gate-accuracy tick에서 evaluateUndergroundConsensusFire를 호출한다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
-
-      expect(mockEvaluateUndergroundConsensusFire).toHaveBeenCalledTimes(1);
-    });
-
-    it('플래그 ON + evaluateUndergroundConsensusFire가 reject해도 태스크는 크래시하지 않는다 (graceful)', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluateUndergroundConsensusFire.mockRejectedValueOnce(new Error('consensus failed'));
-
-      await expect(
-        runWithLocation(makeLocation(37.498, 127.028, { accuracy })),
-      ).resolves.toBeUndefined();
-    });
-
-    it('accuracy 게이트를 통과하는 정상 tick에서는 호출하지 않는다(gate-accuracy 실패 전용)', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockStorageValues(null);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M - 1 }));
-
-      expect(mockEvaluateUndergroundConsensusFire).not.toHaveBeenCalled();
-    });
-  });
-
-  // #2383 (Part of #2381) — position-train-lock 경로. 환경(지상/지하) 오분류·GPS accuracy
-  // 상태에 독립적이라는 것이 핵심이므로 "accuracy가 정상인 tick"에서도 호출되는지를 검증한다
-  // (2026-08-26 덤프: accuracy 9~40m로 gate-accuracy 강등 분기에 도달조차 못 해 #2382가
-  // 무력화됐다 — 이 경로가 그 실패 지점을 우회한다).
-  describe('#2383 — position-train-lock 발사 게이트 (EXPO_PUBLIC_MINIMAL_ALARM)', () => {
-    const goodAccuracy = MAX_ACCURACY_M - 1;
-
-    it('플래그 OFF면 evaluatePositionTrainFire를 호출하지 않는다(현행 완전 불변)', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(false);
-      mockStorageValues(null);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockEvaluatePositionTrainFire).not.toHaveBeenCalled();
-    });
-
-    it('플래그 ON이면 accuracy가 정상인 tick에서도 evaluatePositionTrainFire를 호출한다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockStorageValues(null);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockEvaluatePositionTrainFire).toHaveBeenCalledTimes(1);
-    });
-
-    it('플래그 ON이면 gate-accuracy tick에서도 evaluatePositionTrainFire를 (evaluateUndergroundConsensusFire보다 먼저) 호출한다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      const accuracy = MAX_ACCURACY_M + 50;
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
-
-      expect(mockEvaluatePositionTrainFire).toHaveBeenCalledTimes(1);
-      expect(mockEvaluateUndergroundConsensusFire).toHaveBeenCalledTimes(1);
-      const positionTrainOrder = mockEvaluatePositionTrainFire.mock.invocationCallOrder[0];
-      const consensusOrder = mockEvaluateUndergroundConsensusFire.mock.invocationCallOrder[0];
-      expect(positionTrainOrder).toBeLessThan(consensusOrder);
-    });
-
-    it('evaluatePositionTrainFire가 true를 반환하면 이번 tick을 종료하고 GPS 파이프라인/consensus로 fall through하지 않는다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockResolvedValue(true);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockEvaluateUndergroundConsensusFire).not.toHaveBeenCalled();
-      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
-    });
-
-    it('evaluatePositionTrainFire가 false를 반환하면 기존 파이프라인이 그대로 이어진다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockResolvedValue(false);
-      mockStorageValues(JSON.stringify(mockDestination));
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockProcessLocationUpdate).toHaveBeenCalled();
-    });
-
-    it('evaluatePositionTrainFire가 예외를 던져도 태스크는 크래시하지 않고 기존 파이프라인이 이어진다 (graceful)', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockRejectedValueOnce(new Error('position-train failed'));
-      mockStorageValues(JSON.stringify(mockDestination));
-
-      await expect(
-        runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy })),
-      ).resolves.toBeUndefined();
-      expect(mockProcessLocationUpdate).toHaveBeenCalled();
-    });
-  });
-
-  // #2480 — waypoint arvlCd 직폴 spine. #2383(evaluatePositionTrainFire)이 못 잡은 tick에도
-  // lock된 열차의 다음 waypoint 도착정보를 직접 폴링해 발사를 시도한다. #2383과 동일하게
-  // GPS accuracy 게이트보다 먼저(MINIMAL_ALARM 가드 안) 배선된다.
-  describe('#2480 — waypoint arvlCd 직폴 발사 게이트 (EXPO_PUBLIC_MINIMAL_ALARM)', () => {
-    const goodAccuracy = MAX_ACCURACY_M - 1;
-
-    it('플래그 OFF면 evaluateWaypointArvlcdFire를 호출하지 않는다(현행 완전 불변)', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(false);
-      mockStorageValues(null);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockEvaluateWaypointArvlcdFire).not.toHaveBeenCalled();
-    });
-
-    it('플래그 ON이면 accuracy가 정상인 tick에서도 evaluatePositionTrainFire 이후 evaluateWaypointArvlcdFire를 호출한다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockStorageValues(null);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockEvaluateWaypointArvlcdFire).toHaveBeenCalledTimes(1);
-      const positionTrainOrder = mockEvaluatePositionTrainFire.mock.invocationCallOrder[0];
-      const waypointOrder = mockEvaluateWaypointArvlcdFire.mock.invocationCallOrder[0];
-      expect(positionTrainOrder).toBeLessThan(waypointOrder);
-    });
-
-    it('evaluatePositionTrainFire가 true를 반환하면 evaluateWaypointArvlcdFire는 호출하지 않는다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockResolvedValue(true);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockEvaluateWaypointArvlcdFire).not.toHaveBeenCalled();
-    });
-
-    it('evaluateWaypointArvlcdFire가 true를 반환하면 이번 tick을 종료하고 GPS 파이프라인으로 fall through하지 않는다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockResolvedValue(false);
-      mockEvaluateWaypointArvlcdFire.mockResolvedValue(true);
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
-    });
-
-    it('evaluateWaypointArvlcdFire가 false를 반환하면 기존 파이프라인이 그대로 이어진다', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockResolvedValue(false);
-      mockEvaluateWaypointArvlcdFire.mockResolvedValue(false);
-      mockStorageValues(JSON.stringify(mockDestination));
-
-      await runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy }));
-
-      expect(mockProcessLocationUpdate).toHaveBeenCalled();
-    });
-
-    it('evaluateWaypointArvlcdFire가 예외를 던져도 태스크는 크래시하지 않고 기존 파이프라인이 이어진다 (graceful)', async () => {
-      mockIsMinimalAlarmEnabled.mockReturnValue(true);
-      mockEvaluatePositionTrainFire.mockResolvedValue(false);
-      mockEvaluateWaypointArvlcdFire.mockRejectedValueOnce(new Error('waypoint arvlCd failed'));
-      mockStorageValues(JSON.stringify(mockDestination));
-
-      await expect(
-        runWithLocation(makeLocation(37.498, 127.028, { accuracy: goodAccuracy })),
-      ).resolves.toBeUndefined();
-      expect(mockProcessLocationUpdate).toHaveBeenCalled();
-    });
   });
 
   // ── #527 jump gate: trip 컨텍스트(destJson 통과) 이후에만 동작 ──

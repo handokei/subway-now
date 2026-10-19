@@ -568,15 +568,6 @@ describe('liveActivityPushChannel', () => {
       expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
     });
 
-    it('dogfood 모드(flag ON)면 등록에 성공했어도 false(device가 계속 쓴다) — 회귀 방지', async () => {
-      process.env.EXPO_PUBLIC_MINIMAL_ALARM = 'true';
-      const handle = setupListener();
-      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
-      handle.emit('tok');
-      await Promise.resolve();
-      expect(shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
-    });
-
     it('backend-tracked trip 자체가 없으면(tripToken null) false — pre-boarding 등 lock 전 구간', () => {
       delete process.env.EXPO_PUBLIC_MINIMAL_ALARM;
       expect(shouldSkipDeviceLiveActivityWrite(null)).toBe(false);

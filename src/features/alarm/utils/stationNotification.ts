@@ -40,15 +40,7 @@ import {
 } from './notificationSource';
 import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
-import {
-  readBackendSsotMirror,
-  isBackendSsotMirrorFresh,
-  resolveBackendSsotMirrorStation,
-  type BackendSsotMirrorEntry,
-} from './backendSsotMirror';
-import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { markDeviceGpsLiveActivityWrite } from './liveActivityGpsWriteArbitration';
-import { getLegAdvance } from './legAdvanceStorage';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
 import { logLiveActivityUpdated } from './alarmLog';
 import {
@@ -57,7 +49,6 @@ import {
   STATION_TRACKING_CATEGORY,
 } from './notificationCategory';
 import { resolveStationNotifSoundFields } from '../../../shared/constants/stationNotifSound';
-import type { LineNumber } from '../../../shared/types/station';
 import { logFiredLaFallbackNotification, logSuppressedLaFallbackContentDedup } from './alarmLog';
 import {
   logPushReceipt,
@@ -365,12 +356,6 @@ async function isRecentLocalAuxFireDuplicate(
 /** boarding-prompt local fire dedup 키 kind — `recentLocalStationFires`(#2122 station-passed
  *  선례) 재사용. station name과 조합해 `${kind}:${stationName}` 키를 만든다. */
 export const LOCAL_BOARDING_PROMPT_FIRE_KIND = 'boarding-prompt';
-
-/** #2591 (code review 6번) — 로컬 boarding-prompt 억제 판정 자체의 TTL dedup 키. 발사
- *  dedup(`LOCAL_BOARDING_PROMPT_FIRE_KIND`)와 별개 kind — 억제된 origin은 이 TTL 동안
- *  mirror/legAdvance 재조회·재로깅 없이 조용히 skip한다(호출부가 매 polling cycle마다
- *  재평가하는 `useLocalBoardingPromptGate` 특성상 무한 재실행 IO/로그 스팸을 방지). */
-export const LOCAL_BOARDING_PROMPT_SUPPRESS_KIND = 'boarding-prompt-suppressed';
 
 /**
  * #2422 — backend remote boarding-prompt alert push(`data.kind === 'boarding-prompt'`)가,
@@ -1011,217 +996,5 @@ export async function fireFgAuxStationPassedNotification(
     data: { kind: 'intermediate', stationName, line },
   });
   await markLocalStationFired(stationName, 'station-passed');
-  return true;
-}
-
-/**
- * #2422 — "탔어요?" boarding-prompt title/body 빌더. backend `buildBoardingPromptMessage`
- * (backend/alarm-worker/src/scheduled.ts)의 device 쪽 대응 — ETA 절대시각까지는 복제하지 않는다
- * (단순성. 이 로컬 발사는 backend remote push의 fallback 안전망이라 표시 정보가 backend와
- * 100% 동일할 필요는 없다. 사용자는 앱 홈 화면에서 이미 ETA를 보고 있다).
- */
-/**
- * #2528 — LA AlertConfiguration도 이 문구를 재사용한다(`useLiveActivityPreBoardingLifecycle`) —
- * 백업 알림과 LA 잠금화면 alert가 동일한 문구로 사용자에게 일관되게 보이도록.
- */
-export function buildBoardingPromptContent(
-  originStation: string,
-  line: string,
-): { title: string; body: string } {
-  return {
-    title: i18next.t('route.boardingPromptTitle'),
-    body: i18next.t('route.boardingPromptBody', {
-      line: LINE_NAMES[line as LineNumber] ?? line,
-      originStation: getStationDisplayNameByName(originStation, allStations),
-    }),
-  };
-}
-
-/** #2422 — 로컬 boarding-prompt 알림 identifier prefix. 매 발사마다 station+시각을 붙여 유일화
- *  (동일 identifier 재사용은 `useBoardingPromptDisplayLogger`의 dedup Set이 두 번째 발사부터
- *  displayed 카운트를 영구 억제하는 부작용이 있다 — #2422 PR 리뷰 참고). */
-const LOCAL_BOARDING_PROMPT_ID_PREFIX = 'boarding-prompt-local';
-
-/**
- * #2591 (code review 3번) — backend SSoT mirror가 가리키는 역이 origin과 실제로 "다른 역"인지
- * 판정하는 단일 진입점. 문자열 raw 비교(`mirror.currentStationId !== originStation`)는
- * #1410/#2566 클래스의 표기 drift(같은 역의 다른 표기)를 진행으로 오판할 위험이 있어,
- * `resolveBackendSsotMirrorStation`(canonical Station 해석, #2589 SSoT 진입점)로 먼저 resolve하고
- * `isSameStationName`(별칭/정규화 동일성, `normalizeStationName` 경유)으로 비교한다.
- *
- * - resolve 실패('unresolved') — mirror의 역/노선 조합이 stations.json에서 해석되지 않음(데이터
- *   drift 의심). 판정 불확실 = 발사(억제 안 함, item 3 명시 요구사항).
- * - 'confirmed-same' — 정규화 후 origin과 동일 — 여전히 출발역(#2422 SPOF 커버 유지, 발사).
- * - 'confirmed-different' — 정규화 후에도 다른 역 — 여정 진행 확정(억제 대상).
- */
-function classifyMirrorAgainstOrigin(
-  mirror: Pick<BackendSsotMirrorEntry, 'currentStationId' | 'currentStationLine'>,
-  originStation: string,
-): 'confirmed-different' | 'confirmed-same' | 'unresolved' {
-  const resolved = resolveBackendSsotMirrorStation(mirror);
-  if (resolved === null) return 'unresolved';
-  return isSameStationName(resolved.name, originStation) ? 'confirmed-same' : 'confirmed-different';
-}
-
-type LocalBoardingPromptMirrorGate =
-  | { action: 'suppress'; reason: 'journey-progressed' }
-  | {
-      action: 'fire';
-      /** 발사는 하되 mirror가 이 판정에 쓰이지 못한 이유(잔여 창 field 진단용, item 4). */
-      mirrorDiagnostic?: 'mirror-missing' | 'mirror-stale' | 'mirror-cross-trip' | 'mirror-unresolved';
-    };
-
-/**
- * #2591 (code review 2/3/4번) — backend SSoT mirror 기반 여정 진행 판정. 원칙(코디네이터 지시,
- * #2606 transfer 리스트 게이트와 반대 방향): 이 게이트는 "사용자 명시 의향" 게이트의 SPOF
- * 보조망이라 **판정 불확실 시 보수 = 발사(억제 아님)** — #2606은 반대로 보수=거부다. 그래서
- * mirror가 조금이라도 신뢰 불가능/불확실하면 무조건 'fire'를 반환한다.
- *
- * - mirror 부재 → fire(mirror-missing).
- * - #2591 (code review 2번) — corrId 교차 가드. mirror.corrId와 현재 trip corrId
- *   (`getCurrentTripCorrIdSync`)가 둘 다 있고 불일치하면, 옛 trip의 mirror가 race로 revive되어
- *   새 trip 첫 프롬프트를 잘못 억제하는 것(race A)을 막기 위해 이 mirror를 판정에 쓰지 않는다
- *   → fire(mirror-cross-trip). 어느 한쪽이 없으면(레거시 저장분 등) 기존처럼 same-trip 취급.
- * - stale(>180s, `isBackendSsotMirrorFresh`) → fire(mirror-stale) — backend 생존이 확인되지
- *   않아 SPOF 커버가 여전히 필요하다.
- * - fresh + `classifyMirrorAgainstOrigin`이 'unresolved' → fire(mirror-unresolved).
- * - fresh + 'confirmed-same' → fire(진단 태그 없음 — 정상 SPOF 발사).
- * - fresh + 'confirmed-different' → suppress('journey-progressed') — backend 생존 + 여정
- *   진행이 모두 확정된 유일한 케이스.
- */
-function evaluateLocalBoardingPromptMirrorGate(
-  mirror: BackendSsotMirrorEntry | null,
-  originStation: string,
-): LocalBoardingPromptMirrorGate {
-  if (mirror === null) return { action: 'fire', mirrorDiagnostic: 'mirror-missing' };
-
-  const currentCorrId = getCurrentTripCorrIdSync();
-  if (mirror.corrId !== undefined && currentCorrId !== null && mirror.corrId !== currentCorrId) {
-    return { action: 'fire', mirrorDiagnostic: 'mirror-cross-trip' };
-  }
-
-  if (!isBackendSsotMirrorFresh(mirror)) {
-    return { action: 'fire', mirrorDiagnostic: 'mirror-stale' };
-  }
-
-  const classification = classifyMirrorAgainstOrigin(mirror, originStation);
-  if (classification === 'unresolved') {
-    return { action: 'fire', mirrorDiagnostic: 'mirror-unresolved' };
-  }
-  if (classification === 'confirmed-same') {
-    return { action: 'fire' };
-  }
-  return { action: 'suppress', reason: 'journey-progressed' };
-}
-
-/**
- * #2422 (방향 A) — device FG 로컬 boarding-prompt 단일권위 발사.
- *
- * backend remote alert push(주 채널)가 미발송/전달실패해도 device가 FG에서 동일 게이트
- * (`localBoardingPromptGate.ts`)를 통과하면 로컬로 직접 발사한다 — ADR-033(station-passed FG
- * 보조 발사)과 동일 패턴.
- *
- * `useBoardingPromptResponder`가 파싱하는 payload schema(`BoardingPromptPayload`)와 동일한
- * shape으로 `content.data`를 채운다 — [탑승]/[미탑승] 액션 버튼(BOARDING_PROMPT_CATEGORY)이
- * 로컬 발사든 원격 발사든 동일하게 동작한다.
- *
- * tripToken은 `ACTIVE_TRIP_KEY`(backend register 성공 시에만 set)를 요구한다 — 아직 register가
- * 안 된 trip은 이 로컬 발사도 스킵(register 자체의 실패는 이 안전망의 범위 밖. 이 안전망은
- * "register는 됐지만 backend cron/APNs 전달이 실패"하는 SPOF만 커버한다).
- *
- * dedup: `recentLocalStationFires`(#2122 선례)로 같은 originStation 재발사를 TTL(2분) 동안 억제.
- * 반환값은 실제 발사 여부(테스트/로깅 용) — 게이트 자체는 caller(`useLocalBoardingPromptGate`)가
- * 이미 통과한 상태로 호출한다.
- *
- * #2591 — 데스크 trip 실증(무음·무진동 전달 + "용마산 탑승?" 오표기 의심)에서 확정된 fix:
- * 1) presentation 동급화 — backend 채널(`sendBoardingPromptPush`, apns.ts)은 이미
- *    `sound: default` + `interruption-level: time-sensitive`인데 이 로컬 채널만 미전달이었다
- *    (Android도 `fireLocalAlarmNotification`과 동형으로 ALARM_CHANNEL_ID + MAX priority 지정).
- *    사용자 게이트(놓치면 leg가 lockless로 남음)이므로 도착 알림과 동급 이상의 주의 획득이 필요.
- * 2) 여정 진행 중 억제 게이트(`evaluateLocalBoardingPromptMirrorGate`) — backend SSoT mirror가
- *    fresh하고 origin과 다른 역을 확정적으로 가리킬 때만 억제한다. **판정 불확실 시 보수 =
- *    발사**(코디네이터 지시 — #2606 transfer 리스트의 "보수=거부"와 정반대 방향. 이 게이트는
- *    놓치면 leg가 lockless로 방치되는 사용자 명시 의향 게이트라 false negative가 false positive
- *    보다 비싸다).
- * 3) legAdvance stamp(#2278, 사용자 명시 하차 응답 — GPS 무관) 기반 추가 억제 — mirror가
- *    stale/부재라도 다른 채널(hop-end 응답 등)로 이미 이 leg가 확인됐으면 억제한다.
- * 4) 잔여 창(root RCA 항목 4) — legAdvance도 미확인이고 mirror도 이 판정에 못 쓰이는 상태
- *    (stale/부재/cross-trip/unresolved)에서 발사하는 경우는 코드로 완전히 봉합하지 못한다.
- *    침묵하지 않고 `local_boarding_prompt_fired_mirror_unconfirmed` breadcrumb으로 field 진단
- *    가능하게 남긴다 (PR 본문 "잔여 창" 항목 참고).
- * 5) 억제 자체도 `LOCAL_BOARDING_PROMPT_SUPPRESS_KIND` TTL dedup — 같은 origin을 매 polling
- *    cycle마다 재평가/재로깅하는 무한 재실행(IO/로그 스팸)을 차단한다.
- */
-export async function fireLocalBoardingPromptNotification(
-  originStation: string,
-  line: string,
-  destinationDirection: 'up' | 'down' | null,
-): Promise<boolean> {
-  if (await hasRecentLocalStationFire(originStation, LOCAL_BOARDING_PROMPT_FIRE_KIND)) {
-    return false;
-  }
-  if (await hasRecentLocalStationFire(originStation, LOCAL_BOARDING_PROMPT_SUPPRESS_KIND)) {
-    return false;
-  }
-  const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
-  if (!tripToken) return false;
-
-  const legAdvance = await getLegAdvance();
-  if (legAdvance !== null && legAdvance.nextLine === line) {
-    await markLocalStationFired(originStation, LOCAL_BOARDING_PROMPT_SUPPRESS_KIND);
-    notifLogger.info(
-      `local-boarding-prompt-suppressed reason=leg-advance-confirmed origin=${originStation} line=${line}`,
-    );
-    addDomainBreadcrumb('boarding', 'local_boarding_prompt_suppressed', {
-      originStation,
-      line,
-      reason: 'leg-advance-confirmed',
-    });
-    return false;
-  }
-
-  const mirror = await readBackendSsotMirror();
-  const mirrorGate = evaluateLocalBoardingPromptMirrorGate(mirror, originStation);
-  if (mirrorGate.action === 'suppress') {
-    await markLocalStationFired(originStation, LOCAL_BOARDING_PROMPT_SUPPRESS_KIND);
-    notifLogger.info(
-      `local-boarding-prompt-suppressed reason=${mirrorGate.reason} origin=${originStation} mirrorStation=${mirror?.currentStationId}`,
-    );
-    addDomainBreadcrumb('boarding', 'local_boarding_prompt_suppressed', {
-      originStation,
-      line,
-      reason: mirrorGate.reason,
-    });
-    return false;
-  }
-  if (mirrorGate.mirrorDiagnostic) {
-    addDomainBreadcrumb('boarding', 'local_boarding_prompt_fired_mirror_unconfirmed', {
-      originStation,
-      line,
-      mirrorDiagnostic: mirrorGate.mirrorDiagnostic,
-    });
-  }
-
-  const identifier = `${LOCAL_BOARDING_PROMPT_ID_PREFIX}:${originStation}:${Date.now()}`;
-  const { title, body } = buildBoardingPromptContent(originStation, line);
-  await scheduleNotification(identifier, {
-    title,
-    body,
-    sound: true,
-    ...(Platform.OS === 'android' && {
-      channelId: ALARM_CHANNEL_ID,
-      priority: Notifications.AndroidNotificationPriority.MAX,
-    }),
-    ...iosTimeSensitiveOption(),
-    categoryIdentifier: BOARDING_PROMPT_CATEGORY,
-    data: {
-      kind: 'boarding-prompt',
-      originStation,
-      line,
-      tripToken,
-      ...(destinationDirection ? { destinationDirection } : {}),
-    },
-  });
-  await markLocalStationFired(originStation, LOCAL_BOARDING_PROMPT_FIRE_KIND);
   return true;
 }
