@@ -40,6 +40,8 @@
     "routeCollapse": "仅显示主要车站",
     "destinationSet": "设置目的地",
     "previousDestination": "上次目的地",
+    "quickDeparture": "快速出发",
+    "quickDepartureAdd": "+ 添加",
     "sleepMode": "睡眠模式",
     "sleepModeDescription": "在换乘或到达前1站时震动并通知",
     "sleepModeLabel": "切换睡眠模式",

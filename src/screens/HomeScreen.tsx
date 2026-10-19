@@ -11,9 +11,12 @@ import { useStationMismatchDetector } from '../features/nearest-station/hooks/us
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo } from '../features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
-import { LINE_NAMES } from '../shared/constants/lineColors';
+import { FAVORITES_ROUTE } from '../shared/constants/routes';
+import { SolidLineBadge } from '../shared/ui/SolidLineBadge';
 import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
+import { excludeFavoriteStations } from '../features/favorites/utils/excludeFavoriteStations';
+import { FavoriteQuickChips } from '../features/favorites/components/FavoriteQuickChips';
 import { useSettingsStore } from '../features/settings/store/useSettingsStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
@@ -154,6 +157,11 @@ export default function HomeScreen() {
   const setDestination = useDestinationStore((s) => s.setDestination);
   const loadDestination = useDestinationStore((s) => s.loadDestination);
   const recentDestinations = useDestinationStore((s) => s.recentDestinations);
+  // 즐겨찾기 칩과 중복 노출 방지 — 표시 필터만 (스토어 recentDestinations 불변)
+  const visibleRecentDestinations = useMemo(
+    () => excludeFavoriteStations(recentDestinations, favorites),
+    [recentDestinations, favorites],
+  );
   const addRecentDestination = useDestinationStore((s) => s.addRecentDestination);
   const removeRecentDestination = useDestinationStore((s) => s.removeRecentDestination);
   const loadRecentDestinations = useDestinationStore((s) => s.loadRecentDestinations);
@@ -2094,12 +2102,17 @@ export default function HomeScreen() {
             {/* No destination: picker + recent */}
             {!destination && (
               <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
-                {recentDestinations.length > 0 && (
+                <FavoriteQuickChips
+                  favorites={favorites}
+                  onSelect={handleSelectDestination}
+                  onAdd={() => router.push(FAVORITES_ROUTE)}
+                />
+                {visibleRecentDestinations.length > 0 && (
                   <View testID="recent-destinations-list">
                     <Text style={[styles.recentDestinationLabel, { color: colors.muted, paddingHorizontal: spacing.xs }]}>
                       {t('home.previousDestination')}
                     </Text>
-                    {recentDestinations.map((recent) => (
+                    {visibleRecentDestinations.map((recent) => (
                       <View
                         key={recent.id}
                         style={[styles.recentDestinationButton, styles.recentDestinationItemRow, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}
@@ -2111,9 +2124,7 @@ export default function HomeScreen() {
                         >
                           <View style={styles.recentDestinationRow}>
                             <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{getStationDisplayName(recent)}</Text>
-                            <View style={[styles.recentLineBadge, { backgroundColor: recent.lineColor }]}>
-                              <Text style={styles.recentLineText}>{LINE_NAMES[recent.line]}</Text>
-                            </View>
+                            <SolidLineBadge line={recent.line} color={recent.lineColor} />
                           </View>
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -2522,16 +2533,6 @@ const styles = StyleSheet.create({
   recentDestinationName: {
     ...typography.bodyMd,
     fontWeight: '700',
-  },
-  recentLineBadge: {
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  recentLineText: {
-    color: '#fff', // 노선색(lineColor) 배경 위 텍스트 — 항상 흰색 유지
-    ...typography.micro,
-    fontWeight: 'bold',
   },
   destinationButton: {
     borderRadius: radiusGlass.pill,

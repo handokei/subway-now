@@ -40,6 +40,8 @@
     "routeCollapse": "주요 역만 보기",
     "destinationSet": "목적지 설정",
     "previousDestination": "이전 목적지",
+    "quickDeparture": "바로 출발",
+    "quickDepartureAdd": "+ 추가",
     "sleepMode": "취침 모드",
     "sleepModeDescription": "환승·도착 1정거장 전 진동 · 알림",
     "sleepModeLabel": "취침 모드 켜기/끄기",

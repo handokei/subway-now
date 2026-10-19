@@ -40,6 +40,8 @@
     "routeCollapse": "Show key stops only",
     "destinationSet": "Set destination",
     "previousDestination": "Previous destination",
+    "quickDeparture": "Quick start",
+    "quickDepartureAdd": "+ Add",
     "sleepMode": "Sleep mode",
     "sleepModeDescription": "Vibrate and notify 1 stop before transfer or arrival",
     "sleepModeLabel": "Toggle sleep mode",
