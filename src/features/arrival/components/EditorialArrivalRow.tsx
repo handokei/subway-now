@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing } from '../../../shared/theme';
 import { useCountdown } from '../../../shared/hooks/useCountdown';
 import type { ArrivalTrain } from '../../../shared/types/journey';
-import { LineBadge, getLineColor, getLineLabel } from '../../../shared/ui/LineBadge';
+import { getLineLabel } from '../../../shared/ui/LineBadge';
 import { ArrivalStatusBadge } from './ArrivalStatusBadge';
 
 interface Props {
@@ -13,7 +13,6 @@ interface Props {
 
 export function EditorialArrivalRow({ train }: Props) {
   const { mm, ss } = useCountdown(train.arrivalAtMs);
-  const lineC = getLineColor(train.line);
   const { colors } = useTheme();
   const { t } = useTranslation();
   const rowLabel = t('arrival.rowLabel', {
@@ -30,19 +29,12 @@ export function EditorialArrivalRow({ train }: Props) {
       accessibilityLabel={rowLabel}
       accessible
     >
-      <View style={{ minWidth: 90 }}>
-        <Text>
-          <Text style={[typography.countMM, { color: colors.ink }]}>{mm}</Text>
-          <Text style={[typography.titleXs, { color: colors.subtle }]}> : </Text>
-          <Text style={[typography.countSS, { color: colors.muted }]}>{ss}</Text>
-        </Text>
-      </View>
       <View style={{ flex: 1 }}>
-        <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '600' }]}>
+        <Text style={[typography.bodyBase, { color: colors.ink, fontWeight: '600' }]}>
           {train.direction}
         </Text>
         {train.subtext != null && (
-          <Text style={[typography.mono, { color: colors.subtle, marginTop: 2 }]}>
+          <Text style={[typography.micro, { color: colors.muted, marginTop: 2 }]}>
             {train.subtext}
           </Text>
         )}
@@ -55,7 +47,12 @@ export function EditorialArrivalRow({ train }: Props) {
           direction={train.directionKey}
         />
       </View>
-      <LineBadge line={train.line} color={lineC} />
+      {/* Line Glass — 우측 mm:ss (300 weight). 노선 배지는 카드 문맥상 중복이라 제거, 접근성 라벨엔 유지. */}
+      <Text style={[typography.countMM, { color: colors.ink }]}>
+        {mm}
+        <Text style={{ color: colors.subtle }}>:</Text>
+        {ss}
+      </Text>
     </View>
   );
 }
@@ -63,9 +60,9 @@ export function EditorialArrivalRow({ train }: Props) {
 const styles = StyleSheet.create({
   arrivalRow: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: spacing.lg,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: 10,
+    borderBottomWidth: 0,
   },
 });

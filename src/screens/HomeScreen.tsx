@@ -60,9 +60,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
 import { SleepAlarmOverlay } from '../features/alarm/components/SleepAlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
-import { useTheme, typography, spacing, radius } from '../shared/theme';
+import { useTheme, typography, spacing, radiusGlass, lineTint, shadowStyle } from '../shared/theme';
+import { useSyncLineTint } from '../shared/hooks/useSyncLineTint';
+import { resolveTintLine } from '../shared/utils/resolveTintLine';
+import { GlassCard } from '../shared/ui/GlassCard';
+import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
+import { GLASS_SCREEN_BOTTOM_PADDING } from '../shared/ui/GlassTabBar';
 import { ActionBanner } from '../shared/ui/ActionBanner';
-import { LineBadge } from '../shared/ui/LineBadge';
+import { getLineLabel } from '../shared/ui/LineBadge';
 import { LocationStateView } from '../shared/ui/LocationStateView';
 import { ServiceWindowBanner } from '../shared/ui/ServiceWindowBanner';
 import { PermissionChangeBanner } from '../shared/ui/PermissionChangeBanner';
@@ -130,7 +135,7 @@ const logger = createLogger('HomeScreen');
 const FIRST_SEND_ROUTE_WAIT_MS = 1500;
 
 export default function HomeScreen() {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const { t } = useTranslation();
   const router = useRouter();
   const customOrigin = useDestinationStore((s) => s.customOrigin);
@@ -1473,6 +1478,20 @@ export default function HomeScreen() {
     }
   }, [arrivedBanner]);
 
+  // Line Glass — 화면 배경 글로우/탭바 활성색이 따라갈 노선. 탑승 lock > 진행 노선 > 현재역 노선.
+  const tintLine = resolveTintLine({
+    boardingLine: fusionBoardingLock?.boardingLine as LineNumber | undefined,
+    approachLine: approachLine as LineNumber | null | undefined,
+    originLine: effectiveOrigin?.line as LineNumber | undefined,
+  });
+  const tint = lineTint(tintLine, isDark);
+  useSyncLineTint(tintLine);
+  // 경로 카드 내부 3개 블록(journey / route 컨텍스트 / 오탑승 배너)이 모두 비면 빈 글래스 카드를 그리지 않는다.
+  const hasRouteCard =
+    journey != null ||
+    (route != null && effectiveOrigin != null && destination != null) ||
+    (boardingLock != null && (misBoardingDetected || wrongDirectionDetected));
+
   if (permissionDenied) {
     // MapScreen과 동일한 단일 UI(LocationStateView)로 통일. iOS 영구 거부 시 OS dialog가
     // 뜨지 않아 "다시 시도"가 dead end가 되는 문제를 해결한다 (#1061).
@@ -1495,13 +1514,13 @@ export default function HomeScreen() {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={[styles.errorText, { color: colors.accent }]}>{error}</Text>
+          <Text style={[styles.errorText, { color: colors.inkStrong }]}>{error}</Text>
           <TouchableOpacity
-            style={[styles.button, { backgroundColor: colors.accent }]}
+            style={[styles.button, { backgroundColor: colors.inkStrong }]}
             onPress={refresh}
             testID="home-refresh-button"
           >
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
+            <Text style={[styles.buttonText, { color: colors.onInkStrong }]}>{t('home.refresh')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -1512,6 +1531,7 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+      <LineGlowBackground line={tintLine} />
       {arrivedBanner && (
         <View style={[styles.arrivedBanner, { backgroundColor: colors.success }]} testID="arrived-banner">
           <Text style={styles.arrivedBannerText}>{t('home.arrived')}</Text>
@@ -1560,7 +1580,7 @@ export default function HomeScreen() {
 
       <ScrollView
         ref={scrollViewRef}
-        contentContainerStyle={{ paddingBottom: 80 }}
+        contentContainerStyle={{ paddingBottom: GLASS_SCREEN_BOTTOM_PADDING }}
         refreshControl={<RefreshControl refreshing={isManualRefreshing} onRefresh={handleRefresh} />}
       >
         {effectiveOrigin ? (
@@ -1574,47 +1594,26 @@ export default function HomeScreen() {
               change={permissionWatcher.change}
               onAcknowledge={permissionWatcher.acknowledge}
             />
-            {/* Hero: origin station */}
-            <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
-              <Text
-                style={[typography.label, { color: colors.muted, marginBottom: 10 }]}
-                testID="home-origin-label"
-              >
-                {isCustomOrigin
-                  ? t('home.originManual')
-                  : source !== 'gps'
-                  ? t('home.originEstimated')
-                  : result && result.distanceKm <= 0.5
-                  ? t('home.originCurrent')
-                  : t('home.originNearest')}
-              </Text>
-              <View style={styles.heroRow}>
-                {/* #1994 Phase 1-9 — hero fontSize 44 → 36으로 축소 (사용자 관찰: 위 잘림).
-                    lineHeight를 fontSize보다 크게(36 * 1.1) 잡아 상단 clip 방지. 전역
-                    typography.hero 토큰은 AlarmOverlay/OnboardingSplashBase에서도 쓰이므로
-                    본 사용처만 인라인 override로 국한. */}
-                <Text
-                  style={[
-                    typography.hero,
-                    {
-                      color: colors.ink,
-                      flex: 1,
-                      fontWeight: '900',
-                      fontSize: 36,
-                      lineHeight: 36 * 1.1,
-                    },
-                  ]}
-                  testID="home-origin-station-name"
-                >
-                  {/* #2125/#2454 — cascade가 off-arc로 stuck되면 displayOrigin이 raw GPS
-                      실제 위치를 따라간다(resolveDisplayOrigin). 실제 위치조차 없을 때만
-                      정직 강등 placeholder. effectiveOrigin 자체(journey/도착정보/알람
-                      SSOT)는 무변경. */}
-                  {displayOrigin
-                    ? getStationDisplayName(displayOrigin)
-                    : t('home.originStaleDemote')}
-                </Text>
+            {/* Hero: origin station — Line Glass */}
+            <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxl, paddingBottom: spacing.sm }}>
+              <View style={styles.heroTopRow}>
+                <View style={[styles.glassChip, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
+                  <Text style={[typography.captionSm, { color: tint.text, fontWeight: '600' }]} testID="home-origin-label">
+                    {isCustomOrigin
+                      ? t('home.originManual')
+                      : source !== 'gps'
+                      ? t('home.originEstimated')
+                      : result && result.distanceKm <= 0.5
+                      ? t('home.originCurrent')
+                      : t('home.originNearest')}
+                    {/* #446: source==='gps'일 때만 user↔station 거리/도보시간이 의미 있음. */}
+                    {!isCustomOrigin && nearest && source === 'gps'
+                      ? ` · ${nearest.distanceM}m · ${t('home.walkMinutes', { min: nearest.walkMin })}`
+                      : ''}
+                  </Text>
+                </View>
                 <TouchableOpacity
+                  style={[styles.glassRound, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}
                   onPress={() =>
                     isFav
                       ? removeFavorite(effectiveOrigin.id)
@@ -1623,35 +1622,31 @@ export default function HomeScreen() {
                   accessibilityRole="button"
                   accessibilityLabel={isFav ? t('home.favRemove') : t('home.favAdd')}
                 >
-                  <Text style={styles.favoriteIcon}>
-                    {isFav ? '⭐' : '☆'}
-                  </Text>
+                  <Text style={[styles.favoriteIcon, { color: colors.ink }]}>{isFav ? '⭐' : '☆'}</Text>
                 </TouchableOpacity>
               </View>
+              <Text
+                style={[typography.heroGlass, { color: colors.ink, marginTop: spacing.xl }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                testID="home-origin-station-name"
+              >
+                {/* #2125/#2454 — displayOrigin 없으면 정직 강등 placeholder. */}
+                {displayOrigin
+                  ? getStationDisplayName(displayOrigin)
+                  : t('home.originStaleDemote')}
+              </Text>
               <View style={styles.metaRow}>
-                {/* #2454 — badge는 항상 위 이름(displayOrigin)과 같은 역을 가리킨다. 실제
-                    위치조차 없어 이름이 placeholder일 때는 badge도 렌더하지 않는다. */}
+                {/* #2454 — 노선 표기는 항상 위 이름(displayOrigin)과 같은 역. */}
                 {displayOrigin &&
-                  (displayLineVariants.length > 0 ? (
-                    displayLineVariants.map((v) => <LineBadge key={v.id} line={v.line} />)
-                  ) : (
-                    <LineBadge line={displayOrigin.line} />
+                  (displayLineVariants.length > 0
+                    ? displayLineVariants.map((v) => v.line)
+                    : [displayOrigin.line]
+                  ).map((ln) => (
+                    <Text key={ln} style={[typography.bodyBase, { color: lineTint(ln, isDark).text, fontWeight: '600' }]}>
+                      {getLineLabel(ln)}
+                    </Text>
                   ))}
-                {/* #446: source==='gps'일 때만 user↔station 거리/도보시간이 의미 있음.
-                    fusion 추정(positionTrain/arrival/route) 결과의 거리는 user↔추정역
-                    직선거리라 도보 안내로 표시하면 잘못된 정보가 됨 → 숨김. */}
-                {!isCustomOrigin && nearest && source === 'gps' && (
-                  <>
-                    <Dot />
-                    <Text style={[typography.bodySm, { color: colors.muted }]}>
-                      {nearest.distanceM} m
-                    </Text>
-                    <Dot />
-                    <Text style={[typography.bodySm, { color: colors.muted }]}>
-                      {nearest.walkMin} min walk
-                    </Text>
-                  </>
-                )}
                 {!isCustomOrigin && (
                   <SourceBadge
                     source={source}
@@ -1714,27 +1709,26 @@ export default function HomeScreen() {
               </View>
             )}
 
-            <Hr />
 
             {/* Route */}
             {destination && (
               <>
-                <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
+                <GlassCard r={radiusGlass.xl} style={styles.glassSection}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: spacing.xl }}>
                     <View>
-                      <Text style={[typography.label, { color: colors.muted, marginBottom: 4 }]}>
+                      <Text style={[typography.label, { color: colors.muted, marginBottom: 2 }]}>
                         {t('home.routeTo')}
                       </Text>
-                      <Text style={[typography.countMM, { fontWeight: '900', color: colors.ink }]}>{getStationDisplayName(destination)}</Text>
+                      <Text style={[typography.title, { color: colors.ink }]}>{getStationDisplayName(destination)}</Text>
                     </View>
                     <View style={{ alignItems: 'flex-end' }}>
                       {displayEta != null && (
                         <>
-                          <Text style={[typography.countMM, { color: colors.ink }]}>
+                          <Text style={[typography.etaBig, { color: colors.ink }]}>
                             {displayEta}
-                            <Text style={[typography.caption, { color: colors.muted }]}> min</Text>
+                            <Text style={[typography.bodyBase, { color: colors.muted, letterSpacing: 0 }]}> {t('home.minuteUnit')}</Text>
                           </Text>
-                          <Text style={[typography.label, { color: colors.subtle, marginTop: 4 }]}>
+                          <Text style={[typography.micro, { color: colors.muted, marginTop: 2 }]}>
                             {isRealtimeEta ? 'EST' : t('home.estimatedSuffix')} · {journey?.totalStops ?? 0} STOPS
                           </Text>
                         </>
@@ -1742,23 +1736,23 @@ export default function HomeScreen() {
                     </View>
                   </View>
                   {categorized.length > 0 && (
-                    <View style={[styles.routePillGroup, { backgroundColor: colors.hair }]} testID="route-segment-control">
+                    <View style={[styles.routePillGroup, { backgroundColor: colors.segmentTrack }]} testID="route-segment-control">
                       {categorized.map(({ category, candidate }) => {
                         const active = category.key === selectedKey;
                         return (
                           <Pressable
                             key={category.key}
                             testID={`route-tab-${category.key}`}
-                            style={[styles.routePill, active && { backgroundColor: colors.accent }]}
+                            style={[styles.routePill, active && { backgroundColor: colors.segmentActive, ...shadowStyle('segment', isDark) }]}
                             onPress={() => {
                               setSelectedKey(category.key);
                               AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(candidate.route)).catch(() => {});
                             }}
                           >
-                            <Text style={[styles.routePillText, { color: active ? colors.onAccent : colors.muted }]}>
+                            <Text style={[styles.routePillText, { color: active ? colors.ink : colors.muted }]}>
                               {t(`routes.${category.key}`)}
                             </Text>
-                            <Text style={[styles.routePillSub, { color: active ? colors.onAccent : colors.subtle }]}>
+                            <Text style={[styles.routePillSub, { color: colors.muted }]}>
                               {candidate.transferCount === 0
                                 ? t('route.directOnly', { min: candidate.travelMinutes })
                                 : t('route.minutesAndTransfers', { min: candidate.travelMinutes, count: candidate.transferCount })}
@@ -1774,12 +1768,13 @@ export default function HomeScreen() {
                   {categorized.length > 0 && route && !navigationActive && (
                     <Pressable
                       testID="home-navigation-start"
-                      style={[styles.navigationButton, { backgroundColor: colors.accent }]}
+                      style={[styles.navigationButton, { backgroundColor: colors.inkStrong }]}
                       accessibilityRole="button"
                       accessibilityLabel={t('navigation.start')}
                       onPress={handleStartNavigation}
                     >
-                      <Text style={[typography.label, { color: colors.onAccent, fontWeight: '700' }]}>
+                      <View style={[styles.navDot, { backgroundColor: tint.lit, ...shadowStyle('ring', isDark, tint.lit) }]} />
+                      <Text style={[typography.bodyBase, { color: colors.onInkStrong, fontWeight: '700' }]}>
                         {t('navigation.start')}
                       </Text>
                     </Pressable>
@@ -1787,12 +1782,12 @@ export default function HomeScreen() {
                   {navigationActive && (
                     <Pressable
                       testID="home-navigation-stop"
-                      style={[styles.navigationButton, { borderColor: colors.warn, borderWidth: 1 }]}
+                      style={[styles.navigationButton, { backgroundColor: colors.fieldFill, borderColor: colors.glassBorder, borderWidth: 1 }]}
                       accessibilityRole="button"
                       accessibilityLabel={t('navigation.stop')}
                       onPress={handleStopNavigation}
                     >
-                      <Text style={[typography.label, { color: colors.warn, fontWeight: '700' }]}>
+                      <Text style={[typography.bodySm, { color: colors.warn, fontWeight: '600' }]}>
                         {t('navigation.stop')}
                       </Text>
                     </Pressable>
@@ -1804,16 +1799,19 @@ export default function HomeScreen() {
                   {destination !== null && (
                     <Pressable
                       testID="home-navigation-end"
-                      style={[styles.navigationButton, { borderColor: colors.danger, borderWidth: 1 }]}
+                      style={[styles.navigationButton, { backgroundColor: colors.fieldFill, borderColor: colors.glassBorder, borderWidth: 1 }]}
                       accessibilityRole="button"
                       accessibilityLabel={t('navigation.end')}
                       onPress={handleEndNavigationPress}
                     >
-                      <Text style={[typography.label, { color: colors.danger, fontWeight: '700' }]}>
+                      <Text style={[typography.bodySm, { color: colors.danger, fontWeight: '600' }]}>
                         {t('navigation.end')}
                       </Text>
                     </Pressable>
                   )}
+                </GlassCard>
+                {hasRouteCard && (
+                <GlassCard style={[styles.glassSection, { marginTop: spacing.md }]}>
                   {journey && (() => {
                     const stops = journeyDisplayToStops(journey, { expanded: routeExpanded });
                     const selectedCandidate = categorized.find((r) => r.category.key === selectedKey)?.candidate;
@@ -1827,7 +1825,7 @@ export default function HomeScreen() {
                             style={styles.expandToggle}
                             testID="route-expand-toggle"
                           >
-                            <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
+                            <Text style={[typography.label, { color: tint.text }]}>
                               {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
                             </Text>
                           </Pressable>
@@ -2021,11 +2019,11 @@ export default function HomeScreen() {
                   })()}
                   {route && effectiveOrigin && destination && (
                     <Pressable
-                      style={[styles.viewOnMapButton, { borderColor: colors.accent }]}
+                      style={[styles.viewOnMapButton, { backgroundColor: colors.fieldFill }]}
                       onPress={() => router.push('/(tabs)/map')}
                       testID="view-route-on-map-button"
                     >
-                      <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+                      <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '600' }]}>
                         {t('home.viewRouteOnMap')}
                       </Text>
                     </Pressable>
@@ -2046,30 +2044,29 @@ export default function HomeScreen() {
                   {/* #649 — BoardingTrainList 두 인스턴스(현재역/환승)는 EditorialTimeline의
                        renderHopSlot으로 이동: timeline hop 사이에 inline compact 표기.
                        #758 — BoardingLockHopCard도 같은 origin hop slot으로 통합. */}
-                </View>
+                </GlassCard>
+                )}
 
                 {/* Actions */}
                 <View style={styles.actionsRow}>
-                  <Pressable onPress={() => setPickerVisible(true)}>
-                    <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+                  <Pressable style={[styles.actionPill, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]} onPress={() => setPickerVisible(true)}>
+                    <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '600' }]}>
                       {t('home.destinationChange')}
                     </Text>
                   </Pressable>
-                  <View style={[styles.vHair, { backgroundColor: colors.hair }]} />
-                  <Pressable onPress={() => setDestination(null)} testID="destination-clear-button">
+                  <Pressable style={[styles.actionPill, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]} onPress={() => setDestination(null)} testID="destination-clear-button">
                     <Text style={[typography.bodySm, { color: colors.muted }]}>{t('home.destinationReset')}</Text>
                   </Pressable>
                 </View>
 
-                <Hr />
 
                 {/* Sleep mode */}
-                <View style={styles.sleepRow} testID="sleep-mode-row">
-                  <View>
-                    <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '600' }]}>
+                <GlassCard style={[styles.glassSection, styles.sleepRow]} testID="sleep-mode-row">
+                  <View style={{ flex: 1 }}>
+                    <Text style={[typography.bodyBase, { color: colors.ink, fontWeight: '700' }]}>
                       {t('home.sleepMode')}
                     </Text>
-                    <Text style={[typography.mono, { color: colors.muted, marginTop: 2 }]}>
+                    <Text style={[typography.captionSm, { color: colors.muted, marginTop: 2 }]}>
                       {t('home.sleepModeDescription')}
                     </Text>
                   </View>
@@ -2082,16 +2079,15 @@ export default function HomeScreen() {
                         setSleepMode(false);
                       }
                     }}
-                    trackColor={{ false: colors.hair, true: colors.accent }}
-                    thumbColor={colors.bg}
+                    trackColor={{ false: colors.hair, true: tint.base }}
+                    thumbColor="#ffffff"
                     testID="home-sleep-mode-switch"
                     accessibilityLabel={t('home.sleepModeLabel')}
                   />
-                </View>
+                </GlassCard>
 
                 <SleepModeSilentWarning visible={sleepMode} />
 
-                <Hr />
               </>
             )}
 
@@ -2100,13 +2096,13 @@ export default function HomeScreen() {
               <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
                 {recentDestinations.length > 0 && (
                   <View testID="recent-destinations-list">
-                    <Text style={[styles.recentDestinationLabel, { color: colors.accent, paddingHorizontal: spacing.lg }]}>
+                    <Text style={[styles.recentDestinationLabel, { color: colors.muted, paddingHorizontal: spacing.xs }]}>
                       {t('home.previousDestination')}
                     </Text>
                     {recentDestinations.map((recent) => (
                       <View
                         key={recent.id}
-                        style={[styles.recentDestinationButton, styles.recentDestinationItemRow, { borderColor: colors.accent }]}
+                        style={[styles.recentDestinationButton, styles.recentDestinationItemRow, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}
                       >
                         <TouchableOpacity
                           style={styles.recentDestinationTapArea}
@@ -2133,19 +2129,19 @@ export default function HomeScreen() {
                   </View>
                 )}
                 <TouchableOpacity
-                  style={[styles.destinationButton, { backgroundColor: colors.accent }]}
+                  style={[styles.destinationButton, { backgroundColor: colors.inkStrong }]}
                   onPress={() => setPickerVisible(true)}
                   testID="destination-button"
                 >
-                  <Text style={[styles.destinationButtonText, { color: colors.onAccent }]}>{t('home.destinationSet')}</Text>
+                  <Text style={[styles.destinationButtonText, { color: colors.onInkStrong }]}>{t('home.destinationSet')}</Text>
                 </TouchableOpacity>
               </View>
             )}
 
             {/* #634: BoardingTrainList 두 인스턴스(현재역/환승)는 route 박스 안으로 이동됨. */}
             {effectiveOrigin && (
-              <View
-                style={[styles.arrivalSection, { backgroundColor: colors.card }]}
+              <GlassCard
+                style={[styles.glassSection, { marginTop: spacing.md }]}
                 testID="home-arrival-section"
               >
                 <Text
@@ -2177,7 +2173,7 @@ export default function HomeScreen() {
                     />
                   </>
                 )}
-              </View>
+              </GlassCard>
             )}
           </>
         ) : locationUncertain ? (
@@ -2186,11 +2182,11 @@ export default function HomeScreen() {
             <Text style={[styles.title, { color: colors.ink }]}>{t('home.locationUncertainTitle')}</Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.locationUncertainDescription')}</Text>
             <TouchableOpacity
-              style={[styles.button, { backgroundColor: colors.accent }]}
+              style={[styles.button, { backgroundColor: colors.inkStrong }]}
               onPress={refresh}
               testID="home-refresh-button"
             >
-              <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
+              <Text style={[styles.buttonText, { color: colors.onInkStrong }]}>{t('home.refresh')}</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -2204,11 +2200,11 @@ export default function HomeScreen() {
             </Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.notNearStationDescription')}</Text>
             <TouchableOpacity
-              style={[styles.button, { backgroundColor: colors.accent }]}
+              style={[styles.button, { backgroundColor: colors.inkStrong }]}
               onPress={refresh}
               testID="home-refresh-button"
             >
-              <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
+              <Text style={[styles.buttonText, { color: colors.onInkStrong }]}>{t('home.refresh')}</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -2381,10 +2377,6 @@ function Dot() {
   const { colors } = useTheme();
   return <Text style={{ color: colors.subtle }}>·</Text>;
 }
-function Hr() {
-  const { colors } = useTheme();
-  return <View style={{ height: 1, backgroundColor: colors.hair, marginHorizontal: spacing.xxl }} />;
-}
 
 const styles = StyleSheet.create({
   container: {
@@ -2406,26 +2398,34 @@ const styles = StyleSheet.create({
     padding: spacing.xxl,
     minHeight: 400,
   },
-  heroRow: {
-    flexDirection: 'row',
+  heroTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  glassChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radiusGlass.pill,
+    borderWidth: 1,
+  },
+  glassRound: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
     alignItems: 'center',
-    marginBottom: 12,
+    justifyContent: 'center',
   },
-  favoriteIcon: {
-    ...typography.title,
-    marginLeft: spacing.md,
-  },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  favoriteIcon: { fontSize: 17 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginTop: spacing.sm },
+  glassSection: { marginHorizontal: 14, marginTop: spacing.xxl },
   routePillGroup: {
     flexDirection: 'row',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: spacing.lg,
+    borderRadius: 18,
+    padding: 4,
+    marginTop: spacing.lg,
   },
   routePill: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingVertical: 9,
+    borderRadius: 14,
     alignItems: 'center',
   },
   routePillText: {
@@ -2438,24 +2438,33 @@ const styles = StyleSheet.create({
   },
   // #1973 — 안내 시작/중단 버튼. segment control 직후 노출되는 명시 trigger CTA.
   navigationButton: {
-    marginTop: spacing.lg,
-    paddingVertical: spacing.md,
-    borderRadius: radius.md,
+    marginTop: spacing.sm,
+    height: 54,
+    borderRadius: 27,
+    flexDirection: 'row',
+    gap: 10,
     alignItems: 'center',
+    justifyContent: 'center',
   },
+  navDot: { width: 8, height: 8, borderRadius: 4 },
   actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.xxl,
-    paddingHorizontal: spacing.xxl,
-    paddingTop: spacing.sm,
+    gap: spacing.sm,
+    paddingHorizontal: 14,
+    paddingTop: spacing.md,
   },
-  vHair: { width: 1, height: 12 },
-  viewOnMapButton: {
-    marginTop: spacing.xl,
-    paddingVertical: spacing.md,
+  actionPill: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: radiusGlass.md,
     borderWidth: 1,
-    borderRadius: radius.md,
+    alignItems: 'center',
+  },
+  viewOnMapButton: {
+    marginTop: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radiusGlass.md,
     alignItems: 'center',
   },
   expandToggle: {
@@ -2472,12 +2481,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: spacing.xxl,
-    paddingVertical: spacing.xl,
+    gap: spacing.lg,
+    marginTop: spacing.md,
+    paddingVertical: 18,
   },
   recentDestinationButton: {
     borderWidth: 1,
-    borderRadius: radius.md,
+    borderRadius: radiusGlass.lg,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     marginBottom: spacing.sm,
@@ -2524,36 +2534,29 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   destinationButton: {
-    borderRadius: radius.md,
-    paddingVertical: 10,
+    borderRadius: radiusGlass.pill,
+    height: 54,
+    justifyContent: 'center',
     alignItems: 'center',
+    marginTop: spacing.sm,
   },
   destinationButtonText: {
     ...typography.bodyBase,
     fontWeight: '700',
   },
-  arrivalSection: {
-    marginHorizontal: spacing.xxl,
-    marginTop: spacing.xl,
-    paddingVertical: spacing.xl,
-    paddingHorizontal: spacing.xl,
-    borderRadius: radius.lg,
-  },
   sectionTitle: {
     ...typography.bodySm,
-    marginBottom: spacing.lg,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
+    fontWeight: '700',
+    marginBottom: spacing.xs,
   },
   arrivalGroup: {
-    paddingTop: 10,
+    paddingTop: 12,
     borderTopWidth: 1,
     marginTop: spacing.sm,
   },
   arrivalLabel: {
-    ...typography.bodyBase,
-    fontWeight: '600',
-    marginBottom: spacing.xs,
+    ...typography.label,
+    marginBottom: 2,
   },
   arrivalItem: {
     ...typography.bodyBase,
@@ -2583,8 +2586,8 @@ const styles = StyleSheet.create({
   },
   button: {
     paddingHorizontal: 28,
-    paddingVertical: 14,
-    borderRadius: radius.lg,
+    paddingVertical: 15,
+    borderRadius: radiusGlass.pill,
   },
   buttonText: {
     ...typography.bodyBase,

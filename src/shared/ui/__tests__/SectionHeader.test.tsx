@@ -35,10 +35,11 @@ describe('SectionHeader', () => {
     expect(flat.color).toBe(darkColors.muted);
   });
 
-  it('uppercase 스타일이 적용된다', () => {
+  it('uppercase 스타일이 적용되지 않는다', () => {
+    // 디자인 결정(#3065): typography.label의 대문자 변환 폐기
     renderWithTheme(<SectionHeader label="섹션" />);
     const flat = StyleSheet.flatten(screen.getByText('섹션').props.style);
-    expect(flat.textTransform).toBe('uppercase');
+    expect(flat.textTransform).toBeUndefined();
   });
 
   it('커스텀 style을 병합한다', () => {

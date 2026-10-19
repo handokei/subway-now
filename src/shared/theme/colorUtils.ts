@@ -13,3 +13,19 @@ export function withAlpha(hex: string, alpha: number): string {
   const b = parseInt(m[3], 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
+
+/**
+ * 두 #RRGGBB 색을 w(0~1) 비율로 섞어 #RRGGBB를 반환한다 (w=0 → a, w=1 → b).
+ * hex 외 포맷이 들어오면 a를 그대로 반환한다.
+ */
+export function mixHex(a: string, b: string, w: number): string {
+  const pattern = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i;
+  const ma = pattern.exec(a);
+  const mb = pattern.exec(b);
+  if (!ma || !mb) return a;
+  const channels = [1, 2, 3].map((i) => {
+    const mixed = Math.round(parseInt(ma[i], 16) * (1 - w) + parseInt(mb[i], 16) * w);
+    return mixed.toString(16).padStart(2, '0');
+  });
+  return `#${channels.join('')}`;
+}

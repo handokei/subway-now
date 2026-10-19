@@ -1,3 +1,4 @@
+// 디자인 결정(#3065): Line Glass 테마 — muted #6B6459→#55605B 기대값 갱신 (fixture 조정 아님). accent는 구값 유지(사용자 의향 강조 UI 보존).
 import React from 'react';
 import { Platform } from 'react-native';
 import { render, waitFor, fireEvent, act } from '@testing-library/react-native';
@@ -758,8 +759,8 @@ describe('StationMap', () => {
         />,
       );
       const circle = getByTestId('accuracy-circle');
-      expect(circle.props.strokeColor).toBe('#6B6459');
-      expect(circle.props.fillColor).toBe('rgba(107, 100, 89, 0.1)');
+      expect(circle.props.strokeColor).toBe('#55605B');
+      expect(circle.props.fillColor).toBe('rgba(85, 96, 91, 0.1)');
     });
 
   });

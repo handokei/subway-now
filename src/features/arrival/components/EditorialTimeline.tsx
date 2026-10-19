@@ -9,7 +9,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { useTheme, typography, spacing } from '../../../shared/theme';
+import { useTheme, typography, spacing, shadowStyle } from '../../../shared/theme';
 import type { Stop, StopArrivalContext } from '../../../shared/types/journey';
 import { LineBadge, getLineColor } from '../../../shared/ui/LineBadge';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
@@ -79,16 +79,16 @@ function doorFor(stop: Stop | null, accessibilityMode: boolean): string | null {
 }
 
 export function EditorialTimeline({ stops, renderHopSlot }: Props) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const { t } = useTranslation();
   const accessibilityMode = useSettingsStore((s) => s.accessibilityMode);
   return (
     <View>
       {stops.map((s, i) => {
         const isLast = i === stops.length - 1;
-        const lineC = s.line != null ? getLineColor(s.line) : colors.accent;
+        const lineC = s.line != null ? getLineColor(s.line) : colors.inkStrong;
         const nextLineC = !isLast
-          ? (stops[i + 1].line != null ? getLineColor(stops[i + 1].line!) : colors.accent)
+          ? (stops[i + 1].line != null ? getLineColor(stops[i + 1].line!) : colors.inkStrong)
           : lineC;
         const quickExitDoor = doorFor(s, accessibilityMode);
         // #635 — 출발역(첫 mark='filled')에서 탑승 시 어느 칸·문에 타야 다음 hop(환승/도착)에서
@@ -114,20 +114,20 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               <View
                 style={[
                   styles.connector,
-                  { backgroundColor: mix(lineC, nextLineC, 0.5), opacity: 0.35 },
+                  { backgroundColor: nextLineC },
                 ]}
               />
             )}
 
             <View style={styles.markerCol}>
               {s.mark === 'filled' && (
-                <View style={[styles.dot, { backgroundColor: lineC }]} testID="filled-dot" />
+                <View style={[styles.dot, { backgroundColor: lineC, ...shadowStyle('ring', isDark, lineC) }]} testID="filled-dot" />
               )}
               {s.mark === 'transfer' && (
                 <View style={[styles.dotRing, { borderColor: lineC, backgroundColor: colors.bg }]} testID="transfer-dot" />
               )}
               {s.mark === 'dest' && (
-                <View style={[styles.dotDest, { backgroundColor: lineC }]} testID="dest-dot" />
+                <View style={[styles.dotDest, { backgroundColor: lineC, ...shadowStyle('ring', isDark, lineC) }]} testID="dest-dot" />
               )}
               {s.mark === 'intermediate' && (
                 <View
@@ -147,7 +147,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
                 {s.station}
               </Text>
               {s.note != null && (
-                <Text style={[typography.label, { color: colors.subtle, marginTop: 2 }]}>
+                <Text style={[typography.captionSm, { color: colors.muted, marginTop: 2 }]}>
                   {s.note}
                 </Text>
               )}
@@ -162,7 +162,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               )}
               {quickExitDoor != null && (
                 <Text
-                  style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
+                  style={[typography.micro, { color: colors.muted, marginTop: 2 }]}
                   testID={`quick-exit-door-${i}-${quickExitDoor}`}
                 >
                   {t('route.quickExitDoor', { door: quickExitDoor })}
@@ -170,7 +170,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               )}
               {boardingDoor != null && (
                 <Text
-                  style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
+                  style={[typography.micro, { color: colors.muted, marginTop: 2 }]}
                   testID={`boarding-door-${i}-${boardingDoor}`}
                 >
                   {t('route.boardingDoor', { door: boardingDoor })}
@@ -190,21 +190,6 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
   );
 }
 
-export function mix(a: string, b: string, w: number): string {
-  const pa = hex(a), pb = hex(b);
-  const r = Math.round(pa[0] * (1 - w) + pb[0] * w);
-  const g = Math.round(pa[1] * (1 - w) + pb[1] * w);
-  const bl = Math.round(pa[2] * (1 - w) + pb[2] * w);
-  return `rgb(${r},${g},${bl})`;
-}
-
-/** #RRGGBB 형식 전용. 비 hex 입력 시 [0,0,0] fallback */
-export function hex(h: string): [number, number, number] {
-  if (!h.startsWith('#') || h.length < 7) return [0, 0, 0];
-  const x = h.replace('#', '');
-  return [parseInt(x.slice(0, 2), 16), parseInt(x.slice(2, 4), 16), parseInt(x.slice(4, 6), 16)];
-}
-
 const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
@@ -218,13 +203,14 @@ const styles = StyleSheet.create({
   markerCol: { width: 28, alignItems: 'center' },
   connector: {
     position: 'absolute',
-    left: 14,
-    top: 18,
+    left: 12.5,
+    top: 34,
     bottom: -6,
-    width: 1,
+    width: 3,
+    borderRadius: 2,
   },
-  dot:     { width: 10, height: 10, borderRadius: 5 },
-  dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
+  dot:     { width: 12, height: 12, borderRadius: 6 },
+  dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 3 },
   dotDest: { width: 12, height: 12, borderRadius: 6 },
   dotIntermediate: { width: 7, height: 7, borderRadius: 4, borderWidth: 1 },
   rowIntermediate: { minHeight: 30 },
