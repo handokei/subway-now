@@ -177,3 +177,38 @@ describe('useTripOrigin', () => {
     expect(setter).not.toHaveBeenCalled();
   });
 });
+
+// #3076 — originEpoch: 명시 출발역 재지정 시 tripOrigin 재캡처 (clear/hydration 비반응).
+describe('useTripOrigin originEpoch (#3076)', () => {
+  type Props = { origin: Station | null; epoch: number };
+  const setup = (initial: Props) => {
+    const setter = jest.fn();
+    const hook = renderHook(
+      ({ origin, epoch }: Props) => useTripOrigin(stationB, origin, setter, undefined, epoch),
+      { initialProps: initial },
+    );
+    return { setter, ...hook };
+  };
+
+  it('같은 destination에서 originEpoch가 증가하면 새 effectiveOrigin으로 재캡처한다', () => {
+    const { setter, rerender } = setup({ origin: stationA, epoch: 0 });
+    expect(setter).toHaveBeenLastCalledWith(stationA);
+    rerender({ origin: stationC, epoch: 1 });
+    expect(setter).toHaveBeenLastCalledWith(stationC);
+    expect(setter).toHaveBeenCalledTimes(2);
+  });
+
+  it('epoch 불변(clear/hydration/GPS 변화)이면 effectiveOrigin이 바뀌어도 유지한다', () => {
+    const { setter, rerender } = setup({ origin: stationA, epoch: 0 });
+    rerender({ origin: stationC, epoch: 0 });
+    rerender({ origin: null, epoch: 0 });
+    rerender({ origin: stationA, epoch: 0 });
+    expect(setter).toHaveBeenCalledTimes(1);
+  });
+
+  it('epoch가 증가했지만 effectiveOrigin이 null이면 재캡처하지 않는다 (null로 영속값을 덮지 않음)', () => {
+    const { setter, rerender } = setup({ origin: stationA, epoch: 0 });
+    rerender({ origin: null, epoch: 1 });
+    expect(setter).toHaveBeenCalledTimes(1);
+  });
+});

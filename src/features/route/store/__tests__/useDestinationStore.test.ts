@@ -1314,3 +1314,94 @@ describe('setDestination(#2302): 전환/해제가 서로 다른 end_reason으로
     spy.mockRestore();
   });
 });
+
+// #3076 — originEpoch: 명시 출발역 지정 전용 메모리 카운터 (route 재계산 가드 무효화 신호).
+describe('useDestinationStore originEpoch (#3076)', () => {
+  beforeEach(() => {
+    useDestinationStore.setState({
+      destination: null,
+      customOrigin: null,
+      originEpoch: 0,
+    });
+    jest.clearAllMocks();
+  });
+
+  it('초기 originEpoch는 0이다', () => {
+    expect(useDestinationStore.getState().originEpoch).toBe(0);
+  });
+
+  it('setCustomOriginExplicit(다른 id): customOrigin과 originEpoch+1이 단일 set으로 동시 반영된다', () => {
+    const snapshots: { id?: string; epoch: number }[] = [];
+    const unsub = useDestinationStore.subscribe((s) =>
+      snapshots.push({ id: s.customOrigin?.id, epoch: s.originEpoch }),
+    );
+    useDestinationStore.getState().setCustomOriginExplicit(mockStation);
+    unsub();
+    // 구독 알림이 정확히 1회 — customOrigin만 바뀐 중간 상태가 관측되지 않는다 (원자성)
+    expect(snapshots).toEqual([{ id: '2-022', epoch: 1 }]);
+  });
+
+  it('setCustomOriginExplicit: 영속화(AsyncStorage.setItem)를 수행한다', () => {
+    useDestinationStore.getState().setCustomOriginExplicit(mockStation);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:custom-origin',
+      JSON.stringify(mockStation),
+    );
+  });
+
+  it('setCustomOriginExplicit: 다른 id로 재지정하면 epoch가 다시 증가한다', () => {
+    const { setCustomOriginExplicit } = useDestinationStore.getState();
+    setCustomOriginExplicit(mockStation);
+    setCustomOriginExplicit(mockStation2);
+    const state = useDestinationStore.getState();
+    expect(state.customOrigin?.id).toBe('2-021');
+    expect(state.originEpoch).toBe(2);
+  });
+
+  it('setCustomOriginExplicit: 같은 id 재지정은 완전 no-op (epoch·값·영속화 모두 불변)', () => {
+    const { setCustomOriginExplicit } = useDestinationStore.getState();
+    setCustomOriginExplicit(mockStation);
+    const before = useDestinationStore.getState();
+    jest.clearAllMocks();
+    const listener = jest.fn();
+    const unsub = useDestinationStore.subscribe(listener);
+    setCustomOriginExplicit({ ...mockStation });
+    unsub();
+    const after = useDestinationStore.getState();
+    expect(after.originEpoch).toBe(before.originEpoch);
+    expect(after.customOrigin).toBe(before.customOrigin);
+    expect(listener).not.toHaveBeenCalled();
+    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+  });
+
+  it('setCustomOrigin(null) clear는 epoch를 올리지 않는다', () => {
+    const { setCustomOriginExplicit, setCustomOrigin } = useDestinationStore.getState();
+    setCustomOriginExplicit(mockStation);
+    setCustomOrigin(null);
+    expect(useDestinationStore.getState().originEpoch).toBe(1);
+    expect(useDestinationStore.getState().customOrigin).toBeNull();
+  });
+
+  it('SSOT override clear는 epoch를 올리지 않는다', () => {
+    const { setCustomOriginExplicit, clearCustomOriginForSsotOverride } =
+      useDestinationStore.getState();
+    setCustomOriginExplicit(mockStation);
+    expect(clearCustomOriginForSsotOverride(mockStation2)).toBe(true);
+    expect(useDestinationStore.getState().originEpoch).toBe(1);
+  });
+
+  it('loadCustomOrigin(hydration)은 epoch를 올리지 않는다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockStation));
+    await useDestinationStore.getState().loadCustomOrigin();
+    const state = useDestinationStore.getState();
+    expect(state.customOrigin?.id).toBe('2-022');
+    expect(state.originEpoch).toBe(0);
+  });
+
+  it('cold start: originEpoch는 비영속 — 어떤 storage write에도 epoch가 실리지 않는다 (이전 프로세스 ROUTE_KEY 키와 무관, 마운트 ref null로 1회 재계산)', () => {
+    useDestinationStore.getState().setCustomOriginExplicit(mockStation);
+    const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+    expect(calls.map(([k]) => k)).toEqual(['subway-now:custom-origin']);
+    expect(calls.map(([, v]) => v).join('')).not.toContain('originEpoch');
+  });
+});
