@@ -122,7 +122,7 @@ export const font = {
 
 export const typography = {
   hero:      { fontFamily: font.bold,     fontSize: 44, letterSpacing: -1.4, lineHeight: 44 * 0.95 },
-  heroGlass: { fontFamily: font.bold,     fontSize: 64, letterSpacing: -3, lineHeight: 68 },  // Line Glass 포트 화면 전용
+  heroGlass: { fontFamily: font.bold,     fontWeight: '800' as const, fontSize: 64, letterSpacing: -3, lineHeight: 68 },  // Line Glass 포트 화면 전용
   title:     { fontFamily: font.bold,     fontSize: 28, letterSpacing: -0.8, lineHeight: 32 },
   titleSm:   { fontFamily: font.bold,     fontSize: 22, letterSpacing: -0.5 },
   titleXs:   { fontFamily: font.bold,     fontSize: 20 },
