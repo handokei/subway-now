@@ -1,4 +1,5 @@
 import React from 'react';
+import { StyleSheet } from 'react-native';
 import { fireEvent, render } from '@testing-library/react-native';
 import { StationSuggestionList } from '../StationSuggestionList';
 import type { Station } from '../../../../shared/types/station';
@@ -47,5 +48,18 @@ describe('StationSuggestionList', () => {
     );
     fireEvent.press(getByTestId('item-2-022'));
     expect(onSelect).toHaveBeenCalledWith(stations[0]);
+  });
+
+  // #3094: 긴 역명이 행 폭을 밀어 호선 배지가 박스 밖으로 잘리지 않도록 — 이름은 shrink, 배지는 고정.
+  it('역명은 flexShrink 1 + 1줄, 호선 배지는 flexShrink 0, 컨테이너는 overflow hidden', () => {
+    const { getByText, getByTestId } = render(
+      <StationSuggestionList suggestions={stations} onSelect={jest.fn()} listTestID="list" itemTestIDPrefix="item-" />,
+    );
+    const nameNode = getByText('강남');
+    expect(StyleSheet.flatten(nameNode.props.style).flexShrink).toBe(1);
+    expect(nameNode.props.numberOfLines).toBe(1);
+    const badge = StyleSheet.flatten(getByTestId('item-2-022-badge').props.style);
+    expect(badge.flexShrink).toBe(0);
+    expect(StyleSheet.flatten(getByTestId('list').props.style).overflow).toBe('hidden');
   });
 });
