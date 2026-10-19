@@ -61,6 +61,7 @@ import { ROUTE_KEY } from '../shared/constants/storageKeys';
 import { SleepAlarmOverlay } from '../features/alarm/components/SleepAlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
 import { useTheme, typography, spacing, radius, lineTint } from '../shared/theme';
+import { useSyncLineTint } from '../shared/theme/store/useSyncLineTint';
 import { GlassCard } from '../shared/ui/GlassCard';
 import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
 import { ActionBanner } from '../shared/ui/ActionBanner';
@@ -1478,6 +1479,7 @@ export default function HomeScreen() {
   // Line Glass — 화면 배경 글로우/탭바 활성색이 따라갈 노선. 탑승 lock > 진행 노선 > 현재역 노선.
   const tintLine = (fusionBoardingLock?.boardingLine ?? approachLine ?? effectiveOrigin?.line ?? null) as LineNumber | null;
   const tint = lineTint(tintLine, isDark);
+  useSyncLineTint(tintLine);
 
   if (permissionDenied) {
     // MapScreen과 동일한 단일 UI(LocationStateView)로 통일. iOS 영구 거부 시 OS dialog가
