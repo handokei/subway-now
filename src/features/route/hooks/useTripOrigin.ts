@@ -64,9 +64,11 @@ export function useTripOrigin(
       }
       return;
     }
+    // epoch는 effectiveOrigin 유무와 무관하게 동기화 — null일 때 latch를 남기면 이후 GPS 기인
+    // origin 도착이 재캡처로 변환돼 "GPS 변화는 재캡처 금지" 불변식을 깬다.
     const epochChanged = capturedEpochRef.current !== originEpoch;
+    capturedEpochRef.current = originEpoch;
     if (destination && effectiveOrigin && (epochChanged || !tripOriginRef.current)) {
-      capturedEpochRef.current = originEpoch;
       tripOriginRef.current = effectiveOrigin;
       setTripOrigin(effectiveOrigin);
     }

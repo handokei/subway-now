@@ -210,7 +210,7 @@ export default function HomeScreen() {
   const loadDismissSilence = useAlarmEventStore((s) => s.loadDismissSilence);
   const [pickerVisible, setPickerVisible] = useState(false);
   // #977 — F4 confirm 모달 검색 fallback. 후보 0개 또는 사용자 명시 "검색으로 선택" 시 origin 전용
-  // DestinationPicker(mode='origin')를 띄워 직접 station 검색 → setCustomOrigin.
+  // DestinationPicker(mode='origin')를 띄워 직접 station 검색 → setCustomOriginExplicit.
   const [originPickerVisible, setOriginPickerVisible] = useState(false);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
@@ -382,7 +382,7 @@ export default function HomeScreen() {
     setRejectedTrainCode(null);
   }, []);
   // #977 — F4 검색 fallback wire. confirm 모달 dismiss(setDismissed=true) + origin picker 오픈.
-  // 사용자가 picker에서 station 선택 시 setCustomOrigin → confirm 모달은 hasEffectiveOrigin
+  // 사용자가 picker에서 station 선택 시 setCustomOriginExplicit → confirm 모달은 hasEffectiveOrigin
   // 으로 자동 차단되어 재오픈하지 않는다.
   // onClose는 hook 내부 useCallback(deps=[])로 stable — 객체 자체가 아닌 method를 deps에 둔다.
   const confirmModalClose = confirmModal.onClose;
@@ -430,7 +430,7 @@ export default function HomeScreen() {
 
   const handleColdStartSelectCandidate = useCallback(
     (candidate: ColdStartCandidate) => {
-      // 가장 가까운 entry의 stations[0]으로 setCustomOrigin 호출 → trip chain 시작.
+      // 가장 가까운 entry의 stations[0]으로 setCustomOriginExplicit 호출 → trip chain 시작.
       const firstStation = candidate.stations[0];
       if (firstStation) {
         setCustomOriginExplicit(firstStation);
@@ -443,7 +443,7 @@ export default function HomeScreen() {
 
   const handleColdStartSingleCandidate = useCallback(
     (candidate: ColdStartCandidate) => {
-      // 1개 케이스: boardingPrompt 흐름과 동일하게 setCustomOrigin 적용.
+      // 1개 케이스: boardingPrompt 흐름과 동일하게 setCustomOriginExplicit 적용.
       const firstStation = candidate.stations[0];
       if (firstStation) {
         setCustomOriginExplicit(firstStation);

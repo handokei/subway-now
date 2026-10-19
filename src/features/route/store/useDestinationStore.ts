@@ -36,6 +36,15 @@ import { isDegenerateDestination } from '../utils/isDegenerateDestination';
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = (): void => {};
 
+/** customOrigin 영속화 단일 경로 — setCustomOrigin / setCustomOriginExplicit 공용 (#3076). */
+function persistCustomOrigin(station: Station | null): void {
+  if (station) {
+    AsyncStorage.setItem(CUSTOM_ORIGIN_KEY, JSON.stringify(station)).catch(noop);
+  } else {
+    AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
+  }
+}
+
 /**
  * #1321 — trip transition(목적지 switch/null) cleanup 직렬화 큐.
  *
@@ -79,7 +88,7 @@ export interface DestinationState {
   customOrigin: Station | null;
   /**
    * #3076 — 명시 출발역 지정 전용 카운터 (메모리 전용, 비영속, 초기 0).
-   * setCustomOriginExplicit(다른 id)만 증가시킨다. clear / SSOT override / hydration / rehydrate는 불변.
+   * setCustomOriginExplicit(같은 id 포함)만 증가시킨다. clear / SSOT override / hydration / rehydrate는 불변.
    * HomeScreen route 재계산 가드(sessionKey)와 useTripOrigin 재캡처가 이 값으로 무효화된다.
    */
   originEpoch: number;
@@ -95,8 +104,9 @@ export interface DestinationState {
   loadRecentDestinations: () => Promise<void>;
   setCustomOrigin: (station: Station | null) => void;
   /**
-   * #3076 — 사용자 명시 출발역 지정. 같은 id 재지정은 완전 no-op, 다른 id면 customOrigin과
-   * originEpoch+1을 단일 set으로 원자 반영 + 영속화. clear(null)는 setCustomOrigin을 쓴다.
+   * #3076 — 사용자 명시 출발역 지정. 같은 id 재지정 포함 항상 customOrigin과 originEpoch+1을
+   * 단일 set으로 원자 반영 + 영속화 (명시 제스처 = 「여기서부터 다시」, hydration race 고착 복구 경로).
+   * clear(null)는 setCustomOrigin을 쓴다.
    */
   setCustomOriginExplicit: (station: Station) => void;
   /**
@@ -330,18 +340,12 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
 
   setCustomOrigin: (station: Station | null) => {
     set({ customOrigin: station });
-    if (station) {
-      AsyncStorage.setItem(CUSTOM_ORIGIN_KEY, JSON.stringify(station)).catch(noop);
-    } else {
-      AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
-    }
+    persistCustomOrigin(station);
   },
 
   setCustomOriginExplicit: (station: Station) => {
-    const { customOrigin, originEpoch } = get();
-    if (station.id === customOrigin?.id) return;
-    set({ customOrigin: station, originEpoch: originEpoch + 1 });
-    AsyncStorage.setItem(CUSTOM_ORIGIN_KEY, JSON.stringify(station)).catch(noop);
+    set({ customOrigin: station, originEpoch: get().originEpoch + 1 });
+    persistCustomOrigin(station);
   },
 
   // #1541 — 강 SSOT consensus가 customOrigin과 다른 station을 가리키면 unlock.
@@ -362,7 +366,9 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
   loadCustomOrigin: async () => {
     try {
       const raw = await AsyncStorage.getItem(CUSTOM_ORIGIN_KEY);
-      if (raw) {
+      // #3076 — in-flight hydration이 그 사이 명시 지정된 값을 stale 값으로 덮지 않는다.
+      const { originEpoch, customOrigin } = get();
+      if (raw && originEpoch === 0 && customOrigin === null) {
         set({ customOrigin: JSON.parse(raw) });
       }
     } catch {
