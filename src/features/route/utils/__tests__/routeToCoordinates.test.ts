@@ -141,3 +141,12 @@ describe('routeToCoordinates', () => {
     });
   });
 });
+
+// #3076 특성 테스트 — stale route(2호선) + 타노선 customOrigin(7호선 논현)이면 null.
+// HomeScreen route 재계산 가드가 customOrigin 축을 못 보면 이 조합이 지도에 그대로 주입된다(증상 모드 A).
+describe('routeToCoordinates stale route + 타노선 origin (#3076 characterization)', () => {
+  it('2호선 direct route에 7호선 출발역을 주면 null (지도 폴리라인 미렌더)', () => {
+    const staleRoute = findRoute(byId('2-022').id, byId('2-019').id);
+    expect(routeToCoordinates(staleRoute, byId('7-024'), byId('2-019'))).toBeNull();
+  });
+});

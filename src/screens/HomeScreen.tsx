@@ -142,7 +142,9 @@ export default function HomeScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const customOrigin = useDestinationStore((s) => s.customOrigin);
-  const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
+  // #3076 — 명시 지정은 setCustomOriginExplicit(originEpoch 증가)로만. clear는 이 화면에서 호출 0.
+  const setCustomOriginExplicit = useDestinationStore((s) => s.setCustomOriginExplicit);
+  const originEpoch = useDestinationStore((s) => s.originEpoch);
   const loadCustomOrigin = useDestinationStore((s) => s.loadCustomOrigin);
   // #1541 — 강 SSOT consensus가 customOrigin과 다른 station을 가리킬 때 unlock하는 액션.
   const clearCustomOriginForSsotOverride = useDestinationStore(
@@ -216,7 +218,7 @@ export default function HomeScreen() {
   const loadDismissSilence = useAlarmEventStore((s) => s.loadDismissSilence);
   const [pickerVisible, setPickerVisible] = useState(false);
   // #977 — F4 confirm 모달 검색 fallback. 후보 0개 또는 사용자 명시 "검색으로 선택" 시 origin 전용
-  // DestinationPicker(mode='origin')를 띄워 직접 station 검색 → setCustomOrigin.
+  // DestinationPicker(mode='origin')를 띄워 직접 station 검색 → setCustomOriginExplicit.
   const [originPickerVisible, setOriginPickerVisible] = useState(false);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
@@ -350,9 +352,9 @@ export default function HomeScreen() {
   const [shortRouteToast, setShortRouteToast] = useState<string | null>(null);
   const handleConfirmStation = useCallback(
     (station: Station) => {
-      setCustomOrigin(station);
+      setCustomOriginExplicit(station);
     },
-    [setCustomOrigin],
+    [setCustomOriginExplicit],
   );
   const confirmModal = useCurrentStationConfirmModal({
     locationUncertain,
@@ -388,7 +390,7 @@ export default function HomeScreen() {
     setRejectedTrainCode(null);
   }, []);
   // #977 — F4 검색 fallback wire. confirm 모달 dismiss(setDismissed=true) + origin picker 오픈.
-  // 사용자가 picker에서 station 선택 시 setCustomOrigin → confirm 모달은 hasEffectiveOrigin
+  // 사용자가 picker에서 station 선택 시 setCustomOriginExplicit → confirm 모달은 hasEffectiveOrigin
   // 으로 자동 차단되어 재오픈하지 않는다.
   // onClose는 hook 내부 useCallback(deps=[])로 stable — 객체 자체가 아닌 method를 deps에 둔다.
   const confirmModalClose = confirmModal.onClose;
@@ -398,10 +400,10 @@ export default function HomeScreen() {
   }, [confirmModalClose]);
   const handleOriginPickerSelect = useCallback(
     (station: Station) => {
-      setCustomOrigin(station);
+      setCustomOriginExplicit(station);
       setOriginPickerVisible(false);
     },
-    [setCustomOrigin],
+    [setCustomOriginExplicit],
   );
   const handleOriginPickerClose = useCallback(() => setOriginPickerVisible(false), []);
 
@@ -436,28 +438,28 @@ export default function HomeScreen() {
 
   const handleColdStartSelectCandidate = useCallback(
     (candidate: ColdStartCandidate) => {
-      // 가장 가까운 entry의 stations[0]으로 setCustomOrigin 호출 → trip chain 시작.
+      // 가장 가까운 entry의 stations[0]으로 setCustomOriginExplicit 호출 → trip chain 시작.
       const firstStation = candidate.stations[0];
       if (firstStation) {
-        setCustomOrigin(firstStation);
+        setCustomOriginExplicit(firstStation);
       }
       coldStartPickerDismissedRef.current = true;
       setColdStartPickerVisible(false);
     },
-    [setCustomOrigin],
+    [setCustomOriginExplicit],
   );
 
   const handleColdStartSingleCandidate = useCallback(
     (candidate: ColdStartCandidate) => {
-      // 1개 케이스: boardingPrompt 흐름과 동일하게 setCustomOrigin 적용.
+      // 1개 케이스: boardingPrompt 흐름과 동일하게 setCustomOriginExplicit 적용.
       const firstStation = candidate.stations[0];
       if (firstStation) {
-        setCustomOrigin(firstStation);
+        setCustomOriginExplicit(firstStation);
       }
       coldStartPickerDismissedRef.current = true;
       setColdStartPickerVisible(false);
     },
-    [setCustomOrigin],
+    [setCustomOriginExplicit],
   );
 
   const handleColdStartSearchFallback = useCallback(() => {
@@ -615,7 +617,7 @@ export default function HomeScreen() {
     currentStationDisplayDemoted,
     isCustomOrigin,
   );
-  useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin);
+  useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin, originEpoch);
   const handleSameOriginToastDismiss = useCallback(() => setSameOriginToast(null), []);
   const handleShortRouteToastDismiss = useCallback(() => setShortRouteToast(null), []);
   // #1324 — 목적지 선택 단일 진입점. 현재역(effectiveOrigin)과 같은 역이면 degenerate trip을
@@ -678,9 +680,10 @@ export default function HomeScreen() {
   // (demoted 아님) displayOrigin===effectiveOrigin이라 기존 동작과 동일.
   const displayLineVariants = resolveOriginLineVariants(displayOrigin, variants, isCustomOrigin);
 
-  // #1883 (RC-11) — 마지막으로 route를 계산한 trip session id (`${destinationId}|${routePreference}`).
+  // #1883 (RC-11) — 마지막으로 route를 계산한 trip session id (`${destinationId}|${routePreference}|${originEpoch}`).
   // trip session이 같으면 effectiveOrigin / variants 갱신으로 인한 mid-trip route mutation을 차단.
-  // 사용자가 destination 또는 routePreference를 명시적으로 바꾸면 다른 session id가 되어 가드 통과.
+  // 사용자가 destination / routePreference / 출발역(명시 지정 → originEpoch 증가)을 명시적으로 바꾸면
+  // 다른 session id가 되어 가드 통과. clear·hydration·GPS 변화는 epoch 불변이라 계속 freeze (#3076).
   const lastComputedRouteSessionRef = useRef<string | null>(null);
   useEffect(() => {
     // #1379: destination 종료(=실제 trip 종료)일 때만 ROUTE_KEY removeItem.
@@ -697,9 +700,11 @@ export default function HomeScreen() {
     // #1883 (RC-11) — mid-trip route mutation 차단 (사용자 paradigm 2).
     // trip이 시작된 후(이 session id로 이미 1회 계산 완료) effectiveOrigin 변화 / variants
     // 갱신으로 route를 재계산하면 환승역이 바뀌어 "건대입구 → 군자" 같은 회귀가 발생한다.
-    // session id(`destinationId|routePreference`)가 동일하면 route는 freeze — 사용자 명시
-    // destination 또는 routePreference 변경 시에만 재계산. lockless / lock 활성 둘 다 동일 보호.
-    const sessionKey = `${destination.id}|${routePreference}`;
+    // session id(`destinationId|routePreference|originEpoch`)가 동일하면 route는 freeze — 사용자 명시
+    // destination / routePreference / 출발역 명시 지정(#3076 originEpoch) 변경 시에만 재계산.
+    // 명시 출발역 재지정은 useRouteProgress 진행도 리셋을 동반하는 선언된 부작용(#1883 코멘트 참조).
+    // lockless / lock 활성 둘 다 동일 보호.
+    const sessionKey = `${destination.id}|${routePreference}|${originEpoch}`;
     if (lastComputedRouteSessionRef.current === sessionKey) {
       return;
     }
@@ -722,7 +727,7 @@ export default function HomeScreen() {
       }
     });
     return () => interaction.cancel();
-  }, [effectiveOrigin?.id, destination?.id, routePreference, variantIds]);
+  }, [effectiveOrigin?.id, destination?.id, routePreference, variantIds, originEpoch]);
 
   // #2280 — journey(화면 route/stop 목록) fromName은 trip 등록 시점에 고정된 tripOrigin을
   // SSOT로 사용해야 한다. effectiveOrigin은 GPS/현재역이 바뀔 때마다 흔들리는 라이브 값이라
