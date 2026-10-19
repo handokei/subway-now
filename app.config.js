@@ -25,7 +25,7 @@ module.exports = {
       zh: './locales/zh.json',
     },
     splash: {
-      image: './assets/splash/splash-ko-1284x2778.png',
+      image: './assets/splash/splash-11a-1170x2532.png',
       resizeMode: 'cover',
       backgroundColor: '#CDEBF7',
     },
