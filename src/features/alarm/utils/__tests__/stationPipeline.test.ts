@@ -47,7 +47,7 @@ jest.mock('../../../../shared/utils/stationRoute', () => {
 });
 
 // #2478 — isLockConfirmedForwardHop이 route 방향대로 정렬된 arc를 얻기 위해 재사용하는 함수.
-// bgPositionTrainFire.test.ts와 동일하게 mock으로 arc 반환값을 직접 제어(null/빈 배열/정상 등).
+// (bgPositionTrainFire.test.ts는 #3063 철거) mock으로 arc 반환값을 직접 제어(null/빈 배열/정상 등).
 const mockComputeRouteArc = jest.fn();
 jest.mock('../../../route/utils/routeProgress', () => ({
   computeRouteArc: (...args: unknown[]) => mockComputeRouteArc(...args),

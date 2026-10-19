@@ -14,7 +14,7 @@ export interface PickCandidateTrainsInput {
   line: LineNumber;
   /**
    * #2946 (H-7 결함1) — 이전엔 옵셔널(`direction?: 0 | 1`)이라 호출자가 키 자체를 생략하면
-   * 컴파일러가 아무 경고 없이 "방향 필터 미적용"으로 조용히 넘어갔다(`bgPositionTrainFire.ts`가
+   * 컴파일러가 아무 경고 없이 "방향 필터 미적용"으로 조용히 넘어갔다(`bgPositionTrainFire.ts`(#3063 철거)가
    * 실사례 — 방향을 알아낼 수 있는 재료(route+destination+boardingStationId)를 다 갖고도
    * 전혀 계산하지 않고 호출). 필수 키로 바꿔 모든 호출자가 "방향을 안다(0|1)"/"모른다(명시적
    * undefined)"를 컴파일 타임에 선언하게 강제한다 — 런타임 필터 동작(undefined=필터 미적용)
@@ -78,7 +78,7 @@ export interface PickCandidateTrainsInput {
 
 /**
  * ADR-039 2단계(#2728) — arcStations 내에서 candidateId가 boardingStationId 기준
- * arc window(±N hop) 이내인지. `fusionDistanceGate.ts`/`lockedStationGate.ts`의 동일 이름
+ * arc window(±N hop) 이내인지. `fusionDistanceGate.ts`/`lockedStationGate.ts`(#3063 철거)의 동일 이름
  * 함수와 같은 계약 — arrival feature는 디렉토리 경계 룰상 nearest-station을 import할 수
  * 없어 순수 부분만 여기 재정의한다.
  */

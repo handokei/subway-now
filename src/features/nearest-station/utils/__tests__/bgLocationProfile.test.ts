@@ -30,7 +30,6 @@ import {
   demoteToUndergroundIfNeeded,
   releaseFromUndergroundIfNeeded,
   resetUndergroundFailCount,
-  isUndergroundProfile,
 } from '../bgLocationProfile';
 import {
   BG_LOCATION_PROFILE_KEY,
@@ -386,24 +385,6 @@ describe('bgLocationProfile', () => {
       mockSetItem.mockRejectedValue(new Error('fail'));
 
       await expect(resetUndergroundFailCount()).resolves.toBeUndefined();
-    });
-  });
-
-  describe('isUndergroundProfile', () => {
-    it('저장된 profile이 underground면 true를 반환한다', async () => {
-      mockGetItem.mockImplementation((key: string) =>
-        key === BG_LOCATION_PROFILE_KEY ? Promise.resolve('underground') : Promise.resolve(null),
-      );
-
-      await expect(isUndergroundProfile()).resolves.toBe(true);
-    });
-
-    it('저장된 profile이 surface/stationary/부재면 false를 반환한다', async () => {
-      mockGetItem.mockImplementation((key: string) =>
-        key === BG_LOCATION_PROFILE_KEY ? Promise.resolve('stationary') : Promise.resolve(null),
-      );
-
-      await expect(isUndergroundProfile()).resolves.toBe(false);
     });
   });
 });

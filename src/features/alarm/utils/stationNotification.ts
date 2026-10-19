@@ -72,7 +72,7 @@ const liveActivityLogger = createLogger('LiveActivity');
 
 /**
  * #2591 (code review 8번, SonarCloud dup 회피) — iOS `interruptionLevel: 'timeSensitive'`
- * 옵션 spread 단일 진입점. `fireLocalAlarmNotification`/`fireLocalBoardingPromptNotification`
+ * 옵션 spread 단일 진입점. `fireLocalAlarmNotification`(+ `fireLocalBoardingPromptNotification`, #3063 철거)
  * (본 파일)과 `lastTrainAlarm.ts`/`silentPushTask.ts`(skew-fallback)까지 동일한
  * `...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const })` 4개 사본이
  * 있었다 — 이 함수로 통합해 4곳 모두 재사용한다.

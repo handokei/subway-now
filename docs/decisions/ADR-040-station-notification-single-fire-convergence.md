@@ -40,9 +40,9 @@ ADR-036은 Phase 2(backend visible 퇴역)를 **"Phase 1 실증 후에만"** 으
 
 | 경로 | 역할 | 상태 |
 | --- | --- | --- |
-| `bgPositionTrainFire.ts:55` | #2383 position-train 발사 = ADR-036 Phase 0 축1 | `return false` |
-| `bgWaypointArvlcdFire.ts:73` | BG waypoint arvlCd 발사 | `return false` |
-| `undergroundConsensusFire.ts:64` | 지하 consensus 발사 | `return` |
+| `bgPositionTrainFire.ts:55` | #2383 position-train 발사 = ADR-036 Phase 0 축1 | `return false` (#3063 철거) |
+| `bgWaypointArvlcdFire.ts:73` | BG waypoint arvlCd 발사 | `return false` (#3063 철거) |
+| `undergroundConsensusFire.ts:64` | 지하 consensus 발사 | `return` (#3063 철거) |
 | `stationPipeline.ts:503/636` | **G0-3 게이트 arvlCd-우회**(ADR-036 critical path) | 우회 비활성 |
 | `useStationAlarm.ts:1127` | Phase 1 **D1** FG phase 발사 | 비활성 |
 

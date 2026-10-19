@@ -342,7 +342,7 @@ async function adoptLiveActivitySession(
 
 /**
  * #2481 (backend-authority device 쓰기 억제 게이트, Wave 2) → #2735 (권위 이양 조건 수정) —
- * backend-authority 모드(`isMinimalAlarmEnabled() === false`)에서 device가 LA content-state를
+ * backend-authority 모드(dogfood flag는 #3063에서 철거 — 항상 이 모드)에서 device가 LA content-state를
  * 써도 되는지 판정한다. device W2(`updateStationNotification`)/W3
  * (`refreshLiveActivityFromBackgroundContext`)가 공유하는 단일 게이트.
  *
@@ -353,15 +353,13 @@ async function adoptLiveActivitySession(
  * 생겨 LA가 첫 write에서 영구히 얼어붙었다(2026-09-18 실측: 28분 주행 내내 write 1회).
  *
  * true(스킵, backend가 저자)는 다음이 모두 성립할 때만:
- *   - backend-authority 모드(dogfood 플래그 OFF)
  *   - tripToken이 존재하고, backend가 실제로 이 tripToken의 LA push 등록에 성공함
  *     (`backendConfirmed?.tripToken === tripToken`)
  *   - 그 확인이 `LA_BACKEND_AUTHORITY_STALE_MS` 이내로 신선함(요구사항 3 backstop — 등록에
  *     성공했더라도 그 이후 재확인이 오래 없으면 device가 다시 쓴다. device는 실제 push 도달을
  *     관찰할 수 없으므로 "재확인(재등록) 신선도"를 그 대리 신호로 쓴다).
  *
- * false(계속 device가 쓴다)는 blank/frozen LA 회귀를 막는 4개 케이스를 모두 커버한다:
- *   - dogfood 모드(flag ON) — 기존 device 동작 100% 유지.
+ * false(계속 device가 쓴다)는 blank/frozen LA 회귀를 막는 3개 케이스를 모두 커버한다:
  *   - backend-tracked trip 자체가 없음(tripToken null) — pre-boarding 등 lock 전 구간.
  *   - trip은 있지만 backend 등록이 아직 성공하지 못한 상태(시도 중/실패/재시도 소진 전부 포함) —
  *     blank/frozen LA보다 GPS 추정치라도 갱신되는 편이 낫다(#2735 요구사항 2).

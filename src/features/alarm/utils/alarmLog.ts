@@ -648,12 +648,6 @@ export interface AlarmLogEntry {
   // currentHopIndex = D1 estimator/fallback이 결정한 SSOT hop, candidateIndex = arc 위 candidate 위치.
   currentHopIndex?: number;
   candidateIndex?: number;
-  // #2474 — position-train-fire 진단 stamp 컨텍스트.
-  // hasTrainCode: lock.trainCode 필드 자체의 존재 여부(falsy 문자열 포함 판정). pending
-  // sentinel인지 여부는 별도로 reason('skip-pending-traincode')이 구분한다.
-  // candidatesCount: pickCandidateTrains가 반환한 후보 열차 수 (매칭 실패 원인 분석용).
-  hasTrainCode?: boolean;
-  candidatesCount?: number;
   // #2709 — lock-sync-delivery(outcome='fired') 전용. lock 생성(boardedAt) → backend 반영
   // 확인(POST /boarding-lock/sync 200 응답) 사이 경과 초. 전달 지연 실측 — 과거엔 ∞였으나
   // 관측조차 안 남던 사실 자체가 회귀 재발 시 재확인을 불가능하게 했다(#2709 요구사항 7).
@@ -2202,7 +2196,7 @@ export interface BgTaskHeartbeatSnapshot {
  * #2403 — BG task 발화 heartbeat 갱신. 순수 진단 계측 — behavior 무변경.
  *
  * `BACKGROUND_LOCATION_TASK`가 `latest` fix를 확보한 직후, 기존 gate-age/gate-accuracy 게이트나
- * position-train-lock 발사 경로보다 먼저 호출한다.
+ * position-train-lock 발사 경로(#3063 철거)보다 먼저 호출한다.
  *
  * #2618 — 기존에는 alarmLog ring(200-cap)에 매 tick(~2s 간격) 적재해 24분간 62건이 RCA 유효
  * 이벤트를 밀어내는 회귀를 유발했다. "BG task가 죽지 않았다"는 생존 확인만이 목적이므로 ring
