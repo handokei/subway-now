@@ -1,7 +1,7 @@
 import { renderHook } from '@testing-library/react-native';
 import { useSyncLineTint } from '../useSyncLineTint';
-import { useLineTintStore } from '../useLineTintStore';
-import type { LineNumber } from '../../../types/station';
+import { useLineTintStore } from '../../theme/store/useLineTintStore';
+import type { LineNumber } from '../../types/station';
 
 describe('useSyncLineTint', () => {
   beforeEach(() => {

@@ -3,7 +3,7 @@ import { Platform, StyleSheet, Text } from 'react-native';
 import { screen } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import { GlassCard } from '../GlassCard';
-import { lightColors, darkColors, radius } from '../../theme';
+import { lightColors, darkColors, radiusGlass } from '../../theme';
 import { renderWithTheme } from '../../../testUtils/renderWithTheme';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
@@ -34,13 +34,21 @@ describe('GlassCard', () => {
     expect(screen.getByTestId('glass')).toBeTruthy();
   });
 
-  it('iOS: 투명 배경 + 기본 radius.lg + 테두리 glassBorder', () => {
+  it('iOS: glass 채움 + 기본 radiusGlass.lg + 클리핑 레이어 테두리 glassBorder', () => {
+    const { toJSON } = renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
+    const flat = StyleSheet.flatten(screen.getByTestId('glass').props.style);
+    expect(flat.backgroundColor).toBe(lightColors.glass);
+    expect(flat.borderRadius).toBe(radiusGlass.lg);
+    expect(JSON.stringify(toJSON())).toContain(lightColors.glassBorder);
+  });
+
+  it('구아키 호환: boxShadow 대신 legacy shadow props + elevation', () => {
     renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
     const flat = StyleSheet.flatten(screen.getByTestId('glass').props.style);
-    expect(flat.backgroundColor).toBe('transparent');
-    expect(flat.borderRadius).toBe(radius.lg);
-    expect(flat.borderColor).toBe(lightColors.glassBorder);
-    expect(flat.boxShadow).toContain('rgba(0,60,30,0.18)');
+    expect(flat.boxShadow).toBeUndefined();
+    expect(flat.shadowColor).toBe('#003C1E');
+    expect(flat.shadowRadius).toBe(15);
+    expect(flat.elevation).toBe(4);
   });
 
   it('strong=true면 glassStrong 채움을 쓴다', () => {
@@ -62,23 +70,23 @@ describe('GlassCard', () => {
 
   it('다크 모드: 다크 그림자와 glassBorder', () => {
     mockUseColorScheme.mockReturnValue('dark');
-    renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
+    const { toJSON } = renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
     const flat = StyleSheet.flatten(screen.getByTestId('glass').props.style);
-    expect(flat.borderColor).toBe(darkColors.glassBorder);
-    expect(flat.boxShadow).toContain('rgba(0,0,0,0.6)');
+    expect(JSON.stringify(toJSON())).toContain(darkColors.glassBorder);
+    expect(flat.shadowOpacity).toBe(0.5);
   });
 
   it('Android 라이트: blur 없이 진한 흰색 fallback 채움', () => {
     setOS('android');
     renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
-    expect(StyleSheet.flatten(screen.getByTestId('glass').props.style).backgroundColor).toBe('rgba(255,255,255,0.86)');
+    expect(StyleSheet.flatten(screen.getByTestId('glass').props.style).backgroundColor).toBe(lightColors.glassFallback);
   });
 
   it('Android 다크: 진한 어두운 fallback 채움', () => {
     setOS('android');
     mockUseColorScheme.mockReturnValue('dark');
     renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
-    expect(StyleSheet.flatten(screen.getByTestId('glass').props.style).backgroundColor).toBe('rgba(24,28,26,0.92)');
+    expect(StyleSheet.flatten(screen.getByTestId('glass').props.style).backgroundColor).toBe(darkColors.glassFallback);
   });
 
   it('커스텀 style을 병합한다', () => {

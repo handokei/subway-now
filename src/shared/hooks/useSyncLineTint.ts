@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
-import type { LineNumber } from '../../types/station';
-import { useLineTintStore } from './useLineTintStore';
+import type { LineNumber } from '../types/station';
+import { useLineTintStore } from '../theme/store/useLineTintStore';
 
 /**
  * 화면이 결정한 현재 노선을 useLineTintStore에 반영한다(탭바·타 탭 틴트 연동).

@@ -11,8 +11,9 @@ import { useThemeStore, type ThemeMode } from '../shared/theme/store/useThemeSto
 import { useLocaleStore, type LocalePreference } from '../shared/i18n/store/useLocaleStore';
 import { ROUTE_CATEGORIES } from '../shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
-import { useTheme, typography, spacing, radius, lineTint, useLineTintStore } from '../shared/theme';
+import { useTheme, typography, spacing, radiusGlass, lineTint, useLineTintStore, shadowStyle } from '../shared/theme';
 import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
+import { GLASS_SCREEN_BOTTOM_PADDING } from '../shared/ui/GlassTabBar';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
 import { SleepModeSilentWarning } from '../features/settings/components/SleepModeSilentWarning';
 import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
@@ -100,7 +101,7 @@ export default function SettingsScreen() {
         />
 
         {/* 알람 */}
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+        <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.alarmSection')}</Text>
 
           <View style={styles.settingRow}>
@@ -167,7 +168,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* 접근성 — 알람 카드 아래에 배치. E2E smoke flow의 sleep-mode-switch 가시성을 깨지 않기 위함. */}
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+        <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.accessibilitySection')}</Text>
 
           <View style={styles.settingRow}>
@@ -192,7 +193,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* #1038 follow-up — Sentry 오류 진단 정보 opt-in. 기본 OFF. */}
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+        <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>
             {t('settings.privacySection')}
           </Text>
@@ -220,7 +221,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* #1034 — 버그 신고 진입점. Pressable 1줄로 모달 open. */}
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+        <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>
             {t('settings.feedbackSection')}
           </Text>
@@ -321,7 +322,7 @@ function LocaleNavSetting({
       : (selectedNativeName ?? autoLabel);
 
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+    <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
 
       <View style={styles.settingRow}>
@@ -364,9 +365,9 @@ function SegmentSetting<T extends string>({
   onChange,
   options,
 }: SegmentSettingProps<T>) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+    <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
 
       <View style={styles.settingRow}>
@@ -382,7 +383,7 @@ function SegmentSetting<T extends string>({
           return (
             <Pressable
               key={optionValue}
-              style={[styles.segment, active && { backgroundColor: colors.segmentActive, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }]}
+              style={[styles.segment, active && { backgroundColor: colors.segmentActive, ...shadowStyle('segment', isDark) }]}
               onPress={() => onChange(optionValue)}
               testID={`${testIDPrefix}-${optionValue}`}
               accessibilityRole="radio"
@@ -405,7 +406,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scroll: {
-    paddingBottom: 120,
+    paddingBottom: GLASS_SCREEN_BOTTOM_PADDING,
   },
   header: {
     ...typography.screen,
@@ -414,7 +415,7 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   card: {
-    borderRadius: radius.lg,
+    borderRadius: radiusGlass.lg,
     borderWidth: 1,
     paddingHorizontal: 18,
     paddingVertical: 16,
@@ -445,14 +446,14 @@ const styles = StyleSheet.create({
   },
   segmentGroup: {
     flexDirection: 'row',
-    borderRadius: radius.md,
+    borderRadius: radiusGlass.md,
     padding: 4,
     marginTop: spacing.md,
   },
   segment: {
     flex: 1,
     paddingVertical: 8,
-    borderRadius: radius.sm,
+    borderRadius: radiusGlass.sm,
     alignItems: 'center',
   },
   segmentText: {

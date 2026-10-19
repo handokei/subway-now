@@ -5,7 +5,7 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react-native';
-import { EditorialTimeline, mix, hex } from '../EditorialTimeline';
+import { EditorialTimeline } from '../EditorialTimeline';
 import { MOCK_STOPS } from '../../../../testUtils/fixtures';
 import type { Stop } from '../../../../shared/types/journey';
 import type { LineNumber } from '../../../../shared/types/station';
@@ -400,34 +400,5 @@ describe('intermediate stop 렌더링', () => {
     render(<EditorialTimeline stops={stops} />);
     // 2호선 라벨은 출발/도착 stop 2개에서만 노출 (intermediate에서는 미노출)
     expect(screen.getAllByText('2호선').length).toBe(2);
-  });
-});
-
-describe('mix', () => {
-  it('should blend two colors at 50%', () => {
-    expect(mix('#FF0000', '#0000FF', 0.5)).toBe('rgb(128,0,128)');
-  });
-
-  it('should return first color at weight 0', () => {
-    expect(mix('#FF0000', '#0000FF', 0)).toBe('rgb(255,0,0)');
-  });
-
-  it('should return second color at weight 1', () => {
-    expect(mix('#FF0000', '#0000FF', 1)).toBe('rgb(0,0,255)');
-  });
-});
-
-describe('hex', () => {
-  it('should parse hex color to RGB tuple', () => {
-    expect(hex('#FF0000')).toEqual([255, 0, 0]);
-    expect(hex('#00FF00')).toEqual([0, 255, 0]);
-    expect(hex('#0000FF')).toEqual([0, 0, 255]);
-  });
-
-  it('should fallback to [0,0,0] for non-hex formats', () => {
-    expect(hex('rgba(26,24,20,0.08)')).toEqual([0, 0, 0]);
-    expect(hex('rgb(255,0,0)')).toEqual([0, 0, 0]);
-    expect(hex('FF8800')).toEqual([0, 0, 0]);
-    expect(hex('#FFF')).toEqual([0, 0, 0]);
   });
 });

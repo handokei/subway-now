@@ -1,8 +1,6 @@
 import React from 'react';
 import { StyleSheet, View, type ViewStyle } from 'react-native';
-import { useTheme } from '../theme';
-import { lineTint, rgba } from '../theme/theme';
-import { useLineTintStore } from '../theme/store/useLineTintStore';
+import { useTheme, lineTint, withAlpha, useLineTintStore } from '../theme';
 import type { LineNumber } from '../types/station';
 
 /**
@@ -31,7 +29,7 @@ export function LineGlowBackground({ line, secondaryLine }: { line?: LineNumber 
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
       {glow(t.glow, { width: 620, height: 620, left: -330, top: -330 })}
       {glow(t.glowSoft, { width: 460, height: 460, right: -250, top: 60 })}
-      {t2 && glow(rgba(t2.base, isDark ? 0.3 : 0.35), { width: 520, height: 520, right: -280, top: 640 })}
+      {t2 && glow(withAlpha(t2.base, isDark ? 0.3 : 0.35), { width: 520, height: 520, right: -280, top: 640 })}
     </View>
   );
 }

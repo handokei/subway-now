@@ -24,8 +24,9 @@ import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../shared/utils/formatTime';
 import { getStationDisplayName, matchesStationQuery } from '../shared/utils/stationDisplay';
-import { useTheme, typography, type ThemeColors } from '../shared/theme';
+import { useTheme, typography, withAlpha, type ThemeColors } from '../shared/theme';
 import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
+import { GLASS_SCREEN_BOTTOM_PADDING } from '../shared/ui/GlassTabBar';
 import stationsData from '../data/stations.json';
 import { ArrivalSourceNotice, shouldHideArrivalEta } from '../features/arrival/components/ArrivalSourceNotice';
 import type { StationArrival } from '../features/arrival/api/arrivalApi';
@@ -188,7 +189,7 @@ function SearchResultCard({
   colors: ThemeColors;
 }) {
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+    <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
       <View style={styles.cardInfo}>
         <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
           <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
@@ -196,12 +197,12 @@ function SearchResultCard({
         <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
       </View>
       <TouchableOpacity
-        style={[styles.addButton, { backgroundColor: colors.accent }, already && { backgroundColor: colors.hair }]}
+        style={[styles.addButton, { backgroundColor: colors.inkStrong }, already && { backgroundColor: colors.hair }]}
         onPress={onAdd}
         disabled={already}
         testID={`favorite-add-${station.id}`}
       >
-        <Text style={[styles.addButtonText, { color: already ? colors.muted : colors.onAccent }]}>{already ? '✓' : '+'}</Text>
+        <Text style={[styles.addButtonText, { color: already ? colors.muted : colors.onInkStrong }]}>{already ? '✓' : '+'}</Text>
       </TouchableOpacity>
     </View>
   );
@@ -243,7 +244,7 @@ function FavoriteCard({
     setEditing(false);
   };
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+    <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
       {/* Remove 버튼을 onToggle TouchableOpacity 밖 sibling으로 배치.
           중첩 TouchableOpacity는 iOS에서 부모 a11y 흡수로 자식 testID가 maestro에서 안 잡혔다. */}
       <View style={styles.cardRow}>
@@ -261,7 +262,7 @@ function FavoriteCard({
           </View>
           <Text style={[styles.expandIcon, { color: colors.muted }]}>{isExpanded ? '▲' : '▼'}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.removeButton, { backgroundColor: `${colors.danger}1A` }]} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
+        <TouchableOpacity style={[styles.removeButton, { backgroundColor: withAlpha(colors.danger, 0.1) }]} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
           <Text style={[styles.removeText, { color: colors.danger }]}>{t('favorites.remove')}</Text>
         </TouchableOpacity>
       </View>
@@ -281,14 +282,14 @@ function FavoriteCard({
                   testID={`favorite-label-input-${station.id}`}
                 />
                 <TouchableOpacity
-                  style={[styles.labelButton, { backgroundColor: colors.accent }]}
+                  style={[styles.labelButton, { backgroundColor: colors.inkStrong }]}
                   onPress={handleSave}
                   testID={`favorite-label-save-${station.id}`}
                 >
-                  <Text style={[styles.labelButtonText, { color: colors.onAccent }]}>{t('favorites.saveLabel')}</Text>
+                  <Text style={[styles.labelButtonText, { color: colors.onInkStrong }]}>{t('favorites.saveLabel')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.labelButton, { backgroundColor: colors.card, borderColor: colors.hair, borderWidth: 1 }]}
+                  style={[styles.labelButton, { backgroundColor: colors.glass, borderColor: colors.hair, borderWidth: 1 }]}
                   onPress={handleCancel}
                   testID={`favorite-label-cancel-${station.id}`}
                 >
@@ -297,7 +298,7 @@ function FavoriteCard({
               </>
             ) : (
               <TouchableOpacity
-                style={[styles.labelButton, { backgroundColor: colors.card, borderColor: colors.hair, borderWidth: 1 }]}
+                style={[styles.labelButton, { backgroundColor: colors.glass, borderColor: colors.hair, borderWidth: 1 }]}
                 onPress={() => {
                   setDraftLabel(label ?? '');
                   setEditing(true);
@@ -359,7 +360,7 @@ function SlotCard({
   }
   const { station } = entry;
   return (
-    <View style={[styles.slotCard, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
+    <View style={[styles.slotCard, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
       <TouchableOpacity style={styles.slotMain} onPress={onAssign} testID={`slot-change-${role}`}>
         <Text style={styles.slotIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>
         <Text style={[styles.slotLabel, { color: colors.ink }]}>{label}</Text>
@@ -405,11 +406,11 @@ function SlotPickerModal({
             {role ? t('favorites.slotPickerTitle', { label: t(`favorites.${role}`) }) : ''}
           </Text>
           <TouchableOpacity onPress={onClose} testID="slot-picker-close">
-            <Text style={[styles.slotModalClose, { color: colors.accent }]}>{t('common.close')}</Text>
+            <Text style={[styles.slotModalClose, { color: colors.inkStrong }]}>{t('common.close')}</Text>
           </TouchableOpacity>
         </View>
         <TextInput
-          style={[styles.searchInput, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.hair, marginHorizontal: 24 }]}
+          style={[styles.searchInput, { backgroundColor: colors.glass, color: colors.ink, borderColor: colors.hair, marginHorizontal: 24 }]}
           placeholder={t('favorites.searchPlaceholder')}
           placeholderTextColor={colors.muted}
           value={query}
@@ -421,7 +422,7 @@ function SlotPickerModal({
           {results.map((station) => (
             <TouchableOpacity
               key={station.id}
-              style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}
+              style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}
               onPress={() => onPick(station)}
               testID={`slot-picker-result-${station.id}`}
             >
@@ -463,7 +464,7 @@ function ArrivalRow({
               {formatArrivalTime(item.arrivalSeconds)}
             </Text>
             {item.statusMessage !== '' && (
-              <Text style={[styles.statusMessage, { color: colors.accent }]}>{item.statusMessage}</Text>
+              <Text style={[styles.statusMessage, { color: colors.inkStrong }]}>{item.statusMessage}</Text>
             )}
           </View>
         ))}
@@ -479,7 +480,7 @@ const styles = StyleSheet.create({
   scroll: {
     paddingHorizontal: 14,
     paddingTop: 20,
-    paddingBottom: 120,
+    paddingBottom: GLASS_SCREEN_BOTTOM_PADDING,
     flexGrow: 1,
   },
   header: {

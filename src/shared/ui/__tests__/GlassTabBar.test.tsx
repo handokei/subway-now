@@ -1,9 +1,9 @@
 import React from 'react';
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 import { fireEvent, screen, act } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
-import { GlassTabBar } from '../GlassTabBar';
+import { GlassTabBar, GLASS_TAB_BAR_CLEARANCE, GLASS_SCREEN_BOTTOM_PADDING } from '../GlassTabBar';
 import { useLineTintStore } from '../../theme/store/useLineTintStore';
 import { lineTint, lightColors, darkColors } from '../../theme';
 import { renderWithTheme } from '../../../testUtils/renderWithTheme';
@@ -112,5 +112,32 @@ describe('GlassTabBar', () => {
     mockBottomInset = 0;
     const second = renderWithTheme(<GlassTabBar {...makeProps().props} />);
     expect(JSON.stringify(second.toJSON())).toContain('"bottom":12');
+  });
+
+  describe('플랫폼/그림자/상수', () => {
+    const originalOS = Platform.OS;
+    afterEach(() => {
+      Object.defineProperty(Platform, 'OS', { value: originalOS, configurable: true });
+    });
+
+    it('iOS: glassBar 채움 + legacy shadow(구아키 호환, boxShadow 없음)', () => {
+      const { toJSON } = renderWithTheme(<GlassTabBar {...makeProps().props} />);
+      const json = JSON.stringify(toJSON());
+      expect(json).toContain(lightColors.glassBar);
+      expect(json).toContain('"shadowRadius":15');
+      expect(json).not.toContain('boxShadow');
+    });
+
+    it('Android: blur 없이 glassFallback 채움', () => {
+      Object.defineProperty(Platform, 'OS', { value: 'android', configurable: true });
+      const { toJSON } = renderWithTheme(<GlassTabBar {...makeProps().props} />);
+      const json = JSON.stringify(toJSON());
+      expect(json).toContain(lightColors.glassFallback);
+      expect(json).not.toContain(lightColors.glassBar);
+    });
+
+    it('콘텐츠 여백 상수는 탭바 클리어런스보다 크다(화면 결합 지점 단일화)', () => {
+      expect(GLASS_SCREEN_BOTTOM_PADDING).toBeGreaterThan(GLASS_TAB_BAR_CLEARANCE);
+    });
   });
 });

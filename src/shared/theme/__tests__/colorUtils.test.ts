@@ -1,4 +1,4 @@
-import { withAlpha } from '../colorUtils';
+import { withAlpha, mixHex } from '../colorUtils';
 
 describe('withAlpha', () => {
   it('#RRGGBB hex를 rgba 문자열로 변환', () => {
@@ -20,5 +20,25 @@ describe('withAlpha', () => {
   it('alpha=0 / alpha=1 모두 표현', () => {
     expect(withAlpha('#000000', 0)).toBe('rgba(0, 0, 0, 0)');
     expect(withAlpha('#ffffff', 1)).toBe('rgba(255, 255, 255, 1)');
+  });
+});
+
+describe('mixHex', () => {
+  it('w=0이면 a, w=1이면 b', () => {
+    expect(mixHex('#FF0000', '#0000FF', 0)).toBe('#ff0000');
+    expect(mixHex('#FF0000', '#0000FF', 1)).toBe('#0000ff');
+  });
+
+  it('50% 혼합', () => {
+    expect(mixHex('#FF0000', '#0000FF', 0.5)).toBe('#800080');
+  });
+
+  it('한 자리 채널은 0 패딩', () => {
+    expect(mixHex('#000000', '#0a0a0a', 1)).toBe('#0a0a0a');
+  });
+
+  it('hex 외 포맷이 하나라도 있으면 a를 그대로 반환', () => {
+    expect(mixHex('rgba(0,0,0,0.4)', '#ffffff', 0.5)).toBe('rgba(0,0,0,0.4)');
+    expect(mixHex('#000000', 'white', 0.5)).toBe('#000000');
   });
 });

@@ -1,4 +1,4 @@
-// 디자인 결정(#3065): Line Glass 테마 — accent #C8553D→#0E1512, muted #6B6459→#55605B 기대값 갱신 (fixture 조정 아님).
+// 디자인 결정(#3065): Line Glass 테마 — muted #6B6459→#55605B 기대값 갱신 (fixture 조정 아님). accent는 구값 유지(사용자 의향 강조 UI 보존).
 import React from 'react';
 import { Platform } from 'react-native';
 import { render, waitFor, fireEvent, act } from '@testing-library/react-native';
@@ -232,7 +232,7 @@ describe('StationMap', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     const badge = getByTestId('badge-2-022');
     expect(badge.props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#0E1512' })]),
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
     );
   });
 
@@ -242,7 +242,7 @@ describe('StationMap', () => {
     );
     const badge = getByTestId('badge-2-023');
     expect(badge.props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#0E1512' })]),
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
     );
   });
 
@@ -258,7 +258,7 @@ describe('StationMap', () => {
     const highlighted = getByTestId('badge-5-540');
     const other = getByTestId('badge-6-636');
     expect(highlighted.props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#0E1512' })]),
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
     );
     expect(other.props.style).toEqual(
       expect.arrayContaining([expect.objectContaining({ backgroundColor: '#CD7C2F' })]),
@@ -276,7 +276,7 @@ describe('StationMap', () => {
     const highlighted = getByTestId('badge-6-636');
     const other = getByTestId('badge-5-540');
     expect(highlighted.props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#0E1512' })]),
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
     );
     expect(other.props.style).toEqual(
       expect.arrayContaining([expect.objectContaining({ backgroundColor: '#996CAC' })]),
@@ -648,7 +648,7 @@ describe('StationMap', () => {
       const transferBadge = getByTestId(`badge-${transferStation.id}`);
       expect(transferBadge.props.style).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ backgroundColor: '#0E1512' }),
+          expect.objectContaining({ backgroundColor: '#C8553D' }),
         ]),
       );
     });
@@ -675,7 +675,7 @@ describe('StationMap', () => {
       const otherBadge = getByTestId(`badge-${transferOtherLine.id}`);
       expect(routedBadge.props.style).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ backgroundColor: '#0E1512' }),
+          expect.objectContaining({ backgroundColor: '#C8553D' }),
         ]),
       );
       expect(otherBadge.props.style).toEqual(
@@ -696,7 +696,7 @@ describe('StationMap', () => {
       const destBadge = getByTestId(`badge-${destStation.id}`);
       expect(destBadge.props.style).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ backgroundColor: '#0E1512' }),
+          expect.objectContaining({ backgroundColor: '#C8553D' }),
         ]),
       );
     });

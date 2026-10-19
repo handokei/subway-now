@@ -60,10 +60,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
 import { SleepAlarmOverlay } from '../features/alarm/components/SleepAlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
-import { useTheme, typography, spacing, radius, lineTint } from '../shared/theme';
-import { useSyncLineTint } from '../shared/theme/store/useSyncLineTint';
+import { useTheme, typography, spacing, radiusGlass, lineTint, shadowStyle } from '../shared/theme';
+import { useSyncLineTint } from '../shared/hooks/useSyncLineTint';
+import { resolveTintLine } from '../shared/utils/resolveTintLine';
 import { GlassCard } from '../shared/ui/GlassCard';
 import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
+import { GLASS_SCREEN_BOTTOM_PADDING } from '../shared/ui/GlassTabBar';
 import { ActionBanner } from '../shared/ui/ActionBanner';
 import { getLineLabel } from '../shared/ui/LineBadge';
 import { LocationStateView } from '../shared/ui/LocationStateView';
@@ -1477,9 +1479,18 @@ export default function HomeScreen() {
   }, [arrivedBanner]);
 
   // Line Glass — 화면 배경 글로우/탭바 활성색이 따라갈 노선. 탑승 lock > 진행 노선 > 현재역 노선.
-  const tintLine = (fusionBoardingLock?.boardingLine ?? approachLine ?? effectiveOrigin?.line ?? null) as LineNumber | null;
+  const tintLine = resolveTintLine({
+    boardingLine: fusionBoardingLock?.boardingLine as LineNumber | undefined,
+    approachLine: approachLine as LineNumber | null | undefined,
+    originLine: effectiveOrigin?.line as LineNumber | undefined,
+  });
   const tint = lineTint(tintLine, isDark);
   useSyncLineTint(tintLine);
+  // 경로 카드 내부 3개 블록(journey / route 컨텍스트 / 오탑승 배너)이 모두 비면 빈 글래스 카드를 그리지 않는다.
+  const hasRouteCard =
+    journey != null ||
+    (route != null && effectiveOrigin != null && destination != null) ||
+    (boardingLock != null && (misBoardingDetected || wrongDirectionDetected));
 
   if (permissionDenied) {
     // MapScreen과 동일한 단일 UI(LocationStateView)로 통일. iOS 영구 거부 시 OS dialog가
@@ -1503,13 +1514,13 @@ export default function HomeScreen() {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={[styles.errorText, { color: colors.accent }]}>{error}</Text>
+          <Text style={[styles.errorText, { color: colors.inkStrong }]}>{error}</Text>
           <TouchableOpacity
-            style={[styles.button, { backgroundColor: colors.accent }]}
+            style={[styles.button, { backgroundColor: colors.inkStrong }]}
             onPress={refresh}
             testID="home-refresh-button"
           >
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
+            <Text style={[styles.buttonText, { color: colors.onInkStrong }]}>{t('home.refresh')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -1569,7 +1580,7 @@ export default function HomeScreen() {
 
       <ScrollView
         ref={scrollViewRef}
-        contentContainerStyle={{ paddingBottom: 120 }}
+        contentContainerStyle={{ paddingBottom: GLASS_SCREEN_BOTTOM_PADDING }}
         refreshControl={<RefreshControl refreshing={isManualRefreshing} onRefresh={handleRefresh} />}
       >
         {effectiveOrigin ? (
@@ -1597,7 +1608,7 @@ export default function HomeScreen() {
                       : t('home.originNearest')}
                     {/* #446: source==='gps'일 때만 user↔station 거리/도보시간이 의미 있음. */}
                     {!isCustomOrigin && nearest && source === 'gps'
-                      ? ` · ${nearest.distanceM}m · ${t('home.walkMinutes', { min: nearest.walkMin, defaultValue: '도보 {{min}}분' })}`
+                      ? ` · ${nearest.distanceM}m · ${t('home.walkMinutes', { min: nearest.walkMin })}`
                       : ''}
                   </Text>
                 </View>
@@ -1615,7 +1626,7 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
               <Text
-                style={[typography.hero, { color: colors.ink, marginTop: spacing.xl }]}
+                style={[typography.heroGlass, { color: colors.ink, marginTop: spacing.xl }]}
                 numberOfLines={1}
                 adjustsFontSizeToFit
                 testID="home-origin-station-name"
@@ -1702,7 +1713,7 @@ export default function HomeScreen() {
             {/* Route */}
             {destination && (
               <>
-                <GlassCard r={radius.xl} style={styles.glassSection}>
+                <GlassCard r={radiusGlass.xl} style={styles.glassSection}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: spacing.xl }}>
                     <View>
                       <Text style={[typography.label, { color: colors.muted, marginBottom: 2 }]}>
@@ -1715,7 +1726,7 @@ export default function HomeScreen() {
                         <>
                           <Text style={[typography.etaBig, { color: colors.ink }]}>
                             {displayEta}
-                            <Text style={[typography.bodyBase, { color: colors.muted, letterSpacing: 0 }]}> {t('home.minuteUnit', { defaultValue: '분' })}</Text>
+                            <Text style={[typography.bodyBase, { color: colors.muted, letterSpacing: 0 }]}> {t('home.minuteUnit')}</Text>
                           </Text>
                           <Text style={[typography.micro, { color: colors.muted, marginTop: 2 }]}>
                             {isRealtimeEta ? 'EST' : t('home.estimatedSuffix')} · {journey?.totalStops ?? 0} STOPS
@@ -1732,7 +1743,7 @@ export default function HomeScreen() {
                           <Pressable
                             key={category.key}
                             testID={`route-tab-${category.key}`}
-                            style={[styles.routePill, active && { backgroundColor: colors.segmentActive, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }]}
+                            style={[styles.routePill, active && { backgroundColor: colors.segmentActive, ...shadowStyle('segment', isDark) }]}
                             onPress={() => {
                               setSelectedKey(category.key);
                               AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(candidate.route)).catch(() => {});
@@ -1757,13 +1768,13 @@ export default function HomeScreen() {
                   {categorized.length > 0 && route && !navigationActive && (
                     <Pressable
                       testID="home-navigation-start"
-                      style={[styles.navigationButton, { backgroundColor: colors.accent }]}
+                      style={[styles.navigationButton, { backgroundColor: colors.inkStrong }]}
                       accessibilityRole="button"
                       accessibilityLabel={t('navigation.start')}
                       onPress={handleStartNavigation}
                     >
-                      <View style={[styles.navDot, { backgroundColor: tint.lit, boxShadow: `0 0 0 4px ${tint.tabActiveBg}` }]} />
-                      <Text style={[typography.bodyBase, { color: colors.onAccent, fontWeight: '700' }]}>
+                      <View style={[styles.navDot, { backgroundColor: tint.lit, ...shadowStyle('ring', isDark, tint.lit) }]} />
+                      <Text style={[typography.bodyBase, { color: colors.onInkStrong, fontWeight: '700' }]}>
                         {t('navigation.start')}
                       </Text>
                     </Pressable>
@@ -1799,6 +1810,7 @@ export default function HomeScreen() {
                     </Pressable>
                   )}
                 </GlassCard>
+                {hasRouteCard && (
                 <GlassCard style={[styles.glassSection, { marginTop: spacing.md }]}>
                   {journey && (() => {
                     const stops = journeyDisplayToStops(journey, { expanded: routeExpanded });
@@ -2033,6 +2045,7 @@ export default function HomeScreen() {
                        renderHopSlot으로 이동: timeline hop 사이에 inline compact 표기.
                        #758 — BoardingLockHopCard도 같은 origin hop slot으로 통합. */}
                 </GlassCard>
+                )}
 
                 {/* Actions */}
                 <View style={styles.actionsRow}>
@@ -2116,11 +2129,11 @@ export default function HomeScreen() {
                   </View>
                 )}
                 <TouchableOpacity
-                  style={[styles.destinationButton, { backgroundColor: colors.accent }]}
+                  style={[styles.destinationButton, { backgroundColor: colors.inkStrong }]}
                   onPress={() => setPickerVisible(true)}
                   testID="destination-button"
                 >
-                  <Text style={[styles.destinationButtonText, { color: colors.onAccent }]}>{t('home.destinationSet')}</Text>
+                  <Text style={[styles.destinationButtonText, { color: colors.onInkStrong }]}>{t('home.destinationSet')}</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -2169,11 +2182,11 @@ export default function HomeScreen() {
             <Text style={[styles.title, { color: colors.ink }]}>{t('home.locationUncertainTitle')}</Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.locationUncertainDescription')}</Text>
             <TouchableOpacity
-              style={[styles.button, { backgroundColor: colors.accent }]}
+              style={[styles.button, { backgroundColor: colors.inkStrong }]}
               onPress={refresh}
               testID="home-refresh-button"
             >
-              <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
+              <Text style={[styles.buttonText, { color: colors.onInkStrong }]}>{t('home.refresh')}</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -2187,11 +2200,11 @@ export default function HomeScreen() {
             </Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.notNearStationDescription')}</Text>
             <TouchableOpacity
-              style={[styles.button, { backgroundColor: colors.accent }]}
+              style={[styles.button, { backgroundColor: colors.inkStrong }]}
               onPress={refresh}
               testID="home-refresh-button"
             >
-              <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
+              <Text style={[styles.buttonText, { color: colors.onInkStrong }]}>{t('home.refresh')}</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -2389,7 +2402,7 @@ const styles = StyleSheet.create({
   glassChip: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: radius.pill,
+    borderRadius: radiusGlass.pill,
     borderWidth: 1,
   },
   glassRound: {
@@ -2444,14 +2457,14 @@ const styles = StyleSheet.create({
   actionPill: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: radius.md,
+    borderRadius: radiusGlass.md,
     borderWidth: 1,
     alignItems: 'center',
   },
   viewOnMapButton: {
     marginTop: spacing.lg,
     paddingVertical: spacing.md,
-    borderRadius: radius.md,
+    borderRadius: radiusGlass.md,
     alignItems: 'center',
   },
   expandToggle: {
@@ -2474,7 +2487,7 @@ const styles = StyleSheet.create({
   },
   recentDestinationButton: {
     borderWidth: 1,
-    borderRadius: radius.lg,
+    borderRadius: radiusGlass.lg,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     marginBottom: spacing.sm,
@@ -2521,7 +2534,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   destinationButton: {
-    borderRadius: radius.pill,
+    borderRadius: radiusGlass.pill,
     height: 54,
     justifyContent: 'center',
     alignItems: 'center',
@@ -2574,7 +2587,7 @@ const styles = StyleSheet.create({
   button: {
     paddingHorizontal: 28,
     paddingVertical: 15,
-    borderRadius: radius.pill,
+    borderRadius: radiusGlass.pill,
   },
   buttonText: {
     ...typography.bodyBase,

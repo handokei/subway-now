@@ -10,8 +10,9 @@ import { MapSearchBar } from '../features/map/components/MapSearchBar';
 import { LocationStateView } from '../shared/ui/LocationStateView';
 import { StatusChip } from '../features/arrival/components/StatusChip';
 import stationsData from '../data/stations.json';
-import { useTheme, typography, spacing, radius } from '../shared/theme';
+import { useTheme, typography, spacing, radiusGlass, shadowStyle } from '../shared/theme';
 import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
+import { GLASS_TAB_BAR_CLEARANCE } from '../shared/ui/GlassTabBar';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { LineBadge } from '../shared/ui/LineBadge';
@@ -46,7 +47,7 @@ export default function MapScreen() {
   const { userLocation, result, loading, error, permissionDenied, refresh, requestCurrentLocation, accuracyMeters, locationUncertain } =
     useNearestStation({ enabled: isFocused, instrumentationRole: 'observer' });
   const allStations = stationsData as Station[];
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const customOrigin = useDestinationStore((s) => s.customOrigin);
   const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
   const destination = useDestinationStore((s) => s.destination);
@@ -153,7 +154,7 @@ export default function MapScreen() {
           {
             borderColor: colors.glassBorder,
             backgroundColor: colors.glassStrong,
-            bottom: spacing.xl + (selectedStation ? selectionCardHeight : insets.bottom + 86),
+            bottom: spacing.xl + insets.bottom + GLASS_TAB_BAR_CLEARANCE + (selectedStation ? selectionCardHeight : 0),
           },
         ]}
         onPress={() => {
@@ -172,10 +173,12 @@ export default function MapScreen() {
       {/* 하단 역 선택 카드 */}
       {selectedStation && (
         <View
-          style={[styles.selectionCard, { backgroundColor: colors.glassStrong, borderColor: colors.glassBorder, bottom: insets.bottom + 86, boxShadow: '0 20px 40px -16px rgba(0,0,0,0.3)' }]}
+          style={[styles.selectionCard, { backgroundColor: colors.glassStrong, bottom: insets.bottom + GLASS_TAB_BAR_CLEARANCE, ...shadowStyle('floatCard', isDark) }]}
           onLayout={(e) => setSelectionCardHeight(e.nativeEvent.layout.height)}
           testID="selection-card"
         >
+         {/* iOS shadow는 overflow:hidden 뷰에서 잘리므로 그림자 뷰(바깥)와 클리핑 뷰(안쪽)를 분리 */}
+         <View style={[styles.selectionCardClip, { borderColor: colors.glassBorder }]}>
           {/* Line Glass — 선택 역 노선색으로 카드가 물듦 */}
           <LineGlowBackground line={selectedStation.line} />
           <View style={styles.selectionHeader}>
@@ -204,7 +207,7 @@ export default function MapScreen() {
               <Text style={[styles.selectionButtonText, { color: colors.ink }]}>{t('map.setAsOrigin')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.selectionButton, { backgroundColor: colors.accent }]}
+              style={[styles.selectionButton, { backgroundColor: colors.inkStrong }]}
               onPress={() => {
                 // #1324 — 현재역(customOrigin ∪ GPS)과 같은 역은 목적지로 설정하지 않는다.
                 if (isDegenerateDestination(customOrigin ?? result?.station ?? null, selectedStation)) {
@@ -218,7 +221,7 @@ export default function MapScreen() {
               }}
               testID="set-destination-button"
             >
-              <Text style={[styles.selectionButtonText, { color: colors.onAccent }]}>{t('map.setAsDestination')}</Text>
+              <Text style={[styles.selectionButtonText, { color: colors.onInkStrong }]}>{t('map.setAsDestination')}</Text>
             </TouchableOpacity>
           </View>
           <View style={styles.slotButtons}>
@@ -228,7 +231,7 @@ export default function MapScreen() {
               return (
                 <TouchableOpacity
                   key={role}
-                  style={[styles.slotButton, { borderColor: 'transparent', backgroundColor: isCurrent ? colors.accent : colors.fieldFill }]}
+                  style={[styles.slotButton, { borderColor: 'transparent', backgroundColor: isCurrent ? colors.inkStrong : colors.fieldFill }]}
                   onPress={() => {
                     if (isCurrent) return;
                     setSlotFavorite(role, selectedStation);
@@ -237,13 +240,14 @@ export default function MapScreen() {
                   testID={`assign-slot-${role}`}
                 >
                   <Text style={styles.slotButtonIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>
-                  <Text style={[styles.slotButtonText, { color: isCurrent ? colors.onAccent : colors.ink }]}>
+                  <Text style={[styles.slotButtonText, { color: isCurrent ? colors.onInkStrong : colors.ink }]}>
                     {isCurrent ? t('map.slotAlreadyAssigned', { label: t(`favorites.${role}`) }) : t('map.assignAsSlot', { label: t(`favorites.${role}`) })}
                   </Text>
                 </TouchableOpacity>
               );
             })}
           </View>
+         </View>
         </View>
       )}
 
@@ -276,6 +280,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 10,
     right: 10,
+    borderRadius: 32,
+  },
+  selectionCardClip: {
     padding: spacing.xl,
     borderWidth: 1,
     borderRadius: 32,
@@ -317,7 +324,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     paddingVertical: 11,
-    borderRadius: radius.md,
+    borderRadius: radiusGlass.md,
     borderWidth: 1,
   },
   slotButtonIcon: {
