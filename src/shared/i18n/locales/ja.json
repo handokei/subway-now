@@ -40,6 +40,8 @@
     "routeCollapse": "主要駅のみ表示",
     "destinationSet": "目的地を設定",
     "previousDestination": "前回の目的地",
+    "quickDeparture": "すぐ出発",
+    "quickDepartureAdd": "+ 追加",
     "sleepMode": "おやすみモード",
     "sleepModeDescription": "乗換・到着の1駅手前で振動・通知",
     "sleepModeLabel": "おやすみモードのオン/オフ",

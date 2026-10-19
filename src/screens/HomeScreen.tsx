@@ -14,6 +14,7 @@ import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdo
 import { LINE_NAMES } from '../shared/constants/lineColors';
 import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
+import { FavoriteQuickChips } from '../features/favorites/components/FavoriteQuickChips';
 import { useSettingsStore } from '../features/settings/store/useSettingsStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
@@ -2094,6 +2095,11 @@ export default function HomeScreen() {
             {/* No destination: picker + recent */}
             {!destination && (
               <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
+                <FavoriteQuickChips
+                  favorites={favorites}
+                  onSelect={handleSelectDestination}
+                  onAdd={() => router.push('/(tabs)/favorites')}
+                />
                 {recentDestinations.length > 0 && (
                   <View testID="recent-destinations-list">
                     <Text style={[styles.recentDestinationLabel, { color: colors.muted, paddingHorizontal: spacing.xs }]}>

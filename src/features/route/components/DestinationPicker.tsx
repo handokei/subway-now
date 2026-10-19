@@ -30,6 +30,7 @@ import { StationMap } from '../../map/components/StationMap';
 import { StationSuggestionList } from '../../nearest-station/components/StationSuggestionList';
 import { createLogger } from '../../../shared/utils/logger';
 import { matchesStationQuery, getStationDisplayName } from '../../../shared/utils/stationDisplay';
+import { sortFavoritesByRole } from '../../../shared/utils/sortFavoritesByRole';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 
 const logger = createLogger('DestinationPicker');
@@ -95,8 +96,7 @@ export function DestinationPicker({
   // home → work → general 순으로 정렬. home/work는 아이콘+라벨로 표시 (#557).
   const favoriteChips = useMemo(() => {
     if (!favorites || favorites.length === 0) return [];
-    const order: Record<string, number> = { home: 0, work: 1, general: 2 };
-    return [...favorites].sort((a, b) => order[a.role] - order[b.role]);
+    return sortFavoritesByRole(favorites);
   }, [favorites]);
 
   // #559: 미설정 슬롯에 placeholder chip 노출 — 누르면 다음 선택 역을 슬롯에 저장하는 모드 진입.
