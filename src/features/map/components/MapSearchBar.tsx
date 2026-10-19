@@ -11,7 +11,7 @@ import { Keyboard, StyleSheet, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import stationsData from '../../../data/stations.json';
 import type { Station } from '../../../shared/types/station';
-import { matchesStationQuery } from '../../../shared/utils/stationDisplay';
+import { searchStations } from '../../../shared/utils/fuzzyStationSearch';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { StationSuggestionList } from '../../nearest-station/components/StationSuggestionList';
 
@@ -31,8 +31,7 @@ export function MapSearchBar({ onSelect }: Props) {
   const suggestions = useMemo(() => {
     const q = query.trim();
     if (!q) return [];
-    const qLower = q.toLowerCase();
-    return allStations.filter((s) => matchesStationQuery(s, q, qLower)).slice(0, MAX_SUGGESTIONS);
+    return searchStations(allStations, q, MAX_SUGGESTIONS);
   }, [query]);
 
   function handleSelect(station: Station) {
