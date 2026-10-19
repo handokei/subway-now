@@ -27,6 +27,8 @@
     "originManual": "Origin (manual)",
     "originCurrent": "Current station",
     "originNearest": "Nearest station",
+    "walkMinutes": "{{min}} min walk",
+    "minuteUnit": "min",
     "originEstimated": "Estimated current station",
     "originStaleDemote": "Moving · confirming current station",
     "routeTo": "Route to",

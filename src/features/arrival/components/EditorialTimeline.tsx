@@ -114,20 +114,20 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               <View
                 style={[
                   styles.connector,
-                  { backgroundColor: mix(lineC, nextLineC, 0.5), opacity: 0.35 },
+                  { backgroundColor: nextLineC },
                 ]}
               />
             )}
 
             <View style={styles.markerCol}>
               {s.mark === 'filled' && (
-                <View style={[styles.dot, { backgroundColor: lineC }]} testID="filled-dot" />
+                <View style={[styles.dot, { backgroundColor: lineC, boxShadow: `0 0 0 5px ${lineC}2E` }]} testID="filled-dot" />
               )}
               {s.mark === 'transfer' && (
                 <View style={[styles.dotRing, { borderColor: lineC, backgroundColor: colors.bg }]} testID="transfer-dot" />
               )}
               {s.mark === 'dest' && (
-                <View style={[styles.dotDest, { backgroundColor: lineC }]} testID="dest-dot" />
+                <View style={[styles.dotDest, { backgroundColor: lineC, boxShadow: `0 0 0 5px ${lineC}2E` }]} testID="dest-dot" />
               )}
               {s.mark === 'intermediate' && (
                 <View
@@ -147,7 +147,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
                 {s.station}
               </Text>
               {s.note != null && (
-                <Text style={[typography.label, { color: colors.subtle, marginTop: 2 }]}>
+                <Text style={[typography.captionSm, { color: colors.muted, marginTop: 2 }]}>
                   {s.note}
                 </Text>
               )}
@@ -162,7 +162,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               )}
               {quickExitDoor != null && (
                 <Text
-                  style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
+                  style={[typography.micro, { color: colors.muted, marginTop: 2 }]}
                   testID={`quick-exit-door-${i}-${quickExitDoor}`}
                 >
                   {t('route.quickExitDoor', { door: quickExitDoor })}
@@ -170,7 +170,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               )}
               {boardingDoor != null && (
                 <Text
-                  style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
+                  style={[typography.micro, { color: colors.muted, marginTop: 2 }]}
                   testID={`boarding-door-${i}-${boardingDoor}`}
                 >
                   {t('route.boardingDoor', { door: boardingDoor })}
@@ -218,13 +218,14 @@ const styles = StyleSheet.create({
   markerCol: { width: 28, alignItems: 'center' },
   connector: {
     position: 'absolute',
-    left: 14,
-    top: 18,
+    left: 12.5,
+    top: 34,
     bottom: -6,
-    width: 1,
+    width: 3,
+    borderRadius: 2,
   },
-  dot:     { width: 10, height: 10, borderRadius: 5 },
-  dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
+  dot:     { width: 12, height: 12, borderRadius: 6 },
+  dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 3 },
   dotDest: { width: 12, height: 12, borderRadius: 6 },
   dotIntermediate: { width: 7, height: 7, borderRadius: 4, borderWidth: 1 },
   rowIntermediate: { minHeight: 30 },

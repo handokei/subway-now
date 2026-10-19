@@ -1,47 +1,64 @@
-// theme.ts — 디자인 토큰 (라이트/다크)
-// 앱 전체에서 import하여 사용. 색/폰트/간격을 한 곳에서 관리.
+// theme.ts — 디자인 토큰 (라이트/다크) · Line Glass
+// 기존 키(bg/card/ink/...)는 전부 유지 — 기존 화면은 import 변경 없이 새 톤을 받는다.
+// 신규 키(glass*, segment*, tab*)는 GlassCard / GlassTabBar / 세그먼트 컨트롤에서 사용.
 
 import type { LineNumber } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 
-// 테마 불변 토큰
 const sharedColors = {
-  warn:   '#ff9f43',                   // 경고 (mock 데이터 등)
+  warn: '#ff9f43',
   line: { ...LINE_COLORS } as Record<LineNumber, string>,
 };
 
-// Editorial Light (B) — 핸드오프 원본
+// Line Glass · Light
 export const lightColors = {
   ...sharedColors,
-  bg:       '#F5F2EC',                 // 따뜻한 페이퍼 배경
-  card:     '#ffffff',                 // 카드, 입력창
-  ink:      '#1A1814',                 // 본문 (near-black warm)
-  muted:    '#6B6459',                 // 보조 텍스트
-  subtle:   '#A8A197',                 // 메타 정보
-  hair:     'rgba(26,24,20,0.08)',     // divider
-  overlay:       'rgba(0,0,0,0.4)',      // 모달 배경
-  bgTranslucent: 'rgba(245,242,236,0.92)', // 반투명 bg (헤더 등)
-  accent:        '#C8553D',             // CTA (어스 레드)
-  onAccent:      '#ffffff',             // accent 위 텍스트
-  success:       '#22c55e',             // 성공/완료 (도착 배너 등)
-  danger:        '#ff6b6b',             // 위험/삭제 (삭제 버튼 등)
+  bg:            '#F3F5F4',                 // 쿨 오프화이트 (노선 글로우가 이 위에 깔림)
+  card:          'rgba(255,255,255,0.55)',  // 글래스 카드 채움 (blur 미지원 시에도 읽히는 농도)
+  ink:           '#0E1512',
+  muted:         '#55605B',
+  subtle:        '#8A948F',
+  hair:          'rgba(14,21,18,0.07)',
+  overlay:       'rgba(0,0,0,0.35)',
+  bgTranslucent: 'rgba(243,245,244,0.85)',
+  accent:        '#0E1512',                 // 주 CTA = 잉크 블랙 알약 (노선색은 lineTint로)
+  onAccent:      '#ffffff',
+  success:       '#22c55e',
+  danger:        '#D43B2A',
+  // ── Line Glass 신규 토큰
+  glass:          'rgba(255,255,255,0.55)',
+  glassStrong:    'rgba(255,255,255,0.66)', // 지도 위 카드처럼 배경이 복잡할 때
+  glassBorder:    'rgba(255,255,255,0.90)',
+  glassHighlight: 'rgba(255,255,255,1)',    // 카드 상단 1px 하이라이트
+  segmentTrack:   'rgba(14,21,18,0.06)',
+  segmentActive:  '#ffffff',
+  fieldFill:      'rgba(14,21,18,0.05)',    // 카드 안 보조 버튼/칩
+  blurTint:       'light' as 'light' | 'dark',
 };
 
-// C · Focus — 다크모드
-export const darkColors = {
+// Line Glass · Night
+export const darkColors: typeof lightColors = {
   ...sharedColors,
-  bg:            '#0A0A0A',             // 거의 퓨어블랙
-  card:          '#1A1A1A',             // 다크 카드
-  ink:           '#ffffff',             // 순백 텍스트
-  muted:         '#888888',             // 보조 텍스트
-  subtle:        '#666666',             // 메타 정보
-  hair:          '#2A2A2A',             // divider
-  overlay:       'rgba(0,0,0,0.8)',      // 모달 배경
-  bgTranslucent: 'rgba(10,10,10,0.92)', // 반투명 bg (헤더 등)
-  accent:        '#C8E600',             // CTA (라임그린)
-  onAccent: '#000000',                 // accent 위 텍스트
-  success:       '#22c55e',             // 성공/완료
-  danger:        '#ff6b6b',             // 위험/삭제
+  bg:            '#07090A',
+  card:          'rgba(255,255,255,0.06)',
+  ink:           '#F2F5F3',
+  muted:         '#8C9A93',
+  subtle:        '#6E7A74',
+  hair:          'rgba(255,255,255,0.08)',
+  overlay:       'rgba(0,0,0,0.7)',
+  bgTranslucent: 'rgba(7,9,10,0.85)',
+  accent:        '#F2F5F3',                 // 주 CTA = 화이트 알약
+  onAccent:      '#07090A',
+  success:       '#22c55e',
+  danger:        '#FF7F70',
+  glass:          'rgba(255,255,255,0.06)',
+  glassStrong:    'rgba(22,26,24,0.62)',
+  glassBorder:    'rgba(255,255,255,0.10)',
+  glassHighlight: 'rgba(255,255,255,0.14)',
+  segmentTrack:   'rgba(0,0,0,0.35)',
+  segmentActive:  'rgba(255,255,255,0.14)',
+  fieldFill:      'rgba(255,255,255,0.08)',
+  blurTint:       'dark',
 };
 
 export type ThemeColors = typeof lightColors;
@@ -49,8 +66,55 @@ export type ThemeColors = typeof lightColors;
 /** @deprecated useTheme().colors 사용 권장. 역호환용. See #126, #127 */
 export const colors = lightColors;
 
+// ── 노선 틴트 ──────────────────────────────────────────────
+// 화면 배경 글로우·진행 강조색을 "지금 보고 있는 노선"에 맞춘다.
+// 라이트: 텍스트용은 노선색을 어둡게(대비 4.5:1↑), 다크: 밝게(빛나는 느낌).
+
+function hexToRgb(h: string): [number, number, number] {
+  const x = h.replace('#', '');
+  return [parseInt(x.slice(0, 2), 16), parseInt(x.slice(2, 4), 16), parseInt(x.slice(4, 6), 16)];
+}
+function mixHex(a: string, b: string, w: number): string {
+  const pa = hexToRgb(a), pb = hexToRgb(b);
+  const c = pa.map((v, i) => Math.round(v * (1 - w) + pb[i] * w));
+  return `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+export function rgba(hex: string, a: number): string {
+  const [r, g, b] = hexToRgb(hex);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+export interface LineTint {
+  base: string;      // 공식 노선색 (점·트랙)
+  glow: string;      // 배경 메인 글로우
+  glowSoft: string;  // 배경 보조 글로우
+  text: string;      // 노선명·강조 텍스트
+  lit: string;       // 진행 중 강조 (카운트다운, 토글 등)
+  tabActiveBg: string;
+}
+
+export function lineTint(line: LineNumber | null | undefined, isDark: boolean): LineTint {
+  const base = (line && LINE_COLORS[line]) || '#009D3E';
+  return isDark
+    ? {
+        base,
+        glow: rgba(base, 0.55),
+        glowSoft: rgba(mixHex(base, '#000000', 0.35), 0.6),
+        text: mixHex(base, '#ffffff', 0.55),
+        lit: mixHex(base, '#ffffff', 0.3),
+        tabActiveBg: rgba(mixHex(base, '#ffffff', 0.3), 0.16),
+      }
+    : {
+        base,
+        glow: rgba(base, 0.5),
+        glowSoft: rgba(mixHex(base, '#ffffff', 0.6), 0.7),
+        text: mixHex(base, '#000000', 0.45),
+        lit: mixHex(base, '#000000', 0.2),
+        tabActiveBg: rgba(base, 0.14),
+      };
+}
+
 export const font = {
-  // Pretendard 폰트 적용 전까지 시스템 기본 폰트 사용
   regular:  undefined as string | undefined,
   medium:   undefined as string | undefined,
   semibold: undefined as string | undefined,
@@ -59,12 +123,14 @@ export const font = {
 };
 
 export const typography = {
-  hero:      { fontFamily: font.bold,     fontSize: 44, letterSpacing: -1.4, lineHeight: 44 * 0.95 },
-  title:     { fontFamily: font.bold,     fontSize: 26, letterSpacing: -0.7, lineHeight: 26 },
+  hero:      { fontFamily: font.bold,     fontSize: 64, letterSpacing: -3, lineHeight: 68 },
+  title:     { fontFamily: font.bold,     fontSize: 28, letterSpacing: -0.8, lineHeight: 32 },
   titleSm:   { fontFamily: font.bold,     fontSize: 22, letterSpacing: -0.5 },
   titleXs:   { fontFamily: font.bold,     fontSize: 20 },
-  countMM:   { fontFamily: font.bold,     fontSize: 32, letterSpacing: -0.8 },
-  countSS:   { fontFamily: font.semibold, fontSize: 24, letterSpacing: -0.8 },
+  screen:    { fontFamily: font.bold,     fontSize: 34, letterSpacing: -1.2 },  // 탭 화면 제목
+  etaBig:    { fontFamily: font.regular,  fontSize: 56, letterSpacing: -3, fontWeight: '300' as const },
+  countMM:   { fontFamily: font.regular,  fontSize: 32, letterSpacing: -1.5, fontWeight: '300' as const },
+  countSS:   { fontFamily: font.regular,  fontSize: 24, letterSpacing: -0.8, fontWeight: '300' as const },
   body:      { fontFamily: font.medium,   fontSize: 17, letterSpacing: -0.3 },
   bodyLg:    { fontFamily: font.medium,   fontSize: 18 },
   bodyMd:    { fontFamily: font.medium,   fontSize: 16 },
@@ -74,23 +140,17 @@ export const typography = {
   captionSm: { fontFamily: font.medium,   fontSize: 12 },
   micro:     { fontFamily: font.medium,   fontSize: 11 },
   badge:     { fontFamily: font.medium,   fontSize: 10 },
-  label:     { fontFamily: font.medium,   fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase' as const },
+  // 대문자 라벨 톤 폐기 → 작은 세미볼드 라벨 (한글에 uppercase/자간이 어색했음)
+  label:     { fontFamily: font.semibold, fontSize: 12, fontWeight: '600' as const },
   mono:      { fontFamily: font.mono,     fontSize: 11, letterSpacing: 0.6 },
 };
 
-export const spacing = {
-  xs: 4,
-  sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 20,
-  xxl: 24,
-  xxxl: 32,
-};
+export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, xxxl: 32 };
 
 export const radius = {
-  sm: 6,
-  md: 10,
-  lg: 14,
+  sm: 12,
+  md: 16,
+  lg: 26,     // 섹션 글래스 카드
+  xl: 30,     // 히어로/경로 카드
   pill: 999,
 };

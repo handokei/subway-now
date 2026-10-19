@@ -11,7 +11,8 @@ import { useThemeStore, type ThemeMode } from '../shared/theme/store/useThemeSto
 import { useLocaleStore, type LocalePreference } from '../shared/i18n/store/useLocaleStore';
 import { ROUTE_CATEGORIES } from '../shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
-import { useTheme, typography, spacing, radius } from '../shared/theme';
+import { useTheme, typography, spacing, radius, lineTint, useLineTintStore } from '../shared/theme';
+import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
 import { SleepModeSilentWarning } from '../features/settings/components/SleepModeSilentWarning';
 import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
@@ -47,7 +48,8 @@ export default function SettingsScreen() {
   const setRoutePreference = useDestinationStore((s) => s.setRoutePreference);
   const loadRoutePreference = useDestinationStore((s) => s.loadRoutePreference);
   const localePreference = useLocaleStore((s) => s.localePreference);
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+  const tint = lineTint(useLineTintStore((st) => st.line), isDark);
   const { t } = useTranslation();
   const router = useRouter();
   const showSleepModeGuide = useSleepModeGuide();
@@ -64,8 +66,9 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+      <LineGlowBackground />
       <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
+        <Text style={[styles.header, { color: colors.ink }]}>{t('settings.title')}</Text>
 
         <LocaleNavSetting
           sectionTitle={t('settings.languageSection')}
@@ -97,7 +100,7 @@ export default function SettingsScreen() {
         />
 
         {/* 알람 */}
-        <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.alarmSection')}</Text>
 
           <View style={styles.settingRow}>
@@ -116,8 +119,8 @@ export default function SettingsScreen() {
                   setSleepMode(false);
                 }
               }}
-              trackColor={{ false: colors.hair, true: colors.accent }}
-              thumbColor={sleepMode ? colors.onAccent : colors.subtle}
+              trackColor={{ false: colors.hair, true: tint.base }}
+              thumbColor="#ffffff"
               testID="sleep-mode-switch"
               accessibilityRole="switch"
               accessibilityLabel={t('settings.sleepModeLabel')}
@@ -151,8 +154,8 @@ export default function SettingsScreen() {
                   setAllowSpeaker(true);
                 }
               }}
-              trackColor={{ false: colors.hair, true: colors.accent }}
-              thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
+              trackColor={{ false: colors.hair, true: tint.base }}
+              thumbColor="#ffffff"
               testID="allow-speaker-switch"
               accessibilityRole="switch"
               accessibilityLabel={t('settings.speakerOutputLabel')}
@@ -164,7 +167,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* 접근성 — 알람 카드 아래에 배치. E2E smoke flow의 sleep-mode-switch 가시성을 깨지 않기 위함. */}
-        <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.accessibilitySection')}</Text>
 
           <View style={styles.settingRow}>
@@ -177,8 +180,8 @@ export default function SettingsScreen() {
             <Switch
               value={accessibilityMode}
               onValueChange={setAccessibilityMode}
-              trackColor={{ false: colors.hair, true: colors.accent }}
-              thumbColor={accessibilityMode ? colors.onAccent : colors.subtle}
+              trackColor={{ false: colors.hair, true: tint.base }}
+              thumbColor="#ffffff"
               testID="accessibility-mode-switch"
               accessibilityRole="switch"
               accessibilityLabel={t('settings.accessibilityModeLabel')}
@@ -189,7 +192,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* #1038 follow-up — Sentry 오류 진단 정보 opt-in. 기본 OFF. */}
-        <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>
             {t('settings.privacySection')}
           </Text>
@@ -205,8 +208,8 @@ export default function SettingsScreen() {
             <Switch
               value={sentryOptIn}
               onValueChange={setSentryOptIn}
-              trackColor={{ false: colors.hair, true: colors.accent }}
-              thumbColor={sentryOptIn ? colors.onAccent : colors.subtle}
+              trackColor={{ false: colors.hair, true: tint.base }}
+              thumbColor="#ffffff"
               testID="sentry-opt-in-switch"
               accessibilityRole="switch"
               accessibilityLabel={t('settings.sentryOptInLabel')}
@@ -217,7 +220,7 @@ export default function SettingsScreen() {
         </View>
 
         {/* #1034 — 버그 신고 진입점. Pressable 1줄로 모달 open. */}
-        <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>
             {t('settings.feedbackSection')}
           </Text>
@@ -318,7 +321,7 @@ function LocaleNavSetting({
       : (selectedNativeName ?? autoLabel);
 
   return (
-    <View style={[styles.card, { backgroundColor: colors.card }]}>
+    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
 
       <View style={styles.settingRow}>
@@ -363,7 +366,7 @@ function SegmentSetting<T extends string>({
 }: SegmentSettingProps<T>) {
   const { colors } = useTheme();
   return (
-    <View style={[styles.card, { backgroundColor: colors.card }]}>
+    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.glassBorder }]}>
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
 
       <View style={styles.settingRow}>
@@ -373,20 +376,20 @@ function SegmentSetting<T extends string>({
         </View>
       </View>
 
-      <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID={`${testIDPrefix}-segment`}>
+      <View style={[styles.segmentGroup, { backgroundColor: colors.segmentTrack }]} testID={`${testIDPrefix}-segment`}>
         {options.map(({ value: optionValue, label: optionLabel }) => {
           const active = value === optionValue;
           return (
             <Pressable
               key={optionValue}
-              style={[styles.segment, active && { backgroundColor: colors.accent }]}
+              style={[styles.segment, active && { backgroundColor: colors.segmentActive, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }]}
               onPress={() => onChange(optionValue)}
               testID={`${testIDPrefix}-${optionValue}`}
               accessibilityRole="radio"
               accessibilityLabel={optionLabel}
               accessibilityState={{ selected: active }}
             >
-              <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
+              <Text style={[styles.segmentText, { color: active ? colors.ink : colors.muted, fontWeight: active ? '700' : '600' }]}>
                 {optionLabel}
               </Text>
             </Pressable>
@@ -402,26 +405,25 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scroll: {
-    paddingBottom: 80,
+    paddingBottom: 120,
   },
   header: {
-    ...typography.bodySm,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-    padding: 24,
-    paddingBottom: 16,
+    ...typography.screen,
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 12,
   },
   card: {
-    borderRadius: 16,
-    padding: 20,
-    marginHorizontal: 24,
-    marginBottom: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    marginHorizontal: 14,
+    marginBottom: 10,
   },
   sectionTitle: {
-    ...typography.bodySm,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 16,
+    ...typography.label,
+    marginBottom: 8,
   },
   settingRow: {
     flexDirection: 'row',
@@ -433,18 +435,18 @@ const styles = StyleSheet.create({
     marginRight: 16,
   },
   settingLabel: {
-    ...typography.bodyMd,
+    ...typography.bodyBase,
     fontWeight: '600',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   settingDesc: {
-    ...typography.caption,
-    lineHeight: 18,
+    ...typography.captionSm,
+    lineHeight: 17,
   },
   segmentGroup: {
     flexDirection: 'row',
     borderRadius: radius.md,
-    padding: 3,
+    padding: 4,
     marginTop: spacing.md,
   },
   segment: {

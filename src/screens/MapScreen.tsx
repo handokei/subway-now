@@ -11,6 +11,7 @@ import { LocationStateView } from '../shared/ui/LocationStateView';
 import { StatusChip } from '../features/arrival/components/StatusChip';
 import stationsData from '../data/stations.json';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
+import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { LineBadge } from '../shared/ui/LineBadge';
@@ -112,7 +113,7 @@ export default function MapScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]} edges={['top']}>
       {/* 상단 상태 배너 */}
       {(customOrigin || destination) && (
-        <View style={[styles.statusBar, { backgroundColor: colors.card, borderBottomColor: colors.hair }]} testID="status-bar">
+        <View style={styles.statusBar} testID="status-bar">
           {customOrigin && (
             <StatusChip label={t('map.originBadge')} name={getStationDisplayName(customOrigin)} onClear={() => setCustomOrigin(null)} testID="clear-origin" />
           )}
@@ -150,9 +151,9 @@ export default function MapScreen() {
         style={[
           styles.recenterButton,
           {
-            backgroundColor: colors.card,
-            borderColor: colors.hair,
-            bottom: spacing.xl + (selectedStation ? selectionCardHeight : insets.bottom),
+            borderColor: colors.glassBorder,
+            backgroundColor: colors.glassStrong,
+            bottom: spacing.xl + (selectedStation ? selectionCardHeight : insets.bottom + 86),
           },
         ]}
         onPress={() => {
@@ -171,10 +172,12 @@ export default function MapScreen() {
       {/* 하단 역 선택 카드 */}
       {selectedStation && (
         <View
-          style={[styles.selectionCard, { backgroundColor: colors.card, borderColor: colors.hair, paddingBottom: spacing.xl + insets.bottom }]}
+          style={[styles.selectionCard, { backgroundColor: colors.glassStrong, borderColor: colors.glassBorder, bottom: insets.bottom + 86, boxShadow: '0 20px 40px -16px rgba(0,0,0,0.3)' }]}
           onLayout={(e) => setSelectionCardHeight(e.nativeEvent.layout.height)}
           testID="selection-card"
         >
+          {/* Line Glass — 선택 역 노선색으로 카드가 물듦 */}
+          <LineGlowBackground line={selectedStation.line} />
           <View style={styles.selectionHeader}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.selectionName, { color: colors.ink }]}>{getStationDisplayName(selectedStation)}</Text>
@@ -186,7 +189,7 @@ export default function MapScreen() {
           </View>
           <View style={styles.selectionButtons}>
             <TouchableOpacity
-              style={[styles.selectionButton, { backgroundColor: colors.accent }]}
+              style={[styles.selectionButton, { backgroundColor: colors.fieldFill, borderWidth: 1, borderColor: colors.hair }]}
               onPress={() => {
                 setCustomOrigin(selectedStation);
                 setSelectedStation(null);
@@ -198,10 +201,10 @@ export default function MapScreen() {
               }}
               testID="set-origin-button"
             >
-              <Text style={[styles.selectionButtonText, { color: colors.onAccent }]}>{t('map.setAsOrigin')}</Text>
+              <Text style={[styles.selectionButtonText, { color: colors.ink }]}>{t('map.setAsOrigin')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.selectionButton, { borderWidth: 1, borderColor: colors.accent }]}
+              style={[styles.selectionButton, { backgroundColor: colors.accent }]}
               onPress={() => {
                 // #1324 — 현재역(customOrigin ∪ GPS)과 같은 역은 목적지로 설정하지 않는다.
                 if (isDegenerateDestination(customOrigin ?? result?.station ?? null, selectedStation)) {
@@ -215,7 +218,7 @@ export default function MapScreen() {
               }}
               testID="set-destination-button"
             >
-              <Text style={[styles.selectionButtonText, { color: colors.accent }]}>{t('map.setAsDestination')}</Text>
+              <Text style={[styles.selectionButtonText, { color: colors.onAccent }]}>{t('map.setAsDestination')}</Text>
             </TouchableOpacity>
           </View>
           <View style={styles.slotButtons}>
@@ -225,7 +228,7 @@ export default function MapScreen() {
               return (
                 <TouchableOpacity
                   key={role}
-                  style={[styles.slotButton, { borderColor: colors.hair, backgroundColor: isCurrent ? colors.accent : colors.bg }]}
+                  style={[styles.slotButton, { borderColor: 'transparent', backgroundColor: isCurrent ? colors.accent : colors.fieldFill }]}
                   onPress={() => {
                     if (isCurrent) return;
                     setSlotFavorite(role, selectedStation);
@@ -261,10 +264,9 @@ const styles = StyleSheet.create({
   },
   statusBar: {
     flexDirection: 'row',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    gap: spacing.md,
-    borderBottomWidth: 1,
+    paddingHorizontal: 14,
+    paddingTop: spacing.sm,
+    gap: spacing.sm,
   },
   closeText: {
     ...typography.bodyMd,
@@ -272,13 +274,12 @@ const styles = StyleSheet.create({
   },
   selectionCard: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
+    left: 10,
+    right: 10,
     padding: spacing.xl,
-    borderTopWidth: 1,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
+    borderWidth: 1,
+    borderRadius: 32,
+    overflow: 'hidden',
   },
   selectionHeader: {
     flexDirection: 'row',
@@ -286,8 +287,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   selectionName: {
-    ...typography.bodyLg,
-    fontWeight: '700',
+    ...typography.title,
     marginBottom: spacing.xs,
   },
   selectionButtons: {
@@ -296,9 +296,10 @@ const styles = StyleSheet.create({
   },
   selectionButton: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: radius.md,
+    height: 50,
+    borderRadius: 25,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   selectionButtonText: {
     ...typography.bodyBase,
@@ -315,7 +316,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 10,
+    paddingVertical: 11,
     borderRadius: radius.md,
     borderWidth: 1,
   },
