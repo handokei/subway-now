@@ -26,6 +26,8 @@ function expectedStop(
     mark,
     note,
     arrivalContext,
+    // #3073 — connectorLine = 그 stop으로 타고 들어온 노선 = arrivalContext.line
+    connectorLine: arrivalContext.line,
     ...(transferTargetToLine && { transferTarget: { toLine: transferTargetToLine } }),
   };
 }
@@ -111,6 +113,35 @@ describe('journeyDisplayToStops', () => {
     expect(stops[2]).toEqual(
       expectedStop('dest', '군자', '5', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자'), '5'),
     );
+  });
+
+  it('#3073 환승 경계: 환승 stop connectorLine=탑승 노선(fromLine), line(to-line)은 불변', () => {
+    const journey: JourneyDisplay = {
+      segments: [
+        { line: '6', lineColor: '#CD7C2F', fromName: '효창공원앞', toName: '공덕', stops: 1 },
+        { line: '5', lineColor: '#996CAC', fromName: '공덕', toName: '애오개', stops: 1 },
+      ],
+      totalStops: 2,
+    };
+    const stops = journeyDisplayToStops(journey);
+    expect(stops[1].line).toBe('5');
+    expect(stops[1].connectorLine).toBe('6');
+    expect(stops[2].connectorLine).toBe('5');
+  });
+
+  it('#3073 환승역 종착 흡수 dest: connectorLine=탑승 노선(6), 배지 line(5)은 불변', () => {
+    const journey: JourneyDisplay = {
+      segments: [
+        { line: '6', lineColor: '#CD7C2F', fromName: '효창공원앞', toName: '공덕', stops: 1 },
+        { line: '5', lineColor: '#996CAC', fromName: '공덕', toName: '공덕', stops: 0 },
+      ],
+      totalStops: 1,
+    };
+    const stops = journeyDisplayToStops(journey);
+    expect(stops).toHaveLength(2);
+    expect(stops[1].mark).toBe('dest');
+    expect(stops[1].line).toBe('5');
+    expect(stops[1].connectorLine).toBe('6');
   });
 
   it('#665 출발=첫 환승역(stops=0)이면 transfer 노드를 출발에 흡수 + line은 다음 segment line', () => {
@@ -274,6 +305,20 @@ describe('journeyDisplayToStops', () => {
       };
       const origin = journeyDisplayToStops(journey).find((s) => s.mark === 'filled');
       expect(origin?.line).toBe('2');
+    });
+
+    it('#3073 stale origin 교정 시 첫 connector(첫 hop stop의 connectorLine)도 교정된 origin line(2)과 일치', () => {
+      const journey: JourneyDisplay = {
+        segments: [
+          { line: '7', lineColor: '#54640D', fromName: '성수', toName: '건대입구', stops: 4 },
+          { line: '2', lineColor: '#009D3E', fromName: '건대입구', toName: '뚝섬', stops: 2 },
+        ],
+        totalStops: 6,
+      };
+      const stops = journeyDisplayToStops(journey);
+      const origin = stops.find((s) => s.mark === 'filled');
+      expect(origin?.line).toBe('2');
+      expect(stops[1].connectorLine).toBe(origin?.line);
     });
 
     it('정합 origin(건대입구는 line7에 존재)이면 의도 호선(7) 그대로 유지', () => {
