@@ -37,18 +37,22 @@ describe('GlassCard', () => {
   it('iOS: glass 채움 + 기본 radiusGlass.lg + 클리핑 레이어 테두리 glassBorder', () => {
     const { toJSON } = renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
     const flat = StyleSheet.flatten(screen.getByTestId('glass').props.style);
-    expect(flat.backgroundColor).toBe(lightColors.glass);
     expect(flat.borderRadius).toBe(radiusGlass.lg);
-    expect(JSON.stringify(toJSON())).toContain(lightColors.glassBorder);
+    const json = JSON.stringify(toJSON());
+    expect(json).toContain(lightColors.glass);
+    expect(json).toContain(lightColors.glassBorder);
   });
 
-  it('구아키 호환: boxShadow 대신 legacy shadow props + elevation', () => {
-    renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
+  it('구아키 호환: 그림자는 반투명 카드가 아니라 불투명 캐스터 sibling에만 legacy shadow로 준다', () => {
+    const { toJSON } = renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
     const flat = StyleSheet.flatten(screen.getByTestId('glass').props.style);
     expect(flat.boxShadow).toBeUndefined();
-    expect(flat.shadowColor).toBe('#003C1E');
-    expect(flat.shadowRadius).toBe(15);
-    expect(flat.elevation).toBe(4);
+    expect(flat.shadowColor).toBeUndefined();
+    expect(flat.shadowOpacity).toBeUndefined();
+    expect(flat.elevation).toBeUndefined();
+    const json = JSON.stringify(toJSON());
+    expect(json).toContain(lightColors.shadowCaster);
+    expect(json).toContain('"shadowRadius":15');
   });
 
   it('strong=true면 glassStrong 채움을 쓴다', () => {
@@ -73,20 +77,21 @@ describe('GlassCard', () => {
     const { toJSON } = renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
     const flat = StyleSheet.flatten(screen.getByTestId('glass').props.style);
     expect(JSON.stringify(toJSON())).toContain(darkColors.glassBorder);
-    expect(flat.shadowOpacity).toBe(0.5);
+    expect(JSON.stringify(toJSON())).toContain('"shadowOpacity":0.5');
+    expect(flat.shadowOpacity).toBeUndefined();
   });
 
   it('Android 라이트: blur 없이 진한 흰색 fallback 채움', () => {
     setOS('android');
-    renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
-    expect(StyleSheet.flatten(screen.getByTestId('glass').props.style).backgroundColor).toBe(lightColors.glassFallback);
+    const { toJSON } = renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
+    expect(JSON.stringify(toJSON())).toContain(lightColors.glassFallback);
   });
 
   it('Android 다크: 진한 어두운 fallback 채움', () => {
     setOS('android');
     mockUseColorScheme.mockReturnValue('dark');
-    renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
-    expect(StyleSheet.flatten(screen.getByTestId('glass').props.style).backgroundColor).toBe(darkColors.glassFallback);
+    const { toJSON } = renderWithTheme(<GlassCard testID="glass"><Text>x</Text></GlassCard>);
+    expect(JSON.stringify(toJSON())).toContain(darkColors.glassFallback);
   });
 
   it('커스텀 style을 병합한다', () => {

@@ -3,7 +3,8 @@ import type { ViewStyle } from 'react-native';
 /**
  * Line Glass 그림자 — 구아키(Paper)에서는 `boxShadow`가 no-op이라
  * iOS legacy shadow props + Android elevation 조합을 쓴다(신아키에서도 동작).
- * 주의: iOS shadow는 overflow:hidden 뷰에서 잘리므로 클리핑 레이어와 그림자 뷰를 분리해야 한다.
+ * 주의: (1) iOS shadow는 overflow:hidden 뷰에서 잘리고 (2) 반투명(alpha<1) 뷰에 주면 shadowPath 없는
+ * 픽셀 기반 그림자가 되므로, 글래스는 불투명 ShadowCaster 뷰를 sibling으로 두고 거기에만 적용한다.
  */
 export type ShadowKind = 'card' | 'tabBar' | 'floatCard' | 'segment' | 'ring';
 
@@ -28,9 +29,10 @@ const SHADOWS: Record<ShadowKind, { light: ShadowSpec; dark: ShadowSpec }> = {
     light: { color: '#000000', opacity: 0.25, radius: 20, offsetY: 16, elevation: 8 },
     dark: { color: '#000000', opacity: 0.25, radius: 20, offsetY: 16, elevation: 8 },
   },
+  // 다크 세그먼트 활성 배경은 반투명(14% white) — 반투명 뷰에 shadow를 주면 픽셀 기반 그림자가 되므로 끈다
   segment: {
     light: { color: '#000000', opacity: 0.08, radius: 4, offsetY: 2, elevation: 1 },
-    dark: { color: '#000000', opacity: 0.08, radius: 4, offsetY: 2, elevation: 1 },
+    dark: { color: '#000000', opacity: 0, radius: 0, offsetY: 0, elevation: 0 },
   },
   // 점 주변 후광(색은 호출부가 넘김) — spread 없는 legacy shadow로 근사
   ring: {

@@ -87,7 +87,7 @@ describe('theme', () => {
     it('글래스 토큰과 blurTint가 라이트/나이트에서 정의된다', () => {
       expect(lightColors.blurTint).toBe('light');
       expect(darkColors.blurTint).toBe('dark');
-      for (const key of ['glass', 'glassStrong', 'glassBorder', 'glassHighlight', 'segmentTrack', 'segmentActive', 'fieldFill', 'glassFallback', 'glassBar', 'inkStrong', 'onInkStrong'] as const) {
+      for (const key of ['glass', 'glassStrong', 'glassBorder', 'glassHighlight', 'segmentTrack', 'segmentActive', 'fieldFill', 'glassFallback', 'glassBar', 'inkStrong', 'onInkStrong', 'shadowCaster'] as const) {
         expect(typeof lightColors[key]).toBe('string');
         expect(typeof darkColors[key]).toBe('string');
       }

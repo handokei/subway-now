@@ -3,12 +3,13 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
-import { useTheme, lineTint, useLineTintStore, shadowStyle } from '../theme';
+import { useTheme, lineTint, useLineTintStore } from '../theme';
+import { ShadowCaster } from './ShadowCaster';
 
 const BAR_HEIGHT = 62;
 const BAR_MIN_BOTTOM_MARGIN = 12;
 /** 탭바 위쪽으로 화면 콘텐츠(지도 카드 등)가 비워야 하는 높이 (safe-area bottom 제외) */
-export const GLASS_TAB_BAR_CLEARANCE = 86;
+export const GLASS_TAB_BAR_CLEARANCE = BAR_HEIGHT + BAR_MIN_BOTTOM_MARGIN + 12;
 /** 스크롤 화면 하단 여백 (플로팅 탭바에 마지막 콘텐츠가 가리지 않도록) */
 export const GLASS_SCREEN_BOTTOM_PADDING = 120;
 
@@ -22,16 +23,15 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
 
   return (
     <View pointerEvents="box-none" style={[styles.host, { bottom: Math.max(insets.bottom, BAR_MIN_BOTTOM_MARGIN) }]}>
-      <View
-        style={[
-          styles.bar,
-          { backgroundColor: useBlur ? colors.glassBar : colors.glassFallback },
-          shadowStyle('tabBar', isDark),
-        ]}
-      >
+      <View style={styles.bar}>
+        <ShadowCaster kind="tabBar" r={BAR_HEIGHT / 2} />
         <View
           pointerEvents="none"
-          style={[StyleSheet.absoluteFill, styles.clip, { borderColor: colors.glassBorder }]}
+          style={[
+            StyleSheet.absoluteFill,
+            styles.clip,
+            { borderColor: colors.glassBorder, backgroundColor: useBlur ? colors.glassBar : colors.glassFallback },
+          ]}
         >
           {useBlur && <BlurView intensity={50} tint={colors.blurTint} style={StyleSheet.absoluteFill} />}
         </View>

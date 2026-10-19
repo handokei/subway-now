@@ -10,9 +10,10 @@ import { MapSearchBar } from '../features/map/components/MapSearchBar';
 import { LocationStateView } from '../shared/ui/LocationStateView';
 import { StatusChip } from '../features/arrival/components/StatusChip';
 import stationsData from '../data/stations.json';
-import { useTheme, typography, spacing, radiusGlass, shadowStyle } from '../shared/theme';
+import { useTheme, typography, spacing, radiusGlass } from '../shared/theme';
 import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
 import { GLASS_TAB_BAR_CLEARANCE } from '../shared/ui/GlassTabBar';
+import { ShadowCaster } from '../shared/ui/ShadowCaster';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { LineBadge } from '../shared/ui/LineBadge';
@@ -47,7 +48,7 @@ export default function MapScreen() {
   const { userLocation, result, loading, error, permissionDenied, refresh, requestCurrentLocation, accuracyMeters, locationUncertain } =
     useNearestStation({ enabled: isFocused, instrumentationRole: 'observer' });
   const allStations = stationsData as Station[];
-  const { colors, isDark } = useTheme();
+  const { colors } = useTheme();
   const customOrigin = useDestinationStore((s) => s.customOrigin);
   const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
   const destination = useDestinationStore((s) => s.destination);
@@ -173,12 +174,13 @@ export default function MapScreen() {
       {/* 하단 역 선택 카드 */}
       {selectedStation && (
         <View
-          style={[styles.selectionCard, { backgroundColor: colors.glassStrong, bottom: insets.bottom + GLASS_TAB_BAR_CLEARANCE, ...shadowStyle('floatCard', isDark) }]}
+          style={[styles.selectionCard, { bottom: insets.bottom + GLASS_TAB_BAR_CLEARANCE }]}
           onLayout={(e) => setSelectionCardHeight(e.nativeEvent.layout.height)}
           testID="selection-card"
         >
-         {/* iOS shadow는 overflow:hidden 뷰에서 잘리므로 그림자 뷰(바깥)와 클리핑 뷰(안쪽)를 분리 */}
-         <View style={[styles.selectionCardClip, { borderColor: colors.glassBorder }]}>
+         {/* 그림자는 불투명 ShadowCaster에만(반투명 뷰 shadow는 텍스트마다 번짐, overflow:hidden은 shadow를 자름) */}
+         <ShadowCaster kind="floatCard" r={SELECTION_CARD_RADIUS} />
+         <View style={[styles.selectionCardClip, { borderColor: colors.glassBorder, backgroundColor: colors.glassStrong }]}>
           {/* Line Glass — 선택 역 노선색으로 카드가 물듦 */}
           <LineGlowBackground line={selectedStation.line} />
           <View style={styles.selectionHeader}>
@@ -262,6 +264,8 @@ export default function MapScreen() {
   );
 }
 
+const SELECTION_CARD_RADIUS = 32;
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -280,12 +284,12 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 10,
     right: 10,
-    borderRadius: 32,
+    borderRadius: SELECTION_CARD_RADIUS,
   },
   selectionCardClip: {
     padding: spacing.xl,
     borderWidth: 1,
-    borderRadius: 32,
+    borderRadius: SELECTION_CARD_RADIUS,
     overflow: 'hidden',
   },
   selectionHeader: {

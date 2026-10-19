@@ -35,6 +35,7 @@ export const lightColors = {
   segmentTrack:   'rgba(14,21,18,0.06)',
   segmentActive:  '#ffffff',
   fieldFill:      'rgba(14,21,18,0.05)',    // 카드 안 보조 버튼/칩
+  shadowCaster:   '#ffffff',               // 그림자 전용 불투명 뷰 색(글래스 뒤, ShadowCaster)
   glassFallback:  'rgba(255,255,255,0.86)', // blur 미지원(Android) 시 카드 채움
   glassBar:       'rgba(255,255,255,0.6)',  // 탭바 채움
   blurTint:       'light' as 'light' | 'dark',
@@ -64,6 +65,7 @@ export const darkColors: typeof lightColors = {
   segmentTrack:   'rgba(0,0,0,0.35)',
   segmentActive:  'rgba(255,255,255,0.14)',
   fieldFill:      'rgba(255,255,255,0.08)',
+  shadowCaster:   '#161A18',
   glassFallback:  'rgba(24,28,26,0.92)',
   glassBar:       'rgba(30,34,32,0.55)',
   blurTint:       'dark',

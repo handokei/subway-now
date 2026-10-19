@@ -16,6 +16,12 @@ describe('shadowStyle', () => {
     expect(shadowStyle('card', true).shadowOpacity).toBe(0.5);
   });
 
+  it('다크 세그먼트는 반투명 활성 배경이라 그림자를 끈다', () => {
+    expect(shadowStyle('segment', true).shadowOpacity).toBe(0);
+    expect(shadowStyle('segment', true).elevation).toBe(0);
+    expect(shadowStyle('segment', false).shadowOpacity).toBe(0.08);
+  });
+
   it('colorOverride가 shadowColor를 덮는다(ring 후광)', () => {
     expect(shadowStyle('ring', false, '#009D3E').shadowColor).toBe('#009D3E');
   });

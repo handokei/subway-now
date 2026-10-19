@@ -125,6 +125,7 @@ describe('GlassTabBar', () => {
       const json = JSON.stringify(toJSON());
       expect(json).toContain(lightColors.glassBar);
       expect(json).toContain('"shadowRadius":15');
+      expect(json).toContain(lightColors.shadowCaster);
       expect(json).not.toContain('boxShadow');
     });
 
@@ -134,6 +135,10 @@ describe('GlassTabBar', () => {
       const json = JSON.stringify(toJSON());
       expect(json).toContain(lightColors.glassFallback);
       expect(json).not.toContain(lightColors.glassBar);
+    });
+
+    it('클리어런스는 바 높이 + 최소 하단 마진 + 간격 계산식(62+12+12)', () => {
+      expect(GLASS_TAB_BAR_CLEARANCE).toBe(86);
     });
 
     it('콘텐츠 여백 상수는 탭바 클리어런스보다 크다(화면 결합 지점 단일화)', () => {
