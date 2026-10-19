@@ -29,7 +29,8 @@ import {
 import { StationMap } from '../../map/components/StationMap';
 import { StationSuggestionList } from '../../nearest-station/components/StationSuggestionList';
 import { createLogger } from '../../../shared/utils/logger';
-import { matchesStationQuery, getStationDisplayName } from '../../../shared/utils/stationDisplay';
+import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
+import { searchStations } from '../../../shared/utils/fuzzyStationSearch';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 
 const logger = createLogger('DestinationPicker');
@@ -110,8 +111,7 @@ export function DestinationPicker({
     const q = query.trim();
     if (!q) return [];
     const start = performance.now();
-    const qLower = q.toLowerCase();
-    const result = allStations.filter((s) => matchesStationQuery(s, q, qLower)).slice(0, 8);
+    const result = searchStations(allStations, q, 8);
     logger.debug(`검색 필터링 "${q}": ${(performance.now() - start).toFixed(2)}ms (${result.length}건)`);
     return result;
   }, [query]);
