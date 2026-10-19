@@ -402,3 +402,87 @@ describe('intermediate stop 렌더링', () => {
     expect(screen.getAllByText('2호선').length).toBe(2);
   });
 });
+
+describe('#3073 환승 경계 connector 색 = 탑승 노선(fromLine)', () => {
+  const { StyleSheet } = require('react-native');
+  const { getLineColor } = require('../../../../shared/ui/LineBadge');
+  const { canonicalStationName } = require('../../../../testUtils/canonicalStationName');
+
+  // i번째 stop 행의 connector(position absolute, width 3) 배경색.
+  function connectorColor(i: number): string | undefined {
+    const row = screen.getByTestId(`timeline-stop-${i}`);
+    const nodes = row.findAll((n: any) => {
+      const flat = StyleSheet.flatten(n.props?.style);
+      return flat?.position === 'absolute' && flat?.width === 3;
+    });
+    return nodes.length ? StyleSheet.flatten(nodes[0].props.style).backgroundColor : undefined;
+  }
+
+  const hyochang = canonicalStationName('효창공원앞', '6');
+  const gongdeok = canonicalStationName('공덕', '5');
+  const aeogae = canonicalStationName('애오개', '5');
+
+  it('효창공원앞(6)→공덕(환승, line5+arrivalContext 6)→애오개(5): i=0 connector는 6호선 색', () => {
+    const stops: Stop[] = [
+      { station: hyochang, line: '6', mark: 'filled' },
+      {
+        station: gongdeok, line: '5', mark: 'transfer', stopsFromPrev: '1정거장',
+        arrivalContext: { line: '6', fromName: hyochang, toName: gongdeok },
+        transferTarget: { toLine: '5' },
+      },
+      { station: aeogae, line: '5', mark: 'dest', stopsFromPrev: '1정거장' },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(getLineColor('6')).not.toBe(getLineColor('5'));
+    expect(connectorColor(0)).toBe(getLineColor('6'));
+    // 거부: 환승역→다음역 connector는 toLine(5) 유지
+    expect(connectorColor(1)).toBe(getLineColor('5'));
+  });
+
+  it('환승 2회: 각 경계 connector는 해당 구간 탑승 노선 색', () => {
+    const stops: Stop[] = [
+      { station: '가', line: '6', mark: 'filled' },
+      {
+        station: '나', line: '5', mark: 'transfer',
+        arrivalContext: { line: '6', fromName: '가', toName: '나' },
+        transferTarget: { toLine: '5' },
+      },
+      {
+        station: '다', line: '3', mark: 'transfer',
+        arrivalContext: { line: '5', fromName: '나', toName: '다' },
+        transferTarget: { toLine: '3' },
+      },
+      { station: '라', line: '3', mark: 'dest' },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(connectorColor(0)).toBe(getLineColor('6'));
+    expect(connectorColor(1)).toBe(getLineColor('5'));
+    expect(connectorColor(2)).toBe(getLineColor('3'));
+  });
+
+  it('expanded: intermediate→환승역 connector는 탑승 노선(6) 색, 환승역→다음 connector는 toLine(5)', () => {
+    const stops: Stop[] = [
+      { station: '가', line: '6', mark: 'filled' },
+      { station: '중간', line: '6', mark: 'intermediate' },
+      {
+        station: hyochang, line: '5', mark: 'transfer',
+        arrivalContext: { line: '6', fromName: '중간', toName: hyochang },
+        transferTarget: { toLine: '5' },
+      },
+      { station: '다음', line: '5', mark: 'dest' },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(connectorColor(0)).toBe(getLineColor('6'));
+    expect(connectorColor(1)).toBe(getLineColor('6'));
+    expect(connectorColor(2)).toBe(getLineColor('5'));
+  });
+
+  it('arrivalContext 없는 stop은 line 폴백', () => {
+    const stops: Stop[] = [
+      { station: '가', line: '2', mark: 'filled' },
+      { station: '나', line: '2', mark: 'dest' },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(connectorColor(0)).toBe(getLineColor('2'));
+  });
+});
