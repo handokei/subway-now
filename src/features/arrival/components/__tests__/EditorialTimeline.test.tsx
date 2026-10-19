@@ -4,7 +4,10 @@
  * 옵트인되어 있어 같은 패턴 적용. ADR Phase 5 (#890) orchestration 컨벤션.
  */
 import React from 'react';
+import { StyleSheet } from 'react-native';
 import { render, screen } from '@testing-library/react-native';
+import { getLineColor } from '../../../../shared/ui/LineBadge';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import { EditorialTimeline } from '../EditorialTimeline';
 import { MOCK_STOPS } from '../../../../testUtils/fixtures';
 import type { Stop } from '../../../../shared/types/journey';
@@ -404,18 +407,11 @@ describe('intermediate stop 렌더링', () => {
 });
 
 describe('#3073 환승 경계 connector 색 = 탑승 노선(fromLine)', () => {
-  const { StyleSheet } = require('react-native');
-  const { getLineColor } = require('../../../../shared/ui/LineBadge');
-  const { canonicalStationName } = require('../../../../testUtils/canonicalStationName');
 
-  // i번째 stop 행의 connector(position absolute, width 3) 배경색.
+  // connector View는 testID로 조회 (스타일 상수/인덱스 복제 금지).
   function connectorColor(i: number): string | undefined {
-    const row = screen.getByTestId(`timeline-stop-${i}`);
-    const nodes = row.findAll((n: any) => {
-      const flat = StyleSheet.flatten(n.props?.style);
-      return flat?.position === 'absolute' && flat?.width === 3;
-    });
-    return nodes.length ? StyleSheet.flatten(nodes[0].props.style).backgroundColor : undefined;
+    const { backgroundColor } = StyleSheet.flatten(screen.getByTestId(`timeline-connector-${i}`).props.style);
+    return backgroundColor;
   }
 
   const hyochang = canonicalStationName('효창공원앞', '6');
@@ -428,6 +424,7 @@ describe('#3073 환승 경계 connector 색 = 탑승 노선(fromLine)', () => {
       {
         station: gongdeok, line: '5', mark: 'transfer', stopsFromPrev: '1정거장',
         arrivalContext: { line: '6', fromName: hyochang, toName: gongdeok },
+        connectorLine: '6',
         transferTarget: { toLine: '5' },
       },
       { station: aeogae, line: '5', mark: 'dest', stopsFromPrev: '1정거장' },
@@ -445,11 +442,13 @@ describe('#3073 환승 경계 connector 색 = 탑승 노선(fromLine)', () => {
       {
         station: '나', line: '5', mark: 'transfer',
         arrivalContext: { line: '6', fromName: '가', toName: '나' },
+        connectorLine: '6',
         transferTarget: { toLine: '5' },
       },
       {
         station: '다', line: '3', mark: 'transfer',
         arrivalContext: { line: '5', fromName: '나', toName: '다' },
+        connectorLine: '5',
         transferTarget: { toLine: '3' },
       },
       { station: '라', line: '3', mark: 'dest' },
@@ -467,6 +466,7 @@ describe('#3073 환승 경계 connector 색 = 탑승 노선(fromLine)', () => {
       {
         station: hyochang, line: '5', mark: 'transfer',
         arrivalContext: { line: '6', fromName: '중간', toName: hyochang },
+        connectorLine: '6',
         transferTarget: { toLine: '5' },
       },
       { station: '다음', line: '5', mark: 'dest' },
