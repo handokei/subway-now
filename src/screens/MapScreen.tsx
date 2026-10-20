@@ -23,6 +23,7 @@ import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { routeToCoordinates, type RouteCoordinatePath } from '../features/route/utils/routeToCoordinates';
 import type { Route } from '../shared/utils/stationRoute';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
+import { MIN_TOUCH_TARGET } from '../shared/constants/touchTarget';
 import {
   FAVORITE_SLOT_ICONS,
   FAVORITE_SLOT_ROLES,
@@ -117,7 +118,7 @@ export default function MapScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]} edges={['top']}>
       {/* 상단 상태 배너 */}
       {(customOrigin || destination) && (
-        <View style={styles.statusBar} testID="status-bar">
+        <View style={[styles.statusBar, { backgroundColor: colors.glassStrong, borderBottomColor: colors.glassBorder }]} testID="status-bar">
           {customOrigin && (
             <StatusChip label={t('map.originBadge')} name={getStationDisplayName(customOrigin)} onClear={() => setCustomOrigin(null)} testID="clear-origin" />
           )}
@@ -190,7 +191,7 @@ export default function MapScreen() {
               <Text style={[styles.selectionName, { color: colors.ink }]}>{getStationDisplayName(selectedStation)}</Text>
               <LineBadge line={selectedStation.line} />
             </View>
-            <TouchableOpacity onPress={() => setSelectedStation(null)} testID="close-selection">
+            <TouchableOpacity style={styles.closeTouch} onPress={() => setSelectedStation(null)} testID="close-selection">
               <Text style={[styles.closeText, { color: colors.muted }]}>✕</Text>
             </TouchableOpacity>
           </View>
@@ -277,6 +278,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: spacing.sm,
     gap: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  closeTouch: {
+    minWidth: MIN_TOUCH_TARGET,
+    minHeight: MIN_TOUCH_TARGET,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   closeText: {
     ...typography.bodyMd,
