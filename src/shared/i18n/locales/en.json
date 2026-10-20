@@ -376,6 +376,7 @@
       "assignSlotLabel": "Assign {{label}} slot",
       "assignSlotHint": "Saves the next selected station to this slot",
       "favoriteChipHint": "Tap to set this station as destination",
+      "favoriteMarkerLabel": "Favorite",
       "misBoardingBannerLabel": "Cannot identify your train. Please reselect.",
       "misBoardingWrongDirectionBannerLabel": "You seem to be heading the wrong way. Please reselect.",
       "misBoardingReselectLabel": "Reselect boarding train",

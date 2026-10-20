@@ -15,7 +15,7 @@ import { FAVORITES_ROUTE } from '../shared/constants/routes';
 import { SolidLineBadge } from '../shared/ui/SolidLineBadge';
 import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
-import { excludeFavoriteStations } from '../features/favorites/utils/excludeFavoriteStations';
+import { RecentDestinationList } from '../features/route/components/RecentDestinationList';
 import { FavoriteQuickChips } from '../features/favorites/components/FavoriteQuickChips';
 import { useSettingsStore } from '../features/settings/store/useSettingsStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
@@ -159,11 +159,6 @@ export default function HomeScreen() {
   const setDestination = useDestinationStore((s) => s.setDestination);
   const loadDestination = useDestinationStore((s) => s.loadDestination);
   const recentDestinations = useDestinationStore((s) => s.recentDestinations);
-  // 즐겨찾기 칩과 중복 노출 방지 — 표시 필터만 (스토어 recentDestinations 불변)
-  const visibleRecentDestinations = useMemo(
-    () => excludeFavoriteStations(recentDestinations, favorites),
-    [recentDestinations, favorites],
-  );
   const addRecentDestination = useDestinationStore((s) => s.addRecentDestination);
   const removeRecentDestination = useDestinationStore((s) => s.removeRecentDestination);
   const loadRecentDestinations = useDestinationStore((s) => s.loadRecentDestinations);
@@ -2112,38 +2107,12 @@ export default function HomeScreen() {
                   onSelect={handleSelectDestination}
                   onAdd={() => router.push(FAVORITES_ROUTE)}
                 />
-                {visibleRecentDestinations.length > 0 && (
-                  <View testID="recent-destinations-list">
-                    <Text style={[styles.recentDestinationLabel, { color: colors.muted, paddingHorizontal: spacing.xs }]}>
-                      {t('home.previousDestination')}
-                    </Text>
-                    {visibleRecentDestinations.map((recent) => (
-                      <View
-                        key={recent.id}
-                        style={[styles.recentDestinationButton, styles.recentDestinationItemRow, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}
-                      >
-                        <TouchableOpacity
-                          style={styles.recentDestinationTapArea}
-                          onPress={() => handleSelectDestination(recent)}
-                          testID={`recent-destination-button-${recent.id}`}
-                        >
-                          <View style={styles.recentDestinationRow}>
-                            <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{getStationDisplayName(recent)}</Text>
-                            <SolidLineBadge line={recent.line} color={recent.lineColor} />
-                          </View>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.recentDestinationDelete}
-                          onPress={() => removeRecentDestination(recent.id)}
-                          accessibilityLabel={t('common.remove')}
-                          testID={`recent-destination-delete-${recent.id}`}
-                        >
-                          <Text style={[styles.recentDestinationDeleteText, { color: colors.muted }]}>✕</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                  </View>
-                )}
+                <RecentDestinationList
+                  recents={recentDestinations}
+                  favorites={favorites}
+                  onSelect={handleSelectDestination}
+                  onRemove={removeRecentDestination}
+                />
                 <TouchableOpacity
                   style={[styles.destinationButton, { backgroundColor: colors.inkStrong }]}
                   onPress={() => setPickerVisible(true)}
@@ -2500,44 +2469,6 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
     marginTop: spacing.md,
     paddingVertical: 18,
-  },
-  recentDestinationButton: {
-    borderWidth: 1,
-    borderRadius: radiusGlass.lg,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  recentDestinationItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  recentDestinationTapArea: {
-    flex: 1,
-  },
-  recentDestinationDelete: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    marginLeft: spacing.sm,
-  },
-  recentDestinationDeleteText: {
-    ...typography.bodyMd,
-    fontWeight: '700',
-  },
-  recentDestinationLabel: {
-    ...typography.micro,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  recentDestinationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  recentDestinationName: {
-    ...typography.bodyMd,
-    fontWeight: '700',
   },
   destinationButton: {
     borderRadius: radiusGlass.pill,
