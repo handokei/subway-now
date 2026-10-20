@@ -190,20 +190,22 @@ function SearchResultCard({
 }) {
   return (
     <View style={[styles.card, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}>
-      <View style={styles.cardInfo}>
-        <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
-          <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
+      <View style={styles.cardRow} testID={`favorite-search-row-${station.id}`}>
+        <View style={styles.cardInfo}>
+          <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
+            <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
+          </View>
+          <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
         </View>
-        <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
+        <TouchableOpacity
+          style={[styles.addButton, { backgroundColor: colors.inkStrong }, already && { backgroundColor: colors.hair }]}
+          onPress={onAdd}
+          disabled={already}
+          testID={`favorite-add-${station.id}`}
+        >
+          <Text style={[styles.addButtonText, { color: already ? colors.muted : colors.onInkStrong }]}>{already ? '✓' : '+'}</Text>
+        </TouchableOpacity>
       </View>
-      <TouchableOpacity
-        style={[styles.addButton, { backgroundColor: colors.inkStrong }, already && { backgroundColor: colors.hair }]}
-        onPress={onAdd}
-        disabled={already}
-        testID={`favorite-add-${station.id}`}
-      >
-        <Text style={[styles.addButtonText, { color: already ? colors.muted : colors.onInkStrong }]}>{already ? '✓' : '+'}</Text>
-      </TouchableOpacity>
     </View>
   );
 }
