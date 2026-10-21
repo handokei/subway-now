@@ -246,7 +246,7 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
     // 알린다: corrId(dedupe 키)와 ACTIVE_TRIP_KEY(data.tripToken)가 cleanup에서 지워진다. 알림 실패는
     // notifyTripEnded가 삼키므로 아래 cleanup을 막지 않는다.
     await notifyTripEnded({
-      destination: useDestinationStore.getState().destination ?? null,
+      destination: useDestinationStore.getState().destination,
       reason: 'lifecycle',
     });
     // #2302 — backend end_reason도 breadcrumb/releaseLock과 동일 사유로 기록한다.
@@ -307,7 +307,7 @@ async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<
     // PR-3b(#2675) — 일시정지 15분 자동 종료도 조용한 종료였다(트리거 불변, 통지만 추가). 9h와 같은
     // 이유로 cleanup 앞에서 알린다.
     await notifyTripEnded({
-      destination: useDestinationStore.getState().destination ?? null,
+      destination: useDestinationStore.getState().destination,
       reason: 'paused',
     });
     // #2302 — 2026-10-15 실측에서 이 경로가 "생성 6초 후 DELETE"의 용의자였는데 모든 경로가
