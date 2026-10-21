@@ -50,3 +50,21 @@ describe('deriveCongestionDirection', () => {
     expect(deriveCongestionDirection(line2, current, next)).toBe('down');
   });
 });
+
+// #3122 감사 — 이 함수는 "idx 증가=up"이라, 역방향 노선(수인분당·신분당: idx 증가=상행)에서는 이미 정답이다.
+// (비역방향 노선은 idx 증가=하행이라 반대로 나오지만, 소비자가 Mock sample 데이터뿐인 PoC라
+//  이 PR에서는 비역방향 동작을 바꾸지 않는다 — 현 동작 pin.)
+describe('deriveCongestionDirection — 역방향 노선 pin (#3122)', () => {
+  it.each([
+    ['bundang', '서울숲', '압구정로데오', 'down'],
+    ['bundang', '압구정로데오', '서울숲', 'up'],
+    ['sinbundang', '신논현', '강남', 'down'],
+    ['sinbundang', '강남', '신논현', 'up'],
+  ] as const)('%s %s→%s = %s (상행=왕십리/신사 방면)', (line, from, to, expected) => {
+    expect(deriveCongestionDirection(line, from, to)).toBe(expected);
+  });
+
+  it('비역방향 7호선은 기존 동작 유지(idx 증가=up) — 변경하지 않음', () => {
+    expect(deriveCongestionDirection('7', '건대입구', '자양(뚝섬한강공원)')).toBe('up');
+  });
+});
