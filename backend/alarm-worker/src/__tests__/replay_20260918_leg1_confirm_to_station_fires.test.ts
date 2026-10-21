@@ -51,7 +51,8 @@ import {
 import { firedStationOccurrences } from './helpers/pushAssertions';
 import { parseReplayFixture } from '../replayFixture';
 import fixtureJson from './fixtures/replayLibrary/capture_20260918_line7_yongmasan_overshoot.fixture.json';
-import type { Env } from '../types';
+import { getTrip, putTrip } from '../trips';
+import type { Env, Trip } from '../types';
 
 const fixture = parseReplayFixture(fixtureJson);
 const TRIP_TOKEN = 'leg1-confirm-axis';
@@ -114,6 +115,14 @@ describe('#2981 탭 → lock 생성 → 매역 발사 (9/18 캡처, position ser
       // seedPositionSeries 의도적 미제공 — 위 헤더 "핵심 assert" 참고.
       beforeTick: async ({ tick, tickIndex, env }) => {
         if (tickIndex !== CONFIRM_AFTER_TICKS) return;
+        // #3144 (v8 D2, ADR-043) — 탭의 trainCode는 backend가 프롬프트로 제시한 열차여야 lock이 된다
+        // (증거 없음 = 거부). 이 테스트의 관심사는 "응답 -> lock -> 매역 발사"이므로 탭 직전에 프롬프트가
+        // 7256을 제시했다는 stamp를 둔다(실측 ride의 사용자는 7256에 응답했다).
+        const trip = await getTrip(env.TRIPS, TRIP_TOKEN);
+        await putTrip(env.TRIPS, {
+          ...(trip as Trip),
+          recentPromptCandidates: { trainCodes: [RIDE_20260918_TRAIN], firedAt: tick - 1_000 },
+        });
         const res = await postBoardingConfirmAt(tick, env, RIDE_20260918_TRAIN);
         confirmStatus = res.status;
       },

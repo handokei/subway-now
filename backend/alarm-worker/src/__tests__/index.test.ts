@@ -6316,6 +6316,15 @@ describe('POST /boarding-lock/sync (#901)', () => {
         ),
       );
       const env = makeKvEnv();
+      // #3144 (v8 D3-A) — register-time resolver는 현재 leg 응답 마커가 있을 때만 동작한다. 첫 등록 후
+      // boarding-confirm 'boarded' 핸들러가 남기는 마커를 심고(실제 writer는 그 핸들러 1곳)
+      // same-session 재등록으로 resolver를 구동한다.
+      await postWithCtx('/trips', anchorTripBody(), env, makeExecutionContext());
+      const first = JSON.parse((await env.TRIPS.get('trip:anchor-tok')) as string);
+      await env.TRIPS.put(
+        'trip:anchor-tok',
+        JSON.stringify({ ...first, boardingResponse: { legKey: 'leg1', at: Date.now() } }),
+      );
       const ctx = makeExecutionContext();
       const res = await postWithCtx('/trips', anchorTripBody(), env, ctx);
       expect(res.status).toBe(200);
@@ -6448,14 +6457,16 @@ describe('isPromotionCorroborated (#2824) — unit', () => {
     expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
   });
 
-  it('(c) legResolveStreak.trainCode와 일치 → true(승격)', () => {
+  // #3144 (v8 D2) — (c)·(d)는 ADR-043으로 뒤집혔다: streak-only / 증거 없음은 거부. 상세는
+  // v8_d2_d3_lock_origin.test.ts.
+  it('(c) legResolveStreak.trainCode만 일치 → false (프롬프트 제시 열차가 아니다, #3144)', () => {
     const trip = baseTrip({ legResolveStreak: { trainCode: '7039', count: 1 } });
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
   });
 
-  it('(d) 두 신호 모두 부재(한 번도 stamp 안 됨) → true(backward-safe 기존대로 승격)', () => {
+  it('(d) 두 신호 모두 부재(프롬프트 제시 이력 없음) → false (backward-safe 폐기, #3144)', () => {
     const trip = baseTrip();
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
   });
 });
 
@@ -6539,7 +6550,8 @@ describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)
     expect(stored.boardingLock?.trainCode).toBe('7039');
   });
 
-  it('(c) legResolveStreak.trainCode와 일치하면 승격', async () => {
+  // #3144 (v8 D2, ADR-043) — (c)·(d)는 뒤집혔다: streak-only / 증거 없음은 승격하지 않는다.
+  it('(c) legResolveStreak.trainCode만 일치하면 승격 거부 (프롬프트 제시 열차가 아님)', async () => {
     const env = makeKvEnv();
     await env.TRIPS.put(
       'trip:corrob-tok',
@@ -6550,10 +6562,10 @@ describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)
     expect(res.status).toBe(200);
 
     const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
-    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.boardingLock).toBeUndefined();
   });
 
-  it('(d) 두 신호 모두 부재 → backward-safe 기존대로 승격(false-reject 0, #2560 무회귀)', async () => {
+  it('(d) 두 신호 모두 부재 → 승격 거부 (backward-safe 폐기, 171 3013 근본)', async () => {
     const env = makeKvEnv();
     await env.TRIPS.put('trip:corrob-tok', JSON.stringify(unlockedTrip()));
 
@@ -6561,7 +6573,7 @@ describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)
     expect(res.status).toBe(200);
 
     const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
-    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.boardingLock).toBeUndefined();
   });
 });
 

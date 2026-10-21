@@ -1563,9 +1563,14 @@ describe('runScheduled — boarding anchor trainCode resolution (backend-authori
     });
   }
 
-  it('anchor + 후보 1개 → boardingLock 승격 + persist + boardingAnchorResolved 카운트', async () => {
+  it('anchor + 후보 1개 + 현재 leg 응답 마커 → boardingLock 승격 + persist + boardingAnchorResolved 카운트', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, anchorTrip());
+    // #3144 (v8 D3-A) — 응답 마커 없이는 cron leg-1 resolver가 부착하지 않는다(아래 '#3144 D3' 케이스).
+    const base = anchorTrip();
+    await putTrip(kv as unknown as KVNamespace, {
+      ...base,
+      boardingResponse: { legKey: currentBoardingLegKey(base), at: NOW - 1_000 },
+    });
     const seoul = makeSeoulPositions([{ trainCode: '7246' }]);
     const stats = await runScheduled(makeEnv(kv), {
       seoul,

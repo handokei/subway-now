@@ -12,8 +12,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import app from '../index';
 import { runScheduled, isBoardingLockActive } from '../scheduled';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { getTrip } from '../trips';
-import type { Env } from '../types';
+import { getTrip, putTrip } from '../trips';
+import type { Env, Trip } from '../types';
 import type { ArrivalEntry, PositionEntry, SeoulArrivalClient } from '../seoul';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -117,6 +117,13 @@ describe('WHOLE 3-leg E2E — leg-1→환승→leg-2→환승→leg-3→목적�
       });
     }
     async function syncLeg(observedStation: string, trainCode: string, boardingLine: string): Promise<void> {
+      // #3144 (v8 D2, ADR-043) — sync 승격은 backend가 프롬프트로 제시한 열차만. 각 leg의 탑승 프롬프트가
+      // 해당 열차를 제시했고 사용자가 그 열차에 응답한 상태를 재현한다(sync는 실 Date.now() 기준).
+      const before = await getTrip(env.TRIPS, token);
+      await putTrip(env.TRIPS, {
+        ...(before as Trip),
+        recentPromptCandidates: { trainCodes: [trainCode], firedAt: Date.now() },
+      });
       await app.fetch(
         new Request('http://example.com/boarding-lock/sync', {
           method: 'POST', headers: { 'content-type': 'application/json' },

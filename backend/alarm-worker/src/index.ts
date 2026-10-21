@@ -126,6 +126,7 @@ import {
   sentryOptions,
 } from './sentry';
 import { recordTripEvent,
+  recordLockAttached,
   type LaTokenRegisterOutcome,
   type TripRegisterOutcome,
 } from './tripEventLog';
@@ -183,8 +184,10 @@ import {
   readBoardingPromptCounters,
 } from './boardingPromptCounterAccumulator';
 import {
+  currentBoardingLegKey,
   getDeviceTripIndex,
   getTrip,
+  hasBoardingResponseForCurrentLeg,
   isLegAnchorMatch,
   isRouteProgressRelation,
   putDeviceTripIndex,
@@ -365,6 +368,12 @@ async function resolveBoardingAnchorAtRegister(env: Env, trip: Trip): Promise<vo
       lastLaPushAt: undefined,
     };
     await putTrip(env.TRIPS, resolvedTrip);
+    await recordLockAttached(env.DB, {
+      token: trip.token,
+      lock: anchorLock,
+      path: 'register',
+      hasResponseMarker: hasBoardingResponseForCurrentLeg(resolvedTrip),
+    });
     console.log(
       JSON.stringify({
         msg: 'boarding-anchor: trainCode resolved at register (tap-time)',
@@ -1362,6 +1371,13 @@ app.post('/trips', async (c) => {
           // 유무만 봄)가 커버 못하는 "과거에 부착됐었다"는 사실이 소실된다. 명시 보존으로 방지.
           lockEverAttached: existing.lockEverAttached,
           boardingPromptResponded: existing.boardingPromptResponded,
+          // #3144 (v8 D2·D3) — backend-only state 2종. device는 보내지 않는 필드라 `...incoming`이
+          // 항상 undefined로 덮는다(위 lockEverAttached/legResolveStreak 계열과 같은 클래스):
+          // - recentPromptCandidates: 프롬프트가 제시한 열차 목록. 재등록(~30s)마다 소실되면
+          //   `isPromotionCorroborated`(D2)가 정당한 응답 승격까지 거부한다.
+          // - boardingResponse: 현재 leg 응답 마커. 소실되면 D3 resolver 게이트가 영구히 닫힌다.
+          recentPromptCandidates: existing.recentPromptCandidates,
+          boardingResponse: existing.boardingResponse,
         }
       : {
           ...incoming,
@@ -1507,8 +1523,34 @@ app.post('/trips', async (c) => {
   // 얹지 않고, 실패/예외는 전부 swallow — register 자체(위에서 이미 persist 완료)는 절대
   // 실패시키지 않는다. cron(`scheduled.ts`)은 retry로 그대로 유지 — 이 tap-time 시도가
   // 실패해도(dwell window를 못 잡았거나 ambiguous) 다음 cycle이 계속 재평가한다.
-  if (trip.infoModeEnabled === true && trip.boardingLock === undefined) {
+  //
+  // #3144 (v8 D3-A, ADR-043) — 위 설명의 "탭 직후" 전제는 거짓이었다(device는 GPS update마다
+  // 재등록, 173 D1 trip-register 10행+). infoModeEnabled(목록 탭이 켜는 의향)만으로 프롬프트 응답
+  // 없이 lock을 붙이던 경로를 닫는다 — 현재 leg에 대한 boarding-prompt 응답 마커(boarding-confirm
+  // 'boarded' 핸들러 stamp, same-session carry)가 있을 때만 "응답 후 trainCode 미해소 재시도"로
+  // 동작한다. register-time은 #2957 release 로직을 여전히 거치지 않는다(무변경 상속).
+  if (
+    trip.infoModeEnabled === true &&
+    trip.boardingLock === undefined &&
+    hasBoardingResponseForCurrentLeg(trip)
+  ) {
     scheduleTripEvent(c, resolveBoardingAnchorAtRegister(c.env, trip));
+  }
+
+  // #3144 — 구 빌드가 register body로 직접 보낸 boardingLock(b7, #2709 이후 미송신)도 부착 지점이므로
+  // 출처를 D1에 남긴다. 같은 열차의 재송신(existing 동일 trainCode)은 신규 부착이 아니라 제외.
+  const { boardingLock: incomingLock } = incoming;
+  const existingLockTrainCode = existingForRateLimit?.boardingLock?.trainCode;
+  if (incomingLock !== undefined && incomingLock.trainCode !== existingLockTrainCode) {
+    scheduleTripEvent(
+      c,
+      recordLockAttached(c.env.DB, {
+        token: trip.token,
+        lock: incomingLock,
+        path: 'register-incoming',
+        hasResponseMarker: hasBoardingResponseForCurrentLeg(trip),
+      }),
+    );
   }
 
   // #3003 — 성공 1건 적재. 이 이벤트가 **0건이면 등록 경로 자체가 끊긴 것**이고, 있으면
@@ -2697,6 +2739,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
     }
+    // #3144 (v8 D3-A, ADR-043) — 응답 마커의 유일한 writer. lock 해소 성공 여부와 무관하게 "[탑승] 응답이
+    // 있었다"를 현재 leg(해소 후 최종 상태 기준, tapAdvance 반영)에 기록한다 — 해소 실패 시 이후
+    // register/cron resolver가 이 마커를 근거로 재시도한다(10/13형 15분 뒤 해소 보존).
+    working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
   } else if (payload.action === 'disembarked') {
     // #2920 — destinationConfirmPendingSince(#2900 증거 없는 목적지 유예) 중인 trip의 [하차함]
     // 응답은 "탑승 증거 없이 시작된 유예"의 사용자 확인 자체가 ground truth다. 남은
@@ -2752,6 +2798,16 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       c.env.TRIPS,
       extendTripExpiryOnActivity(markBoardingPromptResponded(working), now),
     );
+    // #3144 — 이 요청이 새 lock 객체를 붙였을 때(기존 lock 유지·release-only 제외) 부착 출처를 D1에 남긴다.
+    const { boardingLock: attachedLock } = working;
+    if (payload.action === 'boarded' && attachedLock !== undefined && attachedLock !== existing.boardingLock) {
+      await recordLockAttached(c.env.DB, {
+        token,
+        lock: attachedLock,
+        path: 'confirm',
+        hasResponseMarker: hasBoardingResponseForCurrentLeg(working),
+      });
+    }
   }
 
   // SonarCloud S5145 — token(URL param)/station/line/action은 전부 요청에서 유래한
@@ -3617,10 +3673,12 @@ app.post('/boarding-lock/sync', async (c) => {
   // #2824 (#2780 형제, sync 경로) — 2026-09-28 D1 확정: 위 line 일치 검증만으로는 backend가 한 번도
   // 제시/관측한 적 없는 trainCode도 그대로 승격됐다(용마산7 leg-2에서 2018을 승격했으나 backend
   // live resolver는 3056만 봄, legResolveStreak 비어있음). `isPromotionCorroborated`가
-  // trip.recentPromptCandidates(boarding-prompt 발사 시 제시한 후보, TTL 내)/trip.legResolveStreak
-  // (cron 자동 resolve streak) 중 하나라도 그 trainCode를 뒷받침할 때만 승격을 허용한다. 두 신호가
-  // 모두 부재(한 번도 stamp된 적 없음)면 검증 불가 상태이므로 backward-safe로 기존대로 승격한다
-  // (#2820 프롬프트 embed 열차 = candidateTrains 소속 → 항상 통과, 정당 반복열차도 후보에 있어 통과).
+  // trip.recentPromptCandidates(boarding-prompt 발사 시 제시한 후보, TTL 내)/trip.legBoardingFireStamp
+  // 가 그 trainCode를 뒷받침할 때만 승격을 허용한다.
+  //
+  // #3144 (v8 D2, ADR-043) — 과거엔 두 신호 부재 시 backward-safe로 승격했으나 171(10/20)에서 구 빌드
+  // 목록 탭 lock 3013이 그 분기로 승격돼 2011 프롬프트를 억제했다. 이제 증거 없음 = 거부, streak-only
+  // 도 거부(프롬프트가 제시한 열차가 아니다). 응답 유래 lock은 boarding-confirm 경로가 담당한다.
   if (
     working.boardingLock === undefined &&
     payload.trainCode !== undefined &&
@@ -3695,6 +3753,15 @@ app.post('/boarding-lock/sync', async (c) => {
             kind: 'sync-received',
             station: promoted.segmentStations[0],
             meta: { promotedLock: true, trainCode: promoted.trainCode, line: promoted.line },
+          }),
+        );
+        scheduleTripEvent(
+          c,
+          recordLockAttached(c.env.DB, {
+            token: working.token,
+            lock: promoted,
+            path: 'sync',
+            hasResponseMarker: hasBoardingResponseForCurrentLeg(working),
           }),
         );
       } else {
@@ -3927,28 +3994,31 @@ export function extendTripExpiryOnActivity(trip: Trip, now: number): Trip {
 export const RECENT_PROMPT_CANDIDATES_TTL_MS = 15 * 60 * 1000;
 
 /**
- * #2824 (#2780 형제, sync 경로) — device가 `/boarding-lock/sync`로 보낸 `trainCode`가 backend가
- * 실제로 제시/관측한 적 있는 열차인지 검증한다.
+ * #2824 (#2780 형제, sync 경로) — device가 `/boarding-lock/sync`(및 boarding-confirm body)로 보낸
+ * `trainCode`가 backend가 **boarding-prompt로 실제 제시한** 열차인지 검증한다.
  *
- * 통과 조건(OR):
- * - `trip.recentPromptCandidates.trainCodes`에 포함 && `now - firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS`
- * - `trip.legResolveStreak?.trainCode === trainCode`
+ * #3144 (v8 D2, ADR-043) — "lock은 프롬프트 응답으로만". 통과 조건(OR, 둘 다 TTL 15분):
+ * - `trip.recentPromptCandidates.trainCodes`에 포함 (프롬프트 발사 시 제시한 후보)
+ * - `trip.legBoardingFireStamp.trainCode === trainCode` (leg 프롬프트 발사 stamp)
  *
- * 두 신호가 모두 `undefined`(한 번도 stamp된 적 없음)면 검증 불가 상태이므로 backward-safe로
- * `true`(기존대로 승격)를 반환한다 — false-reject 0 보장(#2820 프롬프트 embed 열차/정당 반복열차
- * 무회귀). 신호가 하나라도 존재하는데 그 trainCode와 일치하지 않으면(완전 외래 값) `false`.
+ * 이전 판 대비 **뺀 것**:
+ * - 두 신호 부재 시 backward-safe `true` — 171(10/20)에서 구 빌드 목록 탭 lock 3013이 이 분기로
+ *   승격돼 2011 프롬프트를 억제했다. 증거 없음 = 거부.
+ * - `legResolveStreak` 일치 — cron 자동 resolve가 관측한 열차이지 사용자에게 제시된 열차가 아니다
+ *   (171류 "다음 열차"가 streak에 들어갈 수 있다).
+ * 거부된 정당 응답은 boarding-confirm 경로에서 stamp/live 해소로 폴백한다.
  */
 export function isPromotionCorroborated(trainCode: string, working: Trip, now: number): boolean {
-  const { recentPromptCandidates, legResolveStreak } = working;
-  if (recentPromptCandidates === undefined && legResolveStreak === undefined) {
-    return true;
-  }
+  const { recentPromptCandidates, legBoardingFireStamp } = working;
   const withinCandidateWindow =
     recentPromptCandidates !== undefined &&
     now - recentPromptCandidates.firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS &&
     recentPromptCandidates.trainCodes.includes(trainCode);
-  const streakMatch = legResolveStreak?.trainCode === trainCode;
-  return withinCandidateWindow || streakMatch;
+  const withinStampWindow =
+    legBoardingFireStamp !== undefined &&
+    legBoardingFireStamp.trainCode === trainCode &&
+    now - legBoardingFireStamp.firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS;
+  return withinCandidateWindow || withinStampWindow;
 }
 
 interface BoardingLockSyncPayload {

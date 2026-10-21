@@ -22,7 +22,7 @@
  * 신규 유니온 추가 없음)로 관측 승격한다.
  */
 
-import { captureXEvent } from './sentry';
+import { captureXEvent, hashTripToken } from './sentry';
 
 /**
  * trip_events.kind 최소 집합. 데이터 주도 확장 시 이 유니온에 추가한다.
@@ -130,9 +130,10 @@ import { captureXEvent } from './sentry';
  *
  * `promotion-rejected-uncorroborated` (#2824) — `/boarding-lock/sync`(index.ts)의 sync-promotion
  * (`isPromotionCorroborated`)이 device가 보낸 `payload.trainCode`가 `trip.recentPromptCandidates`
- * (TTL 15분)에도 `trip.legResolveStreak.trainCode`에도 없어 lock 승격을 거부한 시점에 1건
- * append한다. `meta`에 `{ trainCode, line }`을 싣는다. 두 신호가 모두 부재(한 번도 stamp된 적
- * 없음)면 이 kind는 append되지 않고 기존대로 승격한다(backward-safe).
+ * (TTL 15분)에도 `trip.legBoardingFireStamp.trainCode`에도 없어 lock 승격을 거부한 시점에 1건
+ * append한다. `meta`에 `{ trainCode, line }`을 싣는다. #3144(v8 D2) — 두 신호가 모두 부재(프롬프트
+ * 제시 이력 없음)여도 이제 거부하고 이 kind를 append한다(구 backward-safe 승격 폐기; 구 빌드 목록 탭
+ * lock 거부 건수 = 이 kind). 신 빌드에서 >0이면 응답 lock 오거부 회귀 신호.
  *
  * `vanish-swap` (#2869, 진단 계측 전용) — 10/3 신당 고착 RCA의 "지상 attempt 0행" 블라인드
  * (RCA 하루 지연, R2 수동 소급 필요) 재발 방지. `meta.phase`로 두 전이를 구분한다:
@@ -230,7 +231,24 @@ export type TripEventKind =
   //
   // 중복 적재 없음 — `isEndPromptDue`가 "하한 D 만족 && 하한 D+1tick 불만족"으로 due tick
   // 하나만 true가 되게 무상태 판정한다(마커를 KV에 쓰지 않기 위한 설계).
-  | 'end-prompt-due';
+  | 'end-prompt-due'
+  // #3144 (v8 D3, ADR-043) — backend가 trip.boardingLock을 **부착한 모든 지점** 1건. 171 leg-1 backend
+  // lock의 출처(sync/boarding-confirm/ register resolver / cron resolver)를 D1만으로 가릴 수 없었던
+  // 계측 공백을 메운다. `meta`={ path: LockAttachPath, trainCode, hasResponseMarker }, `station`=
+  // lock.segmentStations[0], `line`=lock.line. 목표(ADR-043): vanish-swap 외에 hasResponseMarker=false인
+  // 신규 attach 0(sync 승격은 프롬프트 제시 열차 corroboration으로 정당화되므로 false가 정상일 수 있다).
+  // 부착 시점 1회만 적재(tick 반복 아님) — KV write 추가 0.
+  | 'lock-attached';
+
+/** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
+export type LockAttachPath =
+  | 'register'
+  | 'cron-leg1'
+  | 'cron-leg2'
+  | 'confirm'
+  | 'sync'
+  | 'vanish-swap'
+  | 'register-incoming';
 
 /** #2977 — `POST /live-activity/register` 결과. */
 export type LaTokenRegisterOutcome = 'stored' | 'trip_not_found' | 'invalid_payload';
@@ -398,6 +416,30 @@ export async function recordTripEvent(
     // 없어 Sentry-only(d1ErrorLog.ts와 동일 패턴).
     captureXEvent('D1-write-failure', { table: 'trip_events', kind: input.kind, err: String(e) });
   }
+}
+
+/**
+ * #3144 — `lock-attached` 1건 append. 모든 lock 부착 지점(`LockAttachPath`)이 이 함수 하나로
+ * 같은 meta shape을 남긴다(사본 금지). `hasResponseMarker`는 caller가 `hasBoardingResponseForCurrentLeg`
+ * 결과를 넘긴다(trips.ts가 이 모듈을 import하므로 순환 방지로 여기서 계산하지 않는다).
+ */
+export async function recordLockAttached(
+  db: D1Database | undefined,
+  input: {
+    token: string;
+    lock: { trainCode: string; line: string; segmentStations: readonly string[] };
+    path: LockAttachPath;
+    hasResponseMarker: boolean;
+  },
+): Promise<void> {
+  const { token, lock, path, hasResponseMarker } = input;
+  await recordTripEvent(db, {
+    tokenHash: hashTripToken(token),
+    kind: 'lock-attached',
+    station: lock.segmentStations[0],
+    line: lock.line,
+    meta: { path, trainCode: lock.trainCode, hasResponseMarker },
+  });
 }
 
 /** 보존 기간(ms). 7일 초과분은 cron cleanup이 삭제한다. */

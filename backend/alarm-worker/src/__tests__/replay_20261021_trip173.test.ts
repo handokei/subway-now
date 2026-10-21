@@ -170,17 +170,18 @@ describe('#3140 트립 173 — lock 없는 구간 알림 0 / lock 활성 준비 
 
 // #3144 (v8 D2·D3) — 거부 테스트: 프롬프트 응답 lock(leg1 06:20:57, leg2 06:30:55)은 D2·D3 후에도 붙는다.
 describe('v8 D2·D3 트립 173 replay — 응답 유래 lock은 무변경으로 부착된다', () => {
-  it('leg-1·leg-2 응답 모두 lock이 부착되고 lock-attached는 path=confirm·hasResponseMarker=true 2건뿐이다', async () => {
+  it('leg-1·leg-2 응답 lock이 붙고, lock-attached는 confirm 2건 + 응답 lock 파생 vanish-swap뿐이다 (register/cron/sync 무프롬프트 부착 0)', async () => {
     const r = await replay173();
     expect(r.replayer.taps.map((t) => t.response.lockState)).toEqual(['leg1', 'leg2']);
     for (const tap of r.replayer.taps) {
       expect(tap.response.resolvedTrainCode).toBe(tap.sent.trainCode);
     }
     const attached = r.events.filter((e) => e.kind === 'lock-attached');
-    expect(attached.map((e) => [e.meta.path, e.meta.hasResponseMarker])).toEqual([
-      ['confirm', true],
-      ['confirm', true],
-    ]);
+    // 실측 173에는 응답 lock 이후 열차 번호 변경(vanish-swap) 교체 2회가 있다 — 응답 유래 lock의 파생이다.
+    const paths = attached.map((e) => e.meta.path);
+    expect(paths.filter((p) => p === 'confirm')).toHaveLength(2);
+    expect(paths.filter((p) => p !== 'confirm' && p !== 'vanish-swap')).toEqual([]);
+    expect(attached.every((e) => e.meta.hasResponseMarker === true)).toBe(true);
     expect(r.events.filter((e) => e.kind === 'promotion-rejected-uncorroborated')).toEqual([]);
   });
 });

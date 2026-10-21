@@ -188,12 +188,22 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
     // 사용했음을 증명하고, outcome:'resolved'가 #2751 fix로 leg-2 역추론 경로가 실제로
     // 살아났음을 증명한다(요구사항 4 — 이슈가 명시한 측정 plan 그 자체).
     expect(prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO trip_events'));
-    const [, , kind, , , metaJson] = bind.mock.calls[0] as [string, number, string, unknown, unknown, string | null];
+    // #3144 — lock 부착 지점은 `lock-attached`(path=confirm)를 먼저 남기므로 kind로 찾는다.
+    type BindArgs = [string, number, string, unknown, unknown, string | null];
+    const calls = bind.mock.calls as BindArgs[];
+    const [, , kind, , , metaJson] = calls.find((c) => c[2] === 'boarding-confirm-result') as BindArgs;
     expect(kind).toBe('boarding-confirm-result');
     expect(JSON.parse(metaJson ?? '{}')).toEqual({
       lockState: 'leg2',
       outcome: 'resolved',
       anchorSource: 'tap',
+    });
+    const attached = calls.filter((c) => c[2] === 'lock-attached');
+    expect(attached).toHaveLength(1);
+    expect(JSON.parse(attached[0][5] ?? '{}')).toMatchObject({
+      path: 'confirm',
+      trainCode: RIDE_20260918_TRAIN,
+      hasResponseMarker: true,
     });
   });
 

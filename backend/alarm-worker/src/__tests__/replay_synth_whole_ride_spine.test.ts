@@ -39,7 +39,7 @@ import { runCaptureReplay, makeCaptureFetch, type CapturedPush } from './helpers
 import { makeWholeRideSpineTrip } from './helpers/wholeRideSpineTrip';
 import { firedStationOccurrences } from './helpers/pushAssertions';
 import { parseReplayFixture } from '../replayFixture';
-import { getTrip } from '../trips';
+import { getTrip, putTrip } from '../trips';
 import type { Env, Trip } from '../types';
 import wholeRideFixtureJson from './fixtures/spine/capture_synth_whole_ride_spine.fixture.json';
 import earlyFireFixtureJson from './fixtures/spine/capture_synth_early_fire_wrong_lock.fixture.json';
@@ -313,6 +313,15 @@ describe('#3027 Task 0 — S-C(조기 발사 → 오열차 lock): red 정적 확
         // cycle1(tickIndex===1) — 7269 도착 시각. 이 시점에 body.trainCode=7267(앞차 embed
         // 값, 실사용 충실)을 동봉해 boarding-confirm을 1회 주입한다.
         if (tickIndex === 1) {
+          // #3144 (v8 D2) — 이 시나리오의 전제는 "리드-7267에 대한 프롬프트가 이미 발사됐다"이다. replay
+          // tick 순서상 그 stamp가 아직 없어 과거엔 backward-safe(증거 없음 = 승격)가 이 전제를 우연히
+          // 대신 만족했다. 증거 없음 = 거부가 된 지금은 전제를 명시한다(없으면 7267이 거부되고 live가
+          // 7269를 잡아 #2696 잔여 설계 질문이 가려진다).
+          const seeded = await getTrip(env.TRIPS, TOKEN_C1);
+          await putTrip(env.TRIPS, {
+            ...(seeded as Trip),
+            recentPromptCandidates: { trainCodes: ['7267'], firedAt: tick - 1_000 },
+          });
           await postBoardingConfirmAt(tick, env, TOKEN_C1, '용마산', '7', '7267');
         }
       },

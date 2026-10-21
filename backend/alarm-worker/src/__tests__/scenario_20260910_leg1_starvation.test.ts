@@ -292,7 +292,13 @@ describe('2026-09-10 leg-1 침묵 격리 (용마산7→뚝섬2)', () => {
     const kv = new InMemoryKV();
     const env = makeEnv(kv);
     // backend가 라이드 실측처럼 infoMode-lockless로 trip 보유(lock 없음).
-    const trip = makeTrip({ token: 'scenario-sync-promote', infoModeEnabled: true });
+    // #3144 (v8 D2, ADR-043) — 목록 탭만으로는 승격되지 않는다(171 3013). 이 시나리오는 사용자가 boarding-prompt가
+    // 제시한 열차(7039)에 응답해 그 trainCode가 sync로 도달한 경우이므로 프롬프트 후보 stamp를 둔다.
+    const trip = makeTrip({
+      token: 'scenario-sync-promote',
+      infoModeEnabled: true,
+      recentPromptCandidates: { trainCodes: ['7039'], firedAt: Date.now() },
+    });
     await putTrip(kv as unknown as KVNamespace, trip);
 
     // device가 탭한 열차(7039) trainCode를 sync로 전송(관측역=용마산).
