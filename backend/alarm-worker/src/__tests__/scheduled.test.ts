@@ -8221,7 +8221,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     // 증거 유무와 무관하게 발사.
     // #2920 — 같은 시점에 하차 확인 프롬프트(hop-end 채널 재사용)도 1회 추가 발사되므로
     // 총 호출 수는 2회로 늘어난다(아래 두 push 각각 존재 확인으로 분해).
-    expect(apnsFetch).toHaveBeenCalledTimes(2);
+    // #3140 — lock 없는 트립은 알림 없음: 즉시 "안내 종료" 배너는 제거(종료는 타임아웃 후
+    // cleanupTripWithLa의 단일 trip-ended 통지로 보장 — A2e). 프롬프트(하차 확인)만 남는다.
+    expect(apnsFetch).toHaveBeenCalledTimes(1);
     const tripEndedCall = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).find((call) => {
       try {
         const body = JSON.parse(call[1].body as string);
@@ -8230,7 +8232,7 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
         return false;
       }
     });
-    expect(tripEndedCall, 'S11 거부 케이스 ⓕ 위반 — 증거 없다고 도착 알림이 발사되지 않음').toBeDefined();
+    expect(tripEndedCall, '#3140 위반 — lockless 즉시 도착 배너가 발사됨').toBeUndefined();
     // #2920 — 하차 확인 프롬프트(hop-end 채널 재사용)도 함께 발사됐는지 확인.
     const disembarkCall = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).find((call) => {
       try {
@@ -15478,6 +15480,15 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       },
     );
     expect(tripEndedCall).toBeDefined();
+    // #3140 — 즉시 배너 제거 후에도 종료 통지는 정확히 1회(cleanupTripWithLa 경로).
+    const tripEndedCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((call) => {
+      try {
+        return JSON.parse(call[1].body as string)?.data?.kind === 'trip-ended';
+      } catch {
+        return false;
+      }
+    });
+    expect(tripEndedCalls).toHaveLength(1);
     expect(await kv.get(`trip:${TOKEN_A2}`)).toBeNull();
   });
 
@@ -17005,6 +17016,77 @@ describe('restrictArrivalsByLegDirection (#2944, H-6)', () => {
     const arrivals = [arrival({ trainCode: 'UP', isUp: true }), arrival({ trainCode: 'DOWN', isUp: false })];
     const result = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
     expect(result).toEqual([]);
+  });
+});
+
+// #3140 — lock 없는 트립은 알림이 없다(사용자 결정 decision_lock_only_alerts, 프롬프트는 예외).
+// 취침·준비 알람은 lock 활성 게이트, lockless 매역 "통과" push는 제거. lock 활성 발사는 위
+// '#2066'/'#2510' describe가 그대로 고정한다(거부 케이스).
+describe('#3140 — lock 없는 트립 알림 제거 (backend)', () => {
+  const ARRIVED: ArrivalEntry = {
+    destination: '강남행',
+    arrivalSeconds: 30,
+    trainCode: '7246',
+    isUp: true,
+    subwayNm: '지하철2호선',
+    arvlCd: 1,
+  };
+
+  async function runLockless(overrides: Partial<Trip>) {
+    const kv = new InMemoryKV();
+    const pending = new InMemoryKV();
+    const { db, inserts } = makeFireLogDb();
+    const trip = makeTrip({
+      originStationName: '시청',
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' },
+        { stationName: '역삼', line: '2', kind: 'destination' },
+      ],
+      infoModeEnabled: true,
+      ...overrides,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv, pending, db), {
+      seoul: makeStationAwareSeoul('강남', [ARRIVED]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-3140',
+    });
+    const bodies = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).map(
+      ([, init]) => JSON.parse(init.body as string) as { aps?: { sound?: string }; data?: { kind?: string } },
+    );
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get(`trip:${trip.token}`)) as string);
+    const prepareRows = inserts
+      .filter((args) => args[2] === 'prepare-alarm')
+      .map((args) => JSON.parse(args[5] as string) as Record<string, unknown>);
+    return { stats, bodies, stored, pending, prepareRows };
+  }
+
+  it('lockless 비취침 — 준비 알람(alarm.wav) 미발사 + D1 prepare-alarm skipped/no-lock 1행, waypoint는 정상 advance', async () => {
+    const { stats, bodies, stored, prepareRows } = await runLockless({ sleepModeEnabled: false });
+    expect(stats.prepareAlarmFired).toBe(0);
+    expect(bodies.filter((b) => b.aps?.sound === 'alarm.wav')).toEqual([]);
+    expect(prepareRows).toEqual([expect.objectContaining({ outcome: 'skipped', reason: 'no-lock' })]);
+    expect(stored.waypoints[0].stationName).toBe('역삼');
+  });
+
+  it('lockless 취침 — 취침 알람(alarm.wav) 미발사, waypoint는 정상 advance', async () => {
+    const { stats, bodies, stored } = await runLockless({ sleepModeEnabled: true });
+    expect(stats.sleepAlarmFired).toBe(0);
+    expect(bodies.filter((b) => b.aps?.sound === 'alarm.wav')).toEqual([]);
+    expect(stored.waypoints[0].stationName).toBe('역삼');
+  });
+
+  it('lockless 매역 — station-passed(kind=intermediate) silent push 0 + pending 등록 0, waypoint는 정상 advance', async () => {
+    const { stats, bodies, stored, pending } = await runLockless({});
+    expect(stats.locklessIntermediateFired).toBe(0);
+    expect(bodies.filter((b) => b.data?.kind === 'intermediate')).toEqual([]);
+    expect([...pending.store.keys()]).toEqual([]);
+    expect(stored.waypoints[0].stationName).toBe('역삼');
   });
 });
 

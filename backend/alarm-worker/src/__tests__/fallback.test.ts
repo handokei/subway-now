@@ -308,7 +308,7 @@ describe('runFallbackPushes (#572 P2c)', () => {
       expect(stats.pushed).toBe(0);
     });
 
-    it('intermediate pending + trip lockless(락 없음) → 기존대로 발사', async () => {
+    it('intermediate pending + trip lockless(락 없음) → #3140 발사하지 않고 entry만 삭제 (lock 무관)', async () => {
       const tripsKv = new InMemoryKV();
       await putTrip(tripsKv as unknown as KVNamespace, makeTripFixture({ token: 'tok-lockless' }));
       await putPending(
@@ -322,8 +322,8 @@ describe('runFallbackPushes (#572 P2c)', () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
         now: () => NOW,
       });
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
-      expect(stats.pushed).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(stats.pushed).toBe(0);
       expect(kv.store.has(pendingKey('p-lockless'))).toBe(false);
     });
 
