@@ -1344,6 +1344,8 @@ app.post('/trips', async (c) => {
           // undefined — device가 보내지 않는 필드)으로 덮이면 매 재등록마다 anchor가 사라져
           // createdAt fallback으로 되돌아가는 회귀가 생긴다. same session이면 그대로 보존.
           originProximityAt: existing.originProximityAt,
+          // #3158 — vanish-swap 정정 표식은 backend-only state. 재등록이 지우면 시간표 후속 정정이 소실된다.
+          renumberSuccessor: existing.renumberSuccessor,
           // #2547 — leg-2 anchor 계열도 backend-only state(device는 이 필드들을 보내지 않음 →
           // incoming은 항상 undefined). same-session 재등록마다 덮이면 환승 후 stamp된 anchor가
           // walk-gate 경과 전에 소실돼 leg-2 탑승 프롬프트/lock이 영영 발사되지 않는 회귀가 생긴다

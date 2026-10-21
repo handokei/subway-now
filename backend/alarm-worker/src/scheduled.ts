@@ -71,7 +71,13 @@ import {
 } from './liveActivity';
 import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
-import { attachTrainCodeForLeg } from './lockSwap';
+import { attachTrainCodeForLeg, SWAP_LOCK_TTL_MS } from './lockSwap';
+import {
+  decideTimetableReattach,
+  lookupRenumberSuccessor,
+  nextRenumberArm,
+  resolveRenumberOrigin,
+} from './renumberSuccessor';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
@@ -5170,6 +5176,91 @@ async function attemptVanishSwap(
   };
   trip.boardingLock = newLock;
   trip.consecutiveEtaMissing = 0;
+  // #3158 — 번호 변경 열차(2호선 성수)였다면 시간표 후속이 나중에 관측될 때 정정할 수 있게 표식을 남긴다.
+  // 호출자가 swap 직후 putTrip하므로 추가 KV write 0.
+  trip.renumberSuccessor = nextRenumberArm(
+    activeLock.line,
+    trip.renumberSuccessor,
+    activeLock.trainCode,
+    swapped.trainCode,
+    now,
+  );
+  await recordLockReattach(env, trip, waypoint, now, {
+    source: 'vanish-swap',
+    from: activeLock.trainCode,
+    to: swapped.trainCode,
+  });
+  return newLock;
+}
+
+/**
+ * #3158 — lock 열차 번호 교체 D1 관측(`trip_events` kind='lock-reattach'). 교체 1건당 1행.
+ * source: 'timetable-successor'(시간표 후속) | 'vanish-swap'(기존 휴리스틱). 판정에는 관여하지 않는다.
+ */
+async function recordLockReattach(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  now: number,
+  meta: { source: 'timetable-successor' | 'vanish-swap'; from: string; to: string; timetableFrom?: string },
+): Promise<void> {
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'lock-reattach',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta,
+    },
+    now,
+  );
+}
+
+/**
+ * #3158 — 2호선 성수 번호 변경: lock 열차가 소멸/성수 종착이고 시간표 후속이 같은 노선·방향·시간창에서
+ * 라이브 피드에 관측되면 lock을 후속으로 옮긴다(미관측·항목 없음·타 노선이면 null — 기존 vanish-swap 불변).
+ * 시간표 판정이 가능한 열차(순수 사전 조회 통과)일 때만 self-poll KV를 읽는다. 호출자가 swap 시 putTrip.
+ */
+export async function attemptTimetableSuccessorReattach(
+  trip: Trip,
+  waypoint: Waypoint,
+  activeLock: BoardingLockMeta,
+  env: Env,
+  now: number,
+  log: Logger,
+): Promise<BoardingLockMeta | null> {
+  const origin = resolveRenumberOrigin(activeLock.trainCode, trip.renumberSuccessor, now);
+  if (lookupRenumberSuccessor(activeLock.line, origin, now) === null) return null;
+  const fresh = await readFreshSelfPollPosition(env.TRIPS, activeLock.line, now);
+  const decision = decideTimetableReattach({
+    lockLine: activeLock.line,
+    lockTrainCode: activeLock.trainCode,
+    arm: trip.renumberSuccessor,
+    positions: fresh?.positions ?? null,
+    nowMs: now,
+  });
+  if (!decision.ok || decision.successorCode === activeLock.trainCode) return null;
+  log('boarding-lock: timetable successor reattach', {
+    token: trip.token.slice(0, 8),
+    previousTrainCode: activeLock.trainCode,
+    newTrainCode: decision.successorCode,
+    timetableFrom: decision.fromCode,
+  });
+  const newLock: BoardingLockMeta = {
+    ...activeLock,
+    trainCode: decision.successorCode,
+    expiresAt: Math.max(activeLock.expiresAt, now + SWAP_LOCK_TTL_MS),
+  };
+  trip.boardingLock = newLock;
+  trip.consecutiveEtaMissing = 0;
+  trip.renumberSuccessor = undefined;
+  await recordLockReattach(env, trip, waypoint, now, {
+    source: 'timetable-successor',
+    from: activeLock.trainCode,
+    to: decision.successorCode,
+    timetableFrom: decision.fromCode,
+  });
   return newLock;
 }
 
@@ -5534,6 +5625,13 @@ export async function runTrainCodeTracking(
   ssot: TripPositionSSoT | null = null,
 ): Promise<void> {
   let activeLock = lock;
+  // #3158 — 번호 변경 시간표 후속 재부착은 estimate보다 먼저: 옛 번호 arrival 행이 stale로 계속 매칭되면
+  // estimate가 null이 되지 않아 vanish-swap이 영영 시도되지 않는다(173).
+  const timetableLock = await attemptTimetableSuccessorReattach(trip, waypoint, activeLock, env, now, log);
+  if (timetableLock) {
+    activeLock = timetableLock;
+    await putTrip(env.TRIPS, trip);
+  }
   let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
   // #2869 (E) — estimate===null 상태 전이 계측(전이 시에만, #2073 quota 보호). swap 시도/성공
   // 여부와 무관하게 "이번 tick 진입 시점" 값을 기록한다. 반환된(가능하면 갱신된) ssot를

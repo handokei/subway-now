@@ -178,6 +178,12 @@ export interface Trip {
    */
   etaMissingDemotedAt?: number;
   /**
+   * #3158 — vanish-swap이 2호선 성수 번호 변경 열차(예: 3009)의 lock을 다른 열차로 옮겼을 때 남기는 정정 표식.
+   * 시간표 후속(3045)이 이후 피드에 관측되면 `renumberSuccessor.ts`가 lock을 후속으로 되돌려 맞춘다.
+   * lock이 `swappedTo`와 다르면(사용자 탭 등) 무시, TTL(`RENUMBER_ARM_TTL_MS`) 후 무효. 재부착 시 소거.
+   */
+  renumberSuccessor?: { from: string; swappedTo: string; armedAt: number };
+  /**
    * #2900 (옵션 C, 재설계: 코디네이터 리뷰 2026-10-08) — lockless destination waypoint에서
    * arvlCd 도착 신호(ENTERING/ARRIVED)가 왔지만 탑승 증거(lock 활성 / lockEverAttached /
    * boardingCommitted / legResolveStreak)가 전혀 없을 때, **도착 알림은 그대로 즉시
