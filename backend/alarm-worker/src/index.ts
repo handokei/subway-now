@@ -92,6 +92,8 @@ import {
   advanceBoardingLockWaypoint,
   completeWaypointAdvance,
   createEmptyScheduledStats,
+  fireSyncConsumedPrecedingAlarms,
+  selectConsumedPrecedingAlarmPairs,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
   isLockActiveForLeg,
@@ -3538,6 +3540,41 @@ app.post('/boarding-lock/sync', async (c) => {
               ),
             )
             .then(() => undefined),
+        );
+      }
+      // #3157 — 위 slice가 소비한 intermediate가 아직 도달하지 않은 transfer/destination의 직전역이면
+      // 그 취침/준비 알람은 cron이 다시 볼 수 없다(트립 171 성수 소비 -> "곧 뚝섬" 유실). 관측역은
+      // cron에 맡긴다는 위 #2625 전제는 관측역이 trip에 남을 때만 성립하는데 이 분기는 관측역까지
+      // 잘라낸다. lockless = 알림 없음(#3140)은 maybeFire*의 isBoardingLockActive 게이트가 소유한다
+      // (cron 경로와 동일 단일 게이트). dedup은 기존 (token, target) 키.
+      // 혼합 분기(transfer/destination 소비)는 타깃이 이미 도달한 쌍이라 대상이 없다.
+      if (selectConsumedPrecedingAlarmPairs(existing.waypoints, advance.shiftedCount).length > 0) {
+        const log = createJsonLogger();
+        scheduleTripEvent(
+          c,
+          getArchFlag(c.env.TRIPS)
+            .catch(() => ARCH_FLAG_DEFAULT)
+            .then((archFlag) =>
+              fireSyncConsumedPrecedingAlarms(
+                c.env,
+                existing,
+                advance.shiftedCount,
+                {
+                  apnsConfig: {
+                    keyId: c.env.APNS_KEY_ID,
+                    teamId: c.env.APNS_TEAM_ID,
+                    privateKeyPem: c.env.APNS_PRIVATE_KEY,
+                    bundleId: c.env.APNS_BUNDLE_ID,
+                  },
+                  apnsHosts: { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX },
+                  archFlag,
+                },
+                now,
+                log,
+                () => crypto.randomUUID(),
+              ),
+            )
+            .catch((e) => log('boarding-lock/sync: preceding alarm failed', { error: String(e) })),
         );
       }
     }
