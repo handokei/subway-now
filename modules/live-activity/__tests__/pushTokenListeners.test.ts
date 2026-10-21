@@ -142,4 +142,25 @@ describe('live-activity push token / ended listeners', () => {
       expect(() => sub.remove()).not.toThrow();
     },
   );
+
+  // #3162 — adopt된 Activity는 토큰을 재emit하지 않으므로 JS가 native에서 현재 토큰을 직접 재조회한다.
+  it('iOS: requestLiveActivityPushToken calls native requestPushToken and returns its token', async () => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'ios' });
+    const requestPushToken = jest.fn().mockResolvedValue('abcd');
+    mockRequireOptionalNativeModule.mockReturnValue({ requestPushToken });
+
+    const mod = require('../index');
+
+    await expect(mod.requestLiveActivityPushToken()).resolves.toBe('abcd');
+    expect(requestPushToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-iOS: requestLiveActivityPushToken resolves null', async () => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'android' });
+    mockRequireOptionalNativeModule.mockReturnValue(null);
+
+    const mod = require('../index');
+
+    await expect(mod.requestLiveActivityPushToken()).resolves.toBeNull();
+  });
 });

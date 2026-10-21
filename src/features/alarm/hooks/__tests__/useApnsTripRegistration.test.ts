@@ -57,6 +57,12 @@ jest.mock('../../utils/alarmLog', () => ({
   logSubsurfaceRegisterTransition: (...args: unknown[]) => mockLogSubsurfaceRegisterTransition(...args),
 }));
 
+// #3162 — trip register ack(ACTIVE_TRIP_KEY 확정) 시점에 LA 토큰 불변식 복구를 트리거하는지만 본다.
+const mockRegisterHeldLaToken = jest.fn();
+jest.mock('../../utils/liveActivityPushChannel', () => ({
+  registerHeldLiveActivityTokenForCurrentTrip: () => mockRegisterHeldLaToken(),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -366,6 +372,36 @@ describe('useApnsTripRegistration', () => {
       expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
       expect(mockLogCrossTripMirrorSkip).not.toHaveBeenCalled();
     });
+  });
+
+  it('#3162 trip register ack 직후 LA 토큰 불변식 복구를 트리거한다(ACTIVE_TRIP_KEY 저장 뒤)', async () => {
+    mockRegisterHeldLaToken.mockClear();
+    renderHook(() =>
+      useApnsTripRegistration({
+        route: directRoute,
+        destination: station,
+        nextStationEtaSeconds: 120,
+      }),
+    );
+    await waitFor(() => expect(mockRegisterHeldLaToken).toHaveBeenCalled());
+    const setItemOrder = (AsyncStorage.setItem as jest.Mock).mock.invocationCallOrder;
+    const setItemCalls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+    const activeTripIdx = setItemCalls.findIndex(([key]) => key === ACTIVE_TRIP_KEY);
+    expect(setItemOrder[activeTripIdx]).toBeLessThan(mockRegisterHeldLaToken.mock.invocationCallOrder[0]);
+  });
+
+  it('#3162 register 실패 시에는 LA 토큰 복구를 트리거하지 않는다', async () => {
+    mockRegisterHeldLaToken.mockClear();
+    mockRegister.mockResolvedValue({ ok: false });
+    renderHook(() =>
+      useApnsTripRegistration({
+        route: directRoute,
+        destination: station,
+        nextStationEtaSeconds: 120,
+      }),
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+    expect(mockRegisterHeldLaToken).not.toHaveBeenCalled();
   });
 
   it('register 실패 시 ACTIVE_TRIP_KEY 저장 안 함', async () => {
