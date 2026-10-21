@@ -3838,6 +3838,100 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       });
       expect(stats.prepareAlarmFired).toBe(0);
     });
+
+    // #3110 — 관측 전용: 평가 outcome마다 D1 trip_events(kind='prepare-alarm') 1행.
+    // 10/21 trip 173 06:28:45 '곧 뚝섬' 발사가 D1·덤프 어디에도 없어 판별 불가였다.
+    describe('#3110 — D1 trip_events(kind=prepare-alarm) 관측', () => {
+      const WAYPOINTS: Waypoint[] = [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'transfer' },
+        { stationName: '아차산', line: '5', kind: 'destination' },
+      ];
+
+      async function runWith(
+        overrides: Partial<Trip>,
+        opts: { kvPre?: Record<string, string>; apnsStatus?: number } = {},
+      ) {
+        const { db, inserts } = makeFireLogDb();
+        const kv = new InMemoryKV();
+        await putTrip(kv as unknown as KVNamespace, makeLockTrip({ waypoints: WAYPOINTS, ...overrides }));
+        for (const [k, v] of Object.entries(opts.kvPre ?? {})) await kv.put(k, v);
+        await runScheduled(makeEnv(kv, undefined, db), {
+          seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: vi.fn(
+            async () => new Response('{"reason":"BadFoo"}', { status: opts.apnsStatus ?? 200 }),
+          ) as unknown as typeof fetch,
+          now: () => NOW,
+          generatePushId: () => 'p-prepare-d1',
+        });
+        return inserts
+          .filter((args) => args[2] === 'prepare-alarm')
+          .map((args) => ({
+            station: args[3],
+            line: args[4],
+            meta: JSON.parse(args[5] as string) as Record<string, unknown>,
+          }));
+      }
+
+      it('발사 → outcome=fired 1행 (역·노선·target 종류·pushId)', async () => {
+        const rows = await runWith({ sleepModeEnabled: false });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].station).toBe('중곡');
+        expect(rows[0].line).toBe('7');
+        expect(rows[0].meta).toMatchObject({
+          outcome: 'fired',
+          targetStation: '군자',
+          targetKind: 'transfer',
+          pushId: 'p-prepare-d1',
+        });
+      });
+
+      it('dedup 키 hit → outcome=skipped / reason=dedup 1행', async () => {
+        const rows = await runWith(
+          { sleepModeEnabled: false },
+          { kvPre: { 'prepareAlarmFireKey:lock-tok:군자': '1' } },
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0].meta).toMatchObject({
+          outcome: 'skipped',
+          reason: 'dedup',
+          targetStation: '군자',
+          targetKind: 'transfer',
+        });
+      });
+
+      it('sleep trip → outcome=skipped / reason=sleep 1행', async () => {
+        const rows = await runWith({ sleepModeEnabled: true });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].meta).toMatchObject({ outcome: 'skipped', reason: 'sleep' });
+      });
+
+      it('다음이 transfer/destination 아님 → outcome=skipped / reason=not-preceding 1행', async () => {
+        const rows = await runWith({
+          sleepModeEnabled: false,
+          waypoints: [
+            { stationName: '중곡', line: '7', kind: 'intermediate' },
+            { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
+            { stationName: '군자', line: '7', kind: 'transfer' },
+          ],
+        });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].meta).toMatchObject({ outcome: 'skipped', reason: 'not-preceding' });
+      });
+
+      it('push 실패(400) → outcome=rolled-back 1행 (fired 행 없음)', async () => {
+        const rows = await runWith({ sleepModeEnabled: false }, { apnsStatus: 400 });
+        expect(rows).toHaveLength(1);
+        expect(rows[0].meta).toMatchObject({
+          outcome: 'rolled-back',
+          targetStation: '군자',
+          pushId: 'p-prepare-d1',
+          status: 400,
+        });
+      });
+    });
   });
 
   // #2510 — 도착 진동(ACTION, 전체 트립). transfer/destination의 arvlCd 확정 push는 이제
