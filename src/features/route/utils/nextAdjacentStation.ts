@@ -1,6 +1,7 @@
 import type { LineNumber } from '../../../shared/types/station';
 import { resolveTravelDirection } from './travelDirection';
 import { inferLoopDirection, nextLoopAdjacentStationName } from './loopDirection';
+import { isReversedOrientationLine } from '../../../shared/utils/lineOrientation';
 import { getStationsOnLine, normalizeStationName } from '../../../shared/utils/stationRoute';
 
 /**
@@ -31,7 +32,9 @@ export function resolveNextAdjacentStationName(
     const stations = getStationsOnLine(line);
     const target = normalizeStationName(currentStationName);
     const currentIdx = stations.findIndex((s) => normalizeStationName(s.name) === target);
-    const nextIdx = resolution.direction === 'down' ? currentIdx + 1 : currentIdx - 1;
+    // #3122 — direction→idx 역변환도 역방향 노선(idx 증가=상행)은 반전.
+    const idxIncreasesDown = !isReversedOrientationLine(line);
+    const nextIdx = (resolution.direction === 'down') === idxIncreasesDown ? currentIdx + 1 : currentIdx - 1;
     return stations[nextIdx].name;
   }
 

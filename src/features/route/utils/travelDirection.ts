@@ -1,6 +1,7 @@
 import type { LineNumber, Station } from '../../../shared/types/station';
 import type { TravelDirection } from '../../../shared/types/exitSide';
 import { getStationsOnLine, normalizeStationName } from '../../../shared/utils/stationRoute';
+import { isReversedOrientationLine } from '../../../shared/utils/lineOrientation';
 import lineTopology from '../../../data/lineTopology.json';
 
 // 단조(상행 종점 → 하행 종점)로 stations.json에 표현 가능한 노선만 인덱스 비교로 방향을 결정한다.
@@ -32,8 +33,10 @@ export function resolveTravelDirection(
   const fromIdx = indexOf(stations, fromName);
   const toIdx = indexOf(stations, toName);
   if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return null;
+  // #3122 — 신분당·수인분당은 idx 증가=상행이라 극성 반전.
+  const idxDecreases = toIdx < fromIdx;
   return {
-    direction: toIdx < fromIdx ? 'up' : 'down',
+    direction: idxDecreases !== isReversedOrientationLine(line) ? 'up' : 'down',
     fromStation: stations[fromIdx],
     toStation: stations[toIdx],
   };
@@ -58,7 +61,9 @@ export function resolveProgressingTerminal(
   const endpoints = ENDPOINTS[line];
   /* istanbul ignore next -- lineTopology.json invariant: 모든 monotonicLines가 endpoints에 등록. 추가 노선 도입 시 가드 */
   if (!endpoints) return null;
-  return resolution.direction === 'up' ? endpoints.low : endpoints.high;
+  // endpoints.low = idx 작은 쪽 — 역방향 노선(#3122)은 up이 idx 증가(high) 방면.
+  const towardLow = (resolution.direction === 'up') !== isReversedOrientationLine(line);
+  return towardLow ? endpoints.low : endpoints.high;
 }
 
 function indexOf(stations: ReadonlyArray<Station>, name: string): number {
