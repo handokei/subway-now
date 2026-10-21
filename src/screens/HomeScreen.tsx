@@ -475,7 +475,7 @@ export default function HomeScreen() {
   // 사용자가 직접 "안내 종료"를 누른 경로(handleEndNavigation)에는 붙이지 않는다.
   const handleArrivalClear = useCallback(() => {
     const cleared = destination;
-    setDestination(null);
+    setDestination(null, 'arrival-auto-clear');
     void notifyTripEnded({ destination: cleared, reason: 'arrived' });
   }, [destination, setDestination]);
   // #1973 / #2651 — 안내 시작/중단 명시 trigger. infoMode(`useUserIntentStore.infoModeEnabled`)
@@ -1046,7 +1046,7 @@ export default function HomeScreen() {
   const [autoDisembarkToast, setAutoDisembarkToast] = useState<Station | null>(null);
   const handleAutoDisembark = useCallback(
     (cleared: Station) => {
-      setDestination(null);
+      setDestination(null, 'destination-auto-clear');
       setAutoDisembarkToast(cleared);
       // #2675 — toast는 FG 전용이라 BG/종료 상태에서 끝난 trip은 사용자가 영영 모른다. 알림으로도 알린다.
       void notifyTripEnded({ destination: cleared, reason: 'arrived' });

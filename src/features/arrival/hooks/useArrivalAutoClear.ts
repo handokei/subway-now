@@ -11,6 +11,16 @@ import { logArrivalAutoClearFired } from '../../alarm/utils/alarmLog';
 const ARRIVAL_THRESHOLD_KM = 0.5;
 const CLEAR_DELAY_MS = 2000;
 
+/**
+ * #3109 — distanceKm가 실측이 아니라 placeholder/arc 추정인 source. 이 source들은 거리 임계값
+ * 비교를 신뢰하지 않고 destinationArrivalConfirmed(ARRIVED)를 요구한다. #2716은 'backend-ssot'만,
+ * #2741은 placeholder 플래그만 다뤄 'route-progress'(arc 파생 추정 거리)를 놓쳤다(10/21 trip 173).
+ */
+const ESTIMATED_DISTANCE_SOURCES: ReadonlySet<FusionSource> = new Set<FusionSource>([
+  'backend-ssot',
+  'route-progress',
+]);
+
 export interface UseArrivalAutoClearParams {
   currentStationName: string | undefined;
   distanceKm: number | undefined;
@@ -77,7 +87,8 @@ export function useArrivalAutoClear({
     // 쓰므로 distanceSource만으로 분기할 수 없다. caller가 계산한 distanceIsPlaceholder로
     // placeholder 케이스만 골라 동일한 대체 확증 경로를 태운다.
     const distanceGatePasses =
-      distanceSource === 'backend-ssot' || distanceIsPlaceholder
+      (distanceSource != null && ESTIMATED_DISTANCE_SOURCES.has(distanceSource)) ||
+      distanceIsPlaceholder
         ? destinationArrivalConfirmed
         : distanceKm != null && distanceKm <= ARRIVAL_THRESHOLD_KM;
     if (
