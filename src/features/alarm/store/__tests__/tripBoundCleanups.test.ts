@@ -22,6 +22,7 @@ import {
   markStationFired,
   isStationRecentlyFired,
 } from '../../utils/crossCategoryStationDedup';
+import { isLaDismissed, markLaDismissed } from '../../utils/laDismissSentinel';
 import { clearAlarmLogWindows } from '../../utils/alarmLog';
 import { resetAlarmBackendDedup } from '../../api/alarmBackend';
 import * as alarmBackend from '../../api/alarmBackend';
@@ -723,6 +724,34 @@ describe('tripBoundCleanups', () => {
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
     await expect(runTripBoundCleanups('user-clear')).resolves.toBeUndefined();
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  // #3106 — sentinel clear는 LA end 완료 뒤에 실행돼야 한다. 동시 시작이면 end가 유발한 dismiss
+  // 기록(markLaDismissed)이 clear 뒤에 써져 TTL(30분) 동안 생존 → 새 trip LA 재상승 억제
+  // (10/7·10/13·10/21 3개 독립 trip 실측).
+  it('#3106 — LA end 도중 기록된 dismiss sentinel이 cleanup 완료 후 남지 않는다', async () => {
+    const store = new Map<string, string>();
+    (AsyncStorage.getItem as jest.Mock).mockImplementation((k: string) =>
+      Promise.resolve(store.get(k) ?? null),
+    );
+    (AsyncStorage.setItem as jest.Mock).mockImplementation((k: string, v: string) => {
+      store.set(k, v);
+      return Promise.resolve();
+    });
+    (AsyncStorage.removeItem as jest.Mock).mockImplementation((k: string) => {
+      store.delete(k);
+      return Promise.resolve();
+    });
+    mockEndLiveActivity.mockImplementationOnce(async () => {
+      // end가 비동기로 끝나는 동안 native dismiss 이벤트가 sentinel을 쓴다.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await markLaDismissed();
+    });
+
+    await runTripBoundCleanups('user-clear');
+
+    expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+    expect(await isLaDismissed()).toBe(false);
   });
 
   // #2129 — lockless trip 종료 경로(silent push trip-ended / useStateRehydration sentinel /
