@@ -65,6 +65,11 @@ jest.mock('../../../features/alarm/utils/tripEndedNotification', () => ({
 }));
 const NOTICE_DESTINATION = { id: '2-010', name: '뚝섬', line: '2' };
 
+const mockClaimTripEndAction = jest.fn();
+jest.mock('../../../features/alarm/utils/tripEndClaim', () => ({
+  claimTripEndAction: () => mockClaimTripEndAction(),
+}));
+
 const mockAddDomainBreadcrumb = jest.fn();
 jest.mock('../../infra/monitoring/breadcrumb', () => ({
   addLogBreadcrumb: jest.fn(),
@@ -114,6 +119,7 @@ beforeEach(() => {
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockSetSentinel.mockResolvedValue(undefined);
   mockNotifyTripEnded.mockResolvedValue(undefined);
+  mockClaimTripEndAction.mockResolvedValue({ claimed: true, release: jest.fn() });
   // 기본은 trip 미존재(none) — 기존 테스트들이 backstop 영향 받지 않도록.
   mockGetTripStartedAt.mockResolvedValue(null);
   mockTripLifecyclePhase.mockReturnValue('none');
@@ -641,6 +647,55 @@ describe('useStateRehydration', () => {
       expect(mockNotifyTripEnded.mock.invocationCallOrder[0]).toBeLessThan(
         mockRunTripBoundCleanups.mock.invocationCallOrder[0],
       );
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it('PR-2 경쟁 — 9h force-end: 다른 경로(B)가 같은 종료를 먼저 선점했으면 통지·cleanup·sentinel 모두 skip', async () => {
+      mockClaimTripEndAction.mockResolvedValue({ claimed: false, release: jest.fn() });
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('force-end');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+    });
+
+    it('PR-2 경쟁 — 일시정지 backstop도 선점당하면 skip', async () => {
+      const now = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockClaimTripEndAction.mockResolvedValue({ claimed: false, release: jest.fn() });
+      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it('PR-2 — 9h cleanup이 throw하면 claim을 release해 다음 진입이 재시도할 수 있다', async () => {
+      const release = jest.fn();
+      mockClaimTripEndAction.mockResolvedValue({ claimed: true, release });
+      mockRunTripBoundCleanups.mockRejectedValue(new Error('io'));
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('force-end');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    });
+
+    it('PR-2 — 일시정지 cleanup이 throw하면 claim을 release한다', async () => {
+      const now = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      const release = jest.fn();
+      mockClaimTripEndAction.mockResolvedValue({ claimed: true, release });
+      mockRunTripBoundCleanups.mockRejectedValue(new Error('io'));
+      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(release).toHaveBeenCalledTimes(1));
       (Date.now as jest.Mock).mockRestore();
     });
 

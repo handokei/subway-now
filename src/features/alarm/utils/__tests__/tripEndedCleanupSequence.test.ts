@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import {
   cleanupBackendConfirmedEndedTrip,
+  cleanupBackendGoneTrip,
   cleanupUserInitiatedEndedTrip,
 } from '../tripEndedCleanupSequence';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
@@ -152,5 +153,46 @@ describe('cleanupUserInitiatedEndedTrip', () => {
     expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
       reason: 'user-end-trip-button',
     });
+  });
+});
+
+describe('cleanupBackendGoneTrip (PR-2, B 최소판)', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+    await AsyncStorage.clear();
+    useDestinationStore.setState({
+      destination: MOCK_STATIONS.gangnam,
+      customOrigin: MOCK_STATIONS.chungmuro,
+      tripOrigin: MOCK_STATIONS.hyochang,
+    });
+  });
+
+  it('정본 시퀀스를 그대로 타되 종료 사유만 backend-gone-device-confirmed', async () => {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    mockGetCurrentTripCorrIdSync.mockReturnValue('corr-gone');
+
+    await cleanupBackendGoneTrip(1_700_000_200_000);
+
+    expect(mockTriggerTripEndRecall).toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-gone-device-confirmed');
+    expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledWith('corr-gone');
+    // #2114 — sentinel에 corrId 동봉(다음 트립이 stale sentinel로 지워지지 않게).
+    expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(1_700_000_200_000, 'corr-gone');
+    expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
+      reason: 'backend-gone-device-confirmed',
+    });
+  });
+
+  it('#2972 — 종료 후 register 입력이 소멸한다: destination 계열 reset + ACTIVE_TRIP_KEY 제거', async () => {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+
+    await cleanupBackendGoneTrip(1_700_000_200_000);
+
+    const state = useDestinationStore.getState();
+    expect(state.destination).toBeNull();
+    expect(state.customOrigin).toBeNull();
+    expect(state.tripOrigin).toBeNull();
+    expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
   });
 });

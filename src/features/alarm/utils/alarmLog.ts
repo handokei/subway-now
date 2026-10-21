@@ -517,6 +517,11 @@ export type AlarmLogReason =
   // cold-start rehydration backstop 두 진입점 공통 reason — source='lifecycle-backstop'로
   // 적재해 기존 backstop 계열과 같은 분포로 관측(fire 분모 제외 유지).
   | 'trip-paused-auto-ended'
+  // PR-2 — backend 404/410 자가 종료(B 최소판). 종료 시 fired, 유예 시 suppressed + 사유별 reason.
+  | 'trip-gone-self-end'
+  | 'trip-gone-defer-young'
+  | 'trip-gone-defer-lock'
+  | 'trip-gone-defer-alarm'
   // #2687 — LA fallback 알림 content dedup 적중. 직전 발사와 (title, body)가 완전히 동일해
   // 재예약을 건너뛴 경우. 시간 기반이 아닌 내용 동일성 기준 — 내용이 바뀌면 즉시 재적재된다.
   | 'dedup-la-fallback-content'

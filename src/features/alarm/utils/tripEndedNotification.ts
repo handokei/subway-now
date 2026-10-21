@@ -30,11 +30,9 @@ import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { TRIP_ENDED_CATEGORY } from './notificationCategory';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
-import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { appendAlarmLog } from './alarmLog';
-import { claimTripEnd } from './tripEndClaim';
-import { getTripStartedAt } from './tripStartStorage';
+import { claimTripEnd, resolveTripEndIdentity } from './tripEndClaim';
 
 const log = createLogger('tripEndedNotification');
 
@@ -92,11 +90,7 @@ export interface NotifyTripEndedInput {
  * (cleanup 뒤 호출은 startedAt → 분 단위 폴백으로 내려간다).
  */
 async function resolveEndClaimKey(): Promise<string> {
-  const corrId = getCurrentTripCorrIdSync();
-  if (corrId) return corrId;
-  const startedAt = await getTripStartedAt().catch(() => null);
-  if (startedAt !== null) return `start:${startedAt}`;
-  return `min:${Math.floor(Date.now() / MINUTE_MS)}`;
+  return (await resolveTripEndIdentity()) ?? `min:${Math.floor(Date.now() / MINUTE_MS)}`;
 }
 
 /**

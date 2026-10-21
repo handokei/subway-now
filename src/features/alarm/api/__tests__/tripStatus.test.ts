@@ -1,4 +1,4 @@
-import { fetchTripStatus } from '../tripStatus';
+import { fetchTripStatus, type TripStatusResult } from '../tripStatus';
 
 function jsonResponse(body: unknown, status: number = 200): Response {
   return {
@@ -47,7 +47,7 @@ describe('fetchTripStatus', () => {
       jsonResponse({ tripToken: 'tk', status: 'ended', endedAt: 1, endReason: reason }),
     );
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result?.endReason).toBe(reason);
+    expect((result as TripStatusResult).endReason).toBe(reason);
   });
 
   it('200 ended endReason이 알 수 없는 값이면 unknown', async () => {
@@ -55,7 +55,7 @@ describe('fetchTripStatus', () => {
       jsonResponse({ tripToken: 'tk', status: 'ended', endedAt: 1, endReason: 'mystery' }),
     );
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result?.endReason).toBe('unknown');
+    expect((result as TripStatusResult).endReason).toBe('unknown');
   });
 
   it('200 ended endReason 타입 비-string → unknown', async () => {
@@ -63,7 +63,7 @@ describe('fetchTripStatus', () => {
       jsonResponse({ tripToken: 'tk', status: 'ended', endedAt: 1, endReason: 42 }),
     );
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result?.endReason).toBe('unknown');
+    expect((result as TripStatusResult).endReason).toBe('unknown');
   });
 
   it('200 ended endedAt 누락/비-number → Date.now() fallback', async () => {
@@ -72,22 +72,22 @@ describe('fetchTripStatus', () => {
       jsonResponse({ tripToken: 'tk', status: 'ended', endReason: 'expired' }),
     );
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result?.endedAt).toBe(Date.now());
+    expect((result as TripStatusResult).endedAt).toBe(Date.now());
     jest.useRealTimers();
   });
 
-  it('404 → null', async () => {
+  it('404 → { status: gone, code: 404 }', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ error: 'trip_not_found' }, 404));
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: 'gone', code: 404 });
   });
 
-  it('410 → null', async () => {
+  it('410 → { status: gone, code: 410 } (404와 구분되는 code)', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(
       jsonResponse({ tripToken: 'tk', status: 'expired-retention' }, 410),
     );
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: 'gone', code: 410 });
   });
 
   it('500 → throw', async () => {

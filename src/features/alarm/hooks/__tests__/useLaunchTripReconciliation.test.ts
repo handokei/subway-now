@@ -62,6 +62,12 @@ jest.mock('../../utils/tripEndedNotification', () => ({
   notifyTripEnded: (...args: unknown[]) => mockNotifyTripEnded(...args),
 }));
 
+// PR-2 — gone(404/410) 판정·종료는 공유 orchestrator. 여기서는 분기 배선만 검증한다.
+const mockHandleTripGone = jest.fn();
+jest.mock('../../utils/tripGoneSelfEnd', () => ({
+  handleTripGone: (...args: unknown[]) => mockHandleTripGone(...args),
+}));
+
 const mockFlushSignalDumpOutbox = jest.fn();
 jest.mock('../../api/signalDumpBackend', () => ({
   flushSignalDumpOutbox: (...args: unknown[]) => mockFlushSignalDumpOutbox(...args),
@@ -293,14 +299,54 @@ describe('runLaunchTripReconciliation', () => {
     expect(useDestinationStore.getState().destination).not.toBeNull();
   });
 
-  it('404/410 (null) → active trip clear만, cleanup/recall X (기존 동작 유지)', async () => {
-    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
-    mockFetchTripStatus.mockResolvedValue(null);
-    await runLaunchTripReconciliation();
-    expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
-    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
-    expect(mockSetSentinel).not.toHaveBeenCalled();
-    expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+  describe('PR-2 — gone(404/410) 분기: 맨 키 삭제 대신 handleTripGone 판정', () => {
+    const GONE = { status: 'gone', code: 404 } as const;
+
+    beforeEach(async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockFetchTripStatus.mockResolvedValue(GONE);
+    });
+
+    it('판정 위임: result·tripToken·site=launch 를 넘긴다', async () => {
+      mockHandleTripGone.mockResolvedValue('ended');
+      await runLaunchTripReconciliation();
+      expect(mockHandleTripGone).toHaveBeenCalledWith({
+        result: GONE,
+        tripToken: 'tk',
+        site: 'launch',
+      });
+    });
+
+    it("'ended' -> 이 분기는 키를 직접 건드리지 않는다(정본 시퀀스가 처리)", async () => {
+      mockHandleTripGone.mockResolvedValue('ended');
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+    });
+
+    it("'young' -> 기존 동작 유지: 키만 삭제(heal 재등록 의도 보존), 종료 X", async () => {
+      mockHandleTripGone.mockResolvedValue('young');
+      await runLaunchTripReconciliation();
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+    });
+
+    it.each(['deferred', 'skipped'])(
+      "'%s' -> 키 보존(pull이 재시도 / 선점한 경로가 종료)",
+      async (outcome) => {
+        mockHandleTripGone.mockResolvedValue(outcome);
+        await runLaunchTripReconciliation();
+        expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+      },
+    );
+
+    it('orchestrator가 throw해도 launch를 막지 않는다(graceful) + 키 보존', async () => {
+      mockHandleTripGone.mockRejectedValue(new Error('io'));
+      await expect(runLaunchTripReconciliation()).resolves.toBeUndefined();
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+    });
   });
 
   it('네트워크 에러 → silent fail (throw 없음, 상태 변경 없음)', async () => {
