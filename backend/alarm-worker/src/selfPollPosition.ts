@@ -40,6 +40,7 @@
  */
 
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
+import { updateStationTrainLogs, type StationTrainLogs } from './anchorDepartures';
 import type { ArrivalEntry, PositionEntry, SeoulArrivalClient } from './seoul';
 import type { LineNumber } from './types';
 
@@ -104,6 +105,11 @@ interface SelfPollEntry {
   positions: PositionEntry[];
   /** stamp 시점 epoch ms — caller가 staleness 판정에 사용 (TTL 안쪽이라도 30s 직전이면 보수적 선택 가능). */
   fetchedAt: number;
+  /**
+   * #3155 — 추적 역별 최근 10분 출발 기록. 같은 put에 실려 추가 KV write가 없다. 추적 역 인자가 없거나
+   * 기록할 열차가 없으면 필드 자체가 없다(기존 stamp 형태 불변).
+   */
+  stationLogs?: StationTrainLogs;
 }
 
 /** Phase 5 (#1828) — KV에 stamp된 station-level arrivals entry. */
@@ -196,8 +202,9 @@ export async function writeSelfPollPosition(
   line: LineNumber,
   positions: PositionEntry[],
   now: number,
+  stationLogs?: StationTrainLogs,
 ): Promise<void> {
-  const entry: SelfPollEntry = { positions, fetchedAt: now };
+  const entry: SelfPollEntry = { positions, fetchedAt: now, ...(stationLogs ? { stationLogs } : {}) };
   await kv.put(selfPollKey(line), JSON.stringify(entry), {
     expirationTtl: SELF_POLL_TTL_SEC,
   });
@@ -280,6 +287,7 @@ export async function pollLinesAndStamp(
   seoul: SeoulArrivalClient,
   lines: ReadonlySet<LineNumber>,
   now: number,
+  trackedStations?: ReadonlyMap<string, ReadonlySet<string>>,
 ): Promise<SelfPollStats> {
   const stats: SelfPollStats = { fetched: 0, cacheHit: 0, error: 0 };
   if (lines.size === 0) return stats;
@@ -292,7 +300,12 @@ export async function pollLinesAndStamp(
           return;
         }
         const positions = await seoul.fetchPositions(line);
-        await writeSelfPollPosition(kv, line, positions, now);
+        // #3155 — 직전 stamp(existing)와 비교한 앵커역 출발 기록을 **같은 put**에 싣는다(추가 write 0).
+        const tracked = trackedStations?.get(line);
+        const stationLogs = tracked
+          ? updateStationTrainLogs(existing?.stationLogs, positions, tracked, now)
+          : undefined;
+        await writeSelfPollPosition(kv, line, positions, now, stationLogs);
         stats.fetched += 1;
       } catch {
         stats.error += 1;

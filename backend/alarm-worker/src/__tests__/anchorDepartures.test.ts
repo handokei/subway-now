@@ -136,7 +136,58 @@ describe('classifyAnchorSighting — 앵커에서 본 열차인가', () => {
   });
 });
 
+describe('updateStationTrainLogs — recptnMs 누락/중복 경계', () => {
+  it('recptnMs 0(누락)은 이번 tick 관측(now)으로 취급한다', () => {
+    const logs = updateStationTrainLogs(undefined, [pos('2011', ANCHOR, DEPARTED, { recptnMs: 0 })], TRACKED, NOW);
+    expect(logs?.[ANCHOR].departed).toEqual([{ trainCode: '2011', isUp: true, departedAt: NOW }]);
+    const present = updateStationTrainLogs(undefined, [pos('2011', ANCHOR, ARRIVED, { recptnMs: 0 })], TRACKED, NOW);
+    expect(present?.[ANCHOR].present).toEqual([{ trainCode: '2011', isUp: true, seenAt: NOW }]);
+  });
+
+  it('이미 출발로 기록된 열차가 present에도 남아 있다가 다른 역에서 보여도 출발 시각을 덮어쓰지 않는다', () => {
+    const prev = {
+      [ANCHOR]: {
+        present: [{ trainCode: '2011', isUp: true, seenAt: NOW - 90_000 }],
+        departed: [{ trainCode: '2011', isUp: true, departedAt: NOW - 80_000 }],
+      },
+    };
+    const logs = updateStationTrainLogs(prev, [pos('2011', '성수', ARRIVED)], TRACKED, NOW);
+    expect(logs?.[ANCHOR].departed).toEqual([{ trainCode: '2011', isUp: true, departedAt: NOW - 80_000 }]);
+    expect(logs?.[ANCHOR].present).toEqual([]);
+  });
+
+  it('계속 역에 서 있는 열차는 출발로 보지 않고 seenAt만 갱신한다 (반대 방향 열차도 방향별로 따로 추적)', () => {
+    const t0 = NOW - 30_000;
+    const first = updateStationTrainLogs(
+      undefined,
+      [pos('2011', ANCHOR, ARRIVED, { recptnMs: t0 }), pos('8001', ANCHOR, ARRIVED, { recptnMs: t0, isUp: false })],
+      TRACKED,
+      t0,
+    );
+    const second = updateStationTrainLogs(
+      first,
+      [pos('2011', ANCHOR, ARRIVED), pos('8001', ANCHOR, ARRIVED, { isUp: false })],
+      TRACKED,
+      NOW,
+    );
+    expect(second?.[ANCHOR].departed).toEqual([]);
+    expect(second?.[ANCHOR].present.map((p) => [p.trainCode, p.isUp, p.seenAt])).toEqual([
+      ['2011', true, NOW],
+      ['8001', false, NOW],
+    ]);
+  });
+
+  it('10분 넘게 피드에 안 보인 present는 정리된다', () => {
+    const prev = { [ANCHOR]: { present: [{ trainCode: '2011', isUp: true, seenAt: NOW - ANCHOR_DEPARTURE_WINDOW_MS - 1 }], departed: [] } };
+    expect(updateStationTrainLogs(prev, [], TRACKED, NOW)).toBeUndefined();
+  });
+});
+
 describe('anchorFromSegment', () => {
+  it('노선에 없는 역이라 방향을 못 구하면 null', () => {
+    expect(anchorFromSegment('2', ['없는역', '또없는역'])).toBeNull();
+  });
+
   it('진행 구간 [앵커, 다음역...]에서 앵커/방향(isUp)을 만든다', () => {
     const anchor = anchorFromSegment('2', ['건대입구', '성수', '뚝섬']);
     expect(anchor).toMatchObject({ station: '건대입구', segmentStations: ['건대입구', '성수', '뚝섬'] });

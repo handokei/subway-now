@@ -150,13 +150,14 @@ describe('#3155 트립 171 replay — 앵커역(건대입구) 출발 열차 목�
     expect(o?.departedCodes).not.toContain('3013');
   });
 
-  it('GET anchor-departures가 2011을 실측 출발 시각(06:36:28)과 현재 역(성수)과 함께 내준다', async () => {
+  it('GET anchor-departures가 2011을 실측 출발 시각(06:36:28)과 현재 역(건대입구 출발 직후)과 함께 내준다', async () => {
     const o = await replayAndObserve();
     expect(o?.getBody?.station).toBe('건대입구');
     const row = o?.getBody?.departed.find((d) => d.trainCode === '2011');
     expect(row).toBeDefined();
     expect(row?.departedAt).toBe(DEPARTED_AT_KST_0636_28);
-    expect(row?.currentStation).toBe('성수');
+    // 이 시점 stamp(06:37:45 cycle)의 2011 = 건대입구 sts=2(막 출발). 성수 진입은 다음 cycle(06:38:45)에서야 반영된다.
+    expect(row?.currentStation).toBe('건대입구');
     expect(o?.getBody?.departed.map((d) => d.trainCode)).not.toContain('3013');
   });
 
