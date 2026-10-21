@@ -1097,6 +1097,7 @@ describe('runScheduled', () => {
       const seoulStub = {
         fetchArrivals: async () => [synthetic],
         fetchPositions: async () => [],
+        stats: { httpErrorCount: 0 },
       } as unknown as SeoulArrivalClient;
       const { stats, apnsFetch } = await runLocklessCycle({
         trip: intermediateTrip(),
@@ -1105,7 +1106,9 @@ describe('runScheduled', () => {
       });
       expect(stats.pushed).toBe(0);
       expect(stats.locklessIntermediateFired).toBe(0);
-      expect(apnsFetch).not.toHaveBeenCalled();
+      // origin 프롬프트는 별개 경로라 호출될 수 있다 — 매역 통과(intermediate) push만 없어야 한다.
+      const bodies = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).map((c) => String(c[1]?.body));
+      expect(bodies.some((b) => b.includes('"kind":"intermediate"'))).toBe(false);
     });
 
     // #2524 — 탑승 커밋(PENDING lock, boardingCommitted===true) trip은 실 lock으로 승격되기
@@ -7814,7 +7817,8 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
       waypoint,
       NOW,
     );
-    expect(result).toEqual({ epoch: NOW, arrived: false, arvlCd: null });
+    // #3132 — barvlDt=0 + arvlCd 누락 = 시간 모름: 열차는 보이나 도착 시각 불명(epoch null), 0초(now)로 접지 않는다.
+    expect(result).toEqual({ epoch: null, arrived: false, arvlCd: null });
   });
 
   it('positions-fallback → arvlCd=null (sttus 신호는 매역 SSOT 아님)', async () => {

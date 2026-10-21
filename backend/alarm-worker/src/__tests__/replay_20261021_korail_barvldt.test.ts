@@ -17,6 +17,7 @@ import {
   type ScheduledDeps,
 } from '../scheduled';
 import { buildLiveActivityContentState } from '../liveActivity';
+import { isEtaUnknownRow, minKnownEtaSeconds, parseStopsAway } from '../arrivalEta';
 import type { BoardingLockMeta, Waypoint } from '../types';
 
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'korail_20261021');
@@ -130,7 +131,7 @@ describe('estimateBoardingLockArrival — unknown 매칭', () => {
     line: 'bundang',
     subwayId: '1075',
     selectedDepartureTime: 0,
-    segmentStations: ['왕십리', '서울숲'],
+    segmentStations: ['선정릉', '서울숲'],
     expiresAt: Number.MAX_SAFE_INTEGER,
   };
   const waypoint: Waypoint = { stationName: '서울숲', line: 'bundang', kind: 'intermediate' };
@@ -147,10 +148,10 @@ describe('estimateBoardingLockArrival — unknown 매칭', () => {
 
   it('arrived:false + 매칭 행 unknown + position 있음 → position 추정 epoch 우선', async () => {
     const { client, now } = makeClient('서울숲', [
-      { trainNo: '6139', statnNm: '왕십리', trainSttus: 1, updnLine: '1', lastRecptnDt: '' },
+      { trainNo: '6139', statnNm: '선정릉', trainSttus: 1, updnLine: '1', lastRecptnDt: '' },
     ]);
     const result = await estimateBoardingLockArrival(deps(client), lock, waypoint, now);
-    // 왕십리(idx0) -> 서울숲(idx1) = 1 hop * 90s
+    // 선정릉(idx0) -> 서울숲(idx1) = 1 hop * 90s
     expect(result).toEqual({ epoch: now + 90_000, arrived: false, arvlCd: 5 });
   });
 
@@ -194,5 +195,43 @@ describe('buildRecentPromptCandidates — 정렬', () => {
       { trainCode: 'K-0', arrivalSeconds: 0, stopsAway: null },
     ];
     expect(buildRecentPromptCandidates(pool, 1).trainCodes).toEqual(['K-0', 'K-240', 'U-2', 'U-9', 'U-null']);
+  });
+});
+
+describe('arrivalEta 헬퍼', () => {
+  it('isEtaUnknownRow: P3 (0/1/2 + 0 은 known, 그 외 0·NaN·음수·arvlCd 누락은 unknown)', () => {
+    expect(isEtaUnknownRow(0, 99)).toBe(true);
+    expect(isEtaUnknownRow(0, 5)).toBe(true);
+    expect(isEtaUnknownRow(0, null)).toBe(true);
+    expect(isEtaUnknownRow(Number.NaN, 99)).toBe(true);
+    expect(isEtaUnknownRow(-1, 3)).toBe(true);
+    for (const cd of [0, 1, 2]) expect(isEtaUnknownRow(0, cd)).toBe(false);
+    expect(isEtaUnknownRow(240, 99)).toBe(false);
+  });
+
+  it('parseStopsAway: [N]번째 전역 / unknown 3·4·5 = 1 / known "전역 도착"은 null', () => {
+    expect(parseStopsAway('[3]번째 전역 (선정릉)', 99, true)).toBe(3);
+    expect(parseStopsAway('전역 도착', 5, true)).toBe(1);
+    expect(parseStopsAway('전역 도착', 5, false)).toBeNull();
+    expect(parseStopsAway('전역 도착', null, true)).toBeNull();
+  });
+
+  it('minKnownEtaSeconds: unknown 제외, 전부 unknown/빈 pool은 null', () => {
+    expect(minKnownEtaSeconds([{ arrivalSeconds: null }, { arrivalSeconds: 90 }, { arrivalSeconds: 30 }])).toBe(30);
+    expect(minKnownEtaSeconds([{ arrivalSeconds: null }])).toBeNull();
+    expect(minKnownEtaSeconds([])).toBeNull();
+  });
+
+  it('estimateBoardingLockArrival: arvlCd 1 + 합성 null ETA 는 도착 = now', async () => {
+    const entry = { arvlCd: 1, arrivalSeconds: null, trainCode: 'X' } as unknown as ArrivalEntry;
+    const seoul = { fetchArrivals: async () => [entry], fetchPositions: async () => [] };
+    const lock = { trainCode: 'X', line: '2', subwayId: '1002', selectedDepartureTime: 0, segmentStations: [], expiresAt: 1 } as BoardingLockMeta;
+    const result = await estimateBoardingLockArrival(
+      { seoul } as unknown as ScheduledDeps,
+      lock,
+      { stationName: '강남', line: '2', kind: 'intermediate' },
+      1_000,
+    );
+    expect(result).toEqual({ epoch: 1_000, arrived: true, arvlCd: 1 });
   });
 });
