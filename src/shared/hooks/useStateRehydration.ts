@@ -32,6 +32,10 @@ import {
   type TripEndedReason,
 } from '../../features/alarm/utils/tripEndedNotification';
 import {
+  claimTripEndAction,
+  type TripEndActionClaim,
+} from '../../features/alarm/utils/tripEndClaim';
+import {
   clearBackendSsotMirror,
   readBackendSsotMirror,
 } from '../../features/alarm/utils/backendSsotMirror';
@@ -219,6 +223,7 @@ function notifyAutoEnd(reason: Extract<TripEndedReason, 'lifecycle' | 'paused'>)
  * 직접 호출은 #1351 R2와 동일 이유(prev=null 시 isSwitch=false로 cleanup chain skip되는 버그 회피).
  */
 async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> {
+  let endClaim: TripEndActionClaim | null = null;
   try {
     const startedAt = await getTripStartedAt();
     if (startedAt === null) return;
@@ -239,6 +244,11 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
       logger.info(`trigger=${trigger} silence elapsedMs=${elapsedMs}`);
       return;
     }
+
+    // PR-2 — 같은 launch에서 backend-gone 자가 종료(launch/FG tick)와 동시에 이 지점을 통과할 수 있다.
+    // 동기 claim으로 한 경로만 종료한다(진 쪽은 통지·cleanup·sentinel 모두 skip). 실패 시 release.
+    endClaim = await claimTripEndAction();
+    if (!endClaim.claimed) return;
 
     // force-end (9h+). silent push trip-ended와 동일 시퀀스.
     appendAlarmLog({
@@ -277,6 +287,7 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
     // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
     await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
+    endClaim?.release();
     logger.warn('lifecycle backstop 실패 (graceful)', e);
   }
 }
@@ -295,10 +306,15 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
  * 인지하도록 한다 — 누락 시 backend trip이 계속 살아있을 수 있음(버그 #3).
  */
 async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<void> {
+  let endClaim: TripEndActionClaim | null = null;
   try {
     const pausedAt = await getNavigationPausedAt();
     const now = Date.now();
     if (!isPauseAutoEndDue(pausedAt, now)) return;
+
+    // PR-2 — 9h force-end 와 같은 이유로 종료 행동을 동기 claim 한다(실패 시 release).
+    endClaim = await claimTripEndAction();
+    if (!endClaim.claimed) return;
 
     appendAlarmLog({
       ts: now,
@@ -329,6 +345,7 @@ async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<
     // force-end 경로와 동일 — BG 채널(silent push 등)이 이 종료를 인지하도록 mirror 남김.
     await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
+    endClaim?.release();
     logger.warn('navigation pause backstop 실패 (graceful)', e);
   }
 }

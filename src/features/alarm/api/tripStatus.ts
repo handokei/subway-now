@@ -13,7 +13,8 @@
  *
  * 본 함수는 trip 자체가 정리 대상인지 caller가 판별할 수 있도록
  *  - active/ended는 객체 반환
- *  - 404/410은 null 반환 (정리만)
+ *  - 404/410은 `{ status: 'gone', code }` 반환 — PR-2 이전에는 둘 다 `null`로 합쳐 "서버에 트립 없음"
+ *    증거가 소비자에게 닿지 못했다. 소비자는 `decideTripGone`(하한/lock/알람 가드)으로만 해석한다.
  *  - 네트워크 에러는 throw — caller가 silent fail 처리.
  *
  * Backend endReason은 'destination' / 'expired' / 'eta-missing' / 'push-unrecoverable' contract.
@@ -25,7 +26,16 @@
 import type { TripEndedReason } from '../tasks/silentPushTask';
 import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
 
-/** active/ended 응답 (200) — null이면 trip이 사라진 것(404/410). */
+/** 404/410 — backend에 트립이 없다. 404=트립·종료 마커 모두 없음, 410=마커가 retention 경과. */
+export interface TripStatusGone {
+  status: 'gone';
+  code: 404 | 410;
+}
+
+/** `fetchTripStatus` 결과 합집합. */
+export type TripStatusFetchResult = TripStatusResult | TripStatusGone;
+
+/** active/ended 응답 (200). */
 export interface TripStatusResult {
   status: 'active' | 'ended';
   /** ended일 때만 epoch ms. active는 null. */
@@ -79,7 +89,7 @@ async function fetchWithTimeout(
  *
  * @returns
  *   - 200 → `{ status, endedAt, endReason }`.
- *   - 404/410 → `null`.
+ *   - 404/410 → `{ status: 'gone', code }`.
  *
  * @throws 네트워크 에러 / 5xx / 기타 비정상 응답.
  */
@@ -87,12 +97,12 @@ export async function fetchTripStatus(
   tripToken: string,
   baseUrl: string,
   fetchImpl: FetchImpl = fetch,
-): Promise<TripStatusResult | null> {
+): Promise<TripStatusFetchResult> {
   const url = `${normalizeBaseUrl(baseUrl)}/trips/${encodeURIComponent(tripToken)}/status`;
   const res = await fetchWithTimeout(fetchImpl, url, { method: 'GET' });
 
   if (res.status === 404 || res.status === 410) {
-    return null;
+    return { status: 'gone', code: res.status };
   }
   if (!res.ok) {
     throw new Error(`trip status fetch failed: ${res.status}`);
