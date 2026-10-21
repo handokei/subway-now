@@ -1252,6 +1252,39 @@ describe('stationNotification', () => {
       });
     });
 
+    // 방향별 위키 확정값(platformExitSideByDirection.json, 실데이터)이 알림 본문까지 연결되는지.
+    describe('방향별 위키 확정값 (platformExitSideByDirection)', () => {
+      const seongsu = { phaseId: 'early', type: 'destination', stationName: '성수' } as const;
+
+      it.each([
+        ['up', '오른쪽 문으로 하차하세요'],
+        ['down', '오른쪽 문으로 하차하세요'],
+      ] as const)('성수 본선 %s는 %s', (direction, line) => {
+        expect(buildAlarmContent({ ...seongsu, direction }).body).toBe(
+          `다음 역 성수에서 하차하세요!\n${line}`,
+        );
+      });
+
+      it.each([
+        ['up', '오른쪽 문으로 하차하세요'],
+        ['down', '왼쪽 문으로 하차하세요'],
+      ] as const)('새절 %s는 %s', (direction, line) => {
+        expect(
+          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '새절', direction }).body,
+        ).toBe(`다음 역 새절에서 하차하세요!\n${line}`);
+      });
+
+      it('방향이 없으면 방향별 값은 쓰지 않고 문 라인을 생략한다', () => {
+        expect(buildAlarmContent(seongsu).body).toBe('다음 역 성수에서 하차하세요!');
+      });
+
+      it('문장 근거 없는 방화는 방향이 있어도 문 라인을 생략한다', () => {
+        expect(
+          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '방화', direction: 'up' }).body,
+        ).toBe('다음 역 방화에서 하차하세요!');
+      });
+    });
+
     describe('빠른하차 힌트 (quickExit)', () => {
       // #1504 SonarCloud dedup — quickExit 분기 매트릭스를 it.each로 통합.
       // 각 row: [phaseId, type, stationName, title, body].
