@@ -58,6 +58,13 @@ jest.mock('../../../features/alarm/utils/backendSsotMirror', () => ({
   clearBackendSsotMirror: (...args: unknown[]) => mockClearBackendSsotMirror(...args),
 }));
 
+// PR-3b — 조용한 종료 경로(9h / 일시정지)의 종료 알림. 호출 순서를 cleanup과 비교하기 위해 mock.
+const mockNotifyTripEnded = jest.fn();
+jest.mock('../../../features/alarm/utils/tripEndedNotification', () => ({
+  notifyTripEnded: (...args: unknown[]) => mockNotifyTripEnded(...args),
+}));
+const NOTICE_DESTINATION = { id: '2-010', name: '뚝섬', line: '2' };
+
 const mockAddDomainBreadcrumb = jest.fn();
 jest.mock('../../infra/monitoring/breadcrumb', () => ({
   addLogBreadcrumb: jest.fn(),
@@ -106,6 +113,7 @@ beforeEach(() => {
   mockLoadLegAdvance.mockResolvedValue(undefined);
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockSetSentinel.mockResolvedValue(undefined);
+  mockNotifyTripEnded.mockResolvedValue(undefined);
   // 기본은 trip 미존재(none) — 기존 테스트들이 backstop 영향 받지 않도록.
   mockGetTripStartedAt.mockResolvedValue(null);
   mockTripLifecyclePhase.mockReturnValue('none');
@@ -115,6 +123,7 @@ beforeEach(() => {
   mockReadBackendSsotMirror.mockResolvedValue(null);
   mockClearBackendSsotMirror.mockResolvedValue(undefined);
   jest.spyOn(useDestinationStore, 'getState').mockReturnValue({
+    destination: NOTICE_DESTINATION,
     setDestination: mockSetDestination,
     loadDestination: mockLoadDestination,
     loadCustomOrigin: mockLoadCustomOrigin,
@@ -597,6 +606,79 @@ describe('useStateRehydration', () => {
       mockAppState();
       expect(() => renderHook(() => useStateRehydration())).not.toThrow();
       await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+    });
+  });
+
+  describe('PR-3b — 조용한 종료 경로의 종료 알림 (plan 2026-10-21 Part 3)', () => {
+    it("9h force-end — reason 'lifecycle'로 1회 알리고, runTripBoundCleanups보다 먼저(corrId가 cleanup에서 지워진다)", async () => {
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('force-end');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
+      expect(mockNotifyTripEnded).toHaveBeenCalledTimes(1);
+      expect(mockNotifyTripEnded).toHaveBeenCalledWith({
+        destination: NOTICE_DESTINATION,
+        reason: 'lifecycle',
+      });
+      expect(mockNotifyTripEnded.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRunTripBoundCleanups.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("일시정지 15분 backstop — reason 'paused'로 1회, cleanup보다 먼저", async () => {
+      const now = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
+      expect(mockNotifyTripEnded).toHaveBeenCalledTimes(1);
+      expect(mockNotifyTripEnded).toHaveBeenCalledWith({
+        destination: NOTICE_DESTINATION,
+        reason: 'paused',
+      });
+      expect(mockNotifyTripEnded.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRunTripBoundCleanups.mock.invocationCallOrder[0],
+      );
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it.each([
+      ['phase normal', () => mockTripLifecyclePhase.mockReturnValue('normal')],
+      ['phase silence(6~9h)', () => mockTripLifecyclePhase.mockReturnValue('silence')],
+    ])('거부 — %s이면 알리지 않는다', async (_label, arrange) => {
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      arrange();
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+    });
+
+    it('거부 — 일시정지 15분 미경과면 알리지 않는다', async () => {
+      const now = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockGetNavigationPausedAt.mockResolvedValue(now - (PAUSE_AUTO_END_MS - 1_000));
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it.each([
+      ['fresh', { endedAt: 2_000_000, corrId: null }, 1_000_000],
+      ['stale', { endedAt: 500_000, corrId: null }, 1_000_000],
+    ])('결정 — sentinel 소비(%s)는 알리지 않는다(생산자가 알린다)', async (_label, sentinel, startedAt) => {
+      mockGetSentinel.mockResolvedValue(sentinel);
+      mockGetTripStartedAt.mockResolvedValue(startedAt);
+      // 소비 분기만 격리: 9h backstop이 별도 생산자로 끼어들지 않게 normal 단계로 둔다.
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
+      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
     });
   });
 

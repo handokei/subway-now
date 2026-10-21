@@ -136,6 +136,23 @@ describe('notifyTripEnded — 조용한 종료 경로 콘텐츠 (PR-3a)', () => 
     expect(TRIP_ENDED_AUTO_KIND).toBe('trip-ended-auto');
   });
 
+  it('호출부 보호 — claim 키 조회·문구 조립 단계가 throw해도 reject하지 않는다(종료 cleanup을 막지 않는다)', async () => {
+    mockGetCorrId.mockImplementation(() => {
+      throw new Error('corrId cache broken');
+    });
+    await expect(notifyTripEnded({ destination: null, reason: 'lifecycle' })).resolves.toBeUndefined();
+    expect(mockSchedule).not.toHaveBeenCalled();
+    mockGetCorrId.mockReturnValue('corr-1');
+    const tSpy = jest.spyOn(i18next, 't').mockImplementation(() => {
+      throw new Error('i18n broken');
+    });
+    try {
+      await expect(notifyTripEnded({ destination: null, reason: 'lifecycle' })).resolves.toBeUndefined();
+    } finally {
+      tSpy.mockRestore();
+    }
+  });
+
   it('active trip 토큰이 있으면 data.tripToken에 싣는다', async () => {
     mockGetItem.mockResolvedValue('tok-abc');
     await notifyTripEnded({ destination: null, reason: 'lifecycle' });

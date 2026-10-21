@@ -56,6 +56,12 @@ jest.mock('../../store/tripBoundCleanups', () => ({
   runTripBoundCleanups: (...args: unknown[]) => mockRunTripBoundCleanups(...args),
 }));
 
+// PR-3b — Signal 4 self-end의 종료 알림.
+const mockNotifyTripEnded = jest.fn();
+jest.mock('../../utils/tripEndedNotification', () => ({
+  notifyTripEnded: (...args: unknown[]) => mockNotifyTripEnded(...args),
+}));
+
 const mockFlushSignalDumpOutbox = jest.fn();
 jest.mock('../../api/signalDumpBackend', () => ({
   flushSignalDumpOutbox: (...args: unknown[]) => mockFlushSignalDumpOutbox(...args),
@@ -100,6 +106,7 @@ beforeEach(async () => {
   mockSetSentinel.mockResolvedValue(undefined);
   mockClearSentinel.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
+  mockNotifyTripEnded.mockResolvedValue(undefined);
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
   mockClearBackendSsotMirror.mockResolvedValue(undefined);
@@ -379,6 +386,36 @@ describe('runLaunchTripReconciliation', () => {
       expect(cleanupOrder).toBeLessThan(promptOrder);
       expect(promptOrder).toBeLessThan(sentinelOrder);
       expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+    });
+
+    it("PR-3b — Signal 4 self-end는 reason 'backend-silent'로 1회 알리고 cleanup보다 먼저 부른다", async () => {
+      mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
+      mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
+      await runLaunchTripReconciliation();
+      expect(mockNotifyTripEnded).toHaveBeenCalledTimes(1);
+      expect(mockNotifyTripEnded).toHaveBeenCalledWith({
+        destination: MOCK_STATIONS.gangnam,
+        reason: 'backend-silent',
+      });
+      // corrId는 runTripBoundCleanups가 지우므로 알림이 먼저. recall(storage 입력 필요)은 그보다 앞.
+      const recallOrder = mockTriggerTripEndRecall.mock.invocationCallOrder[0];
+      const noticeOrder = mockNotifyTripEnded.mock.invocationCallOrder[0];
+      const cleanupOrder = mockRunTripBoundCleanups.mock.invocationCallOrder[0];
+      expect(recallOrder).toBeLessThan(noticeOrder);
+      expect(noticeOrder).toBeLessThan(cleanupOrder);
+    });
+
+    it('PR-3b 거부 — Signal 4가 판정되지 않으면(정상 silent push / 10h+ / 미수신) 알리지 않는다', async () => {
+      mockFetchTripStatus.mockResolvedValue({ status: 'active', endedAt: null, endReason: null });
+      mockGetLastSilentPushReceivedAt.mockResolvedValue(now - UNDER_TIMEOUT);
+      mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
+      await runLaunchTripReconciliation();
+      mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
+      mockGetTripStartedAt.mockResolvedValue(now - OVER_KTX);
+      await runLaunchTripReconciliation();
+      mockGetLastSilentPushReceivedAt.mockResolvedValue(null);
+      await runLaunchTripReconciliation();
+      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
     });
 
     it('silent push < 30분 (정상) → fetch로 흐름 이어짐 (self-end skip)', async () => {
