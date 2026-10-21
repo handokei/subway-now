@@ -12,6 +12,7 @@ import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
 import { getTransferSeconds } from './transferTimes';
 import { getStopSecondsFromDistance } from './lineSpeeds';
 import { shortestLinePathIndices, isClosedLoopMainStation } from './lineLoopPath';
+import { isReversedOrientationLine } from './lineOrientation';
 
 const logger = createLogger('StationRoute');
 
@@ -1319,7 +1320,9 @@ export function terminusReachesTarget(
   const lineStations = getLineStationsCached(line);
   const terminusId = lineStations[terminusIdx].id;
   const targetId = lineStations[targetIdx].id;
-  const sign = direction === 'down' ? 1 : -1;
+  // #3122 — sign은 "진행 방향의 idx 증감". 역방향 노선(신분당·수인분당)은 idx 증가=상행이라 반전.
+  const idxIncreasesDown = !isReversedOrientationLine(line);
+  const sign = (direction === 'down') === idxIncreasesDown ? 1 : -1;
 
   if (!isClosedLoopMainStation(line, terminusId) || !isClosedLoopMainStation(line, targetId)) {
     // 직선 구간(또는 지선) — wraparound 없이 idx 비교만으로 충분.

@@ -1,5 +1,6 @@
 import type { LineNumber } from '../../../shared/types/station';
 import { getStationsOnLine } from '../../../shared/utils/stationRoute';
+import { isReversedOrientationLine } from '../../../shared/utils/lineOrientation';
 import { isClosedLoopMainStation, travelDirectionSign } from '../../../shared/utils/lineLoopPath';
 
 /**
@@ -52,5 +53,6 @@ export function directionOnLine(
   if (isClosedLoopMainStation(line, fromId) && isClosedLoopMainStation(line, toId)) {
     return sign === 1 ? 'up' : 'down';
   }
-  return sign === 1 ? 'down' : 'up';
+  // #3122 — 신분당·수인분당은 idx 증가=상행(resolveTripDirection과 동일 극성).
+  return (sign === 1) === isReversedOrientationLine(line) ? 'up' : 'down';
 }

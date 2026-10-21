@@ -11,15 +11,9 @@ import {
   shortestLinePathIndices,
   travelDirectionSign,
 } from '../../../shared/utils/lineLoopPath';
-import lineTopology from '../../../data/lineTopology.json';
+import { isReversedOrientationLine } from '../../../shared/utils/lineOrientation';
 
 export type TripDirection = 'up' | 'down';
-
-// #2877 — 신분당·수인분당은 stations.json 정렬 극성이 반대(idx 증가=상행). 실측 근거는
-// lineTopology.json의 `_reversedOrientationLines_comment` 참고.
-const REVERSED_ORIENTATION_LINES = new Set<LineNumber>(
-  lineTopology.reversedOrientationLines as LineNumber[],
-);
 
 /**
  * #1922 — currentStationId의 노선에 맞는 leg의 line + endName을 산출한다.
@@ -164,7 +158,7 @@ export function resolveTripDirection(
   }
 
   // #2877 — 신분당·수인분당은 idx 증가=상행(나머지 monotonic 노선은 idx 감소=상행).
-  if (REVERSED_ORIENTATION_LINES.has(line)) {
+  if (isReversedOrientationLine(line)) {
     return nextIdx > currIdx ? 'up' : 'down';
   }
   return nextIdx > currIdx ? 'down' : 'up';
