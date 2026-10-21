@@ -335,7 +335,7 @@ describe('pollLinesAndStamp', () => {
     spy.mockRestore();
   });
 
-  it('#2073 (Issue TTL) — re-received (within TTL) tick performs 0 KV puts', async () => {
+  it('#2073/#3118 — 다음 tick(60s 후, TTL 90s 내)도 위치를 재fetch + put 1회 (구: 0 puts, 2-tick 갱신)', async () => {
     // InMemoryKV expiry is wall-clock based — fake timers required to simulate tick spacing.
     vi.useFakeTimers();
     try {
@@ -344,12 +344,12 @@ describe('pollLinesAndStamp', () => {
       const seoul = makeSeoulClient({ positions: [makePosition()] });
       await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
       // Next cron tick (60s later) — well within SELF_POLL_TTL_SEC(90s), so entry is still alive:
-      // existing !== null → cache-hit → fetch and put both skipped (0 writes this tick).
+      // entry는 살아있지만 fetchedAt 60s 경과 ≥ SELF_POLL_REFRESH_MS(45s) → 재fetch + put 1회 (#3118).
       vi.setSystemTime(NOW + 60_000);
       const putSpy = vi.spyOn(kv, 'put');
       const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 60_000);
-      expect(putSpy).not.toHaveBeenCalled();
-      expect(stats).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      expect(stats).toEqual({ fetched: 1, cacheHit: 0, error: 0 });
     } finally {
       vi.useRealTimers();
     }
