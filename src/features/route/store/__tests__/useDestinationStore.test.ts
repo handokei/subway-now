@@ -1315,6 +1315,55 @@ describe('setDestination(#2302): 전환/해제가 서로 다른 end_reason으로
   });
 });
 
+// #3109 — 자동 종료 호출부별 종료 사유. 모두 'user-clear' 단일 라벨이라 173의 종료 주체를
+// 사후 특정할 수 없었다(귀속 추정). 호출부가 넘긴 사유가 DELETE ?reason=까지 흘러야 한다.
+describe('setDestination(#3109): 자동 종료 호출부별 end_reason', () => {
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    useDestinationStore.setState({ destination: mockStation, customOrigin: null, tripOrigin: null });
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'backend-tok-3109');
+  });
+
+  it.each(['arrival-auto-clear', 'destination-auto-clear'] as const)(
+    'setDestination(null, %s) → DELETE reason과 trip/end breadcrumb이 그 사유다',
+    async (reason) => {
+      const spy = jest.spyOn(alarmBackend, 'clearActiveTrip').mockResolvedValue({ ok: true });
+
+      useDestinationStore.getState().setDestination(null, reason);
+      await flush();
+
+      expect(spy).toHaveBeenCalledWith('backend-tok-3109', reason);
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', { reason });
+      spy.mockRestore();
+    },
+  );
+
+  it('거부: 사유 생략 시 기존대로 user-clear (하위 호환)', async () => {
+    const spy = jest.spyOn(alarmBackend, 'clearActiveTrip').mockResolvedValue({ ok: true });
+
+    useDestinationStore.getState().setDestination(null);
+    await flush();
+
+    expect(spy).toHaveBeenCalledWith('backend-tok-3109', 'user-clear');
+    spy.mockRestore();
+  });
+
+  it('거부: 목적지 전환(station≠null)은 사유 인자를 줘도 destination-switch', async () => {
+    const spy = jest.spyOn(alarmBackend, 'clearActiveTrip').mockResolvedValue({ ok: true });
+    useDestinationStore.setState({ destination: null });
+
+    useDestinationStore.getState().setDestination(mockStation, 'arrival-auto-clear');
+    await flush();
+
+    expect(spy).toHaveBeenCalledWith('backend-tok-3109', 'destination-switch');
+    spy.mockRestore();
+  });
+});
+
 // #3076 — originEpoch: 명시 출발역 지정 전용 메모리 카운터 (route 재계산 가드 무효화 신호).
 describe('useDestinationStore originEpoch (#3076)', () => {
   beforeEach(() => {
