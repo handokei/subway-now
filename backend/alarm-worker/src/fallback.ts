@@ -150,6 +150,19 @@ export async function runFallbackPushes(env: Env, deps: FallbackDeps): Promise<F
       continue;
     }
 
+    // #3140 — lock 없는 트립은 알림이 없다(사용자 결정): lockless 매역 "통과" pending은 더 이상
+    // 등록되지 않지만(scheduled.ts runLocklessIntermediate), 배포 직전 등록된 잔여 entry가
+    // 있을 수 있어 lock과 무관하게 발사 없이 삭제한다(ADR-036:117 fallback intermediate 재배정).
+    if (entry.kind === 'intermediate') {
+      log('alert fallback drop (intermediate, lock-only alerts)', {
+        pushId: entry.pushId,
+        station: entry.stationName,
+        ageMs,
+      });
+      await removePending(env.PENDING_PUSHES, entry.pushId);
+      continue;
+    }
+
     // #2617 (코드리뷰 반영) — implicit ACK 판정.
     //   (b) kind==='destination'은 대상에서 제외 — #1995 "must-refire" 정책(도착 알림은 device
     //       접촉 여부와 무관하게 항상 재발사)과 충돌하지 않게 한다.

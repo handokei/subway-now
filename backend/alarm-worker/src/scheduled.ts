@@ -66,7 +66,6 @@ import {
   buildLiveActivityContentState,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
-  fireTripEndedAlertPush,
   resolveCurrentStationName,
   type LiveActivityStats,
 } from './liveActivity';
@@ -110,7 +109,6 @@ import {
 import { deriveWaypointEnvironment, findStationCoordsByNameAndLine } from './stationsLookup';
 import { resolvePromptAnchor } from './promptAnchor';
 import { assertCronCacheTtl } from './kvConsistency';
-import { buildAlarmKey, putPending } from './pendingPushes';
 import { logPushFailure } from './pushFailureLog';
 import { enqueueRetryIfTransient } from './retryPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
@@ -3019,6 +3017,9 @@ function buildSleepAlarmRetryPayload(
  */
 async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<void> {
   const { trip, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId } = inputs;
+  // #3140 — lock 없는 트립은 알림이 없다(사용자 결정). 호출부가 아니라 여기서 막는다:
+  // completeWaypointAdvance는 lock 활성 advance와 lockless 호출이 공유한다. D1 행은 없다(관측 대상 아님).
+  if (!isBoardingLockActive(trip, now)) return;
   const trigger = evaluateSleepAlarmTrigger(trip, waypoint, nextWaypoint);
   if (!trigger.fire) {
     // 'not-sleep' / 'not-preceding' 은 매 intermediate advance마다 정상적으로 대량 발생하는
@@ -3271,6 +3272,11 @@ async function maybeFirePrepareAlarm(inputs: MaybeFirePrepareAlarmInputs): Promi
   // #3110 — 평가 outcome마다 D1 1행(관측 전용, 동작 불변).
   const record = (outcome: PrepareAlarmOutcome, target?: Waypoint, extra: Record<string, unknown> = {}) =>
     recordPrepareAlarm(env, trip, waypoint, outcome, target, extra, now);
+  // #3140 — lock 없는 트립은 알림이 없다(사용자 결정). maybeFireSleepAlarm과 같은 이유로 호출부가 아닌 여기서 막는다.
+  if (!isBoardingLockActive(trip, now)) {
+    await record('skipped', undefined, { reason: 'no-lock' });
+    return;
+  }
   if (trip.sleepModeEnabled === true) {
     // sleep trip은 maybeFireSleepAlarm이 동일 형태의 알람을 전담 — 상호 배타.
     await record('skipped', undefined, { reason: 'sleep' });
@@ -7139,11 +7145,10 @@ async function runLocklessDestination(
       arvlCd: signal.arvlCd,
     });
     await putTrip(env.TRIPS, trip);
-    // #2900 — 기존 trip-ended alert push(#1337, 'destination-arrived')를 그대로 재사용해
-    // 즉시 발사한다. 새 push 채널 신설 없음 — `cleanupTripWithLa`가 내부에서 쓰는 바로 그
-    // 함수를 export해 가져왔다(`liveActivity.ts`). 실제 trip 삭제/D1/LA dismissal은 아직
-    // 수행하지 않는다 — 그건 위 pending 분기가 타임아웃 후에 처리한다.
-    await fireTripEndedAlertPush(trip, 'destination-arrived', env, deps, now, log);
+    // #3140 — lock 없는 트립은 알림이 없다(사용자 결정): 여기서 즉시 쏘던 "안내 종료"
+    // trip-ended 배너(#2900 ⓕ)를 제거했다. 종료 보장은 그대로다 — 위 pending 분기가
+    // `DESTINATION_CONFIRM_TIMEOUT_MS` 후 completeWaypointAdvance → cleanupTripWithLa로
+    // 종료하며 그 경로가 단일 trip-ended 통지를 보낸다.
     // #2920 — 같은 시점에 "하차 확인" 프롬프트를 기존 hop-end(환승역 "하차했나요?") 채널로
     // 재사용해 1회 발사한다(새 채널/문구 신설 금지). 이 if 블록 자체가 pending 최초 1회에만
     // 진입하므로(이 함수 상단의 `destinationConfirmPendingSince !== undefined` 가드가 재진입을
@@ -7330,161 +7335,9 @@ export async function runLocklessIntermediate(
       arvlCd: signal.arvlCd,
     });
   } else {
-    const pushId = generatePushId();
-    log('lockless: station-passed push', {
-      token: trip.token.slice(0, 8),
-      waypoint: waypoint.stationName,
-      ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
-      arvlCd: signal.arvlCd,
-      etaSeconds: signal.etaSeconds,
-      // #2032 (Issue D) — monitoring dimension. lockless fire 시 device sleep 상태 기록.
-      // ADR-023: backend는 sleep 무관 발사. device의 shouldSuppressBySleepRule이 UI suppress 판정.
-      sleepMode: trip.sleepModeEnabled,
-    });
-    // #1561 (T8, ADR-017 / S2 흡수) — lockless fire 직전 SSoT 권위 스냅샷 forward.
-    const locklessSsot = await readSsot(env.TRIPS, trip.token, {
-      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-    });
-    // #1721 — payload 를 local 변수로 추출해 transient 실패 시 retry queue 적재에 재사용.
-    const locklessPayload: SilentPushPayload = {
-      nextWaypoint: waypoint.stationName,
-      etaSeconds: signal.etaSeconds,
-      phase: 'imminent',
-      kind: 'intermediate',
-      sentAt: now,
-      pushId,
-      // Epic #1204 그룹 2 D3 (#1273) — lockless intermediate도 waypoint.hopIndex forward.
-      // D1 estimator의 currentHopIndex와 ±tolerance 매칭 시 거리 검증 우회 + GPS 미준비 fallback.
-      hopIndex: waypoint.hopIndex,
-      // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
-      // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
-      occupiedLine: waypoint.line,
-      // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — 같은 소비처
-      // (buildStationPassedImminentPayload :2408 근방 주석 참조)와 동일 근거로 필드를 아예
-      // 보내지 않는다(omit). stations.json 기반 waypoint environment로의 치환은 거리/
-      // stale-position 게이트를 우회시켜 좀비/stale lock 오발사 방어를 끄는 부작용이 있었다.
-      // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
-      // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
-      tripToken: trip.token,
-      // #1402 — 발사 경로 stamp. device alarmLog에 pushOrigin=lockless로 기록.
-      origin: 'lockless' as const,
-      // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
-      // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
-      passedStations: trip.passedStations,
-      // #1561 (T8, ADR-017 / S2 흡수) — TripPositionSSoT 권위 forward. null/undefined는 apns.ts
-      // JSON serializer가 자연 누락 → device cascade picker는 기존 tier fallback. lockless trip은
-      // backend SSoT가 가장 신뢰 높은 단일 신호 (lock 부재 환경).
-      ssot: toSilentPushSsot(locklessSsot),
-    };
-    const heal = await sendWithEnvHeal(
-      (host) =>
-        sendSilentPush({
-          // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
-          deviceToken: resolveTripDeviceToken(trip),
-          payload: locklessPayload,
-          config: deps.apnsConfig,
-          host,
-          fetchImpl: deps.fetchImpl,
-          now,
-        }),
-      trip.apnsEnv,
-      deps.apnsHosts,
-      log,
-      trip.token.slice(0, 8),
-      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-    );
-    if (heal.correctedEnv) {
-      trip.apnsEnv = heal.correctedEnv;
-      dirty = true;
-      stats.envCorrected += 1;
-      // #1633 — lockless intermediate corrected env 즉시 KV persist. lockless는 매역 fire 경로라
-      // 다음 push까지 짧은 간격(~60s)이지만, 본 cycle 내 후속 코드가 cleanupTripWithLa로 early
-      // return하면 putTrip이 호출되지 않는다. 즉시 write로 corrected env 영구 보존.
-      await putTrip(env.TRIPS, trip);
-    }
-    if (!heal.result.ok) {
-      stats.errors += 1;
-      log('lockless: push failed', {
-        status: heal.result.status,
-        reason: heal.result.reason,
-        token: trip.token.slice(0, 8),
-      });
-      if (
-        isUnrecoverableApnsError(heal.result.status, heal.result.reason) ||
-        heal.envMismatchExhausted
-      ) {
-        // #2177 — unrecoverable(410/mismatch exhausted)로 cleanup 분기하는 경로는 retry queue를
-        // 타지 않아 enqueueRetryIfTransient의 공통 D1 기록 지점을 지나지 않는다 — 직접 기록.
-        await logPushFailure(env.DB, {
-          // #2185 — token_hash는 실 APNs 발사 주소(deviceToken) 기준. trip.token은 신원(로테이션 시 UUID)이라
-          // 별도로 trip_token_hash에 남긴다.
-          token: resolveTripDeviceToken(trip),
-          tripToken: trip.token,
-          pushKind: locklessPayload.kind,
-          apnsStatus: heal.result.status,
-          apnsReason: heal.result.reason,
-          apnsEnv: trip.apnsEnv,
-          envMismatchExhausted: heal.envMismatchExhausted,
-        });
-        // #868 — lockless push unrecoverable로 trip 폐기 시에도 클라 state sync push 발사.
-        await cleanupTripWithLa(trip, env, deps, stats, now, log, {
-          reason: 'push-unrecoverable',
-          endPath: 'push-unrecoverable-lockless-intermediate',
-        });
-        return;
-      }
-      // #1721 — transient 실패(429 / 5xx) 시 retry queue 적재. unrecoverable / envMismatchExhausted
-      // 분기 이후이므로 본 경로는 transient 또는 기타 비치명 실패. enqueueRetryIfTransient 가 retryable
-      // 만 적재한다.
-      // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 retry (lockless intermediate payload.kind='intermediate' → flag=on 시 skip).
-      await enqueueRetryIfTransient(
-        env.PENDING_PUSHES,
-        {
-          pushId,
-          // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
-          token: resolveTripDeviceToken(trip),
-          // #2185 — trip_token_hash용 신원 토큰.
-          tripToken: trip.token,
-          payload: locklessPayload,
-          apnsEnv: trip.apnsEnv ?? 'sandbox',
-          status: heal.result.status,
-          reason: heal.result.reason,
-          now,
-          envMismatchExhausted: heal.envMismatchExhausted,
-        },
-        deps.archFlag,
-        env.DB,
-      );
-      if (dirty) await putTrip(env.TRIPS, trip);
-      return;
-    }
-    // 발사 성공 — dedup stamp + 측정 카운터. waypoint 진행은 kill switch 무관 블록(아래)으로 이동.
-    stats.pushed += 1;
-    stats.locklessIntermediateFired += 1;
-    // #1683 — lockless intermediate kind 카운터.
-    stats.silentPushFiredByKind.intermediate += 1;
-    // #1402 — alert fallback 안전망 등록 (60s 임계, #1894로 30s→60s 완화). shift 전 stationName으로 등록해 alert 본문이
-    // 사용자가 실제로 통과한 station을 가리키게 한다. lockless intermediate는 lock 경로보다
-    // device-side validation이 느슨해 silent push 누락 시 안전망 가동이 더 절실한 경로.
-    // #1995 (ADR-022 Phase 1-2) — flag=on 시 destination 만 pending 등록 (본 경로 kind='intermediate' → flag=on 시 skip).
-    await putPending(
-      env.PENDING_PUSHES,
-      {
-        pushId,
-        // #2174 — pending/retry queue entry의 token은 APNs 재발사 주소. deviceToken 사용.
-        token: resolveTripDeviceToken(trip),
-        // #2522 — fallback이 발사 직전 lock 상태를 재확인할 수 있도록 trip 신원 토큰 동봉.
-        tripToken: trip.token,
-        alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
-        sentAt: now,
-        stationName: waypoint.stationName,
-        kind: 'intermediate',
-        phase: 'imminent',
-        etaSeconds: signal.etaSeconds,
-        apnsEnv: trip.apnsEnv ?? 'sandbox',
-      },
-      deps.archFlag,
-    );
+    // #3140 — lock 없는 트립은 알림이 없다(사용자 결정): 여기서 발사하던 lockless 매역
+    // station-passed silent push와 그 pending(fallback alert) 등록을 제거했다. dedup stamp·
+    // passedStations·LA update는 알림이 아니므로 유지한다(waypoint 진행/표시 SSoT).
     trip.lastFiredPhase = 'imminent';
     // #1539 (S6) — lockless intermediate 통과 시점도 동일하게 stationName 누적. lock 경로와 동등
     // 정확도 보장 의무(ADR-014: 사용자 명시 의향 trip = lock 활성과 동급).

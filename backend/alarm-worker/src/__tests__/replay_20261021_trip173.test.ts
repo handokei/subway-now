@@ -139,3 +139,31 @@ describe('v8 PR-T 트립 173 replay — 현행 코드 baseline ("173 무변경" 
     expect(Math.abs(cycles[0].simNowMs - (fired as { ts: number }).ts)).toBeLessThan(5_000);
   });
 });
+
+// #3140 — lock 없는 트립은 알림 없음. 06:28:00~06:30:55 = leg-1 lock이 환승에서 풀렸고 leg-2 lock은
+// 아직 없는 구간(탭 06:30:55). 이 구간에는 준비 알람·취침 알람·lockless 매역 "통과" push가 없어야 한다.
+// 같은 재생에서 lock 활성 중(06:25:46) 준비 알람은 그대로 1회 발사된다(거부 케이스: lock 활성 불변).
+describe('#3140 트립 173 — lock 없는 구간 알림 0 / lock 활성 준비 알람 불변', () => {
+  const KST_OFFSET_MS = 9 * 60 * 60_000;
+  const kstMs = (hms: string) => Date.parse(`2026-10-21T${hms}+09:00`) - 0 * KST_OFFSET_MS;
+  const WINDOW = { from: kstMs('06:28:00'), to: kstMs('06:30:55') };
+  const isAlarmSound = (p: CapturedPush) => (p.body.aps as { sound?: string } | undefined)?.sound === 'alarm.wav';
+  const isStationPassed = (p: CapturedPush) =>
+    (p.body.data as { kind?: string } | undefined)?.kind === 'intermediate' ||
+    (p.body.aps as { alert?: { title?: string } } | undefined)?.alert?.title?.endsWith('역 도착') === true;
+
+  it('06:28:00~06:30:55 — 준비/취침 알람(alarm.wav)·lockless 매역 push 0건', async () => {
+    const r = await replay173();
+    const inWindow = r.result.cycles.filter((c) => c.simNowMs >= WINDOW.from && c.simNowMs <= WINDOW.to);
+    expect(inWindow.length).toBeGreaterThan(0);
+    const offending = inWindow.flatMap((c) => c.pushes).filter((p) => isAlarmSound(p) || isStationPassed(p));
+    expect(offending).toEqual([]);
+  });
+
+  it('lock 활성 중 준비 알람은 불변 — 건대입구 환승 임박(alarm.wav) 06:25:46 1회', async () => {
+    const r = await replay173();
+    const alarms = r.result.cycles.filter((c) => c.pushes.some(isAlarmSound));
+    expect(alarms.map((c) => c.simNowMs)).toEqual([expect.any(Number)]);
+    expect(Math.abs(alarms[0].simNowMs - kstMs('06:25:46'))).toBeLessThan(5_000);
+  });
+});

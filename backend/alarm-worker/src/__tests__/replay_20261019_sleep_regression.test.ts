@@ -230,18 +230,16 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
     }
   });
 
-  it('[현재 결함 고정] 취침 하차 알람은 환승 체류 중의 가짜 전진 직후 "1정거장 전" 실측 시점보다 훨씬 일찍 발사된다', async () => {
+  // #3140 — 사용자 결정: lock 없는 트립은 알림이 없다. 이 트립에서 취침 알람이 조기 발사된 건
+  // 환승 체류 중 lock 없이(lockless) 가짜 전진이 waypoint를 소비한 직후였다 — 이제 그 구간의
+  // 취침 알람은 lock 활성 게이트(maybeFireSleepAlarm)로 발사되지 않는다. 가짜 전진(advance)
+  // 자체는 여전히 일어난다(#3083 미해결) — 조기 알람만 사라졌다.
+  it('[#3140] 환승 체류 중 가짜 전진이 일어나도 lock 없는 구간의 취침 하차 알람은 발사되지 않는다', async () => {
     const r = await replaySleepTrip();
     const alarmCycles = r.cycles.filter((c) => c.pushes.some(isDestinationSleepAlarm));
-    expect(alarmCycles).toHaveLength(1);
-    const firedAt = alarmCycles[0].simNowMs;
-    // 이유: D1 `advance`가 환승역 이후 구간을 sync/lockless로 빠르게 소비 -> 남은 waypoint가 목적지뿐.
+    expect(alarmCycles).toEqual([]);
+    // 가짜 전진은 그대로: D1 `advance`가 환승역 이후 구간을 sync/lockless로 빠르게 소비한다.
     expect(r.events.filter((e) => e.kind === 'advance').length).toBeGreaterThanOrEqual(3);
-    // 실도착(18:17:34) 전 5분 이상 일찍 — 기기 덤프 18:09:49 companion / 18:05:34·18:08:59 safety-net과 같은 계열.
-    expect(r.oneStopBeforeMs - firedAt).toBeGreaterThan(5 * 60_000);
-    // 목적지 대상(`nextStation`)이 실제 destination이다.
-    const alarm = alarmCycles[0].pushes.find(isDestinationSleepAlarm);
-    expect(pushData(alarm as CapturedPush)?.nextStation).toBe(r.destination.stationName);
   });
 
   // ── 결함 3: 실도착 전 destination-arrived 조기 종료 — 재생 불가 ─────────────────────────

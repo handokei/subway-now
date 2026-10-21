@@ -416,25 +416,13 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
 }
 
 /**
- * apnsFetch mock에서 lockless intermediate(kind==='intermediate') 발사 1건의 payload data를
- * 추출한다. 정확히 1건이 발사됐는지도 단언한다. (#1307 / #1273 lockless wire 검증 공용 헬퍼)
+ * apnsFetch mock 호출 중 boarding-prompt(#3140 예외 — 프롬프트는 lock 무관 유지)를 뺀 push 본문.
+ * "lock 없는 트립은 알림 0" 단언용.
  */
-function parseLocklessIntermediateData(apnsFetch: {
-  mock: { calls: unknown[][] };
-}): Record<string, unknown> {
-  const calls = apnsFetch.mock.calls.filter((c) => {
-    try {
-      const init = c[1] as { body?: unknown } | undefined;
-      const body = JSON.parse(init?.body as string) as { data?: { kind?: string } };
-      return body?.data?.kind === 'intermediate';
-    } catch {
-      return false;
-    }
-  });
-  expect(calls).toHaveLength(1);
-  const init = calls[0][1] as { body?: unknown };
-  const body = JSON.parse(init.body as string) as { data: Record<string, unknown> };
-  return body.data;
+function nonPromptPushBodies(apnsFetch: { mock: { calls: unknown[][] } }): Record<string, unknown>[] {
+  return apnsFetch.mock.calls
+    .map((c) => JSON.parse((c[1] as { body: string }).body) as Record<string, unknown>)
+    .filter((b) => (b.body as { kind?: string } | undefined)?.kind !== 'boarding-prompt');
 }
 
 function makeSeoul(arrivals: ArrivalEntry[]): SeoulArrivalClient {
@@ -1027,12 +1015,13 @@ describe('runScheduled', () => {
 
     const cases: LocklessCase[] = [
       {
-        name: '토글 ON + intermediate + arvlCd=1 → 발사 + locklessIntermediateFired 카운트',
+        // #3140 — lock 없는 트립은 알림이 없다: 매역 "통과" push 미발사(waypoint advance만).
+        name: '토글 ON + intermediate + arvlCd=1 → 발사 0 (#3140 lock 없는 트립 알림 제거)',
         trip: () => intermediateTrip(),
         arrivals: [ARVL_ARRIVED],
         apnsOk: true,
-        expect: { pushed: 1, locklessFired: 1, lockMissing: 0 },
-        apnsCalled: true,
+        expect: { pushed: 0, locklessFired: 0, lockMissing: 0 },
+        apnsCalled: false,
       },
       {
         name: '토글 OFF + intermediate → lockMissing 카운트 (발사 0, arrivals fetch 미호출)',
@@ -1128,16 +1117,16 @@ describe('runScheduled', () => {
         expect(apnsFetch).not.toHaveBeenCalled();
       });
 
-      it('boardingCommitted=false(안내 시작/info-mode) + intermediate + arvlCd=1 → 기존과 동일하게 발사 (unaffected)', async () => {
+      it('boardingCommitted=false(안내 시작/info-mode) + intermediate + arvlCd=1 → #3140 lock 없음이라 발사 0 (억제 카운터도 0)', async () => {
         const { stats, apnsFetch } = await runLocklessCycle({
           trip: intermediateTrip({ boardingCommitted: false }),
           arrivals: [ARVL_ARRIVED],
           apnsOk: true,
         });
-        expect(stats.pushed).toBe(1);
-        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
         expect(stats.boardingCommittedSuppressed).toBe(0);
-        expect(apnsFetch).toHaveBeenCalled();
+        expect(apnsFetch).not.toHaveBeenCalled();
       });
     });
 
@@ -1168,9 +1157,7 @@ describe('runScheduled', () => {
         // 정상 진행돼 lockMissing 분기로 fall-through하지 않는다(intermediateTrip은 lock이
         // 아예 없는 lockless 시나리오이므로 애초에 lockMissing 분기 대상도 아니다).
         expect(stats.lockMissing).toBe(0);
-        // #2510 — 준비 진동(ACTION, 전체 트립)은 매역 INFO push와 별개 채널이라 kill switch가
-        // 죽이지 않는다(위 주석의 "취침 알람까지 함께 죽으면 회귀" 원칙과 동일 — 이제 비취침
-        // 트립도 같은 보호를 받는다). intermediate(강남)→destination(역삼) preceding 매치라 발사.
+        // #3140 — 준비 진동도 lock 활성 게이트(이 trip은 lockless)라 kill switch와 무관하게 미발사.
         const alertCall = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).find((c) => {
           try {
             return JSON.parse(c[1].body as string)?.aps?.sound === 'alarm.wav';
@@ -1178,25 +1165,25 @@ describe('runScheduled', () => {
             return false;
           }
         });
-        expect(alertCall).toBeDefined();
+        expect(alertCall).toBeUndefined();
         // trip advance는 매역 통지 여부와 독립 — kill switch 활성 상태에서도 waypoint가 shift.
         const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
         expect(stored.waypoints[0].stationName).toBe('역삼');
       });
 
-      it('killSwitchLocklessIntermediate=false → 정상 발사 (dormant 확인)', async () => {
+      it('killSwitchLocklessIntermediate=false → (dormant) skip 카운터 0, #3140 이후 발사도 0', async () => {
         const { stats, apnsFetch } = await runLocklessCycle({
           trip: intermediateTrip(),
           arrivals: [ARVL_ARRIVED],
           apnsOk: true,
         });
-        expect(stats.pushed).toBe(1);
-        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
         expect(stats.killSwitchLocklessIntermediateSkipped).toBe(0);
-        expect(apnsFetch).toHaveBeenCalled();
+        expect(apnsFetch).not.toHaveBeenCalled();
       });
 
-      it('killSwitchLocklessIntermediate 미전달(undefined) → 기존 동작 100% 유지 (dormant)', async () => {
+      it('killSwitchLocklessIntermediate 미전달(undefined) → skip 카운터 0 (dormant), #3140 이후 발사 0', async () => {
         const kv = new InMemoryKV();
         const trip = intermediateTrip();
         await putTrip(kv as unknown as KVNamespace, trip);
@@ -1210,17 +1197,17 @@ describe('runScheduled', () => {
           now: () => NOW,
           // killSwitchLocklessIntermediate 미전달
         });
-        expect(stats.pushed).toBe(1);
-        expect(stats.locklessIntermediateFired).toBe(1);
+        expect(stats.pushed).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
         expect(stats.killSwitchLocklessIntermediateSkipped).toBe(0);
-        expect(apnsFetch).toHaveBeenCalled();
+        // 프롬프트(origin boarding-prompt)는 #3140 예외라 남는다 — 알림성 push만 0.
+        expect(nonPromptPushBodies(apnsFetch)).toEqual([]);
       });
 
-      // P2-2 (리뷰 필수) — 취침 알람 생존 회귀 테스트. sleepModeEnabled + infoModeEnabled 둘 다
-      // ON인 lockless trip에서 kill switch가 활성이어도 취침 알람(별 채널, alert+companion)은
-      // 정상 발사되고 waypoint도 정상 advance해야 한다. #1967 P1 리뷰가 지적한 "매역 push만
-      // 죽이려다 취침 알람까지 죽이는" 회귀를 직접 재현/차단.
-      it('sleepModeEnabled + infoModeEnabled + kill switch ON → sleepAlarmFired 1 + 매역 push 0 + waypoint advance 정상', async () => {
+      // P2-2 (#1967 리뷰) — kill switch가 취침 알람까지 죽이는 회귀 차단이 원 목적이었다.
+      // #3140: lock 없는 트립은 취침 알람도 없다(lock 활성 게이트). kill switch ON이어도 waypoint
+      // advance는 정상이고 알림은 0이다. lock 활성 취침 알람 발사는 '#2066' describe가 고정한다.
+      it('sleepModeEnabled + infoModeEnabled + kill switch ON → sleepAlarmFired 0(#3140 lockless) + 매역 push 0 + waypoint advance 정상', async () => {
         const kv = new InMemoryKV();
         // #2066 트리거 조건: waypoint(현재)=intermediate, nextWaypoint=transfer/destination.
         // intermediateTrip() 기본 shape(강남 intermediate → 역삼 destination)이 그대로 부합.
@@ -1237,83 +1224,16 @@ describe('runScheduled', () => {
           generatePushId: () => 'p-sleep-killswitch',
           killSwitchLocklessIntermediate: true,
         });
-        // 취침 알람(별 채널)은 kill switch 무관 정상 발사.
-        expect(stats.sleepAlarmFired).toBe(1);
-        // 매역 station-passed push(lockless intermediate)는 kill switch로 차단.
+        // lock 없음 → 취침 알람 없음.
+        expect(stats.sleepAlarmFired).toBe(0);
         expect(stats.pushed).toBe(0);
         expect(stats.locklessIntermediateFired).toBe(0);
         expect(stats.killSwitchLocklessIntermediateSkipped).toBe(1);
         // waypoint는 정상 advance (trip SSoT는 매역 통지 여부와 독립).
         const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
         expect(stored.waypoints[0].stationName).toBe('역삼');
-        // 취침 알람 push(alert + companion silent)는 실제로 전송 시도됐어야 한다.
-        expect(apnsFetch).toHaveBeenCalled();
+        expect(nonPromptPushBodies(apnsFetch)).toEqual([]);
       });
-    });
-
-    // Epic #1204 그룹 2 D3 (#1273)
-    it('lockless intermediate 발사 시 payload.hopIndex가 waypoint.hopIndex로 wire', async () => {
-      const { apnsFetch } = await runLocklessCycle({
-        // #2944 (H-6) — originStationName(시청→강남='up', ARVL_ARRIVED.isUp=true와 정합).
-        trip: makeTrip({
-          originStationName: '시청',
-          waypoints: [
-            { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
-            { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
-          ],
-          infoModeEnabled: true,
-        }),
-        arrivals: [ARVL_ARRIVED],
-        apnsOk: true,
-      });
-      const data = parseLocklessIntermediateData(apnsFetch);
-      expect(data.hopIndex).toBe(3);
-    });
-
-    it('lockless intermediate 발사 시 waypoint.hopIndex 부재면 payload 본문에서도 hopIndex 누락', async () => {
-      const { apnsFetch } = await runLocklessCycle({
-        trip: makeTrip({
-          originStationName: '시청',
-          waypoints: [
-            { stationName: '강남', line: '2', kind: 'intermediate' },
-            { stationName: '역삼', line: '2', kind: 'destination' },
-          ],
-          infoModeEnabled: true,
-        }),
-        arrivals: [ARVL_ARRIVED],
-        apnsOk: true,
-      });
-      const data = parseLocklessIntermediateData(apnsFetch);
-      expect('hopIndex' in data).toBe(false);
-    });
-
-    // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — lockless intermediate payload에서
-    // subsurface flag를 device 기압계에서 stations.json waypoint environment로 교체하려
-    // 했으나 반려됐다. `silentPushLocationGate.ts`의 `isSubsurfaceBypass`가 subsurface=true를
-    // 받으면 거리/stale-position 게이트를 통째로 우회하는데, 533역 중 375역이 underground라
-    // 이 치환은 거의 모든 intermediate push에서 좀비/stale lock 오발사 방어(ADR-010상 miss와
-    // 동급)를 끄는 부작용이 있다. 대신 필드를 아예 보내지 않는다(omit) — waypoint가
-    // underground/surface 무엇이든, trip.subsurface가 무엇이든 결과는 항상 omit이어야 한다.
-    it.each([
-      ['underground waypoint(강남)', '강남', true],
-      ['surface waypoint(성수)', '성수', false],
-    ])('lockless intermediate — payload에 subsurface 필드가 없다 (%s, #2644)', async (_label, stationName, tripSubsurface) => {
-      const { apnsFetch } = await runLocklessCycle({
-        // #2944 (H-6) — originStationName(시청→강남/성수 모두 'up', ARVL_ARRIVED.isUp=true와 정합).
-        trip: makeTrip({
-          originStationName: '시청',
-          waypoints: [
-            { stationName, line: '2', kind: 'intermediate', hopIndex: 3 },
-            { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
-          ],
-          infoModeEnabled: true,
-          subsurface: tripSubsurface,
-        }),
-        arrivals: [ARVL_ARRIVED],
-        apnsOk: true,
-      });
-      const data = parseLocklessIntermediateData(apnsFetch);
-      expect('subsurface' in data).toBe(false);
     });
 
     it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
@@ -1435,16 +1355,13 @@ describe('runScheduled', () => {
             apnsOk: fires,
             motion,
           });
-          expect(stats.locklessIntermediateFired).toBe(fires ? 1 : 0);
-          expect(stats.pushed).toBe(fires ? 1 : 0);
+          // #3140 — 매역 push는 제거돼 `fires`는 이제 "advance 허용" 의미(push는 항상 0).
+          expect(stats.locklessIntermediateFired).toBe(0);
+          expect(stats.pushed).toBe(0);
           expect(stats.locklessMotionGateBlocked).toBe(fires ? 0 : 1);
-          // 발사 안 하면 첫 waypoint(강남) 유지 — multi/단일 advance 모두 차단.
+          // advance 불허면 첫 waypoint(강남) 유지 — multi/단일 advance 모두 차단.
           expect(await storedFirstWaypoint(kv)).toBe(fires ? '역삼' : '강남');
-          if (fires) {
-            expect(apnsFetch).toHaveBeenCalled();
-          } else {
-            expect(apnsFetch).not.toHaveBeenCalled();
-          }
+          expect(nonPromptPushBodies(apnsFetch)).toEqual([]);
         },
       );
 
@@ -1507,16 +1424,17 @@ describe('runScheduled', () => {
       // lockless trip은 bare-arvlCd 경로만 사용. 이동 + ARRIVED/ENTERING → station-passed 발사.
       // promptGeoContext / autoLock 관련 테스트 제거됨.
 
-      it('이동 + ARRIVED → bare-arvlCd station-passed 발사 (auto-lock 없음)', async () => {
-        const { stats, apnsFetch } = await runLocklessCycle({
+      it('이동 + ARRIVED → bare-arvlCd advance만 (auto-lock 없음, #3140 station-passed 발사 없음)', async () => {
+        const { kv, stats, apnsFetch } = await runLocklessCycle({
           trip: intermediateTrip(),
           arrivals: [ARVL_ARRIVED],
           apnsOk: true,
           motion: 'automotive',
         });
         expect(stats.autoLockSuccess).toBe(0); // paradigm shift: auto-lock 없음
-        expect(stats.locklessIntermediateFired).toBe(1);
-        expect(apnsFetch).toHaveBeenCalled();
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(await storedFirstWaypoint(kv)).toBe('역삼');
+        expect(nonPromptPushBodies(apnsFetch)).toEqual([]);
       });
     });
 
@@ -5652,8 +5570,8 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
 
     it('lockless intermediate + activityPushToken 있으면 LA update push 발사', async () => {
       const { stats, fetchImpl } = await runLocklessLaCycle(makeLocklessLaTrip(), 120);
-      // station-passed silent push 1건 + LA update 1건
-      expect(stats.locklessIntermediateFired).toBe(1);
+      // #3140 — station-passed silent push는 제거(알림 아님인 LA update 1건만 유지)
+      expect(stats.locklessIntermediateFired).toBe(0);
       expect(stats.laPushSent).toBe(1);
       const laCalls = getLaCalls(fetchImpl);
       expect(laCalls).toHaveLength(1);
@@ -5666,7 +5584,7 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     it('lockless intermediate + activityPushToken 없으면 LA push 없음', async () => {
       const trip = makeLocklessLaTrip({ activityPushToken: undefined, activityState: undefined });
       const { stats, fetchImpl } = await runLocklessLaCycle(trip, 120);
-      expect(stats.locklessIntermediateFired).toBe(1);
+      expect(stats.locklessIntermediateFired).toBe(0);
       expect(stats.laPushSent).toBe(0);
       expect(getLaCalls(fetchImpl)).toHaveLength(0);
     });
@@ -8263,7 +8181,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     // 증거 유무와 무관하게 발사.
     // #2920 — 같은 시점에 하차 확인 프롬프트(hop-end 채널 재사용)도 1회 추가 발사되므로
     // 총 호출 수는 2회로 늘어난다(아래 두 push 각각 존재 확인으로 분해).
-    expect(apnsFetch).toHaveBeenCalledTimes(2);
+    // #3140 — lock 없는 트립은 알림 없음: 즉시 "안내 종료" 배너는 제거(종료는 타임아웃 후
+    // cleanupTripWithLa의 단일 trip-ended 통지로 보장 — A2e). 프롬프트(하차 확인)만 남는다.
+    expect(apnsFetch).toHaveBeenCalledTimes(1);
     const tripEndedCall = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).find((call) => {
       try {
         const body = JSON.parse(call[1].body as string);
@@ -8272,7 +8192,7 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
         return false;
       }
     });
-    expect(tripEndedCall, 'S11 거부 케이스 ⓕ 위반 — 증거 없다고 도착 알림이 발사되지 않음').toBeDefined();
+    expect(tripEndedCall, '#3140 위반 — lockless 즉시 도착 배너가 발사됨').toBeUndefined();
     // #2920 — 하차 확인 프롬프트(hop-end 채널 재사용)도 함께 발사됐는지 확인.
     const disembarkCall = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).find((call) => {
       try {
@@ -9817,15 +9737,6 @@ const ARVLCD_LOCK_BOILER: BoardingLockMeta = {
   expiresAt: NOW + 60 * 60_000,
 };
 
-const LOCKLESS_ARRIVED: ArrivalEntry = {
-  destination: '강남행',
-  arrivalSeconds: 30,
-  trainCode: '7246',
-  isUp: true,
-  subwayNm: '지하철2호선',
-  arvlCd: 1,
-};
-
 async function runArvlcdSsotFireScenario(opts: {
   token: string;
   waypoints: Waypoint[];
@@ -9859,44 +9770,6 @@ async function runArvlcdSsotFireScenario(opts: {
   return {
     arvlcdBody: arvlcdCall ? JSON.parse(arvlcdCall[1].body as string) : null,
     stored: JSON.parse((await kv.get(`trip:${opts.token}`)) as string) as Trip,
-  };
-}
-
-async function runLocklessSsotFireScenario(opts: {
-  token: string;
-  waypoints: Waypoint[];
-  seedSsotStation?: string;
-}): Promise<{ stored: Trip; locklessBody: Record<string, any> | null }> {
-  const kv = new InMemoryKV();
-  // #2944 (H-6) — originStationName(시청→강남='up', LOCKLESS_ARRIVED.isUp=true와 정합).
-  const trip = makeTrip({
-    token: opts.token,
-    route: { type: 'direct', line: '2', stops: 2 },
-    originStationName: '시청',
-    waypoints: opts.waypoints,
-    infoModeEnabled: true,
-  });
-  await putTrip(kv as unknown as KVNamespace, trip);
-  await seedLocklessMotionSeries(kv, trip.token, 'automotive');
-  if (opts.seedSsotStation !== undefined) {
-    await seedSsot(kv as unknown as KVNamespace, opts.token, opts.seedSsotStation);
-  }
-  const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-  await runScheduled(makeEnv(kv), {
-    seoul: makeSeoul([LOCKLESS_ARRIVED]),
-    apnsConfig,
-    apnsHosts: APNS_HOSTS,
-    fetchImpl: apnsFetch as unknown as typeof fetch,
-    now: () => NOW,
-  });
-  const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
-  const locklessCall = calls.find((c) => {
-    const body = JSON.parse(c[1].body as string);
-    return body.data?.origin === 'lockless';
-  });
-  return {
-    stored: JSON.parse((await kv.get(`trip:${opts.token}`)) as string) as Trip,
-    locklessBody: locklessCall ? JSON.parse(locklessCall[1].body as string) : null,
   };
 }
 
@@ -9951,89 +9824,10 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
     });
-    expect(stats.locklessIntermediateFired).toBe(1);
+    // #3140 — push는 제거됐지만 passedStations 누적(waypoint 진행 SSoT)은 유지된다.
+    expect(stats.locklessIntermediateFired).toBe(0);
     const stored = JSON.parse((await kv.get('trip:lockless-pass')) as string) as Trip;
     expect(stored.passedStations).toEqual(['강남']);
-  });
-
-  // #2177 — lockless intermediate push가 unrecoverable(410 Unregistered)로 실패하면 retry queue를
-  // 타지 않고 cleanupTripWithLa('push-unrecoverable')로 즉시 trip 폐기된다.
-  it('#2177 — unrecoverable(410) push 실패 → retry-push 큐 적재 X + trip 폐기', async () => {
-    const kv = new InMemoryKV();
-    const trip = makeTrip({
-      token: 'lockless-410',
-      route: { type: 'direct', line: '2', stops: 2 },
-      originStationName: '시청',
-      waypoints: [
-        { stationName: '강남', line: '2', kind: 'intermediate' },
-        { stationName: '역삼', line: '2', kind: 'intermediate' },
-      ],
-      infoModeEnabled: true,
-    });
-    await putTrip(kv as unknown as KVNamespace, trip);
-    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
-    const apnsFetch = vi.fn(async () =>
-      new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 }),
-    );
-    const arrived: ArrivalEntry = {
-      destination: '강남행',
-      arrivalSeconds: 30,
-      trainCode: '7246',
-      isUp: true,
-      subwayNm: '지하철2호선',
-      arvlCd: 1,
-    };
-    const stats = await runScheduled(makeEnv(kv, kv), {
-      seoul: makeSeoul([arrived]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-lockless-410',
-    });
-    expect(stats.errors).toBeGreaterThan(0);
-    expect(await kv.get('retry-push:p-lockless-410')).toBeNull();
-    expect(await kv.get('trip:lockless-410')).toBeNull();
-  });
-
-  // #2177 — lockless intermediate push가 transient(503)로 실패하면 retry-push 큐에 적재된다.
-  it('#2177 — transient(503) push 실패 → retry-push 큐 적재', async () => {
-    const kv = new InMemoryKV();
-    const trip = makeTrip({
-      token: 'lockless-503',
-      route: { type: 'direct', line: '2', stops: 2 },
-      originStationName: '시청',
-      waypoints: [
-        { stationName: '강남', line: '2', kind: 'intermediate' },
-        { stationName: '역삼', line: '2', kind: 'intermediate' },
-      ],
-      infoModeEnabled: true,
-    });
-    await putTrip(kv as unknown as KVNamespace, trip);
-    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
-    const apnsFetch = vi.fn(async () => new Response('', { status: 503 }));
-    const arrived: ArrivalEntry = {
-      destination: '강남행',
-      arrivalSeconds: 30,
-      trainCode: '7246',
-      isUp: true,
-      subwayNm: '지하철2호선',
-      arvlCd: 1,
-    };
-    await runScheduled(makeEnv(kv, kv), {
-      seoul: makeSeoul([arrived]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-lockless-503',
-    });
-    const stored = await kv.get('retry-push:p-lockless-503');
-    expect(stored).not.toBeNull();
-    const entry = JSON.parse(stored as string);
-    expect(entry.lastErrorStatus).toBe(503);
-    // trip은 폐기되지 않고 그대로 유지 (transient 실패는 다음 cycle 재시도).
-    expect(await kv.get('trip:lockless-503')).not.toBeNull();
   });
 });
 
@@ -10279,20 +10073,6 @@ describe('silent push SSoT forward (#1561 T8 / S2 흡수)', () => {
     expect(arvlcdBody).toBeDefined();
     expect(arvlcdBody!.data.ssot).toBeDefined();
     expect(arvlcdBody!.data.ssot.currentStationId).toBe('중곡');
-  });
-
-  it('lockless-fire forwards SSoT from KV to silent push payload', async () => {
-    const { locklessBody } = await runLocklessSsotFireScenario({
-      token: 'ssot-lockless-1',
-      waypoints: [
-        { stationName: '강남', line: '2', kind: 'intermediate' },
-        { stationName: '역삼', line: '2', kind: 'intermediate' },
-      ],
-      seedSsotStation: '강남',
-    });
-    expect(locklessBody).toBeDefined();
-    expect(locklessBody!.data.ssot).toBeDefined();
-    expect(locklessBody!.data.ssot.currentStationId).toBe('강남');
   });
 });
 
@@ -15391,9 +15171,9 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
           }
         },
       );
-      // #2900 거부 케이스 ⓕ — 도착 알림(trip-ended push)은 증거 유무와 무관하게 즉시
-      // 발사된다. trip은 KV에 생존(영구 잔존은 아님 — A2e가 타임아웃 후 실제 종료를 검증).
-      expect(tripEndedCall).toBeDefined();
+      // #3140 — lock 없는 트립은 알림이 없다: 즉시 도착 배너(trip-ended push)는 제거됐다.
+      // trip은 KV에 생존(영구 잔존은 아님 — A2e가 타임아웃 후 실제 종료 + 단일 통지를 검증).
+      expect(tripEndedCall).toBeUndefined();
       expect(await kv.get(`trip:${TOKEN_A2}`)).not.toBeNull();
     },
   );
@@ -15520,6 +15300,15 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       },
     );
     expect(tripEndedCall).toBeDefined();
+    // #3140 — 즉시 배너 제거 후에도 종료 통지는 정확히 1회(cleanupTripWithLa 경로).
+    const tripEndedCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((call) => {
+      try {
+        return JSON.parse(call[1].body as string)?.data?.kind === 'trip-ended';
+      } catch {
+        return false;
+      }
+    });
+    expect(tripEndedCalls).toHaveLength(1);
     expect(await kv.get(`trip:${TOKEN_A2}`)).toBeNull();
   });
 
@@ -16557,7 +16346,7 @@ describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구�
       findTripEndInsert(inserts),
       'S11 스펙 1 위반 — 탑승 증거 없이 D1 trip_events(kind=trip-end)가 기록됨(실제 종료는 유예돼야 함)',
     ).toBeUndefined();
-    // #2900 거부 케이스 ⓕ — 도착 알림은 증거 유무와 무관하게 즉시 발사된다(실제 종료만 유예).
+    // #3140 — lock 없는 트립은 알림이 없다: 즉시 도착 배너는 제거(실제 종료 + 단일 통지는 유예 후).
     const tripEndedPush = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find((call) => {
       try {
         const body = JSON.parse(call[1].body as string);
@@ -16566,10 +16355,7 @@ describe('S11 (#2893) — 목적지 확정은 사용자 탑승 증거를 요구�
         return false;
       }
     });
-    expect(
-      tripEndedPush,
-      'S11 거부 케이스 ⓕ 위반 — 증거 없다고 도착 알림 자체가 발사되지 않음',
-    ).toBeDefined();
+    expect(tripEndedPush, '#3140 위반 — lockless 즉시 도착 배너가 발사됨').toBeUndefined();
   });
 
   it('스펙 2(거부 케이스, 과차단 금지) — 탑승 증거(lock)가 있으면 목적지 도착 시 정상 종료한다', async () => {
@@ -16854,9 +16640,12 @@ describe('S-2921 (#2921) — lockless leg 전진 후보 제한', () => {
         generatePushId: () => 'p-s2921-known-gap',
       });
       // 이상적 동작(미구현) — 사용자가 타지 않은 단일 열차로는 intermediate가 통과되면 안
-      // 된다. 현재는 통과된다(locklessIntermediateFired===1) — 이 assertion은 지금 실패하고,
-      // it.fails가 그 실패 자체를 "예상대로"로 받아들인다.
+      // 된다. 현재는 통과된다(waypoint shift) — 이 assertion은 지금 실패하고, it.fails가 그
+      // 실패 자체를 "예상대로"로 받아들인다. (#3140: 매역 push가 제거돼 통과 여부는
+      // locklessIntermediateFired가 아니라 저장된 waypoint 진행으로 판정한다.)
       expect(stats.locklessIntermediateFired).toBe(0);
+      const stored = JSON.parse((await kv.get('trip:s2921-known-gap')) as string) as Trip;
+      expect(stored.waypoints[0].stationName).toBe('중곡');
     },
   );
 });
@@ -17047,6 +16836,77 @@ describe('restrictArrivalsByLegDirection (#2944, H-6)', () => {
     const arrivals = [arrival({ trainCode: 'UP', isUp: true }), arrival({ trainCode: 'DOWN', isUp: false })];
     const result = restrictArrivalsByLegDirection(trip, waypoint, arrivals);
     expect(result).toEqual([]);
+  });
+});
+
+// #3140 — lock 없는 트립은 알림이 없다(사용자 결정 decision_lock_only_alerts, 프롬프트는 예외).
+// 취침·준비 알람은 lock 활성 게이트, lockless 매역 "통과" push는 제거. lock 활성 발사는 위
+// '#2066'/'#2510' describe가 그대로 고정한다(거부 케이스).
+describe('#3140 — lock 없는 트립 알림 제거 (backend)', () => {
+  const ARRIVED: ArrivalEntry = {
+    destination: '강남행',
+    arrivalSeconds: 30,
+    trainCode: '7246',
+    isUp: true,
+    subwayNm: '지하철2호선',
+    arvlCd: 1,
+  };
+
+  async function runLockless(overrides: Partial<Trip>) {
+    const kv = new InMemoryKV();
+    const pending = new InMemoryKV();
+    const { db, inserts } = makeFireLogDb();
+    const trip = makeTrip({
+      originStationName: '시청',
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' },
+        { stationName: '역삼', line: '2', kind: 'destination' },
+      ],
+      infoModeEnabled: true,
+      ...overrides,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv, pending, db), {
+      seoul: makeStationAwareSeoul('강남', [ARRIVED]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-3140',
+    });
+    const bodies = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).map(
+      ([, init]) => JSON.parse(init.body as string) as { aps?: { sound?: string }; data?: { kind?: string } },
+    );
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get(`trip:${trip.token}`)) as string);
+    const prepareRows = inserts
+      .filter((args) => args[2] === 'prepare-alarm')
+      .map((args) => JSON.parse(args[5] as string) as Record<string, unknown>);
+    return { stats, bodies, stored, pending, prepareRows };
+  }
+
+  it('lockless 비취침 — 준비 알람(alarm.wav) 미발사 + D1 prepare-alarm skipped/no-lock 1행, waypoint는 정상 advance', async () => {
+    const { stats, bodies, stored, prepareRows } = await runLockless({ sleepModeEnabled: false });
+    expect(stats.prepareAlarmFired).toBe(0);
+    expect(bodies.filter((b) => b.aps?.sound === 'alarm.wav')).toEqual([]);
+    expect(prepareRows).toEqual([expect.objectContaining({ outcome: 'skipped', reason: 'no-lock' })]);
+    expect(stored.waypoints[0].stationName).toBe('역삼');
+  });
+
+  it('lockless 취침 — 취침 알람(alarm.wav) 미발사, waypoint는 정상 advance', async () => {
+    const { stats, bodies, stored } = await runLockless({ sleepModeEnabled: true });
+    expect(stats.sleepAlarmFired).toBe(0);
+    expect(bodies.filter((b) => b.aps?.sound === 'alarm.wav')).toEqual([]);
+    expect(stored.waypoints[0].stationName).toBe('역삼');
+  });
+
+  it('lockless 매역 — station-passed(kind=intermediate) silent push 0 + pending 등록 0, waypoint는 정상 advance', async () => {
+    const { stats, bodies, stored, pending } = await runLockless({});
+    expect(stats.locklessIntermediateFired).toBe(0);
+    expect(bodies.filter((b) => b.data?.kind === 'intermediate')).toEqual([]);
+    expect([...pending.store.keys()]).toEqual([]);
+    expect(stored.waypoints[0].stationName).toBe('역삼');
   });
 });
 

@@ -395,9 +395,12 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // 확증(ARRIVED→DEPARTED)을 통과하지 못해 끝내 lock되지 않는다 — 결과적으로 #2751
       // 이전과 동일하게 lockless 경로가 3개 역 전부를 다시 커버한다(우연이 아니라 안전판이
       // 두 번째 결함도 막아낸 결과).
-      locklessIntermediateStations: ['어린이대공원(세종대)', '군자(능동)', '중곡'],
-      // 중곡 lockless 통과가 정상 트리거되어 목적지(용마산) "1정거장 전" 준비 알림이 다시 뜬다.
-      prepareAlarmTargets: ['용마산'],
+      //
+      // #3140 (사용자 결정: lock 없는 트립은 알림이 없다) — 이 trip은 lock이 생애 전체에 없었으므로
+      // lockless 매역 "통과" push와 목적지 "1정거장 전" 준비 알림은 이제 발사되지 않는다(waypoint
+      // advance·종료는 그대로). 위 3개 역 서술은 #3140 이전 동작의 이력이다.
+      locklessIntermediateStations: [],
+      prepareAlarmTargets: [],
       // #2720 fix — lockless 경로가 destination waypoint를 arvlCd ground truth로 처리해
       // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다. #2754 fix 후 lock이
       // 형성되지 않아(위 설명) lockless 경로가 다시 목적지까지 완주하므로 이 완결도 복원된다.
@@ -408,8 +411,10 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // 재설계 후에는 **도착 알림은 증거 유무와 무관하게 즉시 발사**되고(거부 케이스 ⓕ),
       // 유예되는 것은 backend trip의 실제 KV 삭제뿐이다. 이 generic 하네스의 `tripEnded`
       // 단언은 push 발사만 확인하므로(실제 KV 상태는 보지 않음) 이전과 동일하게 유지한다.
+      // #3140 — 즉시 "안내 종료" 배너 제거 후에도 trip-ended는 타임아웃 종료 경로(cleanupTripWithLa)로
+      // 발사된다(위 tripEnded 단언이 그대로 통과). minPushes: 매역 3 + 준비 알림 + 즉시 배너 제거분 감소(7→5).
       tripEnded: { reason: 'destination-arrived' },
-      minPushes: 7,
+      minPushes: 5,
     },
   },
 ];
