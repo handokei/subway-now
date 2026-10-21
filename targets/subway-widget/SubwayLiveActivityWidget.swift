@@ -138,7 +138,7 @@ private struct LockScreenView: View {
     var body: some View {
         VStack(spacing: 0) {
             if isBoardingQuestionAlert {
-                BoardingPromptRow(state: state, phase: state.boardingPhase ?? "")
+                BoardingQuestionStandaloneView(state: state, phase: state.boardingPhase ?? "")
             } else {
                 stateView
                 if isBoardingPrompt {
@@ -316,6 +316,55 @@ private struct BoardingPromptRow: View {
             .padding(.vertical, 10)
         }
         // 상태 뷰의 배경과 이어지도록 동일 계열을 쓴다(상태 뷰가 분기별 배경을 각자 보유).
+        .background(Color.black.opacity(0.85))
+    }
+}
+
+/// #3101 — 발사 순간 **단독** 질문 카드. 상태 뷰(역명)가 숨겨지므로 서버 발신 alert 문구
+/// (`boardingAlertTitle`/`boardingAlertBody`)를 크게 보여 "어느 역에 왔는지"를 알린다.
+/// 버튼은 `BoardingPromptButton`(iOS 17+) 재사용 — 16.x는 문구만.
+@available(iOS 16.1, *)
+private struct BoardingQuestionStandaloneView: View {
+    let state: SubwayActivityAttributes.ContentState
+    let phase: String
+
+    /// 서버 문구가 비어 있으면 기존 질문 키로 fallback.
+    var titleText: String {
+        if let title = state.boardingAlertTitle, !title.isEmpty { return title }
+        return NSLocalizedString("widget.boardingPrompt.boarded.question", comment: "Live Activity boarding confirmation prompt")
+    }
+
+    var bodyText: String? {
+        guard let body = state.boardingAlertBody, !body.isEmpty else { return nil }
+        return body
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(titleText)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                if let bodyText {
+                    Text(bodyText)
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.85))
+                }
+            }
+
+            Spacer()
+
+            if #available(iOS 17.0, *) {
+                BoardingPromptButton(
+                    state: state,
+                    phase: phase,
+                    autoLockedTracking: phase == "pre-boarding" && state.boardingAutoLocked == true
+                )
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 20)
         .background(Color.black.opacity(0.85))
     }
 }
