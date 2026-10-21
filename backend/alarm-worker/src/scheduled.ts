@@ -19,6 +19,7 @@ import {
   buildSilentPushData,
   sendAlertPush,
   sendBoardingPromptPush,
+  BOARDING_PROMPT_SOUND,
   sendReschedulePush,
   sendSilentPush,
   sendSleepAlarmCompanionPush,
@@ -8133,7 +8134,8 @@ async function fireBoardingPromptForAnchor(inputs: {
           now,
           log,
           undefined,
-          { title, body },
+          // #3108 — 소리 없는 alert는 확장 표시/배너가 무음이라 인지 불가. 일반 알림 프롬프트와 동일 소리.
+          { title, body, sound: BOARDING_PROMPT_SOUND },
         );
         if (laResult.dirty) dirty = true;
         if (stats.laPushSent > laPushSentBefore) {
