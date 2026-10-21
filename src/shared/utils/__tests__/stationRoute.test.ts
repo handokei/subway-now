@@ -1,3 +1,4 @@
+import lineTopology from '../../../data/lineTopology.json';
 import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
@@ -2335,6 +2336,53 @@ describe('terminusReachesTarget (#2696)', () => {
     it('역명 lookup 실패(존재하지 않는 이름) → true(판정 불가, 배제하지 않음)', () => {
       expect(terminusReachesTarget('3', 'down', '존재하지않는역', '정발산')).toBe(true);
       expect(terminusReachesTarget('3', 'down', '정발산', '존재하지않는역')).toBe(true);
+    });
+  });
+
+  // #3122 — 신분당·수인분당은 stations.json idx 증가=상행(lineTopology.reversedOrientationLines).
+  describe('역방향 노선(수인분당·신분당) — idx 증가=상행 (#3122)', () => {
+    it('10/21 서울숲 실측: bundang down, 종착 고색 → 압구정로데오 도달(true)', () => {
+      expect(terminusReachesTarget('bundang', 'down', '고색', '압구정로데오')).toBe(true);
+    });
+
+    it('bundang down: 목표역 뒤쪽(왕십리·서울숲 방면)에서 끝나는 열차는 조기종착(false)', () => {
+      expect(terminusReachesTarget('bundang', 'down', '서울숲', '압구정로데오')).toBe(false);
+      expect(terminusReachesTarget('bundang', 'down', '왕십리', '압구정로데오')).toBe(false);
+    });
+
+    it('bundang up: 청량리행은 서울숲 도달(true), 수서행(목표역 뒤쪽)은 조기종착(false)', () => {
+      expect(terminusReachesTarget('bundang', 'up', '청량리', '서울숲')).toBe(true);
+      expect(terminusReachesTarget('bundang', 'up', '수서', '서울숲')).toBe(false);
+    });
+
+    it('sinbundang: down/up 모두 idx 증가=상행 극성으로 판정', () => {
+      expect(terminusReachesTarget('sinbundang', 'down', '광교', '강남')).toBe(true);
+      expect(terminusReachesTarget('sinbundang', 'down', '신사', '강남')).toBe(false);
+      expect(terminusReachesTarget('sinbundang', 'up', '신사', '강남')).toBe(true);
+      expect(terminusReachesTarget('sinbundang', 'up', '광교', '강남')).toBe(false);
+    });
+
+    // 데이터 구동 — 역방향 노선이 추가돼도 같은 불변식이 자동 적용된다(하드코딩 id 없음).
+    describe.each(lineTopology.reversedOrientationLines)('%s 전 구간 불변식', (line) => {
+      const stations = getStationsOnLine(line as LineNumber);
+      const first = stations[0].name;
+      const mid = stations[Math.floor(stations.length / 2)].name;
+      const last = stations[stations.length - 1].name;
+      it('down(idx 감소 진행): 첫 역 종착=도달, 끝 역 종착=조기종착', () => {
+        expect(terminusReachesTarget(line as LineNumber, 'down', first, mid)).toBe(true);
+        expect(terminusReachesTarget(line as LineNumber, 'down', last, mid)).toBe(false);
+      });
+      it('up(idx 증가 진행): 끝 역 종착=도달, 첫 역 종착=조기종착', () => {
+        expect(terminusReachesTarget(line as LineNumber, 'up', last, mid)).toBe(true);
+        expect(terminusReachesTarget(line as LineNumber, 'up', first, mid)).toBe(false);
+      });
+    });
+
+    it('비역방향 노선(7호선)은 기존 극성 유지: down=idx 증가', () => {
+      expect(terminusReachesTarget('7', 'down', '부평구청', '건대입구')).toBe(true);
+      expect(terminusReachesTarget('7', 'down', '장암', '건대입구')).toBe(false);
+      expect(terminusReachesTarget('7', 'up', '장암', '건대입구')).toBe(true);
+      expect(terminusReachesTarget('7', 'up', '부평구청', '건대입구')).toBe(false);
     });
   });
 
