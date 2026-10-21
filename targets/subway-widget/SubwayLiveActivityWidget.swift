@@ -111,6 +111,13 @@ private struct LockScreenView: View {
             || state.boardingPhase == "end-prompt"
     }
 
+    /// #3101 — backend 발사 갱신(phase=pre-boarding + alert 필드)만 참. 무음 heartbeat는
+    /// alert 필드를 싣지 않으므로 거짓 → 기존 공존 레이아웃. 응답 시 phase가 바뀌어(boarded/nil)
+    /// 자동으로 거짓. `isBoardingPrompt`(end-prompt 포함)는 무변경.
+    var isBoardingQuestionAlert: Bool {
+        state.boardingPhase == "pre-boarding" && state.boardingAlertTitle != nil
+    }
+
     /// #2997 S2 — 상태 뷰(주)와 탑승/하차 버튼 행(보조)을 **합성**한다.
     ///
     /// 종전에는 `isBoardingPrompt`가 **배타 분기**여서 `boardingPhase`가 오면 긴급/일반 뷰에
@@ -123,11 +130,20 @@ private struct LockScreenView: View {
     ///
     /// 판정은 추가하지 않는다(A+C 원칙) — `isBoardingPrompt`는 `boardingPhase` 유무만 보고
     /// 그 값은 backend가 결정한다. 이 파일은 **받은 대로 그리기만** 한다.
+    ///
+    /// #3101 — 단, **발사 순간**(`isBoardingQuestionAlert`)에는 질문 행만 **단독**으로 그린다.
+    /// 상태 뷰 + 질문 행을 한 카드에 쌓으면 잠금화면 높이 제한으로 위/아래가 반반 잘려 질문이
+    /// 보이지 않는다(2026-10-19/21 사용자 verbatim). 무음 heartbeat(alert 없음)는 위 공존 유지.
+    /// Dynamic Island는 질문 행을 그리지 않아(상태만 표시) 클리핑 대상이 아니므로 변경 없음.
     var body: some View {
         VStack(spacing: 0) {
-            stateView
-            if isBoardingPrompt {
-                BoardingPromptRow(state: state, phase: state.boardingPhase ?? "")
+            if isBoardingQuestionAlert {
+                BoardingQuestionStandaloneView(state: state, phase: state.boardingPhase ?? "")
+            } else {
+                stateView
+                if isBoardingPrompt {
+                    BoardingPromptRow(state: state, phase: state.boardingPhase ?? "")
+                }
             }
         }
     }
@@ -300,6 +316,55 @@ private struct BoardingPromptRow: View {
             .padding(.vertical, 10)
         }
         // 상태 뷰의 배경과 이어지도록 동일 계열을 쓴다(상태 뷰가 분기별 배경을 각자 보유).
+        .background(Color.black.opacity(0.85))
+    }
+}
+
+/// #3101 — 발사 순간 **단독** 질문 카드. 상태 뷰(역명)가 숨겨지므로 서버 발신 alert 문구
+/// (`boardingAlertTitle`/`boardingAlertBody`)를 크게 보여 "어느 역에 왔는지"를 알린다.
+/// 버튼은 `BoardingPromptButton`(iOS 17+) 재사용 — 16.x는 문구만.
+@available(iOS 16.1, *)
+private struct BoardingQuestionStandaloneView: View {
+    let state: SubwayActivityAttributes.ContentState
+    let phase: String
+
+    /// 서버 문구가 비어 있으면 기존 질문 키로 fallback.
+    var titleText: String {
+        if let title = state.boardingAlertTitle, !title.isEmpty { return title }
+        return NSLocalizedString("widget.boardingPrompt.boarded.question", comment: "Live Activity boarding confirmation prompt")
+    }
+
+    var bodyText: String? {
+        guard let body = state.boardingAlertBody, !body.isEmpty else { return nil }
+        return body
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(titleText)
+                    .font(.headline)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                if let bodyText {
+                    Text(bodyText)
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.85))
+                }
+            }
+
+            Spacer()
+
+            if #available(iOS 17.0, *) {
+                BoardingPromptButton(
+                    state: state,
+                    phase: phase,
+                    autoLockedTracking: phase == "pre-boarding" && state.boardingAutoLocked == true
+                )
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 20)
         .background(Color.black.opacity(0.85))
     }
 }
