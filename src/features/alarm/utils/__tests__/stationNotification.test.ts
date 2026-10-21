@@ -123,8 +123,8 @@ jest.mock('../../../../data/exitSide.json', () => ({
 // fallback 검증용으로 잠실(2-016)·왕십리(2-008)에만 명시 매핑을 등록한다. 두 역은 exitSide.json에 없어
 // fallback 경로를 단독 측정한다.
 jest.mock('../../../../data/platformExitSide.json', () => ({
-  '2-016': 'right',
-  '2-008': 'both',
+  '2-016': { side: 'right', grade: 'official-derived' },
+  '2-008': { side: 'left', grade: 'official-derived' },
 }));
 
 // 빠른하차 힌트 분기 테스트용 — 잠실(2-016)·왕십리(2-008)만 등록.
@@ -1233,7 +1233,7 @@ describe('stationNotification', () => {
         });
 
         it('primary가 unmatched여도 platformExitSide에 매핑이 있으면 fallback이 적용된다', () => {
-          // 왕십리(2-008): primary 미등록 / fallback='both'. direction이 있어도 primary null → fallback.
+          // 왕십리(2-008): primary 미등록 / fallback='left'. direction이 있어도 primary null → fallback.
           expect(
             buildAlarmContent({
               phaseId: 'early',
@@ -1241,7 +1241,7 @@ describe('stationNotification', () => {
               stationName: '왕십리(성동구청)',
               direction: 'up',
             }).body,
-          ).toBe('다음 역 왕십리(성동구청)에서 환승하세요!\n양쪽 문이 열립니다\n환승이 빠른 위치에서 하차하세요');
+          ).toBe('다음 역 왕십리(성동구청)에서 환승하세요!\n왼쪽 문으로 하차하세요\n환승이 빠른 위치에서 하차하세요');
         });
 
         it('stations.json에 없는 역은 fallback도 발화하지 않는다', () => {
@@ -1270,7 +1270,7 @@ describe('stationNotification', () => {
         [
           'transfer 알람이고 데이터가 있으면 "환승이 빠른 위치" 힌트가 붙는다',
           'early', 'transfer', '왕십리(성동구청)',
-          '환승 알림', '다음 역 왕십리(성동구청)에서 환승하세요!\n양쪽 문이 열립니다\n환승이 빠른 위치에서 하차하세요',
+          '환승 알림', '다음 역 왕십리(성동구청)에서 환승하세요!\n왼쪽 문으로 하차하세요\n환승이 빠른 위치에서 하차하세요',
         ],
         [
           '알람 대상역이 stations.json에도 없으면 힌트 없이 본문만 표시한다',
