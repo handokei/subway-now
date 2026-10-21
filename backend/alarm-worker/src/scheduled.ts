@@ -4586,8 +4586,26 @@ export async function fireSyncSkippedStationPasses(
  * 1역 전 고정은 `evaluate*Trigger`(waypoint, next 쌍 평가)에만 있다 — #3100(N역 전)은 거기서 쌍을 N칸으로
  * 넓히고 이 함수의 "타깃 미소비" 규칙은 그대로 쓴다.
  *
- * `trip`은 slice 이전(pre-slice) 스냅샷이어야 한다(`buildStationNotifContent`의 남은 정거장 계산).
+ * `waypoints`/`trip`은 slice 이전(pre-slice) 스냅샷이어야 한다(`buildStationNotifContent`의 남은 정거장 계산).
+ * `selectConsumedPrecedingAlarmPairs`는 순수 선택(호출자가 waitUntil 스케줄 여부 판단에도 쓴다),
+ * `fireSyncConsumedPrecedingAlarms`는 그 쌍에 대한 발사.
  */
+export function selectConsumedPrecedingAlarmPairs(
+  waypoints: readonly Waypoint[],
+  shiftedCount: number,
+): { waypoint: Waypoint; nextWaypoint: Waypoint }[] {
+  const pairs: { waypoint: Waypoint; nextWaypoint: Waypoint }[] = [];
+  for (let i = 0; i < shiftedCount; i++) {
+    // 타깃(i+1)이 이미 소비된 쌍은 건너뛴다 — 사용자가 이미 도착한 쌍.
+    if (i + 1 < shiftedCount) continue;
+    const waypoint = waypoints[i];
+    const nextWaypoint = waypoints[i + 1];
+    if (waypoint === undefined || nextWaypoint === undefined) continue;
+    if (evaluatePrepareAlarmTrigger(waypoint, nextWaypoint).fire) pairs.push({ waypoint, nextWaypoint });
+  }
+  return pairs;
+}
+
 export async function fireSyncConsumedPrecedingAlarms(
   env: Env,
   trip: Trip,
@@ -4600,20 +4618,8 @@ export async function fireSyncConsumedPrecedingAlarms(
   const stats = createEmptyScheduledStats(now);
   // maybeFire*는 env 치유 시 trip.apnsEnv를 mutate한다 — 호출자 스냅샷을 오염시키지 않는다.
   const scratch: Trip = { ...trip };
-  for (let i = 0; i < shiftedCount; i++) {
-    const nextIndex = i + 1;
-    if (nextIndex < shiftedCount) continue; // 타깃이 이미 소비됨
-    const inputs = {
-      trip: scratch,
-      waypoint: trip.waypoints[i],
-      nextWaypoint: trip.waypoints[nextIndex],
-      env,
-      deps,
-      stats,
-      now,
-      log,
-      generatePushId,
-    };
+  for (const { waypoint, nextWaypoint } of selectConsumedPrecedingAlarmPairs(trip.waypoints, shiftedCount)) {
+    const inputs = { trip: scratch, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId };
     await maybeFireSleepAlarm(inputs);
     await maybeFirePrepareAlarm(inputs);
   }

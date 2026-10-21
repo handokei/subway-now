@@ -91,6 +91,7 @@ import {
   completeWaypointAdvance,
   createEmptyScheduledStats,
   fireSyncConsumedPrecedingAlarms,
+  selectConsumedPrecedingAlarmPairs,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
   isLockActiveForLeg,
@@ -3544,7 +3545,10 @@ app.post('/boarding-lock/sync', async (c) => {
       // cron에 맡긴다는 위 #2625 전제는 관측역이 trip에 남을 때만 성립하는데 이 분기는 관측역까지
       // 잘라낸다. 같은 lock-active 게이트(lockless = 알림 없음), dedup은 기존 (token, target) 키.
       // 혼합 분기(transfer/destination 소비)는 타깃이 이미 도달한 쌍이라 대상이 없다.
-      if (isBoardingLockActive(existing, now)) {
+      if (
+        isBoardingLockActive(existing, now) &&
+        selectConsumedPrecedingAlarmPairs(existing.waypoints, advance.shiftedCount).length > 0
+      ) {
         const log = createJsonLogger();
         scheduleTripEvent(
           c,
