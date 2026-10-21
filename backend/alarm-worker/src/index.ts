@@ -4211,7 +4211,7 @@ export function validateLiveActivityRegister(
  * 백스톱으로 stale route/destination/lock state를 자체 cleanup한다.
  *
  * 응답 모델:
- *   200 active     — KV에 trip이 살아 있음
+ *   200 active     — KV에 trip이 살아 있음 (+ hasLiveActivityToken: 이 trip의 LA push 토큰 보유 여부, #3164)
  *   200 ended      — trip은 사라졌지만 종료 마커가 있고 retention(`TRIP_STATUS_RETENTION_MS`) 내
  *   404            — trip도 마커도 없음 (등록된 적 없거나 KV TTL 자연 폐기)
  *   410            — 마커는 있으나 retention 만료(expired-retention) — body로 사유 명시
@@ -4219,6 +4219,15 @@ export function validateLiveActivityRegister(
  * Privacy: tripToken은 디바이스가 자신의 token을 echo하는 케이스라 인증 없이 노출 가능 — 다른
  * 디바이스의 token을 추측 brute-force할 risk는 사실상 0(UUID 공간).
  */
+/**
+ * #3164 — backend LA push 발사 조건(scheduled.ts `trip.activityPushToken && activityState === 'live'`)과
+ * 동일한 판정. APNs 410/종료 dismissal/DELETE /live-activity가 토큰을 조용히 비우면 false가 되어
+ * device가 재등록할 수 있다(device는 필드 부재를 허용한다 — 구 backend 호환).
+ */
+function tripHasLiveActivityToken(trip: Trip): boolean {
+  return Boolean(trip.activityPushToken) && trip.activityState === 'live';
+}
+
 app.get('/trips/:tripToken/status', async (c) => {
   const tripToken = c.req.param('tripToken');
   if (!tripToken) return c.json({ error: 'missing_token' }, 400);
@@ -4231,6 +4240,7 @@ app.get('/trips/:tripToken/status', async (c) => {
       status: 'active' as const,
       endedAt: null,
       endReason: null,
+      hasLiveActivityToken: tripHasLiveActivityToken(trip),
     });
   }
 
@@ -4248,6 +4258,7 @@ app.get('/trips/:tripToken/status', async (c) => {
         status: 'active' as const,
         endedAt: null,
         endReason: null,
+        hasLiveActivityToken: tripHasLiveActivityToken(indexedTrip),
       });
     }
     const indexedEnded = await readTripEndedStatus(c.env.TRIPS, indexedToken);
