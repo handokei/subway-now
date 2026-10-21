@@ -12,7 +12,11 @@
  *
  * 보수적 death 판정 (ADR-010 — false positive는 miss와 동급, 오탐으로 trip을 죽이지 않는다):
  *   - status === 'ended' (명시 응답)만 death 확정 → cleanup 수행.
- *   - null(404/410) / status === 'active' / 네트워크 에러 → 전부 무동작.
+ *   - gone(404/410) → **BG 두 사이트(silent-push / bg-location-tick)는 무동작(alive)**. FG tick만
+ *     `handleTripGone`(PR-2: 하한·lock·알람 가드 4종 + claim)에 위임한다 — FG는 사용자가 앱을 보고 있어
+ *     오판의 비용이 낮고 launch reconciliation 과 같은 판정을 공유한다. 이 재배정이 #2178 헤더의
+ *     "404/410은 death 아님"을 FG 한정으로 깨뜨린다(BG는 유지).
+ *   - status === 'active' / 네트워크 에러 → 무동작.
  *
  * 두 진입점이 공유:
  *   1. silentPushTask 처리 말미 — 로컬 active trip이 있는데 수신 payload의 trip 신원과
@@ -32,6 +36,7 @@ import { TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS } from '../../../shared/constants
 import { fetchTripStatus } from '../api/tripStatus';
 import { cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import { cleanupBackendConfirmedEndedTrip } from './tripEndedCleanupSequence';
+import { handleTripGone } from './tripGoneSelfEnd';
 import { appendAlarmLog } from './alarmLog';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -119,10 +124,13 @@ export async function checkTripDeathByPull(
     return 'skipped';
   }
 
-  if (result === null || result.status === 'active') {
-    // 404/410은 보수적으로 무시 — 'ended' 명시 응답에서만 정리(#2178 전제 코멘트, ADR-010).
-    return 'alive';
+  if (result.status === 'gone') {
+    // BG 사이트는 보수적으로 무시(#2178 전제 코멘트, ADR-010). FG tick만 판정 경로로 위임.
+    if (site !== 'fg-tick') return 'alive';
+    const outcome = await handleTripGone({ result, tripToken: activeTripToken, site });
+    return outcome === 'ended' ? 'ended' : 'alive';
   }
+  if (result.status === 'active') return 'alive';
 
   // status === 'ended' — death 확정.
   logger.info(

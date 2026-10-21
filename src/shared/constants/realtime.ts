@@ -235,6 +235,14 @@ export const SIGNAL_4_SILENT_PUSH_TIMEOUT_MS = 30 * 60_000;
 export const SIGNAL_4_KTX_ETA_UPPER_BOUND_MS = 10 * 60 * 60_000;
 
 /**
+ * B 최소판(PR-2) — backend 404/410(트립 없음)을 "device가 스스로 종료해도 되는 증거"로 인정하기 전의 유예.
+ * 하한 = `TRIP_STARTED_AT + DEFAULT_TRIP_TTL_MS(2h) + 이 값`. backend `expiresAt`은 재등록·sliding으로
+ * 시작+2h 아래로 내려가지 않는다(PR #3125 고정 테스트) — 그 이전의 404는 "방금 등록/KV 전파 지연"으로 보고
+ * 종료하지 않는다. 5분은 초기값이며 D1/덤프의 `trip-gone-self-end` 시점 분포로 튜닝한다.
+ */
+export const TRIP_GONE_GRACE_MS = 5 * 60_000;
+
+/**
  * #2178 — pull 기반 trip 死 backstop(silentPushTask 처리 말미 + BG location tick)의
  * 판단/호출 빈도 상수.
  *

@@ -234,7 +234,7 @@ export interface AlarmBackendResult {
 }
 
 /** 기본 트립 TTL — 2시간. 백엔드 KV expiration과 정렬. */
-const DEFAULT_TRIP_TTL_MS = 2 * 60 * 60 * 1000;
+export const DEFAULT_TRIP_TTL_MS = 2 * 60 * 60 * 1000;
 /** fetch 타임아웃 — 백엔드 응답 지연으로 알람 등록이 차단되지 않도록 짧게 유지. */
 const REQUEST_TIMEOUT_MS = 5000;
 // #2699 — 과거 register dedup hash는 `alarmAtEpochMs`를 60s 버킷(`ALARM_TIME_BUCKET_MS`)으로
