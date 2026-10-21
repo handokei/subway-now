@@ -110,7 +110,8 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   clearDismissSilenceStorage,
   // #926 — destination 재설정(switch/null) 시 LA dismiss sentinel도 해제 → 다음 silent push에서
   // LA 재상승 허용. TTL 30분은 보조 게이트, 사용자 명시 재설정이 더 강한 의도 신호이므로 즉시 reset.
-  clearLaDismissSentinel,
+  // #3106 — sentinel clear는 별도 항목이 아니라 `endLiveActivityCleanup` 안에서 LA end 완료 뒤에
+  // 실행한다(동시 시작이면 end가 유발한 dismiss 기록이 clear 뒤에 써져 30분 생존).
   // #919 — trip 시작 시각만 제거. LAST_UPLOADED_RECALL_TRIP_START_KEY는 dedup 마커이므로
   // 새 trip이 시작될 때 (tripStart 값이 달라질 때) 자연 무효화된다. 여기서 같이 지우면
   // BG silent-push가 upload + 직후 FG setDestination(null)이 같은 tripStart로 재trigger되는
@@ -276,9 +277,14 @@ function resetNavigationActive(): Promise<void> {
  * 일관성 보강하지만 본 helper 자체가 swallow하므로 단독 호출(예: 테스트)에서도 안전.
  */
 function endLiveActivityCleanup(): Promise<void> {
-  return LiveActivity.endLiveActivity().catch((e) => {
-    log.warn('endLiveActivity threw', e);
-  });
+  return (
+    LiveActivity.endLiveActivity()
+      .catch((e) => {
+        log.warn('endLiveActivity threw', e);
+      })
+      // #3106 — end가 유발한 dismiss 기록(markLaDismissed)이 끝난 뒤에 clear해야 sentinel이 남지 않는다.
+      .then(clearLaDismissSentinel)
+  );
 }
 
 /**
