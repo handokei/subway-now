@@ -6383,7 +6383,7 @@ describe('useStationAlarm', () => {
       expect(mockLogSuppressedPendingLockUnresolved).not.toHaveBeenCalled();
     });
 
-    it('lock=null(순수 lockless) + infoModeEnabled=true → 기존대로 발사 (변경 없음 확인, 거부 케이스)', async () => {
+    it('v9 d5 — lock=null(순수 lockless) + infoModeEnabled=true → 억제 (infoMode OR 철거)', async () => {
       mockGetBoardingLock.mockResolvedValue(null);
       useUserIntentStore.setState({ infoModeEnabled: true });
       mockGetLastNotifiedStationId.mockResolvedValue(null);
@@ -6406,9 +6406,12 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: 'station-passed' }),
+        ),
+      );
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
       expect(mockLogSuppressedPendingLockUnresolved).not.toHaveBeenCalled();
-      expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
     });
   });
 
