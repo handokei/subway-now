@@ -1080,6 +1080,10 @@ describe('BoardingTrainList', () => {
     });
 
     it('#3120 data 있을 때 user 탭 → "탑승 등록 중" 문구 미노출 + row highlight는 유지', () => {
+      function flattenStyle(style: unknown): Record<string, unknown> {
+        if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+        return (style ?? {}) as Record<string, unknown>;
+      }
       const train = makeTrain({ trainCode: 'T-PEND-BANNER' });
       const { getByTestId, queryByTestId, queryByText } = renderWithTheme(
         <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
