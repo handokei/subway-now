@@ -172,6 +172,9 @@ export type TripEventKind =
   | 'route-signature-mismatch'
   | 'leg-resolve-attempt'
   | 'promotion-rejected-uncorroborated'
+  // #3155 — sync 승격 시 열차가 이미 지난 중간역 waypoint를 건너뛴 수(`skipped`) / 지난 환승·도착 때문에 포기한
+  // 경우(`blockedAt`). 건너뛰면 늦은 매역 push가 없어야 한다.
+  | 'promotion-fastforward'
   | 'vanish-swap'
   | 'cooldown-bypass'
   // #3110 — 준비 알람(`maybeFirePrepareAlarm`, "곧 OO 도착") 평가 outcome. 발사/skip/rollback이

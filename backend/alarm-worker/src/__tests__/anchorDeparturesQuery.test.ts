@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { InMemoryKV } from './inMemoryKv';
-import { isTrainSeenAtAnchor, loadAnchorDepartures } from '../anchorDeparturesQuery';
+import { isTrainSeenAtAnchor, loadAnchorDepartures, loadTrainPosition } from '../anchorDeparturesQuery';
 import { inferLegDirection } from '../legDirection';
 import type { Trip } from '../types';
 
@@ -58,6 +58,35 @@ describe('isTrainSeenAtAnchor', () => {
 
   it('방향을 알 수 없는 구간(역 1개)은 fail-closed false', async () => {
     expect(await isTrainSeenAtAnchor(kvWith({ positions, fetchedAt: NOW }), '7039', '7', ['용마산'], NOW)).toBe(false);
+  });
+});
+
+describe('loadTrainPosition', () => {
+  const stamp = {
+    positions: [
+      { trainCode: '7039', stationName: '군자', trainSttus: 2, isUp: IS_UP, recptnMs: NOW },
+      { trainCode: '7039', stationName: '사가정', trainSttus: 1, isUp: !IS_UP, recptnMs: NOW },
+    ],
+    fetchedAt: NOW,
+    stationLogs: { 용마산: { present: [], departed: [{ trainCode: '7039', isUp: IS_UP, departedAt: NOW - 60_000 }] } },
+  };
+
+  it('같은 방향 신선 position과 앵커 통과 여부를 돌려준다', async () => {
+    const r = await loadTrainPosition(kvWith(stamp), '7039', '7', SEGMENT, NOW);
+    expect(r.position?.stationName).toBe('군자');
+    expect(r.passedAnchor).toBe(true);
+  });
+
+  it('출발 기록이 없으면 passedAnchor false', async () => {
+    const r = await loadTrainPosition(kvWith({ ...stamp, stationLogs: undefined }), '7039', '7', SEGMENT, NOW);
+    expect(r.passedAnchor).toBe(false);
+  });
+
+  it('방향 불명·stamp 없음·KV 장애는 모두 근거 없음', async () => {
+    const none = { position: undefined, passedAnchor: false };
+    expect(await loadTrainPosition(kvWith(stamp), '7039', '7', ['용마산'], NOW)).toEqual(none);
+    expect(await loadTrainPosition(kvWith(undefined), '7039', '7', SEGMENT, NOW)).toEqual(none);
+    expect(await loadTrainPosition(brokenKv, '7039', '7', SEGMENT, NOW)).toEqual(none);
   });
 });
 

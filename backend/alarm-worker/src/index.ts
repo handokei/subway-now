@@ -16,7 +16,8 @@ import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 // #2655 — 역명 정규화(#1410/#2566 drift 흡수). scheduled.ts의 transfer anchor 비교와 동일 함수를
 // 써야 "sync가 stamp한 역명"과 "cron이 advance하는 waypoint 역명"이 조용히 어긋나지 않는다.
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
-import { isTrainSeenAtAnchor, loadAnchorDepartures } from './anchorDeparturesQuery';
+import { isTrainSeenAtAnchor, loadAnchorDepartures, loadTrainPosition } from './anchorDeparturesQuery';
+import { planPromotionFastForward } from './anchorDepartures';
 import {
   attemptBoardingAnchorResolution,
   buildLockFromKnownTrainCode,
@@ -3598,14 +3599,48 @@ app.post('/boarding-lock/sync', async (c) => {
           now,
         ));
       if (corroborated) {
+        // #3155 — 열차가 이미 앵커를 지나 몇 역 앞에 있으면 지난 중간역 waypoint를 건너뛴다(늦은 매역 push
+        // 방지). 지난 역에 환승/도착이 있으면 건너뛰지 않고 보고만 한다.
+        const { position: trainPosition, passedAnchor } = await loadTrainPosition(
+          c.env.TRIPS,
+          payload.trainCode,
+          payload.boardingLine,
+          promoted.segmentStations,
+          now,
+        );
+        const fastForward = planPromotionFastForward(
+          working.waypoints,
+          promoted.segmentStations,
+          trainPosition,
+          passedAnchor,
+        );
         working = {
           ...working,
+          waypoints: working.waypoints.slice(fastForward.skip),
           boardingLock: promoted,
           lastTrackedArrivalEpoch: undefined,
           lastLaPushEpoch: undefined,
           lastLaPushAt: undefined,
           consecutiveEtaMissing: 0,
         };
+        if (fastForward.skip > 0 || fastForward.blockedAt !== undefined) {
+          if (fastForward.skip > 0) {
+            await maybeMirrorLockSyncProgress(c.env.TRIPS, working, fastForward.skip);
+          }
+          scheduleTripEvent(
+            c,
+            recordTripEvent(c.env.DB, {
+              tokenHash,
+              kind: 'promotion-fastforward',
+              station: working.waypoints[0]?.stationName,
+              meta: {
+                trainCode: promoted.trainCode,
+                skipped: fastForward.skip,
+                ...(fastForward.blockedAt !== undefined ? { blockedAt: fastForward.blockedAt } : {}),
+              },
+            }),
+          );
+        }
         scheduleTripEvent(
           c,
           recordTripEvent(c.env.DB, {

@@ -215,6 +215,17 @@ describe('planPromotionFastForward — 승격 시 열차가 이미 지난 역 �
     });
   });
 
+  it('구간(현재 leg) 밖에 있는데 앵커를 지난 기록이 있으면 leg 끝(환승)을 넘어선 열차 — blockedAt 보고', () => {
+    const leg = ['용마산', '중곡', '군자'];
+    const wps = [wp('중곡', 'intermediate'), wp('군자', 'transfer')];
+    expect(planPromotionFastForward(wps, leg, pos('7039', '어린이대공원', ARRIVED), true)).toEqual({
+      skip: 0,
+      blockedAt: '군자',
+    });
+    // 앵커 통과 기록이 없으면(앵커 이전 역의 접근 열차) 구간 밖이어도 건드리지 않는다.
+    expect(planPromotionFastForward(wps, leg, pos('7039', '사가정', APPROACHING), false)).toEqual({ skip: 0 });
+  });
+
   it('waypoint가 구간에 없으면 거기서 멈춘다', () => {
     expect(planPromotionFastForward([wp('없는역', 'intermediate')], segment, pos('7039', '군자', DEPARTED))).toEqual({ skip: 0 });
   });

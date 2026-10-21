@@ -68,7 +68,7 @@ export interface AnchorForSighting {
 const trainKey = (trainCode: string, isUp: boolean): string => `${trainCode}|${isUp ? 'u' : 'd'}`;
 
 /** recptnMs 0(누락)은 신뢰 불가가 아니라 "관측 시각 모름" — 이번 tick 관측으로 취급한다. */
-function isFreshPosition(position: PositionEntry, now: number): boolean {
+export function isFreshPosition(position: PositionEntry, now: number): boolean {
   return position.recptnMs <= 0 || now - position.recptnMs <= POSITION_FRESHNESS_MS;
 }
 
@@ -195,12 +195,42 @@ export interface PromotionFastForward {
   blockedAt?: string;
 }
 
+/**
+ * 이미 앵커를 지난 열차를 sync로 lock할 때, 열차가 **이미 지난** 중간역 waypoint 수를 계산한다.
+ * 그대로 두면 cron이 head를 따라잡으며(`estimateArrivalFromPosition` #2571) tick당 1역씩 늦은 매역 push를 쏜다.
+ *
+ *  - 열차가 구간 안 k번째 역에 sts=2(출발)이면 k까지, 그 외(진입/도착)면 k-1까지가 "지난 역"이다 —
+ *    열차가 서 있는 역은 아직 지나지 않았으므로 그 역 알림은 정상 발사 대상으로 남긴다.
+ *  - 지난 역에 환승/도착 waypoint가 하나라도 있으면 **아무것도 건너뛰지 않고** `blockedAt`을 보고한다
+ *    (환승·도착은 건너뛰면 안 되고, 그 경우의 동작은 발명하지 않는다 — 호출부가 trip event로 남긴다).
+ *  - 위치를 모르거나 앵커(idx 0)/앵커 이전이면 건너뛰지 않는다(#3056 신선 탭 동작 불변). 구간 밖이어도
+ *    앵커 출발 기록(`passedAnchor`)이 있으면 현재 leg의 끝을 넘어선 열차로 보고 환승/도착 waypoint를 보고한다.
+ */
 export function planPromotionFastForward(
-  _waypoints: readonly Waypoint[],
-  _segmentStations: readonly string[],
-  _position: PositionEntry | undefined,
+  waypoints: readonly Waypoint[],
+  segmentStations: readonly string[],
+  position: PositionEntry | undefined,
+  passedAnchor = false,
 ): PromotionFastForward {
-  return { skip: 0 };
+  if (!position) return { skip: 0 };
+  const trainIdx = segmentStations.indexOf(position.stationName);
+  // 구간 밖인데 앵커를 지난 기록이 있으면 현재 leg의 끝(환승/도착)을 넘어선 열차다 — 구간 전체가 "지난 역".
+  if (trainIdx < 0 && !passedAnchor) return { skip: 0 };
+  if (trainIdx === 0) return { skip: 0 };
+  const passedIdx =
+    trainIdx < 0
+      ? Number.POSITIVE_INFINITY
+      : position.trainSttus === TRAIN_STATUS.DEPARTED
+        ? trainIdx
+        : trainIdx - 1;
+  let skip = 0;
+  for (const waypoint of waypoints) {
+    const idx = segmentStations.indexOf(waypoint.stationName);
+    if (idx < 0 || idx > passedIdx) break;
+    if (waypoint.kind !== 'intermediate') return { skip: 0, blockedAt: waypoint.stationName };
+    skip += 1;
+  }
+  return { skip };
 }
 
 /**

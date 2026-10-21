@@ -6,8 +6,10 @@ import {
   anchorFromSegment,
   classifyAnchorSighting,
   departedFromStation,
+  isFreshPosition,
   resolveListAnchor,
 } from './anchorDepartures';
+import type { PositionEntry } from './seoul';
 import { readSelfPollPosition } from './selfPollPosition';
 import type { LineNumber, Trip } from './types';
 
@@ -43,6 +45,35 @@ export async function isTrainSeenAtAnchor(
     return classifyAnchorSighting(trainCode, anchor, stamp.positions, stamp.stationLogs, now) !== null;
   } catch {
     return false;
+  }
+}
+
+/**
+ * 승격 fast-forward 입력 — 최신 stamp에서 이 코드의 같은 방향 신선 position. 방향 불명/stamp 없음/KV 장애는
+ * undefined(= 건너뛰지 않음).
+ */
+export async function loadTrainPosition(
+  kv: KVNamespace,
+  trainCode: string,
+  line: string,
+  segmentStations: readonly string[],
+  now: number,
+): Promise<{ position: PositionEntry | undefined; passedAnchor: boolean }> {
+  const none = { position: undefined, passedAnchor: false };
+  const anchor = anchorFromSegment(line, segmentStations);
+  if (!anchor) return none;
+  try {
+    const stamp = await readSelfPollPosition(kv, line as LineNumber);
+    if (!stamp) return none;
+    const position = stamp.positions.find(
+      (p) => p.trainCode === trainCode && p.isUp === anchor.isUp && isFreshPosition(p, now),
+    );
+    const passedAnchor = departedFromStation(stamp.stationLogs, anchor.station, anchor.isUp, now).some(
+      (d) => d.trainCode === trainCode,
+    );
+    return { position, passedAnchor };
+  } catch {
+    return none;
   }
 }
 
