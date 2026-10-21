@@ -59,7 +59,12 @@ jest.mock('../alarmLog', () => ({
 
 import {
   __resetLiveActivityPushChannelForTests,
+  acknowledgeTripRegistration,
   endLiveActivityWithDeregister,
+  markBackendLiveActivityTokenMissing,
+  resetLiveActivityChannelAfterExternalEnd,
+  shouldSkipDeviceLiveActivityWrite,
+  startLiveActivityWithRegistration,
   ensureLiveActivityRegistered,
   reconcileLiveActivityToken,
   registerHeldLiveActivityTokenForCurrentTrip,
@@ -329,6 +334,176 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
 
       expect(mockEndLiveActivity).not.toHaveBeenCalled();
       expect(mockStartLiveActivity).not.toHaveBeenCalled();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // audit-sides 후속(#3163): ACTIVE_TRIP_KEY는 **기기 APNs token**이라(useApnsTripRegistration
+  // `setItem(ACTIVE_TRIP_KEY, token)`) 같은 기기의 모든 trip이 같은 trip token을 쓴다. "종료된 trip 식별"을
+  // token 값으로 하면 한 번 종료된 뒤 그 기기의 이후 모든 trip이 영구 차단된다 — trip *인스턴스*(register ack)로 푼다.
+  // ---------------------------------------------------------------------------------------------
+  describe('P0 — 같은 기기 토큰을 재사용하는 연속 trip', () => {
+    const SAME = 'apns-device-token';
+
+    it('trip A 종료 뒤 같은 토큰으로 시작한 trip B의 새 LA 토큰이 register ack 뒤 등록된다', async () => {
+      setActiveTrip(SAME);
+      emitToken('T1-trip-a');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith(SAME, 'T1-trip-a');
+
+      await endLiveActivityWithDeregister(SAME);
+      setActiveTrip(null); // cleanup이 ACTIVE_TRIP을 비움
+      emitToken('T2-trip-b'); // 06:18:00 새 LA
+      await jest.advanceTimersByTimeAsync(100);
+      setActiveTrip(SAME); // trip B register ack — 같은 기기 토큰
+      acknowledgeTripRegistration();
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith(SAME, 'T2-trip-b');
+    });
+
+    it('[거부] ack 전에는 종료 직후 storage에 남은 옛 trip 토큰에 새 LA 토큰을 붙이지 않는다', async () => {
+      setActiveTrip(SAME);
+      emitToken('T1-trip-a');
+      await jest.advanceTimersByTimeAsync(0);
+      await endLiveActivityWithDeregister(SAME);
+      mockRegisterLiveActivityToken.mockClear();
+
+      emitToken('T2-trip-b'); // storage에는 아직 옛 trip(SAME)이 남아 있다
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+    });
+
+    it('종료 뒤 LA update tick(reconcile)도 register ack 이후에는 같은 토큰 trip에서 동작한다', async () => {
+      setActiveTrip(SAME);
+      await endLiveActivityWithDeregister(SAME);
+      setActiveTrip(SAME);
+      acknowledgeTripRegistration();
+      mockRequestLiveActivityPushToken.mockResolvedValue('T-adopted-b');
+
+      await ensureLiveActivityRegistered(SAME, DATA);
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith(SAME, 'T-adopted-b');
+    });
+  });
+
+  describe('P1-a — backend가 device 몰래 LA 토큰을 지웠다(410/종료 dismissal/DELETE)', () => {
+    const SAME = 'apns-device-token';
+
+    it('LA가 살아 있으면 dedup을 풀고 같은 (trip, 현재 토큰)을 다시 등록한다', async () => {
+      setActiveTrip(SAME);
+      emitToken('T1');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+      mockRequestLiveActivityPushToken.mockResolvedValue('T1');
+
+      markBackendLiveActivityTokenMissing();
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+      expect(mockRegisterLiveActivityToken).toHaveBeenLastCalledWith(SAME, 'T1');
+    });
+
+    it('backend 권위 확인(backendConfirmed)도 풀려 device 쓰기가 재개된다', async () => {
+      setActiveTrip(SAME);
+      await startLiveActivityWithRegistration(SAME, DATA);
+      emitToken('T-sess');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
+      mockHasActiveLiveActivity.mockReturnValue(false); // 재등록은 안 일어나게 — 권위 해제만 본다
+
+      markBackendLiveActivityTokenMissing();
+
+      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
+    });
+
+    it('[거부] trip이 이미 끝났으면(ACTIVE_TRIP 없음) 재등록하지 않는다', async () => {
+      setActiveTrip(SAME);
+      emitToken('T1');
+      await jest.advanceTimersByTimeAsync(0);
+      mockRegisterLiveActivityToken.mockClear();
+      setActiveTrip(null);
+
+      markBackendLiveActivityTokenMissing();
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+    });
+
+    it('[거부] LA가 이미 사라졌으면 죽은 토큰을 재등록하지 않는다', async () => {
+      setActiveTrip(SAME);
+      emitToken('T1');
+      await jest.advanceTimersByTimeAsync(0);
+      mockRegisterLiveActivityToken.mockClear();
+      mockHasActiveLiveActivity.mockReturnValue(false);
+
+      markBackendLiveActivityTokenMissing();
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('P1-b — 앱이 FG로 돌아오지 않는 BG-only trip (173 주머니 케이스)', () => {
+    it('BG에서 data 없이 호출돼도 native 토큰을 재조회해 등록하고 LA는 건드리지 않는다', async () => {
+      setActiveTrip('apns-device-token');
+      setAppState('background');
+      mockRequestLiveActivityPushToken.mockResolvedValue('T-bg');
+
+      await reconcileLiveActivityToken();
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('apns-device-token', 'T-bg');
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+      expect(mockStartLiveActivity).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('P2 — 재생성/외부 종료 시 backend 권위 상태', () => {
+    const SAME = 'apns-device-token';
+
+    it('토큰 없는 LA를 재생성하면 backendConfirmed를 풀어 최대 5분 무음 구간을 없앤다', async () => {
+      setActiveTrip(SAME);
+      await startLiveActivityWithRegistration(SAME, DATA);
+      emitToken('T-old');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
+      mockRequestLiveActivityPushToken.mockResolvedValue(null);
+
+      await ensureLiveActivityRegistered(SAME, DATA);
+      await jest.advanceTimersByTimeAsync(30_000);
+      await ensureLiveActivityRegistered(SAME, DATA);
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(mockStartLiveActivity).toHaveBeenCalled(); // 재생성 발생
+      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
+    });
+
+    it('cleanup 경로의 native 종료(외부 종료)도 backend 권위 상태/세션을 정리한다', async () => {
+      setActiveTrip(SAME);
+      await startLiveActivityWithRegistration(SAME, DATA);
+      emitToken('T-old');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
+
+      resetLiveActivityChannelAfterExternalEnd();
+
+      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
+    });
+
+    it('[거부] 외부 종료 정리가 trip에 아직 안 묶인 새 LA의 대기 토큰을 삼키지 않는다', async () => {
+      setActiveTrip(null);
+      emitToken('T2-new-la');
+      await jest.advanceTimersByTimeAsync(100);
+
+      resetLiveActivityChannelAfterExternalEnd();
+      setActiveTrip(SAME);
+      acknowledgeTripRegistration();
+      await jest.advanceTimersByTimeAsync(10_000);
+
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith(SAME, 'T2-new-la');
     });
   });
 });

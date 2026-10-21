@@ -21,6 +21,24 @@ describe('fetchTripStatus', () => {
     expect(init.method).toBe('GET');
   });
 
+  // #3163 후속 — backend가 trip의 LA push 토큰 보유 여부를 알려주면(additive 필드) 그대로 전달한다.
+  // 필드가 없는 구 backend 응답은 키 자체를 만들지 않는다(기존 toEqual 계약 유지).
+  it.each([true, false])('200 active hasLiveActivityToken=%s → 그대로 전달', async (has) => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      jsonResponse({ tripToken: 'tk', status: 'active', endedAt: null, endReason: null, hasLiveActivityToken: has }),
+    );
+    const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
+    expect(result).toEqual({ status: 'active', endedAt: null, endReason: null, hasLiveActivityToken: has });
+  });
+
+  it('200 active hasLiveActivityToken이 boolean이 아니면 무시(키 생략)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      jsonResponse({ tripToken: 'tk', status: 'active', endedAt: null, endReason: null, hasLiveActivityToken: 'yes' }),
+    );
+    const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
+    expect(result).toEqual({ status: 'active', endedAt: null, endReason: null });
+  });
+
   it('200 ended → endedAt/endReason 반환 (destination → destination-arrived 정규화)', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(
       jsonResponse({

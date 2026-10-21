@@ -60,7 +60,8 @@ jest.mock('../../utils/alarmLog', () => ({
 // #3162 — trip register ack(ACTIVE_TRIP_KEY 확정) 시점에 LA 토큰 불변식 복구를 트리거하는지만 본다.
 const mockRegisterHeldLaToken = jest.fn();
 jest.mock('../../utils/liveActivityPushChannel', () => ({
-  registerHeldLiveActivityTokenForCurrentTrip: () => mockRegisterHeldLaToken(),
+  acknowledgeTripRegistration: () => mockRegisterHeldLaToken(),
+  registerHeldLiveActivityTokenForCurrentTrip: jest.fn(), // 구 이름 — ack 이전 wiring과의 호환(제거 대상 아님: 훅이 사용)
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({

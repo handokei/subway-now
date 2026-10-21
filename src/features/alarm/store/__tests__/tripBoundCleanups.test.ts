@@ -53,6 +53,11 @@ jest.mock('../../../widget/api/widgetStorage', () => ({
 jest.mock('live-activity', () => ({
   endLiveActivity: () => mockEndLiveActivity(),
 }));
+// #3163 후속 P2.2 — cleanup의 native 종료는 channel 상태(backendConfirmed/세션)도 정리해야 한다.
+const mockResetLaChannelAfterExternalEnd = jest.fn();
+jest.mock('../../utils/liveActivityPushChannel', () => ({
+  resetLiveActivityChannelAfterExternalEnd: () => mockResetLaChannelAfterExternalEnd(),
+}));
 
 describe('tripBoundCleanups', () => {
   beforeEach(() => {
@@ -714,6 +719,17 @@ describe('tripBoundCleanups', () => {
     mockEndLiveActivity.mockClear();
     await runTripBoundCleanups('user-clear');
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('#3163 P2.2 — cleanup의 LA end 뒤 channel 상태(backend 권위/세션)를 정리한다 (end 실패해도 호출)', async () => {
+    mockResetLaChannelAfterExternalEnd.mockClear();
+    await runTripBoundCleanups('user-clear');
+    expect(mockResetLaChannelAfterExternalEnd).toHaveBeenCalledTimes(1);
+
+    mockResetLaChannelAfterExternalEnd.mockClear();
+    mockEndLiveActivity.mockRejectedValueOnce(new Error('already-ended'));
+    await runTripBoundCleanups('user-clear');
+    expect(mockResetLaChannelAfterExternalEnd).toHaveBeenCalledTimes(1);
   });
 
   it('#1892 / #1885 — LA dismiss가 reject해도 다른 cleanup이 진행되고 호출자에게 reject 전파 안 함', async () => {
