@@ -20,3 +20,15 @@ export interface PlatformExitSideEntry {
 
 // station id → entry 맵. 매핑이 없는 역은 키 자체가 없다 (helper가 null 반환).
 export type PlatformExitSideMap = Record<string, PlatformExitSideEntry>;
+
+// 방향별(up/down) 하차문 override 항목. 인용 가능한 문장이 있는 방향만 수록한다(비공식 wiki 등급).
+// sourceUrl은 ko.wikipedia 또는 나무위키 문서, note에 인용·한계를 남긴다.
+export interface DirectionalExitSideEntry {
+  up: PlatformExitSide;
+  down: PlatformExitSide;
+  grade: 'wiki';
+  sourceUrl: string;
+  note: string;
+}
+
+export type DirectionalExitSideMap = Record<string, DirectionalExitSideEntry>;
