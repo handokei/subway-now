@@ -19,6 +19,7 @@ import {
 import { RECENT_ROUTES_LIMIT } from '../../../shared/constants/recentDestinations';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
 import { setTripStartedAt } from '../../alarm/utils/tripStartStorage';
+import { scheduleTripEndOffer } from '../../alarm/utils/tripEndOffer';
 import {
   generateTripCorrId,
   getCurrentTripCorrIdSync,
@@ -241,6 +242,10 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         )
         .catch(noop)
         .then(() => (station ? setTripStartedAt() : undefined))
+        .catch(noop)
+        // #3007 A — trip 시작 직후 15분 종료 제안을 OS에 예약한다. 위 cleanup(destination-switch)이
+        // 이전 제안을 이미 취소했으므로 여기서의 예약은 항상 새 trip 기준 1건이다.
+        .then(() => (station ? scheduleTripEndOffer(Date.now()) : undefined))
         .catch(noop);
       // #1501 (ADR-015 §10 P5 / PR-A) — 새 trip 시작 시 corrId 생성.
       // rawSignalBuffer entry / backend evidence가 어떤 trip 소속인지 사후 재구성용.

@@ -244,6 +244,8 @@
     "arrivalEarlyTitle": "到达提醒",
     "transferImminentTitle": "即将换乘",
     "arrivalImminentTitle": "即将到达",
+    "tripEndOfferTitle": "还没上车吗?",
+    "tripEndOfferBody": "要结束导航吗?点击下方按钮即可结束。",
     "actions": {
       "acknowledge": "确认",
       "endTrip": "结束旅程",

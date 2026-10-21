@@ -16,6 +16,7 @@ import {
 } from '../utils/boardingLockLifecycleBuffer';
 import { isPendingTrainCode, isRealBoardingLock } from '../../../shared/constants/boardingLock';
 import { recordPendingLockPromotion } from '../utils/lockCorrectionMetrics';
+import { cancelTripEndOffer, rearmTripEndOfferOnRelease } from '../utils/tripEndOffer';
 
 /**
  * #1438 (E5) — release 사유 식별자.
@@ -193,6 +194,8 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
       recordPendingLockPromotion(lock.trainCode, resolveTier);
     }
     await setBoardingLock(lock);
+    // #3007 A — 탑승 lock 부착 = 탑승 확인. "아직 탑승 전이신가요?" 제안은 더는 맞지 않다.
+    await cancelTripEndOffer();
     // #746: 새 lock 생성 = 사용자가 새 leg에 탑승 의사 명시 → 이전 dismiss silence는 무효.
     // 동일 trip 내 환승으로 lock이 교체되는 경우에도 같은 의미 — 즉시 클리어.
     await clearDismissSilence();
@@ -233,6 +236,8 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
         trainCode: prev.trainCode,
         line: prev.boardingLine,
       });
+      // #3007 A-2 — trip이 이어지는 release(환승 등)면 제안을 다시 건다. 종료 계열 사유는 내부에서 거른다.
+      await rearmTripEndOfferOnRelease(reason);
     }
   },
 

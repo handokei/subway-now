@@ -25,7 +25,11 @@
  */
 import { ALARM_ACTION_END_TRIP } from '../utils/notificationCategory';
 import { getTripStartedAt } from '../utils/tripStartStorage';
-import { cleanupUserInitiatedEndedTrip } from '../utils/tripEndedCleanupSequence';
+import {
+  cleanupUserEndOfferEndedTrip,
+  cleanupUserInitiatedEndedTrip,
+} from '../utils/tripEndedCleanupSequence';
+import { TRIP_END_OFFER_KIND } from '../utils/tripEndOffer';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('alarmEndTripResponder');
@@ -35,7 +39,11 @@ const log = createLogger('alarmEndTripResponder');
  * boarding-prompt가 아닌 응답을 이 함수로 위임한다(`useBoardingPromptResponder.handleResponse`와
  * 동일한 "listener 밖 pure 함수" 패턴 — 테스트에서 직접 호출 가능).
  */
-export async function handleAlarmEndTripResponse(actionIdentifier: string): Promise<void> {
+export async function handleAlarmEndTripResponse(
+  actionIdentifier: string,
+  // #3007 A — 알림 `content.data`. `kind === 'trip-end-offer'`면 종료 사유를 분리 기록한다.
+  data?: unknown,
+): Promise<void> {
   if (actionIdentifier !== ALARM_ACTION_END_TRIP) return;
 
   const tripStartedAt = await getTripStartedAt();
@@ -45,5 +53,10 @@ export async function handleAlarmEndTripResponse(actionIdentifier: string): Prom
     return;
   }
 
+  const { kind } = (data ?? {}) as { kind?: unknown };
+  if (kind === TRIP_END_OFFER_KIND) {
+    await cleanupUserEndOfferEndedTrip(Date.now());
+    return;
+  }
   await cleanupUserInitiatedEndedTrip(Date.now());
 }

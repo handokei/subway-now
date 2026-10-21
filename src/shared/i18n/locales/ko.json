@@ -244,6 +244,8 @@
     "arrivalEarlyTitle": "하차 알림",
     "transferImminentTitle": "환승 임박",
     "arrivalImminentTitle": "도착 임박",
+    "tripEndOfferTitle": "아직 탑승 전이신가요?",
+    "tripEndOfferBody": "안내를 종료할까요? 아래 버튼을 누르면 안내가 종료돼요.",
     "actions": {
       "acknowledge": "확인",
       "endTrip": "trip 종료",

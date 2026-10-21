@@ -87,6 +87,13 @@ describe('scheduleTripEndOffer', () => {
     expect('tripToken' in firstScheduleRequest().content.data).toBe(false);
   });
 
+  it('ACTIVE_TRIP_KEY 조회가 reject해도 tripToken 없이 예약한다', async () => {
+    mockGetItem.mockRejectedValue(new Error('storage'));
+    await scheduleTripEndOffer(T0);
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    expect('tripToken' in firstScheduleRequest().content.data).toBe(false);
+  });
+
   it('취침모드 ON이면 소리 없이 예약한다 (plan U4: ADR-023 무음·passive)', async () => {
     useSettingsStore.setState({ sleepMode: true });
     await scheduleTripEndOffer(T0);
