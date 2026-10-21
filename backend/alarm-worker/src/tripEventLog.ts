@@ -182,6 +182,10 @@ export type TripEventKind =
   // reason?(skipped: sleep|dedup|not-preceding), targetStation?, targetKind?, pushId?, status? }.
   // 관측 전용 — 발사/advance 판정에는 관여하지 않는다.
   | 'prepare-alarm'
+  // #3146 — 프롬프트 소리 채널 결정. LA alert 성공 시 일반 알림을 무음으로 보내는 정책의 튜닝용:
+  // meta={ laOk, notificationSilenced, guard('none'|'stale'|'not-live'), laPushAgeMs(null=heartbeat
+  // 미기록), laBudgetExceeded, laMs }. 프롬프트 발사당 1행(D1 quota 영향 미미, KV write 0).
+  | 'prompt-sound-channel'
   // #2977 — LA push 채널 진단. `laPushDelivery=0/0`(backend LA push 시도 0건)이 #2667 fix
   // 이후에도 재발했는데(2026-10-13 실측) 어디서 끊겼는지 판정할 수 없었다: device 등록 결과는
   // `log.info`에만 남고(`liveActivityPushChannel.ts:201/209/141/128`), backend 저장 라우트

@@ -324,6 +324,8 @@ export function resolveCurrentStationName(trip: Trip, ssot: TripPositionSSoT | n
 export interface LiveActivityFireResult {
   /** trip의 activityPushToken/activityState가 변경되어 putTrip이 필요한지. */
   dirty: boolean;
+  /** #3146 — APNs가 이 LA push를 수락(2xx)했는지. 토큰 없음/비live(미시도)와 실패는 false. */
+  sent: boolean;
 }
 
 /**
@@ -357,7 +359,7 @@ export async function fireLiveActivityUpdate(
   alert?: { title: string; body: string; sound?: string },
 ): Promise<LiveActivityFireResult> {
   if (!trip.activityPushToken || trip.activityState !== 'live') {
-    return { dirty: false };
+    return { dirty: false, sent: false };
   }
   const activityToken = trip.activityPushToken;
   const staleDate = Math.floor(now / 1000) + staleDurationSecForKind(waypointKind);
@@ -384,9 +386,9 @@ export async function fireLiveActivityUpdate(
     stats.laPushSent += 1;
     if (heal.correctedEnv) {
       trip.apnsEnv = heal.correctedEnv;
-      return { dirty: true };
+      return { dirty: true, sent: true };
     }
-    return { dirty: false };
+    return { dirty: false, sent: true };
   }
   stats.laPushFailed += 1;
   log('la update failed', {
@@ -400,9 +402,9 @@ export async function fireLiveActivityUpdate(
     trip.activityPushToken = undefined;
     trip.activityState = 'ended';
     stats.laTokenCleared += 1;
-    return { dirty: true };
+    return { dirty: true, sent: false };
   }
-  return { dirty: false };
+  return { dirty: false, sent: false };
 }
 
 /**

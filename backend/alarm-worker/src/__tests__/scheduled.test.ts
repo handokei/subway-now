@@ -14305,7 +14305,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(findLaAlertCalls(fetchImpl)).toHaveLength(0);
     });
 
-    it('notification push(boarding prompt) 실패 시 LA alert push도 발사하지 않는다', async () => {
+    it('#3146 — 두 채널(notification·LA) 모두 실패하면 fired 아님 (LA는 notification보다 먼저 시도됨)', async () => {
       const fetchImpl = vi.fn(async (url: string) => {
         if (String(url).includes('/3/device/')) {
           return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
@@ -14339,7 +14339,10 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         () => 'pid-origin',
       );
       expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
-      expect(findLaAlertCalls(fetchImpl)).toHaveLength(0);
+      // #3146 — 순서가 LA 먼저로 바뀌어 notification 실패와 무관하게 LA가 시도된다(실패 응답,
+      // BadDeviceToken은 opposite host 1회 재시도 포함).
+      expect(findLaAlertCalls(fetchImpl).length).toBeGreaterThanOrEqual(1);
+      expect(stats.boardingPromptLaAlertFired).toBe(0);
     });
 
     it('LA alert push가 throw해도 notification 발사 흐름은 막히지 않는다(catch, stats만)', async () => {
