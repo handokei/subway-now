@@ -310,6 +310,11 @@ actor LiveActivityManager {
             emitActivityEnded()
         }
         await endAllActivities()
+        // #3107 — 앱 주도 종료가 끝났으면 플래그를 내린다. `endAllActivities()`가 observer를 먼저
+        // 취소하므로 `handleObservedEnd`(유일한 기존 리셋 지점)가 이 종료에 대해 호출되지 않는다.
+        // 내리지 않으면 true로 잔존해, 이후 새 LA의 실제 swipe가 system end로 오분류되어
+        // dismiss sentinel이 기록되지 않는다(miss). 분류 의미는 불변 — miss 방향만 제거한다.
+        expectingSystemEnd = false
     }
 
     // JSON → Codable 디코딩: 타입 안전성 보장, 필드 추가 시 struct만 수정하면 됨
