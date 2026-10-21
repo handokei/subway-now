@@ -213,40 +213,109 @@ export function createDeviceReplayer(opts: {
   token: string;
   stub: { setNow: (ms: number) => void };
   tapBody: (tapIndex: number, pushes: readonly CapturedPush[]) => { station: string; line: string; trainCode?: string };
+  /**
+   * opt-in (v8 PR-T) — 같은 ts의 `sync-received` 행을 POST 1회로 합친다. `/boarding-lock/sync` 1요청은
+   * D1에 2행을 쓴다(index.ts 핸들러 진입부 plain 행 + 승격 시 `meta.promotedLock` 행). 따로 주입하면
+   * promotedLock 행이 trainCode 없는 두 번째 POST가 되어 실제 요청과 달라진다. 합친 POST의 observedStationName은
+   * plain 행 station, trainCode·boardingLine은 `promotedLock` 행 meta(trainCode, line)에서 가져온다.
+   */
+  mergeSyncByTs?: boolean;
+  /**
+   * opt-in (v8 PR-T) — `trip-register` 행(outcome stored)을 same-session `POST /trips`로 주입한다.
+   * waypoints는 D1 `route-signature-mismatch.incomingSig`(그 행 ts 이하 최신, 없으면 첫 행)에서 파생하고,
+   * 나머지 필드는 호출자가 근거를 주석으로 남긴 `body`가 정한다(합성 금지 — 값은 코드·덤프에서 도출).
+   * `fromMs` 이전 행(재생 창 이전)은 건너뛴다. 미지정 시 register 행은 주입하지 않는다(기존 동작).
+   */
+  register?: {
+    fromMs: number;
+    /** `destination`, `route`, `createdAt`(seed trip과 같아야 same-session), `infoModeEnabled` 등. */
+    body: Record<string, unknown>;
+  };
 }): {
   beforeTick: (ctx: { tick: number; env: Env; pushes: readonly CapturedPush[] }) => Promise<void>;
   taps: InjectedTap[];
+  /** register 주입 결과(opt-in 시에만 채워짐). */
+  registers: { at: number; status: number }[];
 } {
-  const queue = opts.rows.filter((r) => r.kind === 'sync-received' || r.kind === 'boarding-confirm-result');
+  const registerOpt = opts.register;
+  const mismatchRows = opts.rows.filter((r) => r.kind === 'route-signature-mismatch');
+  const incomingSigAt = (ts: number): string => {
+    const preceding = mismatchRows.filter((r) => r.ts <= ts);
+    const row = preceding.length > 0 ? preceding[preceding.length - 1] : mismatchRows[0];
+    return routeSigOf(row, 'incomingSig');
+  };
+  const isRegisterRow = (r: D1TripEventRow): boolean =>
+    registerOpt !== undefined &&
+    r.kind === 'trip-register' &&
+    r.ts >= registerOpt.fromMs &&
+    (JSON.parse(r.meta ?? '{}') as { outcome?: string }).outcome === 'stored';
+  const queue = opts.rows.filter(
+    (r) => r.kind === 'sync-received' || r.kind === 'boarding-confirm-result' || isRegisterRow(r),
+  );
   let cursor = 0;
   let tapIndex = 0;
   const taps: InjectedTap[] = [];
+  const registers: { at: number; status: number }[] = [];
+
+  const postAt = async (ts: number, env: Env, pathname: string, body: unknown): Promise<Response> => {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(ts);
+    try {
+      return await app.fetch(
+        new Request(`http://example.com${pathname}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+        env,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
   return {
     taps,
+    registers,
     beforeTick: async ({ tick, env, pushes }) => {
       while (cursor < queue.length && queue[cursor].ts <= tick) {
         const row = queue[cursor];
         cursor += 1;
         opts.stub.setNow(row.ts);
         if (row.kind === 'sync-received') {
-          const spy = vi.spyOn(Date, 'now').mockReturnValue(row.ts);
-          try {
-            await app.fetch(
-              new Request('http://example.com/boarding-lock/sync', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  token: opts.token,
-                  observedStationName: row.station,
-                  observedAtMs: row.ts,
-                  accuracy: 20,
-                }),
-              }),
-              env,
-            );
-          } finally {
-            spy.mockRestore();
+          const body: Record<string, unknown> = {
+            token: opts.token,
+            observedStationName: row.station,
+            observedAtMs: row.ts,
+            accuracy: 20,
+          };
+          if (opts.mergeSyncByTs) {
+            const group = [row];
+            while (cursor < queue.length && queue[cursor].kind === 'sync-received' && queue[cursor].ts === row.ts) {
+              group.push(queue[cursor]);
+              cursor += 1;
+            }
+            const promoted = group.find((r) => (JSON.parse(r.meta ?? '{}') as { promotedLock?: boolean }).promotedLock);
+            const plain = group.find((r) => r !== promoted) ?? row;
+            body.observedStationName = plain.station;
+            if (promoted) {
+              const { trainCode, line } = JSON.parse(promoted.meta as string) as { trainCode: string; line: string };
+              body.trainCode = trainCode;
+              body.boardingLine = line;
+            }
           }
+          await postAt(row.ts, env, '/boarding-lock/sync', body);
+        } else if (row.kind === 'trip-register' && registerOpt) {
+          const waypoints = parseRouteSig(incomingSigAt(row.ts));
+          const res = await postAt(row.ts, env, '/trips', {
+            token: opts.token,
+            expiresAt: row.ts + 60 * 60_000,
+            alarmAtEpochMs: row.ts,
+            ...registerOpt.body,
+            waypoints,
+          });
+          registers.push({ at: row.ts, status: res.status });
+          // register 핸들러는 b1 resolver를 waitUntil(미await)로 띄운다 — 다음 요청 전에 정착시킨다.
+          await new Promise((resolve) => setTimeout(resolve, 0));
         } else {
           const sent = opts.tapBody(tapIndex, pushes);
           tapIndex += 1;
@@ -259,8 +328,12 @@ export function createDeviceReplayer(opts: {
 }
 
 /** `trip_metrics_166_168.json`(wrangler d1 execute --json 원본)에서 trip 1행. */
-export function loadTripMetricsRow(fixtureDirName: string, id: number): Record<string, unknown> {
-  const raw = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, fixtureDirName, 'trip_metrics_166_168.json'), 'utf-8'));
+export function loadTripMetricsRow(
+  fixtureDirName: string,
+  id: number,
+  fileName = 'trip_metrics_166_168.json',
+): Record<string, unknown> {
+  const raw = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, fixtureDirName, fileName), 'utf-8'));
   const row = (raw[0].results as Record<string, unknown>[]).find((r) => r.id === id);
   if (!row) throw new Error(`trip_metrics id=${id} 행이 fixture에 없다`);
   return row;
