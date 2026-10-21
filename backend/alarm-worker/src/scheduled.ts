@@ -2960,6 +2960,9 @@ export function evaluateSleepAlarmTrigger(
   return { fire: true, target: nextWaypoint };
 }
 
+/** 취침/준비 알람 발사가 쓰는 최소 deps — cron(`ScheduledDeps`)과 sync(`SyncSkippedFireDeps`) 양쪽이 만족한다. */
+type AlarmFireDeps = Pick<ScheduledDeps, 'apnsConfig' | 'apnsHosts' | 'fetchImpl' | 'archFlag'>;
+
 interface MaybeFireSleepAlarmInputs {
   trip: Trip;
   /** 방금 arvlCd∈{0,1}로 진입/도착 확정된 역(= 환승/도착역의 "직전역" 후보). */
@@ -2967,7 +2970,7 @@ interface MaybeFireSleepAlarmInputs {
   /** waypoint 바로 다음 대상 (shift 전 `trip.waypoints[1]`). */
   nextWaypoint: Waypoint | undefined;
   env: Env;
-  deps: ScheduledDeps;
+  deps: AlarmFireDeps;
   stats: ScheduledStats;
   now: number;
   log: Logger;
@@ -3250,7 +3253,7 @@ interface MaybeFirePrepareAlarmInputs {
   waypoint: Waypoint;
   nextWaypoint: Waypoint | undefined;
   env: Env;
-  deps: ScheduledDeps;
+  deps: AlarmFireDeps;
   stats: ScheduledStats;
   now: number;
   log: Logger;
@@ -4561,6 +4564,59 @@ export async function fireSyncSkippedStationPasses(
   }
 
   return stats;
+}
+
+/**
+ * #3157 — `/boarding-lock/sync` 순수 intermediate 분기가 소비(`working.waypoints.slice(shiftedCount)`)한
+ * waypoint 중, 아직 도달하지 않은 transfer/destination 의 직전역이 있으면 취침/준비 알람을 발사한다.
+ *
+ * root: 알람 트리거는 "intermediate -> 다음 transfer/destination"(`evaluateSleepAlarmTrigger`/
+ * `evaluatePrepareAlarmTrigger`)이고 호출처는 cron의 `completeWaypointAdvance`·`runLocklessIntermediate`
+ * 뿐이다. sync가 그 intermediate를 먼저 소비하면 cron은 그 역을 다시 볼 수 없어 알람이 영구 유실된다
+ * (트립 171 06:38:45 성수 소비 -> "곧 뚝섬" 미발사). 소비된 역은 trip에서 사라지므로 "나중에 cron이
+ * 발사"하는 pending marker는 same-session 재등록 병합(index.ts register)에서 유실된다 — 여기서 직접
+ * 발사한다. 이중 발사 안전: 기존 `maybeFire*`의 claim-first dedup 키(`alarmFireKey:`/
+ * `prepareAlarmFireKey:`, (token, target))를 그대로 쓰므로 cron이 같은 (직전역, 타깃)을 먼저/나중에
+ * 평가해도 1회.
+ *
+ * 대상 = 소비 구간(`0..shiftedCount-1`) intermediate 중 `existing.waypoints[i+1]`(타깃)이 **미소비**
+ * (`i+1 >= shiftedCount`)인 것. 타깃이 소비됐으면(관측역이 타깃 자신) 사용자가 이미 도착한 것이라 "곧
+ * 도착" 알람은 무의미하다. 호출자는 `isBoardingLockActive`일 때만 부른다(lockless = 알림 없음).
+ * 트리거 평가는 `maybeFire*`가 소유한다 — 이 함수는 소비 구간에서 (직전역, 다음 waypoint) 쌍만 뽑는다.
+ * 1역 전 고정은 `evaluate*Trigger`(waypoint, next 쌍 평가)에만 있다 — #3100(N역 전)은 거기서 쌍을 N칸으로
+ * 넓히고 이 함수의 "타깃 미소비" 규칙은 그대로 쓴다.
+ *
+ * `trip`은 slice 이전(pre-slice) 스냅샷이어야 한다(`buildStationNotifContent`의 남은 정거장 계산).
+ */
+export async function fireSyncConsumedPrecedingAlarms(
+  env: Env,
+  trip: Trip,
+  shiftedCount: number,
+  deps: SyncSkippedFireDeps,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const stats = createEmptyScheduledStats(now);
+  // maybeFire*는 env 치유 시 trip.apnsEnv를 mutate한다 — 호출자 스냅샷을 오염시키지 않는다.
+  const scratch: Trip = { ...trip };
+  for (let i = 0; i < shiftedCount; i++) {
+    const nextIndex = i + 1;
+    if (nextIndex < shiftedCount) continue; // 타깃이 이미 소비됨
+    const inputs = {
+      trip: scratch,
+      waypoint: trip.waypoints[i],
+      nextWaypoint: trip.waypoints[nextIndex],
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId,
+    };
+    await maybeFireSleepAlarm(inputs);
+    await maybeFirePrepareAlarm(inputs);
+  }
 }
 
 /**
