@@ -26,6 +26,11 @@ jest.mock('../tripEndedCleanupSequence', () => ({
     mockCleanupBackendConfirmedEndedTrip(...args),
 }));
 
+const mockHandleTripGone = jest.fn();
+jest.mock('../tripGoneSelfEnd', () => ({
+  handleTripGone: (...args: unknown[]) => mockHandleTripGone(...args),
+}));
+
 const mockAppendAlarmLog = jest.fn();
 jest.mock('../alarmLog', () => ({
   appendAlarmLog: (...args: unknown[]) => mockAppendAlarmLog(...args),
@@ -173,16 +178,54 @@ describe('checkTripDeathByPull', () => {
     jest.useRealTimers();
   });
 
-  it('404/410(null) → 보수적으로 무시(alive 취급), cleanup 호출 안 함', async () => {
-    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
-    mockFetchTripStatus.mockResolvedValue(null);
+  describe.each(['silent-push', 'bg-location-tick'] as const)(
+    'PR-2 BG 불변 — site=%s 는 gone(404/410)을 보수적으로 무시(alive), 판정 위임·cleanup 0회',
+    (site) => {
+      it.each([404, 410] as const)('code=%s', async (code) => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+        mockFetchTripStatus.mockResolvedValue({ status: 'gone', code });
 
-    const result = await checkTripDeathByPull(BASE_URL, 'silent-push');
+        const result = await checkTripDeathByPull(BASE_URL, site);
 
-    expect(result).toBe('alive');
-    expect(mockCleanupBackendConfirmedEndedTrip).not.toHaveBeenCalled();
-    expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
-    expect(mockAppendAlarmLog).not.toHaveBeenCalled();
+        expect(result).toBe('alive');
+        expect(mockHandleTripGone).not.toHaveBeenCalled();
+        expect(mockCleanupBackendConfirmedEndedTrip).not.toHaveBeenCalled();
+        expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
+        expect(mockAppendAlarmLog).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  describe('PR-2 FG — site=fg-tick 만 gone을 decideTripGone 경로(handleTripGone)에 위임', () => {
+    beforeEach(async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockFetchTripStatus.mockResolvedValue({ status: 'gone', code: 404 });
+    });
+
+    it("handleTripGone이 'ended' -> 'ended'", async () => {
+      mockHandleTripGone.mockResolvedValue('ended');
+      await expect(checkTripDeathByPull(BASE_URL, 'fg-tick')).resolves.toBe('ended');
+      expect(mockHandleTripGone).toHaveBeenCalledWith({
+        result: { status: 'gone', code: 404 },
+        tripToken: 'tk',
+        site: 'fg-tick',
+      });
+    });
+
+    it.each(['young', 'deferred', 'skipped', 'not-gone'])(
+      "handleTripGone이 '%s' -> 'alive' (FG는 어떤 유예에서도 키를 건드리지 않는다)",
+      async (outcome) => {
+        mockHandleTripGone.mockResolvedValue(outcome);
+        await expect(checkTripDeathByPull(BASE_URL, 'fg-tick')).resolves.toBe('alive');
+        expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+      },
+    );
+
+    it("쿨다운 내 재호출은 'skipped' — 판정 위임 0회(세 사이트 공유 쿨다운)", async () => {
+      await AsyncStorage.setItem(TRIP_DEATH_PULL_LAST_CHECK_AT_KEY, String(Date.now()));
+      await expect(checkTripDeathByPull(BASE_URL, 'fg-tick')).resolves.toBe('skipped');
+      expect(mockHandleTripGone).not.toHaveBeenCalled();
+    });
   });
 
   it("status active → 무동작", async () => {

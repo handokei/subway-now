@@ -76,18 +76,18 @@ describe('fetchTripStatus', () => {
     jest.useRealTimers();
   });
 
-  it('404 → null', async () => {
+  it('404 → { status: gone, code: 404 }', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ error: 'trip_not_found' }, 404));
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: 'gone', code: 404 });
   });
 
-  it('410 → null', async () => {
+  it('410 → { status: gone, code: 410 } (404와 구분되는 code)', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(
       jsonResponse({ tripToken: 'tk', status: 'expired-retention' }, 410),
     );
     const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
-    expect(result).toBeNull();
+    expect(result).toEqual({ status: 'gone', code: 410 });
   });
 
   it('500 → throw', async () => {

@@ -1,4 +1,16 @@
-import { claimTripEnd, __resetTripEndClaimsForTests__ } from '../tripEndClaim';
+const mockGetCorrId = jest.fn<string | null, []>();
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: () => mockGetCorrId(),
+}));
+const mockGetStartedAt = jest.fn<Promise<number | null>, []>();
+jest.mock('../tripStartStorage', () => ({ getTripStartedAt: () => mockGetStartedAt() }));
+
+import {
+  claimTripEnd,
+  claimTripEndAction,
+  resolveTripEndIdentity,
+  __resetTripEndClaimsForTests__,
+} from '../tripEndClaim';
 
 describe('claimTripEnd — 동기 check-and-set', () => {
   beforeEach(() => __resetTripEndClaimsForTests__());
@@ -24,5 +36,50 @@ describe('claimTripEnd — 동기 check-and-set', () => {
     expect(claimTripEnd('k-39')).toBe(false);
     // 가장 오래된 키는 밀려나 다시 claim 가능
     expect(claimTripEnd('k-0')).toBe(true);
+  });
+});
+
+describe('resolveTripEndIdentity / claimTripEndAction (PR-2: 9h force-end 경쟁)', () => {
+  beforeEach(() => {
+    __resetTripEndClaimsForTests__();
+    mockGetCorrId.mockReturnValue('corr-1');
+    mockGetStartedAt.mockResolvedValue(1_700_000_000_000);
+  });
+
+  it('identity: corrId 우선 -> start -> null', async () => {
+    await expect(resolveTripEndIdentity()).resolves.toBe('corr-1');
+    mockGetCorrId.mockReturnValue(null);
+    await expect(resolveTripEndIdentity()).resolves.toBe('start:1700000000000');
+    mockGetStartedAt.mockResolvedValue(null);
+    await expect(resolveTripEndIdentity()).resolves.toBeNull();
+    mockGetStartedAt.mockRejectedValue(new Error('io'));
+    await expect(resolveTripEndIdentity()).resolves.toBeNull();
+  });
+
+  it('같은 종료에 대한 두 번째 action claim은 실패한다', async () => {
+    const first = await claimTripEndAction();
+    const second = await claimTripEndAction();
+    expect(first.claimed).toBe(true);
+    expect(second.claimed).toBe(false);
+  });
+
+  it('action claim 네임스페이스는 알림 claim과 분리돼 있다(알림이 action을 막지 않는다)', async () => {
+    expect(claimTripEnd('corr-1')).toBe(true);
+    expect((await claimTripEndAction()).claimed).toBe(true);
+  });
+
+  it('release하면 다시 claim할 수 있다(실패한 종료의 재시도)', async () => {
+    const first = await claimTripEndAction();
+    first.release();
+    expect((await claimTripEndAction()).claimed).toBe(true);
+  });
+
+  it('identity를 알 수 없으면(종료할 트립 없음) 조정할 대상이 없으므로 claimed=true', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    mockGetStartedAt.mockResolvedValue(null);
+    const a = await claimTripEndAction();
+    const b = await claimTripEndAction();
+    expect([a.claimed, b.claimed]).toEqual([true, true]);
+    expect(() => a.release()).not.toThrow();
   });
 });
