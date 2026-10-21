@@ -16,8 +16,8 @@
  *   3) #2045 (Signal 4) — backend-timeout self-end 판정. 마지막 silent push 수신 후
  *      SIGNAL_4_SILENT_PUSH_TIMEOUT_MS(30분) 초과 + trip 시작 후 SIGNAL_4_KTX_ETA_UPPER_BOUND_MS
  *      (10h) 미만이면 backend가 실질적으로 이 trip을 놓친 것으로 간주 → 즉시 self-end.
- *      status=ended 분기와 동일한 cleanup 시퀀스 (notification 미발사 — backend 무음 상태에서
- *      "trip 종료" 알림은 사용자에게 잘못된 신호). 관찰 22 BG kill 6h+ 방치 후 launch 시나리오 커버.
+ *      status=ended 분기와 동일한 cleanup 시퀀스 + 종료 알림(PR-3b: `backend-silent` 문구가
+ *      원인을 명시하므로 잘못된 신호가 아니다. 이전 "미발사" 판정은 개정). 관찰 22 BG kill 6h+ 방치 후 launch 시나리오 커버.
  *   4) `fetchTripStatus` 호출.
  *      - status='ended' → trip-end recall + storage cleanup + sentinel 기록 + active trip clear.
  *        silent push handler와 같은 cleanup 시퀀스를 그대로 따라 사전예약/route/destination
@@ -58,6 +58,7 @@ import { getTripStartedAt } from '../utils/tripStartStorage';
 import { fetchTripStatus } from '../api/tripStatus';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
+import { notifyTripEnded } from '../utils/tripEndedNotification';
 import { cleanupBackendConfirmedEndedTrip } from '../utils/tripEndedCleanupSequence';
 import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
@@ -146,10 +147,12 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     // Sentinel 이후 배치: 위에서 sentinel !== null 이미 skip. 여기 도달 = sentinel 부재 상태.
     // Self-end 성공 시 setTripEndedSentinel(now)로 다음 launch에서는 sentinel skip로 즉시 return.
     //
-    // Notification 미발사: sendTripEndedNotification 호출 안 함. Backend가 무음 상태에서
-    // "trip 종료" 알림은 사용자에게 잘못된 신호(백엔드 outage인지 정상 종료인지 모름).
-    // status=ended 분기와 다른 점: cleanup + sentinel만 수행. UI는 다음 FG mount 시
-    // useStateRehydration이 sentinel 감지해 destination/lock reset하는 기존 chain에 위임.
+    // 종료 알림(PR-3b, #2675 개정): 이전에는 "backend가 무음 상태에서 'trip 종료' 알림은 사용자에게
+    // 잘못된 신호(outage인지 정상 종료인지 모름)"라며 미발사였다. 그 근거는 문구가 원인을 말하지 않을 때만
+    // 성립한다 — `backend-silent` 문구는 "서버와 연결이 끊겨 안내를 종료했어요"로 원인을 명시하므로 잘못된
+    // 신호가 아니고, 알림 없이 조용히 사라지는 쪽이 #2675가 금지한 실패다. 그래서 알린다.
+    // status=ended 분기는 그대로: backend가 종료를 확정했으면 backend alert push(B12, #2069)가 알린다(추정).
+    // UI reset은 다음 FG mount 시 useStateRehydration이 sentinel 감지해 destination/lock reset하는 기존 chain에 위임.
     const now = Date.now();
     const [lastReceivedAt, startedAt] = await Promise.all([
       getLastSilentPushReceivedAt(),
@@ -166,6 +169,12 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       );
       // 기존 status=ended 분기와 동일한 순서 — recall이 cleanup 이전이어야 storage 입력 유지.
       await triggerTripEndRecall();
+      // 알림은 cleanup 앞 — corrId(dedupe 키)·ACTIVE_TRIP_KEY(tripToken)가 cleanup에서 지워진다.
+      // recall은 storage 입력이 필요해 그보다 앞. 알림 실패는 notifyTripEnded가 삼킨다.
+      await notifyTripEnded({
+        destination: useDestinationStore.getState().destination,
+        reason: 'backend-silent',
+      });
       const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
       // #2302 — Signal 4(backend 30분 무음) self-end. 이 경로도 alarmLog에 흔적을 남기지
       // 않으므로(logger.info만) backend end_reason이 유일한 사후 식별 수단이다.
@@ -209,6 +218,9 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     logger.info(`trip ended on backend — reconcile state reason=${reason} endedAt=${endedAt}`);
     // #2069 (Phase 3) — D11(`sendTripEndedNotification`) 제거. B12가 원격 alert push 단일
     // 채널이라 로컬 알림 재생성은 하지 않는다. state cleanup(recall/cleanups/sentinel)만 유지.
+    // (PR-3b 판정: **유지** — 이 분기는 backend가 종료를 확정한 경우라 backend alert push가 알린다(추정 U10).
+    // device가 스스로 종료하는 Signal 4 분기만 위에서 notifyTripEnded를 부른다. 중복 방지: 이 분기에서
+    // 알리면 B12와 이중 알림이 된다.)
     // #1351 R1 — silent push handler와 동일한 cleanup 시퀀스. alert payload trip-ended가
     // BG handler를 호출하지 않아 cleanup이 누락된 경우 launch backstop으로 복구.
     // recall은 cleanup이 storage를 비우기 전에 호출되어야 입력을 읽을 수 있다.

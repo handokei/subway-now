@@ -405,15 +405,6 @@ describe('runLaunchTripReconciliation', () => {
       expect(noticeOrder).toBeLessThan(cleanupOrder);
     });
 
-    it('PR-3b — 알림이 reject돼도 Signal 4 cleanup/sentinel은 완주한다', async () => {
-      mockNotifyTripEnded.mockRejectedValue(new Error('notification denied'));
-      mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
-      mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
-      await runLaunchTripReconciliation();
-      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
-      expect(mockSetSentinel).toHaveBeenCalledWith(now, null);
-    });
-
     it('PR-3b 거부 — Signal 4가 판정되지 않으면(정상 silent push / 10h+ / 미수신) 알리지 않는다', async () => {
       mockFetchTripStatus.mockResolvedValue({ status: 'active', endedAt: null, endReason: null });
       mockGetLastSilentPushReceivedAt.mockResolvedValue(now - UNDER_TIMEOUT);

@@ -110,13 +110,14 @@ async function resolveEndClaimKey(): Promise<string> {
  */
 export async function notifyTripEnded(input: NotifyTripEndedInput): Promise<void> {
   const { destination, reason } = input;
-  if (!claimTripEnd(await resolveEndClaimKey())) return;
-  const stationName = destination ? getStationDisplayName(destination) : null;
-  const { title: titleKey, body: bodyKey } = TRIP_ENDED_TEXT_KEYS[reason];
-  const bodyText = i18next.t(bodyKey);
-  const body = stationName ? `${stationName} · ${bodyText}` : bodyText;
-  const silent = useSettingsStore.getState().sleepMode;
+  // 어떤 단계(claim 키 조회 / 문구 조립 / 예약)가 throw해도 호출부(종료 cleanup 흐름)로 새지 않는다.
   try {
+    if (!claimTripEnd(await resolveEndClaimKey())) return;
+    const stationName = destination ? getStationDisplayName(destination) : null;
+    const { title: titleKey, body: bodyKey } = TRIP_ENDED_TEXT_KEYS[reason];
+    const bodyText = i18next.t(bodyKey);
+    const body = stationName ? `${stationName} · ${bodyText}` : bodyText;
+    const silent = useSettingsStore.getState().sleepMode;
     const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
     await Notifications.scheduleNotificationAsync({
       identifier: TRIP_ENDED_NOTIFICATION_ID,

@@ -71,6 +71,7 @@
 | useLiveActivityPreBoardingLifecycle.ts:24-35 | 함정 | LA 시작경로 이원화(채널 세션 vs 직접 update) — 서로 인지 못 하면 kill/깜빡임(#2806 root) | 부분 |
 | stationNotifCollapseId.ts:11 | 불변식 | collapse id 포맷 변경 금지(backend와 동시 조정) | 부분 |
 | tripEndedSentinel.ts:102 | 불변식 | sentinel 기록 후 새 trip이 소비(reset) 금지 | **없음** |
+| useStateRehydration.ts (sentinel 소비) | 불변식 | sentinel 소비 지점은 알리지 않는다 — **모든 sentinel 생산자(6곳)가 각자 알리거나 사유가 분류돼 있어야 한다**(PR-3b #3128) | 부분(`sentinelProducerNotices.test.ts`: 생산자 파일·지점 수 고정, 신규 생산자는 분류 필수. 표시 도달은 관측 불가) |
 | isBoardableCandidate.ts:2-11 | 불변식 | "탑승 가능 후보"는 단일 함수만 — picker 독자구현 금지(9/16 실증) | 있음 |
 | boardingPromptContext.ts:16 | 전제 | 프롬프트는 leg 미시작(탑승 전)에서만 의미 | **없음** |
 | safetyNetScheduler.ts:77,261 | 불변식 | tripStart 미확인 시 절대 무장 안 함 | 부분 |

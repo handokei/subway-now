@@ -644,16 +644,6 @@ describe('useStateRehydration', () => {
       (Date.now as jest.Mock).mockRestore();
     });
 
-    it('9h·일시정지 종료의 알림 실패(reject)가 cleanup/sentinel을 막지 않는다', async () => {
-      mockNotifyTripEnded.mockRejectedValue(new Error('notification denied'));
-      mockGetTripStartedAt.mockResolvedValue(1_000_000);
-      mockTripLifecyclePhase.mockReturnValue('force-end');
-      mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
-      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('lifecycle-9h-force-end');
-    });
-
     it.each([
       ['phase normal', () => mockTripLifecyclePhase.mockReturnValue('normal')],
       ['phase silence(6~9h)', () => mockTripLifecyclePhase.mockReturnValue('silence')],
@@ -683,6 +673,8 @@ describe('useStateRehydration', () => {
     ])('결정 — sentinel 소비(%s)는 알리지 않는다(생산자가 알린다)', async (_label, sentinel, startedAt) => {
       mockGetSentinel.mockResolvedValue(sentinel);
       mockGetTripStartedAt.mockResolvedValue(startedAt);
+      // 소비 분기만 격리: 9h backstop이 별도 생산자로 끼어들지 않게 normal 단계로 둔다.
+      mockTripLifecyclePhase.mockReturnValue('normal');
       mockAppState();
       renderHook(() => useStateRehydration());
       await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());

@@ -27,6 +27,7 @@ import {
   isPauseAutoEndDue,
 } from '../../features/alarm/utils/navigationPauseStorage';
 import { appendAlarmLog } from '../../features/alarm/utils/alarmLog';
+import { notifyTripEnded } from '../../features/alarm/utils/tripEndedNotification';
 import {
   clearBackendSsotMirror,
   readBackendSsotMirror,
@@ -241,6 +242,13 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
     logger.info(`trigger=${trigger} force-end elapsedMs=${elapsedMs} → cleanup`);
     // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
     const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+    // PR-3b(#2675) — 9시간 force-end는 사용자가 한 행동이 아니라 조용한 자동 종료다. cleanup **앞**에서
+    // 알린다: corrId(dedupe 키)와 ACTIVE_TRIP_KEY(data.tripToken)가 cleanup에서 지워진다. 알림 실패는
+    // notifyTripEnded가 삼키므로 아래 cleanup을 막지 않는다.
+    await notifyTripEnded({
+      destination: useDestinationStore.getState().destination ?? null,
+      reason: 'lifecycle',
+    });
     // #2302 — backend end_reason도 breadcrumb/releaseLock과 동일 사유로 기록한다.
     await runTripBoundCleanups('lifecycle-9h-force-end');
     // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
@@ -296,6 +304,12 @@ async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<
     logger.info(`trigger=${trigger} pause auto-end (pausedAt=${pausedAt}) → cleanup`);
     // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
     const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+    // PR-3b(#2675) — 일시정지 15분 자동 종료도 조용한 종료였다(트리거 불변, 통지만 추가). 9h와 같은
+    // 이유로 cleanup 앞에서 알린다.
+    await notifyTripEnded({
+      destination: useDestinationStore.getState().destination ?? null,
+      reason: 'paused',
+    });
     // #2302 — 2026-10-15 실측에서 이 경로가 "생성 6초 후 DELETE"의 용의자였는데 모든 경로가
     // 'user-delete'로 기록돼 배제도 확정도 불가했다. 경로 고유 사유로 기록한다.
     await runTripBoundCleanups('navigation-pause-auto-end');
