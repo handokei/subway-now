@@ -191,6 +191,10 @@ export type AlarmLogSource =
   // la-session-teardown / la-register-cancelled / la-adopt-token-state를 싣고 detail은 stationName 슬롯에
   // 인코딩한다(`live-activity-token-register`와 동형). 관측 전용 — 정책 변경 없음.
   | 'live-activity-lifecycle'
+  // PR-3a(#3126) — 조용한 자동 종료 경로의 종료 알림 표시 stamp(`notifyTripEnded`). reason 슬롯은
+  // 'trip-end-notice', 종료 사유(TripEndedReason)는 stationName 슬롯에 `reason=<값>`로 싣는다.
+  // 표시 도달(OS가 실제 보여줌)은 관측 불가 — 이 행은 "예약 호출 성공"까지다(#2822).
+  | 'trip-end-notice'
   // #2768 (게이트 전수감사 C, ⑤) — LA mirror 갱신 skip 사유. 기존 콘솔 전용
   // logger.info(liveActivityMirrorSync.ts)를 대체하지 않고 alarmLog에도 적재한다.
   // mirror sync는 5s 폴링 경로라 매 tick 적재 시 ring(200-cap)을 점령한다 — 호출자가
@@ -246,6 +250,8 @@ export type AlarmLogReason =
   | 'la-session-teardown'
   | 'la-register-cancelled'
   | 'la-adopt-token-state'
+  // PR-3a(#3126) — source='trip-end-notice' 행의 reason. 종료 사유는 stationName에 `reason=<값>`.
+  | 'trip-end-notice'
   // #2398 — UNNotificationCategory 등록 실패(setNotificationCategoryAsync reject/throw) stamp.
   | 'category-registration-failed'
   | 'dedup-station'
@@ -1965,6 +1971,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'live-activity-token-register': null,
   // #3107 — 진단 stamp.
   'live-activity-lifecycle': null,
+  // PR-3a — 종료 알림 stamp. silent push 집계 대상 아님.
+  'trip-end-notice': null,
   'silent-push-received': 'received',
   'silent-push-fired': 'fired',
   'silent-push-skipped': 'skipped',
@@ -2055,6 +2063,8 @@ export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'live-activity-token-register': false,
   // #3107 — 진단 stamp. KPI 분모 오염 금지.
   'live-activity-lifecycle': false,
+  // PR-3a — 종료 통지는 매역/도착 안내 같은 "알람 fire"가 아니다. KPI 분모 오염 금지.
+  'trip-end-notice': false,
   fg: true,
   bg: true,
   'fg-evaluated': true,
