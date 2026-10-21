@@ -522,6 +522,8 @@ export type AlarmLogReason =
   | 'trip-gone-defer-young'
   | 'trip-gone-defer-lock'
   | 'trip-gone-defer-alarm'
+  // #3143 — backend status='ended'/trip-ended push도 미발사 도착 OS 알람이 있으면 cleanup을 유예(gone과 동일 가드).
+  | 'trip-ended-defer-alarm'
   // #2687 — LA fallback 알림 content dedup 적중. 직전 발사와 (title, body)가 완전히 동일해
   // 재예약을 건너뛴 경우. 시간 기반이 아닌 내용 동일성 기준 — 내용이 바뀌면 즉시 재적재된다.
   | 'dedup-la-fallback-content'

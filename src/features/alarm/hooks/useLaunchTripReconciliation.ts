@@ -66,6 +66,7 @@ import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip } from '../utils/alarmLog';
+import { hasFutureTripArrivalAlarm } from '../utils/tripGone';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -222,6 +223,12 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     }
 
     // status === 'ended'. silent push miss를 backstop으로 복구.
+    // #3143 — 미발사 도착 알람이 남아 있으면 유예: 키·store를 보존해 다음 launch/FG pull이 재시도한다
+    // (gone 분기의 deferred(alarm)와 동일 가드, 최후 보루는 9h backstop).
+    if (await hasFutureTripArrivalAlarm(tripToken)) {
+      logger.info('trip ended on backend — 대기 중 도착 알람, cleanup 유예');
+      return;
+    }
     const endedAt = result.endedAt ?? Date.now();
     const reason = result.endReason ?? 'unknown';
     logger.info(`trip ended on backend — reconcile state reason=${reason} endedAt=${endedAt}`);

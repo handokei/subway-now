@@ -71,6 +71,7 @@ import {
   shouldCheckTripDeathOnSilentPush,
   getBackendUrl as getTripDeathPullBackendUrl,
 } from '../utils/tripDeathPullBackstop';
+import { hasFutureTripArrivalAlarm } from '../utils/tripGone';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import {
   logPushReceipt,
@@ -1194,6 +1195,21 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
           sentAt: payload.sentAt,
           receivedAt,
         });
+        // #3143 — 미발사 도착 OS 알람이 남아 있으면 유예(gone 경로의 deferred(alarm)와 동일 가드).
+        // BG 안전성: 도착 알람은 OS가 직접 발사하므로 앱이 BG여도 보존되고, 정리는 다음 FG tick/launch의
+        // pull('ended' 재확인)이 알람 발사 후 수행한다(최후 보루 9h backstop). 대기 알람은 이 push가 취소할
+        // 대상이므로 dedup 기록은 남기지 않는다. 토큰은 payload 우선, 구버전은 ACTIVE_TRIP_KEY.
+        const guardTripToken = payload.tripToken ?? (await AsyncStorage.getItem(ACTIVE_TRIP_KEY));
+        if (guardTripToken !== null && (await hasFutureTripArrivalAlarm(guardTripToken))) {
+          logger.info(`trip-ended 유예: 대기 중 도착 알람 reason=${payload.reason}`);
+          logSilentPushSkipped({
+            stationName: `trip-ended:${payload.reason}`,
+            kind: undefined,
+            reason: 'trip-ended-defer-alarm',
+          });
+          void ackOutcome(payload.pushId, apnsToken, 'skipped', `trip-ended:${payload.reason}:defer-alarm`);
+          return;
+        }
         // #1370 L4 — OS scheduled queue burst fire 차단. 종착역 도착 시 backend trip-ended push가
         // 도달할 때 device 로컬 OS queue(`bl:`/`tba:`)에 잔존한 사전 예약 알람이 동시에 발사돼
         // 사용자가 "용마산 도착 후 한꺼번에 받음"으로 인지하는 회귀.
