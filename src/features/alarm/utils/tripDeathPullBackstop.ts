@@ -39,6 +39,7 @@ import { cleanupBackendConfirmedEndedTrip } from './tripEndedCleanupSequence';
 import { hasFutureTripArrivalAlarm } from './tripGone';
 import { handleTripGone } from './tripGoneSelfEnd';
 import { appendAlarmLog } from './alarmLog';
+import { markBackendLiveActivityTokenMissing } from './liveActivityPushChannel';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('tripDeathPullBackstop');
@@ -131,7 +132,11 @@ export async function checkTripDeathByPull(
     const outcome = await handleTripGone({ result, tripToken: activeTripToken, site });
     return outcome === 'ended' ? 'ended' : 'alive';
   }
-  if (result.status === 'active') return 'alive';
+  if (result.status === 'active') {
+    // #3163 후속 P1-a — backend가 몰래 LA 토큰을 지웠으면(false) device 등록 dedup을 풀고 재등록. 필드 부재(구 backend)는 무동작.
+    if (result.hasLiveActivityToken === false) markBackendLiveActivityTokenMissing();
+    return 'alive';
+  }
 
   // status === 'ended' — death 확정. 단 미발사 도착 알람이 남아 있으면 유예(#3143): cancel도 cleanup도
   // 하지 않는다. 알람 발사 후 다음 체크(FG tick/launch)에서 정리, 최후 보루는 9h backstop.

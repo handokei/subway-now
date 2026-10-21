@@ -42,7 +42,7 @@ import { anchorRouteToCurrentStation, type Route } from '../../../shared/utils/s
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
-import { shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
+import { reconcileLiveActivityToken, shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
 import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
 import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
 import { computeRouteArc } from '../../route/utils/routeProgress';
@@ -118,6 +118,10 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       logger.info('LA dismiss sentinel active — skip refresh');
       return;
     }
+    // #3163 후속 P1-b — FG 복귀가 없는 BG-only trip(주머니 케이스)에서도 LA 토큰 불변식을 복구한다.
+    // data를 넘기지 않으므로 재생성(end→start)은 절대 일어나지 않는다(BG start 금지) — 토큰 재조회/재등록만.
+    // 시간 예산을 잠식하지 않도록 기다리지 않는다(in-flight 합류, 예외는 내부에서 흡수).
+    void reconcileLiveActivityToken();
     // #2589 (code review 효율) — destination/tripToken만 먼저 읽어 destination-absent 조기
     // return과 #2481 backend-authority skip 게이트를 최소 I/O로 먼저 판정한다. 두 게이트 모두
     // route/bg/mirror 값이 필요 없으므로, skip되는 trip에서 route/bg/mirror read를 낭비하지 않는다.

@@ -61,7 +61,6 @@ jest.mock('../../utils/alarmLog', () => ({
 const mockRegisterHeldLaToken = jest.fn();
 jest.mock('../../utils/liveActivityPushChannel', () => ({
   acknowledgeTripRegistration: () => mockRegisterHeldLaToken(),
-  registerHeldLiveActivityTokenForCurrentTrip: jest.fn(), // 구 이름 — ack 이전 wiring과의 호환(제거 대상 아님: 훅이 사용)
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({

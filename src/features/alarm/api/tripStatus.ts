@@ -42,6 +42,11 @@ export interface TripStatusResult {
   endedAt: number | null;
   /** ended일 때만 reason. active는 null. */
   endReason: TripEndedReason | null;
+  /**
+   * #3163 후속 — active일 때 backend가 이 trip의 LA push 토큰을 실제로 보유(`activityPushToken && state==='live'`)하는지.
+   * backend가 APNs 410/종료 dismissal/DELETE로 토큰을 조용히 지우면 false. 구 backend 응답엔 없다(undefined).
+   */
+  hasLiveActivityToken?: boolean;
 }
 
 const REQUEST_TIMEOUT_MS = 5000;
@@ -112,10 +117,18 @@ export async function fetchTripStatus(
     status?: unknown;
     endedAt?: unknown;
     endReason?: unknown;
+    hasLiveActivityToken?: unknown;
   };
 
   if (body.status === 'active') {
-    return { status: 'active', endedAt: null, endReason: null };
+    return {
+      status: 'active',
+      endedAt: null,
+      endReason: null,
+      ...(typeof body.hasLiveActivityToken === 'boolean'
+        ? { hasLiveActivityToken: body.hasLiveActivityToken }
+        : {}),
+    };
   }
   if (body.status === 'ended') {
     const endedAt = typeof body.endedAt === 'number' && Number.isFinite(body.endedAt)

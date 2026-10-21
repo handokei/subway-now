@@ -493,6 +493,20 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
       expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
     });
 
+    it('외부 종료로 끝난 LA의 등록된 토큰은 폐기되어 다음 복구 때 다시 붙지 않는다', async () => {
+      setActiveTrip(SAME);
+      emitToken('T-dead');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith(SAME, 'T-dead');
+      mockRegisterLiveActivityToken.mockClear();
+
+      resetLiveActivityChannelAfterExternalEnd();
+      await reconcileLiveActivityToken(); // 새 LA는 있지만 아직 토큰 없음(native null)
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+    });
+
     it('[거부] 외부 종료 정리가 trip에 아직 안 묶인 새 LA의 대기 토큰을 삼키지 않는다', async () => {
       setActiveTrip(null);
       emitToken('T2-new-la');

@@ -30,6 +30,7 @@ import { clearFiredPushIds } from '../utils/firedPushIds';
 import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
+import { resetLiveActivityChannelAfterExternalEnd } from '../utils/liveActivityPushChannel';
 import { clearLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import { cancelAllSafetyNetAlarms, resolveEffectiveTripToken } from '../utils/safetyNetScheduler';
@@ -282,6 +283,9 @@ function endLiveActivityCleanup(): Promise<void> {
       .catch((e) => {
         log.warn('endLiveActivity threw', e);
       })
+      // #3163 후속 P2.2 — 채널을 거치지 않은 native 종료라 `endLiveActivityWithDeregister`가 하던 backend 권위/
+      // ambient 상태 정리가 빠져 있었다(같은 기기 토큰의 새 trip이 옛 backendConfirmed로 최대 5분 device 쓰기 억제).
+      .then(resetLiveActivityChannelAfterExternalEnd)
       // #3106 — end가 유발한 dismiss 기록(markLaDismissed)이 끝난 뒤에 clear해야 sentinel이 남지 않는다.
       .then(clearLaDismissSentinel)
   );

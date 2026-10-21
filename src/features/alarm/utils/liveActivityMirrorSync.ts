@@ -47,6 +47,7 @@ import {
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
+import { reconcileLiveActivityToken } from './liveActivityPushChannel';
 import { isDeviceGpsLiveActivityWriteRecent } from './liveActivityGpsWriteArbitration';
 import {
   logLiveActivityUpdated,
@@ -77,6 +78,9 @@ export async function updateLiveActivityFromMirrorStation(
     logLiveActivityMirrorSkip('la-mirror-skip-dismissed', mirrorStation.name);
     return false;
   }
+  // #3163 후속 P1-b — mirror tick은 BG-only trip에서 유일하게 주기적으로 도는 LA 경로다. 이 tick에서도 LA 토큰
+  // 불변식을 복구한다(data 없음 -> 재생성 금지, 토큰 재조회/재등록만). 아래 양보/skip 사유와 무관하게 먼저 실행.
+  void reconcileLiveActivityToken();
   // #2659 — backend-authority 게이트(`shouldSkipDeviceLiveActivityWrite`, #2481)는 **GPS-sourced**
   // 쓰기 전용이다. 그 게이트의 근거는 "device GPS 추정치로 backend의 정확한 N정거장을 덮어쓰지
   // 마라"인데, 이 경로가 쓰는 값은 GPS 추정치가 아니라 **backend 자신의 SSoT mirror**라 애초에

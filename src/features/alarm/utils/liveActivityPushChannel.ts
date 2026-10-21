@@ -192,7 +192,13 @@ interface AmbientSession extends RetrySession {
   boundTripToken: string | null;
 }
 const ambientSessions = new Set<AmbientSession>();
-/** #3162 — 마지막으로 종료된 trip. 종료 직후 아직 storage에 남은 그 trip token에 새 LA 토큰을 붙이지 않는다. */
+/**
+ * #3162 — 마지막으로 종료된 trip. 종료 직후 아직 storage에 남은 그 trip token에 새 LA 토큰을 붙이지 않는다.
+ *
+ * **주의: `ACTIVE_TRIP_KEY`는 기기 APNs token이라 같은 기기의 모든 trip이 같은 값을 쓴다**(useApnsTripRegistration
+ * `setItem(ACTIVE_TRIP_KEY, token)`). 따라서 이 값은 token 값으로 "trip 인스턴스"를 식별할 수 없다 — 종료 정리
+ * 레이스 구간에만 유효해야 하고, **다음 trip register ack(`acknowledgeTripRegistration`)가 해제**한다.
+ */
 let lastEndedTripToken: string | null = null;
 
 /**
@@ -373,8 +379,48 @@ async function recreateLiveActivityWithoutToken(data?: LiveActivityData): Promis
   logLiveActivityLifecycle('la-token-recreate', `missingForMs=${now - tokenMissingSince}`);
   lastRecreateAt = now;
   tokenMissingSince = null;
+  // 토큰 없는 LA를 끝내는 순간 "backend가 이 trip의 LA push를 쥐고 있다"는 확인은 거짓이다 — 남겨두면
+  // device 쓰기가 최대 LA_BACKEND_AUTHORITY_STALE_MS(5분) 침묵한다.
+  backendConfirmed = null;
   await endLiveActivity();
   await startLiveActivity(data);
+}
+
+/**
+ * 새 trip의 register ack(backend가 이 trip을 받았다 = 새 trip 인스턴스 확정) 시점에 호출.
+ * 종료 레이스 가드(`lastEndedTripToken`)를 풀고 불변식 복구를 시도한다. 같은 기기 토큰이 trip마다
+ * 재사용되므로(ACTIVE_TRIP_KEY=APNs token) 가드를 token 값으로 영구 유지하면 이후 모든 trip이 차단된다.
+ */
+export function acknowledgeTripRegistration(): void {
+  lastEndedTripToken = null;
+  void reconcileLiveActivityToken();
+}
+
+/**
+ * backend가 device 몰래 이 trip의 LA 토큰을 지웠다는 신호(status 응답 `hasLiveActivityToken === false`;
+ * backend는 APNs 410/env 불일치, 종료 dismissal, `DELETE /live-activity`에서 토큰을 비운다). device의 등록 dedup
+ * 키와 backend 권위 확인(`backendConfirmed`)은 더 이상 사실이 아니므로 풀고 즉시 재등록을 시도한다.
+ * LA가 이미 없거나 trip이 끝났으면 reconcile이 알아서 아무것도 하지 않는다.
+ */
+export function markBackendLiveActivityTokenMissing(): void {
+  lastRegisteredAmbientKey = null;
+  backendConfirmed = null;
+  void reconcileLiveActivityToken();
+}
+
+/**
+ * 채널을 거치지 않은 native LA 종료(`tripBoundCleanups.endLiveActivityCleanup`)가 끝난 뒤 호출 —
+ * `endLiveActivityWithDeregister`와 대칭인 ambient/권위 상태 정리. 같은 기기 토큰으로 새 trip이 곧바로
+ * 시작되면 옛 `backendConfirmed`(최대 5분 유효)가 새 trip의 device 쓰기를 막기 때문이다.
+ * 단, 종료와 동시에 시작된 **새 LA의 대기 토큰**(이 정리에 의해 등록된 적 없는 보관 토큰)과 새 채널 세션은
+ * 건드리지 않는다(173: 3초 겹침) — 등록돼 있던 토큰(=종료된 LA 것)만 폐기한다.
+ */
+export function resetLiveActivityChannelAfterExternalEnd(): void {
+  backendConfirmed = null;
+  if (lastRegisteredAmbientKey !== null && lastRegisteredAmbientKey.endsWith(`:${lastEmittedPushToken}`)) {
+    lastEmittedPushToken = null;
+  }
+  lastRegisteredAmbientKey = null;
 }
 
 /**
@@ -558,7 +604,9 @@ export async function ensureLiveActivityRegistered(
   }
   if (activeTeardown !== null && activeTripToken !== null && activeTripToken !== tripToken) {
     // tripToken 변경 — 이전 trip의 LA token을 backend에서도 정리(진짜 다른 trip 전환이라
-    // kill-recreate가 맞는 유일한 경로, #2806 금지 목록 — 이 분기는 건드리지 않는다).
+    // kill-recreate가 맞는 경로, #2806 금지 목록 — 이 분기는 건드리지 않는다). 두 번째 kill-recreate 경로는
+    // #3162의 `recreateLiveActivityWithoutToken`(토큰을 끝내 못 얻는 LA 한정, FG 전용, 유예 15s·쿨다운 120s,
+    // dismiss sentinel 존중)뿐이다.
     const prev = activeTripToken;
     await endLiveActivityWithDeregister(prev).catch((e) => {
       log.warn('previous LA deregister failed', e);
