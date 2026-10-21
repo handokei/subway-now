@@ -1275,6 +1275,9 @@ app.post('/trips', async (c) => {
           // 그 사이 발사된 cron-fire-attempt가 누락될 수 있다. existing.createdAt으로 고정해
           // client 송신값과 무관하게 backend가 직접 불변성을 보장한다.
           createdAt: existing.createdAt,
+          // #3135 — 순서가 뒤집혀 늦게 도착한 옛 재등록이 expiresAt을 낮추지 못하게 max로 보존한다
+          // (device B 하한 `시작+2h+GRACE`의 근거 "서버 expiresAt은 낮아지지 않는다"를 엄밀화).
+          expiresAt: Math.max(existing.expiresAt, incoming.expiresAt),
           lastFiredPhase: existing.lastFiredPhase,
           // #1367 — cross-station dedup marker는 token 단위로 보존돼야 같은 trip 재등록 race에서
           // 윈도우 안 fire가 다시 통과하지 않는다.
