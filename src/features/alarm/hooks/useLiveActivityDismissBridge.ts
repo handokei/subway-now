@@ -13,6 +13,7 @@
  */
 import { useEffect } from 'react';
 import { addActivityDismissedListener } from '../../../../modules/live-activity';
+import { logLiveActivityLifecycle } from '../utils/alarmLog';
 import { markLaDismissed } from '../utils/laDismissSentinel';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -23,9 +24,12 @@ export function useLiveActivityDismissBridge(): void {
     const subscription = addActivityDismissedListener((event) => {
       // reason은 현재 항상 'user'지만 향후 분기 추가 시 안전망을 둔다.
       if (event.reason !== 'user') return;
-      void markLaDismissed(event.dismissedAt).catch((e) => {
-        log.warn('markLaDismissed threw', e);
-      });
+      void markLaDismissed(event.dismissedAt)
+        // #3107 — sentinel 쓰기 완료를 덤프에 남긴다(직전 la-end-observed와 대조해 작성 주체 판별).
+        .then(() => logLiveActivityLifecycle('la-sentinel-written', `at=${event.dismissedAt}`))
+        .catch((e) => {
+          log.warn('markLaDismissed threw', e);
+        });
     });
     return () => {
       subscription.remove();

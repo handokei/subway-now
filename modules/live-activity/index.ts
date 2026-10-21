@@ -191,3 +191,46 @@ export function addActivityDismissedListener(
     LiveActivityModule?.addListener('onActivityDismissed', listener) ?? NOOP_SUBSCRIPTION
   );
 }
+
+/**
+ * #3107 — native가 관측한 모든 Activity 종료(.ended/.dismissed) 1건. 관측 전용 이벤트다.
+ * 기존 `onActivityEnded`/`onActivityDismissed`의 의미·발사 조건은 바꾸지 않는다 — 이 이벤트는
+ * `expectingSystemEnd` 분류 결과와 무관하게 항상 emit되어, sentinel을 쓴 종료가 swipe인지
+ * backend end push / iOS 8h 종료인지 덤프로 판별하게 한다.
+ *
+ * payload:
+ *  - state: native 관측 상태
+ *  - expectingSystemEnd: 분류 시점의 플래그 값(true면 앱 end()가 기대한 종료로 분류됨)
+ *  - activityId: Activity.id 앞 8자
+ *  - observedAt: unix ms (native 시각)
+ */
+export interface ActivityEndObservedEvent {
+  state: 'ended' | 'dismissed';
+  expectingSystemEnd: boolean;
+  activityId: string;
+  observedAt: number;
+}
+
+export function addActivityEndObservedListener(
+  listener: (event: ActivityEndObservedEvent) => void,
+): EventSubscription {
+  return (
+    LiveActivityModule?.addListener('onActivityEndObserved', listener) ?? NOOP_SUBSCRIPTION
+  );
+}
+
+/**
+ * #3107 — native가 시스템에 남아 있던 Activity를 채택(adopt)한 시점 1건. 관측 전용.
+ * `hasPushToken=false`면 채택한 Activity의 pushToken이 아직 없다 — 토큰 emit 유실(H1) 판별용.
+ */
+export interface ActivityAdoptedEvent {
+  activityId: string;
+  state: string;
+  hasPushToken: boolean;
+}
+
+export function addActivityAdoptedListener(
+  listener: (event: ActivityAdoptedEvent) => void,
+): EventSubscription {
+  return LiveActivityModule?.addListener('onActivityAdopted', listener) ?? NOOP_SUBSCRIPTION;
+}

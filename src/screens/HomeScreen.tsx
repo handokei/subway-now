@@ -54,6 +54,7 @@ import { useTripOrigin } from '../features/route/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../features/nearest-station/hooks/useBackgroundLocation';
 import { useApnsTripRegistration } from '../features/alarm/hooks/useApnsTripRegistration';
 import { useLiveActivityDismissBridge } from '../features/alarm/hooks/useLiveActivityDismissBridge';
+import { useLiveActivityLifecycleObserver } from '../features/alarm/hooks/useLiveActivityLifecycleObserver';
 import { useLiveActivityPreBoardingLifecycle } from '../features/alarm/hooks/useLiveActivityPreBoardingLifecycle';
 import { useEnsureLiveActivity } from '../features/alarm/hooks/useEnsureLiveActivity';
 import { useForegroundLaMirrorSync } from '../features/alarm/hooks/useForegroundLaMirrorSync';
@@ -1209,6 +1210,7 @@ export default function HomeScreen() {
   useBackgroundLocation(destination);
   const permissionWatcher = useLocationPermissionWatcher();
   useLiveActivityDismissBridge();
+  useLiveActivityLifecycleObserver();
   useLiveActivityPreBoardingLifecycle(route);
   // #2828 — lock 이후/BG 재개 시 아무도 LA를 start 안 하던 갭. FG active 상태에서 트립은
   // 활성인데 LA가 없으면 (update→start fall-through로 멱등) 확보한다. currentStation은

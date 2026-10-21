@@ -32,12 +32,15 @@ jest.mock('../../api/alarmBackend', () => ({
 // no-op으로 유지(호출 여부를 검증하지 않는 기존 테스트에 영향 없음).
 const mockLogLiveActivityAuthorityState = jest.fn();
 const mockLogLaTokenRegister = jest.fn();
+const mockLogLaLifecycle = jest.fn();
 jest.mock('../alarmLog', () => ({
   logLiveActivityAuthorityState: (...args: unknown[]) =>
     mockLogLiveActivityAuthorityState(...args),
   logLiveActivityUpdated: jest.fn(),
   // #2977 — ambient 등록 결과 계측. 이 모듈의 4갈래 결과를 덤프로 가시화한다.
   logLiveActivityTokenRegister: (...args: unknown[]) => mockLogLaTokenRegister(...args),
+  // #3107 — 세션 teardown / 취소 무음 반환 가시화.
+  logLiveActivityLifecycle: (...args: unknown[]) => mockLogLaLifecycle(...args),
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -87,6 +90,7 @@ describe('liveActivityPushChannel', () => {
     mockRegisterLiveActivityToken.mockReset();
     mockClearLiveActivityToken.mockReset();
     mockLogLiveActivityAuthorityState.mockReset();
+    mockLogLaLifecycle.mockReset();
     mockHasActiveLiveActivity.mockReset();
     mockHasActiveLiveActivity.mockReturnValue(false);
     mockStartLiveActivity.mockResolvedValue(undefined);
@@ -770,6 +774,43 @@ describe('liveActivityPushChannel', () => {
       await jest.runAllTimersAsync();
 
       expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+    });
+
+    // #3107 — H2 판별: 대기 중이던 ambient 등록이 teardown으로 무음 취소되는지 덤프로 보이게 한다.
+    // 기존 `if (session.cancelled) return;`은 아무 흔적도 남기지 않아 "토큰 emit 후 등록 0행"의
+    // 원인(취소 vs 미시도)을 구별할 수 없었다.
+    describe('#3107 세션 teardown / 취소 계측', () => {
+      it('대기 토큰이 있는 상태의 trip 종료 -> la-session-teardown heldToken=true + 취소된 등록은 la-register-cancelled', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+        const handle = setupListener();
+        startAmbientLiveActivityTokenRegistration();
+        handle.emit('tok-cancel');
+
+        await endLiveActivityWithDeregister('trip-ended');
+        await jest.runAllTimersAsync();
+
+        expect(mockLogLaLifecycle).toHaveBeenCalledWith('la-session-teardown', 'heldToken=true');
+        expect(mockLogLaLifecycle).toHaveBeenCalledWith(
+          'la-register-cancelled',
+          expect.stringMatching(/^attempt=\d+$/),
+        );
+      });
+
+      it('보관 토큰이 없으면 heldToken=false', async () => {
+        await endLiveActivityWithDeregister('trip-none');
+        expect(mockLogLaLifecycle).toHaveBeenCalledWith('la-session-teardown', 'heldToken=false');
+        expect(mockLogLaLifecycle).not.toHaveBeenCalledWith('la-register-cancelled', expect.anything());
+      });
+
+      it('[거부] 취소 없이 정상 등록되면 la-register-cancelled를 적재하지 않는다', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-ok');
+        const handle = setupListener();
+        startAmbientLiveActivityTokenRegistration();
+        handle.emit('tok-ok');
+        await jest.runAllTimersAsync();
+
+        expect(mockLogLaLifecycle).not.toHaveBeenCalledWith('la-register-cancelled', expect.anything());
+      });
     });
 
     it('trip 종료 후 새 trip에서는 다시 등록된다 (취소가 영구 차단이 아니다)', async () => {

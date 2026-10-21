@@ -33,6 +33,7 @@ import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import {
   logLiveActivityAuthorityState,
+  logLiveActivityLifecycle,
   logLiveActivityTokenRegister,
   logLiveActivityUpdated,
 } from './alarmLog';
@@ -183,6 +184,8 @@ let ambientRetrySession: RetrySession = { cancelled: false };
 
 /** trip 종료/전환 시 ambient in-flight 재시도를 끊고 dedup 기억을 비운다. */
 function resetAmbientRegistrationState(): void {
+  // #3107 — 대기 중이던 등록이 이 teardown으로 취소되는지(heldToken) 덤프로 판별(H2).
+  logLiveActivityLifecycle('la-session-teardown', `heldToken=${lastEmittedPushToken !== null}`);
   ambientRetrySession.cancelled = true;
   ambientRetrySession = { cancelled: false };
   lastRegisteredAmbientKey = null;
@@ -196,7 +199,11 @@ async function registerAmbientToken(): Promise<void> {
   if (!activityPushToken) return;
   const session = ambientRetrySession;
   for (let attempt = 1; attempt <= AMBIENT_TRIP_WAIT_ATTEMPTS; attempt += 1) {
-    if (session.cancelled) return; // trip이 끝났다 — 죽은 trip에 token을 되살리지 않는다.
+    if (session.cancelled) {
+      // trip이 끝났다 — 죽은 trip에 token을 되살리지 않는다. #3107: 무음 반환을 덤프에 남긴다.
+      logLiveActivityLifecycle('la-register-cancelled', `attempt=${attempt}`);
+      return;
+    }
     // 매 attempt마다 다시 읽는다 — 그 사이 trip이 등록됐을 수 있고, 다른 trip으로 바뀌었을 수도 있다.
     const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
     if (lastEmittedPushToken !== activityPushToken) return; // 더 새 token이 왔다 — 그쪽이 이어받는다.

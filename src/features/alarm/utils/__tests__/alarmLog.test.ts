@@ -80,6 +80,7 @@ import {
   logBackendSsotRouteRegressionReject,
   logLiveActivityAuthorityState,
   logLiveActivityTokenRegister,
+  logLiveActivityLifecycle,
   FIRED_ALARM_SOURCES,
   resetLaTokenRegisterDedupForTest,
   logLiveActivityUpdated,
@@ -1338,6 +1339,46 @@ describe('alarmLog', () => {
       // KPI 오염 금지 — 진단 stamp이므로 "실제 사용자 노출 알람" 분모에 들어가면 안 된다.
       it('FIRED_ALARM_SOURCES에서 false다 (recall/정확도 분모 오염 금지)', () => {
         expect(FIRED_ALARM_SOURCES['live-activity-token-register']).toBe(false);
+      });
+    });
+
+    // #3107 — LA 라이프사이클 관측(end 관측 / sentinel 쓰기 / 세션 teardown / adopt 토큰 유무).
+    // sentinel을 누가 썼는지(swipe / backend end push / iOS 8h)와 토큰 미등록 원인을 덤프로 판별한다.
+    describe('#3107 logLiveActivityLifecycle', () => {
+      it('reason별로 고정 source + received로 적재하고 detail은 stationName 슬롯에 싣는다', async () => {
+        logLiveActivityLifecycle('la-end-observed', 'state=dismissed;expected=false;id=ab12cd34');
+        logLiveActivityLifecycle('la-sentinel-written', 'at=1792000000000');
+        logLiveActivityLifecycle('la-session-teardown', 'heldToken=true');
+        logLiveActivityLifecycle('la-register-cancelled', 'attempt=2');
+        logLiveActivityLifecycle('la-adopt-token-state', 'id=ab12cd34;state=active;hasPushToken=false');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved).toMatchObject([
+          { source: 'live-activity-lifecycle', outcome: 'received', reason: 'la-end-observed', stationName: 'state=dismissed;expected=false;id=ab12cd34' },
+          { source: 'live-activity-lifecycle', outcome: 'received', reason: 'la-sentinel-written', stationName: 'at=1792000000000' },
+          { source: 'live-activity-lifecycle', outcome: 'received', reason: 'la-session-teardown', stationName: 'heldToken=true' },
+          { source: 'live-activity-lifecycle', outcome: 'received', reason: 'la-register-cancelled', stationName: 'attempt=2' },
+          { source: 'live-activity-lifecycle', outcome: 'received', reason: 'la-adopt-token-state', stationName: 'id=ab12cd34;state=active;hasPushToken=false' },
+        ]);
+      });
+
+      // 별도 dedup은 없다 — appendAlarmLog 공통 연속 중복 합산(count)만 적용되어 반복 횟수가 보존된다
+      // (8h 종료 vs swipe 연타 같은 반복 자체가 신호).
+      it('같은 reason+detail 반복은 count로 보존된다 (별도 dedup으로 유실되지 않음)', async () => {
+        logLiveActivityLifecycle('la-session-teardown', 'heldToken=false');
+        logLiveActivityLifecycle('la-session-teardown', 'heldToken=false');
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        expect(JSON.parse(savedJson)).toMatchObject([
+          { reason: 'la-session-teardown', stationName: 'heldToken=false', count: 2 },
+        ]);
+      });
+
+      it('FIRED_ALARM_SOURCES에서 false다 (진단 stamp — recall/정확도 분모 오염 금지)', () => {
+        expect(FIRED_ALARM_SOURCES['live-activity-lifecycle']).toBe(false);
       });
     });
 
