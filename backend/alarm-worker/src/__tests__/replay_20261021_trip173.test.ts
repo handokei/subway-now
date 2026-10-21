@@ -167,3 +167,20 @@ describe('#3140 트립 173 — lock 없는 구간 알림 0 / lock 활성 준비 
     expect(Math.abs(alarms[0].simNowMs - kstMs('06:25:46'))).toBeLessThan(5_000);
   });
 });
+
+// #3144 (v8 D2·D3) — 거부 테스트: 프롬프트 응답 lock(leg1 06:20:57, leg2 06:30:55)은 D2·D3 후에도 붙는다.
+describe('v8 D2·D3 트립 173 replay — 응답 유래 lock은 무변경으로 부착된다', () => {
+  it('leg-1·leg-2 응답 모두 lock이 부착되고 lock-attached는 path=confirm·hasResponseMarker=true 2건뿐이다', async () => {
+    const r = await replay173();
+    expect(r.replayer.taps.map((t) => t.response.lockState)).toEqual(['leg1', 'leg2']);
+    for (const tap of r.replayer.taps) {
+      expect(tap.response.resolvedTrainCode).toBe(tap.sent.trainCode);
+    }
+    const attached = r.events.filter((e) => e.kind === 'lock-attached');
+    expect(attached.map((e) => [e.meta.path, e.meta.hasResponseMarker])).toEqual([
+      ['confirm', true],
+      ['confirm', true],
+    ]);
+    expect(r.events.filter((e) => e.kind === 'promotion-rejected-uncorroborated')).toEqual([]);
+  });
+});

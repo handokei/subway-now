@@ -79,7 +79,7 @@ import {
   readActiveTripsMarker,
 } from '../activeTripsGate';
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
-import { putTrip, waypointSignatureKey } from '../trips';
+import { currentBoardingLegKey, putTrip, waypointSignatureKey } from '../trips';
 import { pendingKey, putPending } from '../pendingPushes';
 import { readSsot, seedSsot, ssotKey, writeSsot, type MotionEvidence, type TripPositionSSoT } from '../tripPositionSsot';
 // #3007 S4-c — 정지 15분 임계(device PAUSE_AUTO_END_MS의 backend 미러).
@@ -1635,6 +1635,75 @@ describe('runScheduled — boarding anchor trainCode resolution (backend-authori
     });
     expect(stats.boardingAnchorResolved).toBe(0);
     expect(stats.boardingAnchorUnresolved).toBe(0);
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
+  // #3144 (v8 D3) — cron leg-1 resolver는 프롬프트 응답 마커가 있을 때만 lock을 붙인다.
+  it('#3144 D3: infoMode=true + 응답 마커 없음 -> cron leg-1 resolver가 부착하지 않는다 (Seoul 후보 1개여도)', async () => {
+    const kv = new InMemoryKV();
+    const { db, inserts } = makeFireLogDb();
+    await putTrip(kv as unknown as KVNamespace, anchorTrip());
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      seoul: makeSeoulPositions([{ trainCode: '7246' }]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.boardingAnchorResolved).toBe(0);
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+    expect(inserts.filter((a) => a[2] === 'lock-attached')).toEqual([]);
+  });
+
+  it('#3144 D3: 현재 leg 응답 마커 있음 -> cron leg-1 부착 + lock-attached(path=cron-leg1, hasResponseMarker=true)', async () => {
+    const kv = new InMemoryKV();
+    const { db, inserts } = makeFireLogDb();
+    const base = anchorTrip();
+    await putTrip(kv as unknown as KVNamespace, {
+      ...base,
+      boardingResponse: { legKey: currentBoardingLegKey(base), at: NOW - 1_000 },
+    });
+    const stats = await runScheduled(makeEnv(kv, undefined, db), {
+      seoul: makeSeoulPositions([{ trainCode: '7246' }]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.boardingAnchorResolved).toBe(1);
+    const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7246');
+    const attached = inserts.filter((a) => a[2] === 'lock-attached');
+    expect(attached).toHaveLength(1);
+    expect(JSON.parse(attached[0][5] as string)).toMatchObject({
+      path: 'cron-leg1',
+      trainCode: '7246',
+      hasResponseMarker: true,
+    });
+  });
+
+  it('#3144 D3: 이전 leg(leg1) 마커는 leg-2 진입 후 무효 -> leg-1 키 마커만으로는 부착하지 않는다', async () => {
+    const kv = new InMemoryKV();
+    const base = anchorTrip();
+    await putTrip(kv as unknown as KVNamespace, {
+      ...base,
+      // promptDisplay(leg-1) 상태에서 찍힌 마커.
+      boardingResponse: { legKey: currentBoardingLegKey(base), at: NOW - 1_000 },
+      // 이후 환승 진입으로 leg-2 anchor가 stamp됨 -> 마커 키 불일치.
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      legBoardingEligibleAt: NOW - 1_000,
+      promptDisplay: undefined,
+    });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulPositions([{ trainCode: '7246', stationName: '건대입구', trainSttus: 2 }]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.boardingAnchorResolved).toBe(0);
     const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:anchor-tok')) as string);
     expect(stored.boardingLock).toBeUndefined();
   });
@@ -16102,6 +16171,54 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
       expect(stored.boardingLock).toMatchObject({ trainCode: '7911', line: '7' });
       expect(stored.legResolveStreak).toBeUndefined();
+    });
+
+    // #3144 (v8 D3-A b2) — leg-2 DEPARTED 전이 confirm의 탑승 증거는 boardingCommitted만이 아니라
+    // 현재 leg 응답 마커(boarding-confirm 'boarded' 핸들러 stamp)도 인정한다. LA Swift 직결 응답처럼
+    // device가 PENDING lock(boardingCommitted)을 안 거치는 응답도 같은 술어로 취급(편측 방지).
+    it('#3144 D3-A: DEPARTED 전이 + 현재 leg 응답 마커(boardingCommitted 없음) -> 승격 + lock-attached(path=cron-leg2)', async () => {
+      const kv = new InMemoryKV();
+      const { db, inserts } = makeFireLogDb();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      const base = makeTransferTrip(TOKEN_STREAK, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: nowAfterWalk,
+        infoModeEnabled: true,
+      });
+      await putTrip(kv as unknown as KVNamespace, {
+        ...base,
+        boardingResponse: { legKey: currentBoardingLegKey(base), at: nowAfterWalk - 1_000 },
+      });
+      const run = (positions: Parameters<typeof makeSeoulFull>[1], arrivals: Parameters<typeof makeSeoulFull>[0], id: string) =>
+        runScheduled(makeEnv(kv, undefined, db), {
+          seoul: makeSeoulFull(arrivals, positions, nowAfterWalk),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+          now: () => nowAfterWalk,
+          generatePushId: () => id,
+        });
+      await run(
+        [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+        { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] },
+        'p-3144-b2-a',
+      );
+      const second = await run(
+        [{ trainCode: '7911', stationName: '건대입구', trainSttus: 2, isUp: true, recptnMs: nowAfterWalk }],
+        {},
+        'p-3144-b2-b',
+      );
+      expect(second.boardingAnchorResolved).toBe(1);
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock).toMatchObject({ trainCode: '7911', line: '7' });
+      const attached = inserts.filter((a) => a[2] === 'lock-attached');
+      expect(attached).toHaveLength(1);
+      expect(JSON.parse(attached[0][5] as string)).toMatchObject({
+        path: 'cron-leg2',
+        trainCode: '7911',
+        hasResponseMarker: true,
+      });
     });
 
     // #2780 red①(통합) — 9/21 실측(건대입구 2호선, 3056) 재현. DEPARTED 전이는 관측되지만
