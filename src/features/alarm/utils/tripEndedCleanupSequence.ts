@@ -23,8 +23,10 @@
  * 멱등: setTripEndedSentinel + removeItem(ACTIVE_TRIP_KEY) 자체가 멱등이라 silent push
  * trip-ended handler / launch reconciliation과 중복 호출돼도 안전.
  *
- * caller는 backend가 명시적으로 `status: 'ended'`를 반환한 경우에만 이 함수를 호출해야 한다 —
- * 404/410(trip 부재)은 death 확정이 아니다(ADR-010, false positive는 miss와 동급).
+ * `cleanupBackendConfirmedEndedTrip`은 backend가 명시적으로 `status: 'ended'`를 반환한 경우에만 호출한다.
+ * 404/410(trip 부재)은 그것만으로 death 확정이 아니다(ADR-010, false positive는 miss와 동급) — PR-2부터는
+ * `decideTripGone` 가드(하한/lock/알람)를 통과한 경우에 한해 `cleanupBackendGoneTrip`(별도 종료 사유)으로 종료한다.
+ * 이 주석의 이전 문장("404/410은 death 아님")은 FG·launch 한정으로 개정됐다(BG pull은 여전히 무동작).
  *
  * #2419 — `runTripBoundCleanups`가 호출하는 `clearTripBoundStoreMemory`는 AsyncStorage의
  * DESTINATION_KEY만 제거하고 in-memory `useDestinationStore.destination`은 건드리지 않는다
@@ -56,7 +58,7 @@ import type { TripEndReason } from '../../../shared/types/tripEnd';
  */
 type SequenceTripEndReason = Extract<
   TripEndReason,
-  'backend-confirmed' | 'user-end-trip-button' | 'user-end-offer'
+  'backend-confirmed' | 'user-end-trip-button' | 'user-end-offer' | 'backend-gone-device-confirmed'
 >;
 
 /**
@@ -94,6 +96,15 @@ async function runFullTripEndCleanupSequence(
  */
 export async function cleanupBackendConfirmedEndedTrip(endedAt: number): Promise<void> {
   await runFullTripEndCleanupSequence(endedAt, 'backend-confirmed');
+}
+
+/**
+ * PR-2 — backend가 404/410(트립 없음)을 냈고 `decideTripGone` 가드를 통과해 device가 스스로 종료하는
+ * 진입점. 정본 시퀀스를 그대로 쓰되 종료 사유만 분리한다(D1 `end_reason`으로 분모 측정).
+ * destination 계열 reset + `ACTIVE_TRIP_KEY` 제거까지 정본이 하므로 종료 후 register 입력이 소멸한다(#2972).
+ */
+export async function cleanupBackendGoneTrip(endedAt: number): Promise<void> {
+  await runFullTripEndCleanupSequence(endedAt, 'backend-gone-device-confirmed');
 }
 
 /**

@@ -51,4 +51,6 @@ export type TripEndReason =
   /** trip 시작 9시간 경과 force-end backstop(#1573 T10). */
   | 'lifecycle-9h-force-end'
   /** "일시정지" 15분 경과 자동 종료 backstop(#2293). */
-  | 'navigation-pause-auto-end';
+  | 'navigation-pause-auto-end'
+  /** backend가 404/410(트립 없음)을 내고 device가 하한·lock·알람 가드를 통과해 스스로 종료했다(PR-2). */
+  | 'backend-gone-device-confirmed';

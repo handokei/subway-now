@@ -59,6 +59,7 @@ import { fetchTripStatus } from '../api/tripStatus';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { notifyTripEnded } from '../utils/tripEndedNotification';
+import { handleTripGone } from '../utils/tripGoneSelfEnd';
 import { cleanupBackendConfirmedEndedTrip } from '../utils/tripEndedCleanupSequence';
 import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
@@ -200,10 +201,18 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       return;
     }
 
-    if (result === null) {
-      // 404/410 — trip이 backend에 이미 없다. active trip 키만 정리.
-      logger.info('trip missing on backend — clear active trip key');
-      await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+    if (result.status === 'gone') {
+      // 404/410 — trip이 backend에 없다. PR-2 이전에는 여기서 ACTIVE_TRIP_KEY만 지우고 return했고, 그
+      // 때문에 이후 pull이 'skipped'(키 없음)가 되어 B가 영구 불발했다. 이제 `decideTripGone` 가드로 판정:
+      //   ended    -> 정본 시퀀스가 통지·cleanup·sentinel·키 제거까지 수행
+      //   young    -> 하한 미충족(전파 지연 가능): **기존 동작 유지** — 키 삭제(= heal 재등록 의도 보존)
+      //   deferred -> lock/알람 가드: 키 보존(pull이 재시도, 9h에 위임)
+      //   skipped  -> 다른 경로가 선점
+      const outcome = await handleTripGone({ result, tripToken, site: 'launch' });
+      if (outcome === 'young') {
+        logger.info('trip missing on backend (young) — clear active trip key');
+        await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+      }
       return;
     }
 

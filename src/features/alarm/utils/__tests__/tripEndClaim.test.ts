@@ -74,6 +74,15 @@ describe('resolveTripEndIdentity / claimTripEndAction (PR-2: 9h force-end 경쟁
     expect((await claimTripEndAction()).claimed).toBe(true);
   });
 
+  it('선점하지 못한 쪽의 release는 선점자의 claim을 풀지 않는다', async () => {
+    const winner = await claimTripEndAction();
+    const loser = await claimTripEndAction();
+    loser.release();
+    expect((await claimTripEndAction()).claimed).toBe(false);
+    winner.release();
+    expect((await claimTripEndAction()).claimed).toBe(true);
+  });
+
   it('identity를 알 수 없으면(종료할 트립 없음) 조정할 대상이 없으므로 claimed=true', async () => {
     mockGetCorrId.mockReturnValue(null);
     mockGetStartedAt.mockResolvedValue(null);

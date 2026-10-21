@@ -158,6 +158,13 @@ describe('hasFutureTripArrivalAlarm — 이 트립의 대기 중 도착 알람',
     await expect(hasFutureTripArrivalAlarm(TOKEN)).resolves.toBe(false);
   });
 
+  it('content.data가 없는 예약도 안전하게 무시한다', async () => {
+    mockGetAllScheduled.mockResolvedValue([
+      { identifier: `alarm-${TOKEN}-역삼-destination#0`, content: {} },
+    ]);
+    await expect(hasFutureTripArrivalAlarm(TOKEN)).resolves.toBe(false);
+  });
+
   it('예약 0건 -> false', async () => {
     mockGetAllScheduled.mockResolvedValue([]);
     await expect(hasFutureTripArrivalAlarm(TOKEN)).resolves.toBe(false);
