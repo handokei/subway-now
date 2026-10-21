@@ -239,6 +239,52 @@ describe('#2869 — vanish swap KV persist + stale-lock env-consensus bypass (�
     expect(stored?.boardingLock?.trainCode).toBe('3203');
   });
 
+  it('#3141 — swap 시 이전 lock 번호(3174)가 trip.lockCodeHistory에 append되어 영속된다', async () => {
+    const trip = makeSindangTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const deps = makeDeps(makeSindangSeoul(), (async () => new Response('', { status: 200 })) as unknown as typeof fetch);
+
+    await runTrainCodeTracking(
+      trip,
+      trip.waypoints[0],
+      trip.boardingLock!,
+      makeEnv(kv),
+      deps,
+      createEmptyScheduledStats(NOW),
+      NOW,
+      () => {},
+      () => 'pid-3141-hist',
+      await readSsot(kv as unknown as KVNamespace, TOKEN),
+    );
+
+    const stored = await getTrip(kv as unknown as KVNamespace, TOKEN);
+    expect(stored?.boardingLock?.trainCode).toBe('3203');
+    expect(stored?.lockCodeHistory).toEqual(['3174']);
+  });
+
+  it('#3141 거부 케이스 — swap 불성립(반대방향 단일 후보)이면 history는 늘지 않는다', async () => {
+    const trip = makeSindangTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const deps = makeDeps(makeSindangSeoul(false), (async () => new Response('', { status: 200 })) as unknown as typeof fetch);
+
+    await runTrainCodeTracking(
+      trip,
+      trip.waypoints[0],
+      trip.boardingLock!,
+      makeEnv(kv),
+      deps,
+      createEmptyScheduledStats(NOW),
+      NOW,
+      () => {},
+      () => 'pid-3141-nohist',
+      await readSsot(kv as unknown as KVNamespace, TOKEN),
+    );
+
+    const stored = await getTrip(kv as unknown as KVNamespace, TOKEN);
+    expect(stored?.boardingLock?.trainCode).toBe('3174');
+    expect(stored?.lockCodeHistory).toBeUndefined();
+  });
+
   it('red 2 — tick 1의 swap이 env-consensus-fail로 blocked되지 않는다 (evidence.trainCode===lock.trainCode bypass)', async () => {
     const trip = makeSindangTrip();
     await putTrip(kv as unknown as KVNamespace, trip);
