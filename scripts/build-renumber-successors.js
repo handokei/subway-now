@@ -24,7 +24,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const API_HOST = 'http://openapi.seoul.go.kr:8088';
+// 서울 열린데이터광장 OpenAPI는 포트 8088이 평문 http 전용이다(https 시도: 8088은 ERR_SSL_WRONG_VERSION_NUMBER,
+// 443은 연결 타임아웃 — 2026-10-21 확인). 이 스크립트는 개발자 PC에서 오프라인 빌드용으로만 실행되며
+// 런타임/앱 번들에는 포함되지 않는다.
+const API_HOST = 'http://openapi.seoul.go.kr:8088'; // NOSONAR — https 미제공(위 주석), 오프라인 빌드 전용
 const LINE_NAME = '2호선';
 const LINE_ID = '2';
 const RENUMBER_STATION = '성수';
@@ -157,7 +160,7 @@ function buildTables(raw) {
   }
   const sorted = {};
   for (const [dayTypeKey, table] of Object.entries(tables)) {
-    sorted[dayTypeKey] = Object.fromEntries(Object.keys(table).sort().map((k) => [k, table[k]]));
+    sorted[dayTypeKey] = Object.fromEntries(Object.keys(table).sort((a, b) => a.localeCompare(b)).map((k) => [k, table[k]]));
   }
   return { tables: sorted, stats };
 }
