@@ -59,6 +59,7 @@
 | SubwayWidget.swift:226-228 | 함정 | trip 19분+ stale 노출 회귀 → savedAt 자율 stale감지 | 없음 |
 | useEnsureLiveActivity.ts:18 | 불변식 | BG에서 LA start 절대 금지(iOS 거부) — AppState≠active면 no-op | 있음 |
 | liveActivityPushChannel.ts:70-73 | 불변식 | LA 세션은 항상 단일(activeTeardown 1개) | 있음 |
+| liveActivityPushChannel.ts `reconcileLiveActivityToken` (#3162) | 불변식 | trip 활성 + LA 존재 → backend가 그 LA의 **현재** push token을 가진다(173 유령 LA: 등록 0건). 다음 기회(FG 복귀·LA update/adopt tick·trip register ack)마다 native 재조회로 복구, 토큰 불가 시 **FG에서만** end→start(BG start 금지·dismiss sentinel 존중). 종료 teardown은 **종료되는 trip에 묶인 등록만** 취소(trip 무관 전부 취소하면 새 LA 토큰 유실). `.ended`(시스템 종료)는 user dismiss 아님 — `.dismissed`+`!expectingSystemEnd`만 sentinel(LiveActivityManager.swift handleObservedEnd) | 있음(liveActivityTokenInvariant.test.ts, modules/live-activity nativeContract.test.ts) |
 | liveActivityPushChannel.ts:363-367 | 불변식 | #2481/#2735 3-state 권위 게이트 — backendConfirmed 신선 시만 backend 단독 저자 | 있음 |
 | liveActivityMirrorSync.ts:76-85 | 함정 | #2659 backend-authority 게이트는 GPS-sourced 전용 — mirror까지 막으면 LA 13분 정지 재발 | 부분 |
 | liveActivityMirrorSync.ts:102-107 | 갭 | LA update=전체 교체 — mirror가 backend push ETA/배지 덮을 위험, 역 전이당 1회 제한뿐 | **없음** |

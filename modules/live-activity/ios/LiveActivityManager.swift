@@ -96,6 +96,23 @@ actor LiveActivityManager {
         startObservers(for: adopted)
     }
 
+    /// #3162 — JS 불변식 복구용: 현재 Activity의 push token(hex)을 재조회. `pushTokenUpdates` emit은
+    /// Activity당 한 번 소비돼 adopt/놓친 emit은 복구되지 않으므로 JS가 직접 묻는다. 토큰이 아직 없으면
+    /// observer를 다시 걸고(emit은 onPushToken으로 도착) nil을 반환한다.
+    func currentPushTokenHex() -> String? {
+        if let tracked = currentActivity,
+           tracked.activityState != .active && tracked.activityState != .stale {
+            currentActivity = nil
+        }
+        adoptExistingActivityIfNeeded()
+        guard let activity = currentActivity else { return nil }
+        guard let tokenData = activity.pushToken else {
+            startObservers(for: activity)
+            return nil
+        }
+        return tokenData.map { String(format: "%02x", $0) }.joined()
+    }
+
     /// #3107 — 덤프 가독용 Activity id 앞 8자.
     private static func shortId(_ id: String) -> String {
         return String(id.prefix(8))
@@ -144,7 +161,10 @@ actor LiveActivityManager {
             Self.shortId(activityId),
             Date().timeIntervalSince1970 * 1000
         )
-        let wasUserDismiss = !expectingSystemEnd
+        // #3162 — 사용자 swipe는 `.dismissed`로만 도착한다. `.ended`는 시스템/원격(backend end push, iOS 8h)
+        // 종료라 사용자 의도가 아니다 — 이를 dismiss로 분류하면 sentinel이 오기록되어 mirror/BG 갱신이
+        // 30분간 막힌다(#967 스펙의 `.dismissed` vs `.ended` 구분).
+        let wasUserDismiss = state == "dismissed" && !expectingSystemEnd
         expectingSystemEnd = false
         if wasUserDismiss {
             emitActivityDismissed()

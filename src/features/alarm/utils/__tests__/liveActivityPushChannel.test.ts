@@ -9,6 +9,8 @@ jest.mock('../../../../../modules/live-activity', () => ({
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
   hasActiveLiveActivity: () => mockHasActiveLiveActivity(),
+  // #3162 — native 토큰 재조회. 이 파일의 기존 케이스는 emit 경로만 보므로 기본은 "조회 불가(null)".
+  requestLiveActivityPushToken: async () => null,
   addPushTokenListener: (...args: unknown[]) =>
     mockAddPushTokenListener(...args),
 }));
@@ -633,6 +635,11 @@ describe('liveActivityPushChannel', () => {
   // (pre-boarding 훅 / lock 이전 GPS)은 startLiveActivityWithRegistration을 쓰지 않아 native가
   // emit한 token이 버려졌고, 그래서 backend는 LA push를 한 건도 못 보냈다(laPushDelivery=0/0).
   describe('ambient LA token 등록 (#2667)', () => {
+    // #3162 — 보관 token 재등록(registerHeld...)은 LA 존재를 전제로 한다(죽은 LA의 token을 새 trip에 붙이지 않는다).
+    beforeEach(() => {
+      mockHasActiveLiveActivity.mockReturnValue(true);
+    });
+
     it('LA 세션을 시작하지 않아도 token emit을 현재 trip에 등록한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-ambient');
       const handle = setupListener();
@@ -780,20 +787,68 @@ describe('liveActivityPushChannel', () => {
     // 기존 `if (session.cancelled) return;`은 아무 흔적도 남기지 않아 "토큰 emit 후 등록 0행"의
     // 원인(취소 vs 미시도)을 구별할 수 없었다.
     describe('#3107 세션 teardown / 취소 계측', () => {
-      it('대기 토큰이 있는 상태의 trip 종료 -> la-session-teardown heldToken=true + 취소된 등록은 la-register-cancelled', async () => {
-        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      // #3162 — 취소 범위는 "종료되는 trip에 묶인 등록"뿐이다. 이전(#3107) 동작은 trip 무관 전부 취소였고
+      // 그것이 173의 새 LA 토큰 유실(H2) 원인이었다.
+      it('종료되는 trip에 묶인 등록 중 trip 종료 -> la-session-teardown heldToken=true + 그 등록은 cancelled', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-ended');
+        mockRegisterLiveActivityToken.mockResolvedValue({ ok: false, status: 503 });
         const handle = setupListener();
         startAmbientLiveActivityTokenRegistration();
         handle.emit('tok-cancel');
+        await jest.advanceTimersByTimeAsync(100); // 등록이 trip-ended에 묶이고 backoff 대기 중
 
         await endLiveActivityWithDeregister('trip-ended');
         await jest.runAllTimersAsync();
 
         expect(mockLogLaLifecycle).toHaveBeenCalledWith('la-session-teardown', 'heldToken=true');
+        expect(mockLogLaTokenRegister).toHaveBeenCalledWith('cancelled');
+        expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1); // 종료된 trip에 더 쏘지 않는다
+      });
+
+      it('전체 초기화(trip 미지정)는 trip에 묶이지 않은 대기 등록도 취소하고 la-register-cancelled를 적재한다', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+        const handle = setupListener();
+        startAmbientLiveActivityTokenRegistration();
+        handle.emit('tok-pending');
+        await jest.advanceTimersByTimeAsync(100);
+
+        __resetLiveActivityPushChannelForTests();
+        await jest.runAllTimersAsync();
+
         expect(mockLogLaLifecycle).toHaveBeenCalledWith(
           'la-register-cancelled',
           expect.stringMatching(/^attempt=\d+$/),
         );
+        expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+      });
+
+      it('[거부] 아직 trip에 묶이지 않은 대기 등록은 다른 trip의 종료로 취소되지 않는다(#3162)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+        const handle = setupListener();
+        startAmbientLiveActivityTokenRegistration();
+        handle.emit('tok-pending');
+
+        await endLiveActivityWithDeregister('trip-other');
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-new');
+        await jest.runAllTimersAsync();
+
+        expect(mockLogLaLifecycle).not.toHaveBeenCalledWith('la-register-cancelled', expect.anything());
+        expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-new', 'tok-pending');
+      });
+
+      it('[거부] 방금 종료된 trip의 token이 storage에 남아 있어도 새 LA 토큰을 그 trip에 붙이지 않는다(#3162)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-ended');
+        const handle = setupListener();
+        startAmbientLiveActivityTokenRegistration();
+        await endLiveActivityWithDeregister('trip-ended');
+
+        handle.emit('tok-next-la');
+        await jest.advanceTimersByTimeAsync(5_000);
+        expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue('trip-new');
+        await jest.runAllTimersAsync();
+        expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-new', 'tok-next-la');
       });
 
       it('보관 토큰이 없으면 heldToken=false', async () => {

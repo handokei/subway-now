@@ -61,6 +61,7 @@ import {
   __resetLiveActivityPushChannelForTests,
   endLiveActivityWithDeregister,
   ensureLiveActivityRegistered,
+  reconcileLiveActivityToken,
   registerHeldLiveActivityTokenForCurrentTrip,
   startAmbientLiveActivityTokenRegistration,
 } from '../liveActivityPushChannel';
@@ -236,6 +237,85 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
 
       expect(mockEndLiveActivity).not.toHaveBeenCalled();
       expect(mockStartLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('재생성 직후 쿨다운 안에서는 또 끝내고 시작하지 않는다(LA 깜빡임 방지)', async () => {
+      setActiveTrip(NEW_TRIP);
+      await laUpdateTick();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await laUpdateTick();
+      expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      await laUpdateTick();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await laUpdateTick();
+
+      expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+      expect(mockStartLiveActivity).toHaveBeenCalledTimes(1);
+    });
+
+    it('LA를 만들 data가 없는 호출(trip register / FG 복귀 트리거)은 토큰이 없어도 LA를 건드리지 않는다', async () => {
+      setActiveTrip(NEW_TRIP);
+
+      registerHeldLiveActivityTokenForCurrentTrip();
+      await jest.advanceTimersByTimeAsync(30_000);
+      registerHeldLiveActivityTokenForCurrentTrip();
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+      expect(mockStartLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('복구 중 예외는 호출자(LA update 경로)로 전파되지 않는다', async () => {
+      setActiveTrip(NEW_TRIP);
+      mockHasActiveLiveActivity.mockImplementation(() => {
+        throw new Error('native gone');
+      });
+
+      await expect(reconcileLiveActivityToken(DATA)).resolves.toBeUndefined();
+    });
+
+    it('storage 읽기가 실패하면 trip을 알 수 없으므로 아무 등록도 하지 않는다', async () => {
+      const storage = jest.requireMock('@react-native-async-storage/async-storage') as {
+        getItem: jest.Mock;
+      };
+      storage.getItem.mockRejectedValueOnce(new Error('disk'));
+
+      await reconcileLiveActivityToken(DATA);
+
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled();
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('native 토큰 조회가 throw해도 emit으로 받아 둔 같은 LA의 토큰으로 등록한다', async () => {
+      setActiveTrip(NEW_TRIP);
+      emitToken('T-emitted');
+      await jest.advanceTimersByTimeAsync(100);
+      mockRegisterLiveActivityToken.mockClear();
+      mockRequestLiveActivityPushToken.mockRejectedValue(new Error('old native build'));
+
+      // 조회 실패는 "토큰 없음"이 아니다 — held 토큰으로 폴백하므로 LA를 끝내지 않고(재생성 X) 이미 등록된 키는 dedup된다.
+      await reconcileLiveActivityToken(DATA);
+      await jest.advanceTimersByTimeAsync(100);
+
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+      expect(mockRegisterLiveActivityToken).not.toHaveBeenCalled(); // 이미 (trip, T-emitted)가 등록됨 -> dedup
+    });
+
+    it('동시에 여러 번 호출돼도 native 조회는 1회만 일어난다(in-flight 합류)', async () => {
+      setActiveTrip(NEW_TRIP);
+      mockRequestLiveActivityPushToken.mockResolvedValue('T-once');
+
+      await Promise.all([
+        reconcileLiveActivityToken(),
+        reconcileLiveActivityToken(),
+        reconcileLiveActivityToken(),
+      ]);
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      expect(mockRequestLiveActivityPushToken).toHaveBeenCalledTimes(1);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
     });
 
     it('사용자 swipe dismiss(sentinel 활성)를 존중한다 — 토큰이 없어도 LA를 되살리지 않는다', async () => {

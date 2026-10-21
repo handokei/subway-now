@@ -21,7 +21,7 @@
  * iOS 전용 — 다른 플랫폼에서는 native 모듈 자체가 no-op subscription을 준다.
  */
 import { useEffect } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import {
   registerHeldLiveActivityTokenForCurrentTrip,
   startAmbientLiveActivityTokenRegistration,
@@ -31,6 +31,15 @@ export function useLiveActivityTokenRegistration(tripIntentKey: string | null): 
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
     return startAmbientLiveActivityTokenRegistration();
+  }, []);
+
+  // #3162 — FG 복귀는 LA 토큰 불변식 복구의 "다음 기회"다(BG에서 LA가 죽거나 emit을 놓쳤어도 복귀 시 고친다).
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') registerHeldLiveActivityTokenForCurrentTrip();
+    });
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {

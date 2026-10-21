@@ -82,6 +82,16 @@ export function hasActiveLiveActivity(): boolean {
   return LiveActivityModule?.hasActiveLiveActivity() ?? false;
 }
 
+/**
+ * #3162 — 현재 Live Activity의 push token(hex)을 native에서 직접 재조회. 없으면 null.
+ * `pushTokenUpdates`는 Activity당 한 번 소비되는 emit이라 adopt된 Activity나 놓친 emit은 복구되지 않는다 —
+ * "trip 활성 + LA 존재 -> backend가 그 LA의 현재 token을 가진다" 불변식 복구가 이 조회를 쓴다.
+ * 이전 native 빌드(함수 없음)/비 iOS는 null — 호출 측은 emit으로 보관한 token으로 폴백한다.
+ */
+export function requestLiveActivityPushToken(): Promise<string | null> {
+  return LiveActivityModule?.requestPushToken?.() ?? Promise.resolve(null);
+}
+
 export function saveWidgetStation(
   stationName: string,
   lineColor: string,

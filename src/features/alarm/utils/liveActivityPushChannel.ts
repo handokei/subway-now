@@ -15,10 +15,12 @@
  * - 네트워크 실패는 silent log. 재시도는 다음 token emit / 다음 LA 사이클에 의존.
  */
 
+import { AppState } from 'react-native';
 import {
   addPushTokenListener,
   endLiveActivity,
   hasActiveLiveActivity,
+  requestLiveActivityPushToken,
   startLiveActivity,
   updateLiveActivity,
   type LiveActivityData,
@@ -31,6 +33,7 @@ import {
 } from '../api/alarmBackend';
 import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
+import { isLaDismissed } from './laDismissSentinel';
 import {
   logLiveActivityAuthorityState,
   logLiveActivityLifecycle,
@@ -180,24 +183,71 @@ let lastRegisteredAmbientKey: string | null = null;
  * 짜리 재시도 창 동안 `endLiveActivityWithDeregister`의 DELETE 뒤에 늦은 POST가 도착해 방금
  * 지운 trip의 activityPushToken을 되살린다.
  */
-let ambientRetrySession: RetrySession = { cancelled: false };
+/**
+ * #3162 — ambient 세션은 "어느 trip에 묶였는가"를 안다. trip 종료 teardown은 **그 trip에 묶인** 세션만 끊는다.
+ * 아직 trip을 못 정한(boundTripToken===null) 세션은 새 trip의 LA 토큰을 기다리는 중일 수 있어 이전 trip의
+ * 종료가 삼키면 안 된다(173: stale trip force-end가 06:18:00 새 LA의 대기 중 등록을 취소 -> 토큰 영구 미등록).
+ */
+interface AmbientSession extends RetrySession {
+  boundTripToken: string | null;
+}
+const ambientSessions = new Set<AmbientSession>();
+/** #3162 — 마지막으로 종료된 trip. 종료 직후 아직 storage에 남은 그 trip token에 새 LA 토큰을 붙이지 않는다. */
+let lastEndedTripToken: string | null = null;
 
-/** trip 종료/전환 시 ambient in-flight 재시도를 끊고 dedup 기억을 비운다. */
-function resetAmbientRegistrationState(): void {
+/**
+ * trip 종료/전환 시 호출. `endedTripToken`을 주면 그 trip에 한정해 정리한다(#3162):
+ *  - 그 trip에 묶인 in-flight 등록만 취소한다.
+ *  - 보관 token이 그 trip에 등록돼 있던 것(=종료되는 LA의 token)일 때만 폐기한다 — 더 새 LA의 token은 보존.
+ * 인자가 없으면(테스트 초기화) 전부 정리한다.
+ */
+function resetAmbientRegistrationState(endedTripToken: string | null = null): void {
   // #3107 — 대기 중이던 등록이 이 teardown으로 취소되는지(heldToken) 덤프로 판별(H2).
   logLiveActivityLifecycle('la-session-teardown', `heldToken=${lastEmittedPushToken !== null}`);
-  ambientRetrySession.cancelled = true;
-  ambientRetrySession = { cancelled: false };
-  lastRegisteredAmbientKey = null;
+  if (endedTripToken === null) {
+    ambientSessions.forEach((session) => {
+      session.cancelled = true;
+    });
+    ambientSessions.clear();
+    lastRegisteredAmbientKey = null;
+    lastEndedTripToken = null;
+    tokenMissingSince = null;
+    lastRecreateAt = null;
+    return;
+  }
+  lastEndedTripToken = endedTripToken;
+  ambientSessions.forEach((session) => {
+    if (session.boundTripToken === endedTripToken) {
+      session.cancelled = true;
+      ambientSessions.delete(session);
+    }
+  });
+  if (lastRegisteredAmbientKey?.startsWith(`${endedTripToken}:`)) {
+    if (lastRegisteredAmbientKey === `${endedTripToken}:${lastEmittedPushToken}`) {
+      lastEmittedPushToken = null;
+    }
+    lastRegisteredAmbientKey = null;
+  }
 }
 
 /** trip 등록(ACTIVE_TRIP_KEY)이 아직 없을 때 재시도 횟수 — LA가 trip보다 먼저 뜨는 순서 흡수. */
 const AMBIENT_TRIP_WAIT_ATTEMPTS = 5;
 
-async function registerAmbientToken(): Promise<void> {
-  const activityPushToken = lastEmittedPushToken;
-  if (!activityPushToken) return;
-  const session = ambientRetrySession;
+async function registerAmbientToken(activityPushToken: string): Promise<void> {
+  // 등록 시도마다 새 세션 — 이전 시도가 어느 trip에 묶였든 이번 token의 대기에 영향을 주지 않는다(#3162).
+  const session: AmbientSession = { cancelled: false, boundTripToken: null };
+  ambientSessions.add(session);
+  try {
+    await registerAmbientTokenWithSession(activityPushToken, session);
+  } finally {
+    ambientSessions.delete(session);
+  }
+}
+
+async function registerAmbientTokenWithSession(
+  activityPushToken: string,
+  session: AmbientSession,
+): Promise<void> {
   for (let attempt = 1; attempt <= AMBIENT_TRIP_WAIT_ATTEMPTS; attempt += 1) {
     if (session.cancelled) {
       // trip이 끝났다 — 죽은 trip에 token을 되살리지 않는다. #3107: 무음 반환을 덤프에 남긴다.
@@ -205,11 +255,14 @@ async function registerAmbientToken(): Promise<void> {
       return;
     }
     // 매 attempt마다 다시 읽는다 — 그 사이 trip이 등록됐을 수 있고, 다른 trip으로 바뀌었을 수도 있다.
-    const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
+    const storedTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
     if (lastEmittedPushToken !== activityPushToken) return; // 더 새 token이 왔다 — 그쪽이 이어받는다.
+    // #3162 — 방금 종료된 trip의 token이 정리 전 storage에 남아 있어도 그 trip에는 붙이지 않는다.
+    const tripToken = storedTripToken === lastEndedTripToken ? null : storedTripToken;
     if (tripToken) {
       const key = `${tripToken}:${activityPushToken}`;
       if (key === lastRegisteredAmbientKey) return;
+      session.boundTripToken = tripToken;
       const ok = await registerWithRetry(tripToken, activityPushToken, session);
       if (ok) {
         lastRegisteredAmbientKey = key;
@@ -238,7 +291,7 @@ export function startAmbientLiveActivityTokenRegistration(): () => void {
   const subscription = addPushTokenListener((event: PushTokenEvent) => {
     if (event.token === lastEmittedPushToken) return;
     lastEmittedPushToken = event.token;
-    void registerAmbientToken();
+    void registerAmbientToken(event.token);
   });
   ambientSubscription = subscription;
   return () => {
@@ -248,11 +301,88 @@ export function startAmbientLiveActivityTokenRegistration(): () => void {
 }
 
 /**
- * trip이 새로 생겼을 때(또는 바뀌었을 때) 호출 — 이미 emit돼 보관 중인 token을 그 trip에 등록한다.
- * token emit이 trip 등록보다 먼저 일어난 순서를 흡수하는 두 번째 경로(구독 콜백과 동일 함수 재사용).
+ * #3162 — LA 토큰 유실 복구 상수.
+ * 정상 start의 token emit은 수 초 안에 온다 — 그 안에는 "못 얻음"으로 판정하지 않는다.
+ */
+const TOKEN_MISSING_RECREATE_GRACE_MS = 15_000;
+/** 재생성 직후 새 LA의 토큰이 오기 전에 또 재생성해 LA가 깜빡이는 것을 막는다. */
+const TOKEN_RECREATE_COOLDOWN_MS = 120_000;
+
+/** 토큰 없는 LA를 처음 관측한 시각(유예 기준). 토큰을 얻으면 null로 돌아간다. */
+let tokenMissingSince: number | null = null;
+let lastRecreateAt: number | null = null;
+let reconcileInFlight: Promise<void> | null = null;
+
+/**
+ * #3162 — **불변식 복구: trip이 활성이고 그 LA가 존재하면 backend는 그 LA의 현재 push token을 가진다.**
+ *
+ * 토큰 등록이 native emit 이벤트 1회에만 의존하면 한 번 놓친 순간 트립 끝까지 복구 경로가 없다
+ * (173: 0건). emit을 놓치는 경로는 ① trip register가 ambient 대기 창보다 늦음 ② adopt된 Activity는
+ * 토큰을 재emit하지 않음 ③ 종료 teardown 경합. 이 함수는 **다음 기회**(FG 복귀 / LA update·adopt tick /
+ * trip register ack)마다 호출돼 위반을 감지하고 고친다. 멱등 — 이미 등록돼 있으면 비용은 native 토큰 조회 1회.
+ *
+ *  1. 활성 trip 없음 -> 할 일 없음. LA 없음 -> 보관 token은 죽은 LA 것이므로 폐기(새 trip에 붙이지 않는다).
+ *  2. native에서 **현재 LA의 token을 직접 재조회**(권위) -> 그 token으로 (trip, token) 등록.
+ *  3. native도 못 주면(유예 경과 후) FG에서만 LA를 끝내고 같은 trip의 data로 새로 시작한다.
+ *     BG start는 iOS가 거부하므로 시도 자체를 하지 않고(끝내고 못 만들면 LA 영구 부재), 사용자가 swipe
+ *     dismiss한 sentinel 구간에는 되살리지 않는다(#967/#926).
+ */
+export function reconcileLiveActivityToken(data?: LiveActivityData): Promise<void> {
+  if (reconcileInFlight) return reconcileInFlight;
+  reconcileInFlight = runReconcileLiveActivityToken(data)
+    .catch((e) => {
+      log.warn('LA token reconcile threw', e);
+    })
+    .finally(() => {
+      reconcileInFlight = null;
+    });
+  return reconcileInFlight;
+}
+
+async function runReconcileLiveActivityToken(data?: LiveActivityData): Promise<void> {
+  const storedTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
+  if (!storedTripToken || storedTripToken === lastEndedTripToken) {
+    tokenMissingSince = null;
+    return;
+  }
+  if (!hasActiveLiveActivity()) {
+    lastEmittedPushToken = null;
+    tokenMissingSince = null;
+    return;
+  }
+  const nativeToken = await requestLiveActivityPushToken().catch(() => null);
+  // native 조회가 불가한 빌드/일시 nil이면 emit으로 받아 둔 token을 그대로 쓴다(둘 다 같은 LA의 것).
+  const token = nativeToken ?? lastEmittedPushToken;
+  if (token) {
+    tokenMissingSince = null;
+    lastEmittedPushToken = token;
+    await registerAmbientToken(token);
+    return;
+  }
+  await recreateLiveActivityWithoutToken(data);
+}
+
+async function recreateLiveActivityWithoutToken(data?: LiveActivityData): Promise<void> {
+  if (!data) return;
+  const now = Date.now();
+  tokenMissingSince ??= now;
+  if (now - tokenMissingSince < TOKEN_MISSING_RECREATE_GRACE_MS) return;
+  if (AppState.currentState !== 'active') return;
+  if (lastRecreateAt !== null && now - lastRecreateAt < TOKEN_RECREATE_COOLDOWN_MS) return;
+  if (await isLaDismissed()) return;
+  logLiveActivityLifecycle('la-token-recreate', `missingForMs=${now - tokenMissingSince}`);
+  lastRecreateAt = now;
+  tokenMissingSince = null;
+  await endLiveActivity();
+  await startLiveActivity(data);
+}
+
+/**
+ * trip이 새로 생겼을 때(또는 바뀌었을 때) 호출 — 불변식 복구(`reconcileLiveActivityToken`)를 시도한다.
+ * 이미 emit돼 보관 중인 token을 그 trip에 붙이는 기존 경로 + native 재조회 경로를 모두 포함한다.
  */
 export function registerHeldLiveActivityTokenForCurrentTrip(): void {
-  void registerAmbientToken();
+  void reconcileLiveActivityToken();
 }
 
 /**
@@ -418,6 +548,8 @@ export async function ensureLiveActivityRegistered(
   tripToken: string,
   data: LiveActivityData,
 ): Promise<void> {
+  // #3162 — LA update/adopt/start tick마다 토큰 불변식을 확인한다(위반 시에만 비용 발생, 비동기·비차단).
+  void reconcileLiveActivityToken(data);
   if (activeTeardown !== null && activeTripToken === tripToken) {
     await updateLiveActivity(data);
     // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
@@ -462,8 +594,8 @@ export async function endLiveActivityWithDeregister(
   backendConfirmed = null;
   // #2667 (코드리뷰 P1-2/P2-2) — "trip 종료 = LA push 관련 모듈 상태 전부 정리"를 세션/ambient
   // 양쪽에 동일하게 적용한다. in-flight ambient 재시도가 DELETE 뒤에 POST를 흘리면 backend가
-  // 방금 지운 token을 되살린다.
-  resetAmbientRegistrationState();
+  // 방금 지운 token을 되살린다. #3162 — 단, 정리 범위는 **종료되는 trip 한정**이다.
+  resetAmbientRegistrationState(tripToken);
   try {
     await endLiveActivity();
   } finally {
