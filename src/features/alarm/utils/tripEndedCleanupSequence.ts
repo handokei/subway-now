@@ -56,7 +56,7 @@ import type { TripEndReason } from '../../../shared/types/tripEnd';
  */
 type SequenceTripEndReason = Extract<
   TripEndReason,
-  'backend-confirmed' | 'user-end-trip-button'
+  'backend-confirmed' | 'user-end-trip-button' | 'user-end-offer'
 >;
 
 /**
@@ -106,4 +106,13 @@ export async function cleanupBackendConfirmedEndedTrip(endedAt: number): Promise
  */
 export async function cleanupUserInitiatedEndedTrip(endedAt: number): Promise<void> {
   await runFullTripEndCleanupSequence(endedAt, 'user-end-trip-button');
+}
+
+/**
+ * #3007 A — 사용자가 15분 종료 제안(`trip-end-offer`)의 [종료] 액션을 탭했을 때의 진입점.
+ * 시퀀스는 `cleanupUserInitiatedEndedTrip`과 동일(정본 공유)하고 종료 사유만 분리 기록한다 —
+ * "사용자가 제안을 받고 끝냈다"의 분모를 D1 `end_reason='user-end-offer'`로 측정하기 위함.
+ */
+export async function cleanupUserEndOfferEndedTrip(endedAt: number): Promise<void> {
+  await runFullTripEndCleanupSequence(endedAt, 'user-end-offer');
 }

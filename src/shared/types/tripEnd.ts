@@ -30,6 +30,8 @@ export type TripEndReason =
   | 'backend-confirmed'
   /** 사용자가 알림의 [안내 종료] 액션을 직접 탭했다(#2428). */
   | 'user-end-trip-button'
+  /** 사용자가 15분 종료 제안(`trip-end-offer`, #3007 A)의 [종료] 액션을 탭했다. */
+  | 'user-end-offer'
   /** register effect의 "trip 없음" 안전망이 잔재를 회수했다(#2673/#2857 계보). */
   | 'hydration-safety-net'
   /** cold launch에서 silent push 30분 공백을 backend 무음으로 판정했다(#2045 Signal 4). */

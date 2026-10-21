@@ -1384,7 +1384,10 @@ describe('useBoardingPromptResponder #2722 C — 리스너 단일화 (ALARM_ACTI
       notification: { request: { content: { data: { kind: 'alarm' } } } },
     });
     await new Promise((r) => setTimeout(r, 0));
-    expect(mockHandleAlarmEndTripResponse).toHaveBeenCalledWith('ALARM_ACTION_END_TRIP');
+    // #3007 A — content.data도 함께 위임한다(trip-end-offer 구분용).
+    expect(mockHandleAlarmEndTripResponse).toHaveBeenCalledWith('ALARM_ACTION_END_TRIP', {
+      kind: 'alarm',
+    });
   });
 
   // 앱 전체 listener 등록 수가 정확히 1개임을 재확인 — 구 코드는 이 훅 + useAlarmEndTripResponder

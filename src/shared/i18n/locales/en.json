@@ -244,6 +244,8 @@
     "arrivalEarlyTitle": "Arrival alert",
     "transferImminentTitle": "Transfer imminent",
     "arrivalImminentTitle": "Arrival imminent",
+    "tripEndOfferTitle": "Haven't boarded yet?",
+    "tripEndOfferBody": "End guidance? Tap the button below to end it.",
     "actions": {
       "acknowledge": "OK",
       "endTrip": "End trip",

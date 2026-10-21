@@ -35,6 +35,7 @@ import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import { cancelAllSafetyNetAlarms, resolveEffectiveTripToken } from '../utils/safetyNetScheduler';
 import { cancelAllPrescheduledAlarms } from '../utils/stationPrescheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
+import { cancelTripEndOffer } from '../utils/tripEndOffer';
 import { clearNavigationPausedAt } from '../utils/navigationPauseStorage';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
@@ -96,6 +97,9 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // ACTIVE_TRIP_KEY를 제거하기 전에). `runTripBoundCleanups`/`cancelTripBoundOsQueue`가
   // 별도로 `cancelAllSafetyNetAlarms(tripToken)`을 선행 실행한다 — graceful, 큐가 비어도 안전.
   () => AsyncStorage.removeItem(ACTIVE_TRIP_KEY),
+  // #3007 A — 15분 종료 제안(OS 예약). 고정 id라 tripToken이 없어도(위 safety-net cancel은 tripToken이
+  // 필요하지만 이 항목은 아니다) 항상 취소된다. destination switch는 이 cleanup 뒤에 새 제안을 건다.
+  cancelTripEndOffer,
   () => AsyncStorage.removeItem(TRIP_ORIGIN_KEY),
   clearLastNotifiedStationId,
   clearLastFiredAlarmStationName,
@@ -453,9 +457,12 @@ export function cancelTripBoundOsQueue(): Promise<void> {
   ]).then(([backendTripToken, tripStart]) => {
     const tripToken = resolveEffectiveTripToken(backendTripToken, tripStart);
     scheduleDefensiveCancel(tripToken);
-    if (!tripToken) return undefined;
+    // #3007 A — 종료 제안은 고정 id라 tripToken 없이도 취소한다(아래 early return보다 먼저).
+    const offerCancelled = cancelTripEndOffer();
+    if (!tripToken) return offerCancelled;
     // #918 — stationPrescheduler(OS 사전예약 "매역" 채널)도 같은 tripToken-scoped cancel 대상.
     return Promise.all([
+      offerCancelled,
       cancelAllSafetyNetAlarms(tripToken).catch((e: unknown) => {
         log.warn('cancelTripBoundOsQueue: safety-net cancel 실패', e);
       }),
@@ -499,6 +506,8 @@ async function runDefensiveCancel(tripToken: string | null): Promise<void> {
     log.info('defensive cancel skip: new trip active');
     return;
   }
+  // #3007 A — 종료 제안도 같은 1분 defensive pass 대상(#1525 zombie 알림 backstop). tripToken 불필요.
+  await cancelTripEndOffer();
   if (!tripToken) return;
   log.info('defensive cancel: running second cancel pass (#1525)');
   await cancelAllSafetyNetAlarms(tripToken).catch((e) => {

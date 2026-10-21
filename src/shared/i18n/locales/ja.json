@@ -244,6 +244,8 @@
     "arrivalEarlyTitle": "到着アラーム",
     "transferImminentTitle": "まもなく乗換",
     "arrivalImminentTitle": "まもなく到着",
+    "tripEndOfferTitle": "まだ乗車前ですか?",
+    "tripEndOfferBody": "案内を終了しますか? 下のボタンを押すと案内が終了します。",
     "actions": {
       "acknowledge": "確認",
       "endTrip": "trip終了",

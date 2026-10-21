@@ -201,7 +201,7 @@ export function useBoardingPromptResponder(deps: UseBoardingPromptResponderDeps)
         // #2722 C — 구 `useAlarmEndTripResponder`가 별도로 등록하던 listener를 여기로 흡수.
         // `handleAlarmEndTripResponse`는 actionIdentifier가 ALARM_ACTION_END_TRIP이 아니면
         // 자체적으로 no-op이므로 무조건 호출해도 안전(기존 별도 listener와 동일 계약).
-        void handleAlarmEndTripResponse(response.actionIdentifier);
+        void handleAlarmEndTripResponse(response.actionIdentifier, request.content.data);
         return;
       }
       // #1385 — BG cold-start fired 보완. FG receive listener가 못 잡은 케이스(killed-app 상태에서

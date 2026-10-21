@@ -833,7 +833,8 @@ describe('tripBoundCleanups', () => {
     // #2089 — purgeBoardingLockSchedulerQueue(내부에서 SCHEDULED_NOTIFICATIONS_KEY removeItem
     // 수행)가 배열에서 제거되며 storage 기반 항목이 하나 줄었다 → 5→6. tripToken 없는 이 테스트
     // 경로에서는 cancelAllSafetyNetAlarms(순수 OS API, removeItem 없음)도 애초에 추가되지 않는다.
-    const NON_STORAGE_CLEANUPS = 6;
+    // #3007 A — cancelTripEndOffer(OS API만, removeItem 없음) 신규 → 6→7.
+    const NON_STORAGE_CLEANUPS = 7;
     expect((AsyncStorage.removeItem as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
       TRIP_BOUND_CLEANUPS.length - NON_STORAGE_CLEANUPS,
     );
