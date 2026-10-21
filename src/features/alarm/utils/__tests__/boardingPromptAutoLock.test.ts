@@ -5,7 +5,7 @@ import { pickAutoTrainCodeFromArrivals, type BoardableCandidateContext } from '.
 function arr(overrides: Partial<ArrivalInfo>): ArrivalInfo {
   return {
     destination: '',
-    arrivalMinutes: 0,
+    stopsAway: null,
     arrivalSeconds: 60,
     statusMessage: '',
     trainCode: 'T1',

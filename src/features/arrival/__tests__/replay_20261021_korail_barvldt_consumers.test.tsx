@@ -10,6 +10,7 @@ import { act, renderHook } from '@testing-library/react-native';
 import { useArrivalCountdown } from '../hooks/useArrivalCountdown';
 import { pickArrivalAtOrigin } from '../utils/pickArrivalAtOrigin';
 import { findTrainFeedEtaSeconds } from '../utils/trainFeedEta';
+import { pickNextTrainMinutes } from '../utils/nextTrainMinutes';
 import { arrivalInfoToArrivalTrain } from '../../route/utils/journeyAdapter';
 import { filterArrivalsByDirection } from '../../route/hooks/useTransferTrainList';
 import { BoardingTrainList } from '../../alarm/components/BoardingTrainList';
@@ -151,5 +152,50 @@ describe('BoardingTrainList', () => {
     expect(getByTestId('boarding-train-sequence-6112').props.children).toBe('3번째 전역 (선정릉)');
     expect(queryByTestId('boarding-train-arrival-6112')).toBeNull();
     expect(getByTestId('boarding-train-row-6112').props.accessibilityState?.disabled).not.toBe(true);
+  });
+});
+
+describe('pickNextTrainMinutes (홈 ETA 입력, HomeScreen nextTrainMinutes)', () => {
+  it('서울교통공사 동작 불변: 양방향 첫 행 중 최소 분', () => {
+    const arrival: StationArrival = {
+      up: [row({ trainCode: 'U', arrivalSeconds: 300 })],
+      down: [row({ trainCode: 'D', arrivalSeconds: 130 })],
+    };
+    expect(pickNextTrainMinutes(arrival)).toBe(2);
+  });
+
+  it('청량리 1001 상행처럼 첫 행이 unknown이면 그 방향은 Infinity (예전의 0분 "지금 도착" 오표기 제거)', () => {
+    const arrival: StationArrival = { up: [FAR_3, SEC_240], down: [] };
+    expect(pickNextTrainMinutes(arrival)).toBe(Infinity);
+  });
+
+  it('한 방향이 unknown이어도 다른 방향 실값이 있으면 그 값', () => {
+    const arrival: StationArrival = { up: [FAR_3], down: [SEC_240] };
+    expect(pickNextTrainMinutes(arrival)).toBe(4);
+  });
+});
+
+describe('BoardingTrainList — 시간 모름 보조 케이스', () => {
+  it('역명이 없는 unknown 행은 괄호 없이 위치 문구만', () => {
+    const noStation = row({ trainCode: 'N1', stopsAway: 1, arrivalCode: 5, statusMessage: '전역 도착' });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList arrivals={[noStation]} line="bundang" onSelect={() => {}} />,
+    );
+    expect(getByTestId('boarding-train-sequence-N1').props.children).toBe('전역 도착');
+  });
+
+  it('unknown 행만 있으면 지연 칩 기준(가장 가까운 도착)이 없어 칩 미노출', () => {
+    const { queryByText } = renderWithTheme(
+      <BoardingTrainList arrivals={[FAR_3]} line="bundang" onSelect={() => {}} initialEtaSeconds={60} />,
+    );
+    expect(queryByText(/지연/)).toBeNull();
+  });
+
+  it('known 행과 섞이면 unknown은 지연 계산에서 제외 — known 행만으로 칩 판정', () => {
+    const late = row({ trainCode: 'L1', arrivalSeconds: 600 });
+    const { queryByText } = renderWithTheme(
+      <BoardingTrainList arrivals={[FAR_3, late]} line="bundang" onSelect={() => {}} initialEtaSeconds={60} />,
+    );
+    expect(queryByText(/\+9/)).toBeTruthy(); // (600-60)/60 = 9분
   });
 });

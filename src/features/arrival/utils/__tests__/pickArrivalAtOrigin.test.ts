@@ -8,7 +8,7 @@ function makeArrival(
 ): ArrivalInfo {
   return {
     destination: 'dest',
-    arrivalMinutes: Math.floor(arrivalSeconds / 60),
+    stopsAway: null,
     arrivalSeconds,
     statusMessage: '',
     trainCode,

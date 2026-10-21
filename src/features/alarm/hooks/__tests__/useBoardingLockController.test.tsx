@@ -91,7 +91,7 @@ jest.mock('../../utils/consensusMismatchMetrics', () => ({
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '종착',
-    arrivalMinutes: 3,
+    stopsAway: null,
     arrivalSeconds: 180,
     statusMessage: '',
     trainCode: 'T-1',
@@ -223,6 +223,15 @@ describe('useBoardingLockController', () => {
         useBoardingLockController({ ...defaultInputs, arrival: arrivalWithPast }),
       );
       expect(result.current.directionalArrivals).toEqual([future]);
+    });
+
+    it('#3132 시간 모름(arrivalSeconds=null, 코레일 barvlDt=0) 열차는 list에서 제외하지 않는다', () => {
+      const unknown = makeTrain({ trainCode: 'UNKNOWN', arrivalSeconds: null, stopsAway: 3 });
+      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: { up: [unknown, future], down: [] } }),
+      );
+      expect(result.current.directionalArrivals).toEqual([unknown, future]);
     });
   });
 
@@ -433,6 +442,18 @@ describe('useBoardingLockController', () => {
         // #2290 P1 — user-tap은 탑승 확정 evidence가 아니므로 evidence=false가 stamp된다.
         boardingEvidence: false,
       });
+    });
+
+    it('#3132 시간 모름(null) 열차를 탭하면 initialEtaSeconds를 stamp하지 않는다 (지연 칩 기준 없음)', async () => {
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(
+          makeTrain({ trainCode: 'T-U', arrivalSeconds: null, stopsAway: 3 }),
+        );
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'T-U', initialEtaSeconds: undefined }),
+      );
     });
 
     it('expectedDurationMinutes null이면 fallback 30분', async () => {

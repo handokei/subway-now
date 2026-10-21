@@ -231,7 +231,10 @@
   "arrival": {
     "upbound": "上り",
     "downbound": "下り",
-    "rowLabel": "{{line}} {{direction}} {{mm}}分{{ss}}秒後到着"
+    "stopsAway_one": "{{count}}駅先",
+    "stopsAway_other": "{{count}}駅先",
+    "rowLabel": "{{line}} {{direction}} {{mm}}分{{ss}}秒後到着",
+    "rowLabelPosition": "{{line}} {{direction}} {{position}}"
   },
   "notifications": {
     "channelStation": "現在駅",

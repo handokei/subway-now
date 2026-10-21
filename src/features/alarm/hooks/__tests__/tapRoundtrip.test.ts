@@ -100,7 +100,7 @@ function arrivalWith(trainCodes: string[]): StationArrival {
   return {
     up: trainCodes.map((trainCode) => ({
       destination: '',
-      arrivalMinutes: 1,
+      stopsAway: null,
       arrivalSeconds: 60,
       statusMessage: '',
       trainCode,

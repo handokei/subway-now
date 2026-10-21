@@ -1,3 +1,5 @@
+import { BRACKET_STOPS_AWAY_RE } from '../../../shared/utils/arrivalEta';
+
 /**
  * Seoul 열린데이터 API `arvlMsg2`(=`ArrivalInfo.statusMessage`)에서 BoardingTrainList에 노출할
  * 거리 표기를 추출한다.
@@ -15,10 +17,9 @@
  * 정책: `[0]번째 전역`도 통과시켜 "0번째 전"으로 표기. Seoul API 명세상 0은 발생하지 않는다고
  * 보지만, 만약 향후 "당역 도착" 대체로 들어오기 시작하면 UX 재검토 필요.
  */
-const BRACKET_DISTANCE_RE = /\[(\d+)\]번째 전역/;
 
 export function parseArrivalDistance(statusMessage: string): string {
-  const match = BRACKET_DISTANCE_RE.exec(statusMessage);
+  const match = BRACKET_STOPS_AWAY_RE.exec(statusMessage);
   if (match) return `${match[1]}번째 전`;
   return statusMessage;
 }

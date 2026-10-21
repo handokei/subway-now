@@ -32,6 +32,7 @@ import { resumeNavigation } from '../features/alarm/store/tripBoundCleanups';
 import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, anchorRouteToCurrentStation, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { isInTripByEvidence } from '../shared/utils/boardingWait';
 import { getFiredAlarms } from '../features/alarm/utils/notificationState';
+import { pickNextTrainMinutes } from '../features/arrival/utils/nextTrainMinutes';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../features/arrival/components/EditorialTimeline';
 import { arrivalInfoToArrivalTrain, journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
@@ -744,12 +745,7 @@ export default function HomeScreen() {
   );
   const nextTrainMinutes = useMemo(() => {
     if (!arrival || arrivalIsMock) return null;
-    const directions = [arrival.up, arrival.down];
-    const minutes = directions.map((trains) => {
-      const first = trains[0];
-      return first?.arrivalSeconds != null ? Math.floor(first.arrivalSeconds / 60) : Infinity;
-    });
-    return Math.min(...minutes);
+    return pickNextTrainMinutes(arrival);
   }, [arrival, arrivalIsMock]);
   // #2290 — in-trip 판정: 출발 leg의 boarding 대기를 표시 ETA에서 제외할지 여부.
   // P1-1 (PR #2295 리뷰): `Boolean(lock)`만으로 판정하면 user-tap lock(BoardingTrainList 직접
@@ -1871,7 +1867,7 @@ export default function HomeScreen() {
                                   lock={boardingLock}
                                   // #2715 — 카드의 "하차" 버튼 = 사용자 명시 탭 → reason='user'.
                                   onRelease={() => releaseBoardingLock('user')}
-                                  currentEtaSeconds={matchedTrain?.arrivalSeconds}
+                                  currentEtaSeconds={matchedTrain?.arrivalSeconds ?? undefined}
                                 />
                               );
                             }

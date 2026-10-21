@@ -15,9 +15,9 @@ export function makeNearestResult(stationKey: keyof typeof MOCK_STATIONS, distan
   return { station: MOCK_STATIONS[stationKey], distanceKm };
 }
 
-export function makeArrivalInfo(overrides: Partial<ArrivalInfo> & { destination: string; arrivalSeconds: number }): ArrivalInfo {
+export function makeArrivalInfo(overrides: Partial<ArrivalInfo> & { destination: string; arrivalSeconds: number | null }): ArrivalInfo {
   return {
-    arrivalMinutes: Math.floor(overrides.arrivalSeconds / 60),
+    stopsAway: null,
     statusMessage: '',
     trainCode: 'T001',
     line: '2',

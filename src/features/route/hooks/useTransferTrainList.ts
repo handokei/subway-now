@@ -245,7 +245,7 @@ export function useTransferTrainList({
         boardedAt: Date.now(),
         expectedDurationMs: durationMin * 60_000,
         // #897 Seam A: 환승 leg 탑승 시점 ETA 스냅샷. 새 폴 응답이 이보다 +180s 이상이면 지연 신호.
-        initialEtaSeconds: train.arrivalSeconds,
+        initialEtaSeconds: train.arrivalSeconds ?? undefined,
       // #2290 P1 — 이 함수는 사용자가 BoardingTrainList에서 직접 탭한 경우에만 호출된다
       // (#2154 — D5 device auto-swap effect 삭제, 무탭 트리거 전량 제거). 탑승 확정 evidence가
       // 아니므로 evidence=false — `hasConsumedOriginWait`가 위 initialEtaSeconds 경과 여부로 판정한다.
@@ -280,7 +280,8 @@ function filterByDirection(
 ): ArrivalInfo[] {
   if (!arrival) return [];
   // #666 이미 지나간 열차(arrivalSeconds <= 0) 제외 — 환승 list에서도 동일 정책.
-  const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds > 0;
+  // #3132 — 시간 모름(null)은 지나간 열차가 아니므로 포함한다 (코레일 barvlDt=0).
+  const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds === null || t.arrivalSeconds > 0;
   if (direction === 'up') return arrival.up.filter(reachable);
   if (direction === 'down') return arrival.down.filter(reachable);
   return [...arrival.up, ...arrival.down].filter(reachable);

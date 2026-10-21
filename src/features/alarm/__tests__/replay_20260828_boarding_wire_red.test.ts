@@ -166,7 +166,7 @@ describe('#2405 whole-trip wire RED — 용마산(7) boardingPrompt → tryAutoL
         up: [
           {
             destination: '성수',
-            arrivalMinutes: 1,
+            stopsAway: null,
             arrivalSeconds: 60,
             statusMessage: '진입',
             trainCode: '2026082699',
@@ -196,7 +196,7 @@ describe('#2405 whole-trip wire RED — 용마산(7) boardingPrompt → tryAutoL
         up: [
           {
             destination: '온수',
-            arrivalMinutes: 0,
+            stopsAway: null,
             arrivalSeconds: 30,
             statusMessage: '출발',
             trainCode: '2026082601',

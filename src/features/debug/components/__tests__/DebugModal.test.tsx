@@ -196,8 +196,8 @@ const arrivalDefaults = {
   trainType: 'normal' as const,
 };
 const baseArrival: StationArrival = {
-  up: [{ destination: '청량리', arrivalSeconds: 90, statusMessage: '진입', trainCode: 'U1', arrivalMinutes: 1, ...arrivalDefaults }],
-  down: [{ destination: '인천', arrivalSeconds: 240, statusMessage: '', trainCode: 'D1', arrivalMinutes: 4, ...arrivalDefaults }],
+  up: [{ destination: '청량리', arrivalSeconds: 90, statusMessage: '진입', trainCode: 'U1', stopsAway: null, ...arrivalDefaults }],
+  down: [{ destination: '인천', arrivalSeconds: 240, statusMessage: '', trainCode: 'D1', stopsAway: null, ...arrivalDefaults }],
   isMock: false,
 };
 
@@ -2250,8 +2250,8 @@ describe('DebugModal arrival edge cases', () => {
   it('up.statusMessage가 빈 문자열이면 괄호를 붙이지 않는다', () => {
     mockUseArrivalInfo.mockReturnValue({
       arrival: {
-        up: [{ destination: '청량리', arrivalSeconds: 60, statusMessage: '', trainCode: 'U', arrivalMinutes: 1, ...arrivalDefaults }],
-        down: [{ destination: '인천', arrivalSeconds: 120, statusMessage: '도착', trainCode: 'D', arrivalMinutes: 2, ...arrivalDefaults }],
+        up: [{ destination: '청량리', arrivalSeconds: 60, statusMessage: '', trainCode: 'U', stopsAway: null, ...arrivalDefaults }],
+        down: [{ destination: '인천', arrivalSeconds: 120, statusMessage: '도착', trainCode: 'D', stopsAway: null, ...arrivalDefaults }],
         isMock: false,
       },
       loading: false,
@@ -4273,7 +4273,7 @@ describe('DebugModal helpers — #1421 auto-lock', () => {
     it('matching trainCode의 destination 반환 (up 슬롯)', () => {
       const arrival: StationArrival = {
         up: [
-          { ...arrivalDefaults, destination: '한성대입구', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', arrivalMinutes: 1 },
+          { ...arrivalDefaults, destination: '한성대입구', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', stopsAway: null },
         ],
         down: [],
       };
@@ -4284,7 +4284,7 @@ describe('DebugModal helpers — #1421 auto-lock', () => {
       const arrival: StationArrival = {
         up: [],
         down: [
-          { ...arrivalDefaults, destination: '오이도', arrivalSeconds: 60, statusMessage: '', trainCode: 'T2', arrivalMinutes: 1 },
+          { ...arrivalDefaults, destination: '오이도', arrivalSeconds: 60, statusMessage: '', trainCode: 'T2', stopsAway: null },
         ],
       };
       expect(findArrivalTerminal(arrival, 'T2')).toBe('오이도');
@@ -4292,7 +4292,7 @@ describe('DebugModal helpers — #1421 auto-lock', () => {
 
     it('matching trainCode 없으면 null', () => {
       const arrival: StationArrival = {
-        up: [{ ...arrivalDefaults, destination: '한성대입구', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', arrivalMinutes: 1 }],
+        up: [{ ...arrivalDefaults, destination: '한성대입구', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', stopsAway: null }],
         down: [],
       };
       expect(findArrivalTerminal(arrival, 'OTHER')).toBeNull();
@@ -4300,7 +4300,7 @@ describe('DebugModal helpers — #1421 auto-lock', () => {
 
     it('destination이 빈 문자열이면 null (falsy fallback)', () => {
       const arrival: StationArrival = {
-        up: [{ ...arrivalDefaults, destination: '', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', arrivalMinutes: 1 }],
+        up: [{ ...arrivalDefaults, destination: '', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', stopsAway: null }],
         down: [],
       };
       expect(findArrivalTerminal(arrival, 'T1')).toBeNull();

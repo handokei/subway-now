@@ -6,7 +6,7 @@ import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 function makeRow(overrides: Partial<ArrivalInfo>): ArrivalInfo {
   return {
     destination: '강남',
-    arrivalMinutes: 1,
+    stopsAway: null,
     arrivalSeconds: 60,
     statusMessage: '',
     trainCode: 'T1',

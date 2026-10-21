@@ -590,7 +590,7 @@ async function tryAutoLock(
   // 두 picker(여기, `usePrevTrainCandidate`)가 각자 다르게 구현했던 불변식을 한 곳으로
   // 단일화(#2696 설계).
   const lineMatched: readonly ArrivalInfo[] = directionPool.filter(
-    (a) => a.line === payload.line && a.arrivalSeconds > 0,
+    (a) => a.line === payload.line && (a.arrivalSeconds === null || a.arrivalSeconds > 0),
   );
 
   if (direction === null) {
@@ -685,7 +685,7 @@ async function tryAutoLock(
       boardedAt: Date.now(),
       expectedDurationMs: deps.expectedDurationMs,
       // #897 Seam A: auto-lock 시점 ETA 스냅샷. 지연 신호의 기준치.
-      initialEtaSeconds: chosen.arrivalSeconds,
+      initialEtaSeconds: chosen.arrivalSeconds ?? undefined,
     // #2290 P2(재검토) — 이 경로는 BOARDED 응답에서만 도달: 사용자가 "지금 탑승한 상태"를 방금
     // 명시했으므로 탑승 상태 evidence는 확정이다(ADR-014 사용자 명시 의향 동급). chosen train이
     // fallback 후보일 수 있다는 건 trainCode 신뢰도의 불확실성이지 탑승 여부의 불확실성이 아님 —

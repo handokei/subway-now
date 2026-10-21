@@ -21,8 +21,10 @@ import {
   type Station,
 } from '../shared/types/station';
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
+import type { ArrivalInfo } from '../shared/types/arrival';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../shared/utils/formatTime';
+import { formatArrivalEtaPosition, orderKnownEtaFirst } from '../shared/utils/arrivalEta';
 import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { searchStations } from '../shared/utils/fuzzyStationSearch';
 import { useTheme, typography, withAlpha, type ThemeColors } from '../shared/theme';
@@ -451,24 +453,41 @@ function ArrivalRow({
   colors,
 }: {
   label: string;
-  items: { destination: string; arrivalSeconds: number; statusMessage: string }[];
+  items: ArrivalInfo[];
   colors: ThemeColors;
 }) {
   return (
     <View style={styles.arrivalRow}>
       <Text style={[styles.arrivalLabel, { color: colors.subtle }]}>{label}</Text>
       <View>
-        {items.map((item, idx) => (
-          <View key={idx}>
-            <Text style={[styles.arrivalItem, { color: colors.ink }]}>
-              {item.destination ? `${item.destination} · ` : ''}
-              {formatArrivalTime(item.arrivalSeconds)}
-            </Text>
-            {item.statusMessage !== '' && (
-              <Text style={[styles.statusMessage, { color: colors.inkStrong }]}>{item.statusMessage}</Text>
-            )}
-          </View>
-        ))}
+        {orderKnownEtaFirst(items).map((item, idx) => {
+          // #3132 — 시간 모름(코레일 barvlDt=0)은 00:00 대신 위치 문구(큰 글씨) + 역명(작은 글씨).
+          if (item.arrivalSeconds === null) {
+            const { primary, secondary } = formatArrivalEtaPosition(item);
+            return (
+              <View key={idx} testID={`favorite-arrival-position-${idx}`}>
+                <Text style={[styles.arrivalItem, { color: colors.ink }]}>
+                  {item.destination ? `${item.destination} · ` : ''}
+                  {primary}
+                </Text>
+                {secondary != null && (
+                  <Text style={[styles.statusMessage, { color: colors.inkStrong }]}>{secondary}</Text>
+                )}
+              </View>
+            );
+          }
+          return (
+            <View key={idx}>
+              <Text style={[styles.arrivalItem, { color: colors.ink }]}>
+                {item.destination ? `${item.destination} · ` : ''}
+                {formatArrivalTime(item.arrivalSeconds)}
+              </Text>
+              {item.statusMessage !== '' && (
+                <Text style={[styles.statusMessage, { color: colors.inkStrong }]}>{item.statusMessage}</Text>
+              )}
+            </View>
+          );
+        })}
       </View>
     </View>
   );

@@ -15,6 +15,10 @@
  *
  * 호출처가 직접 `Date.now() + arrivalSeconds * 1000`을 쓰는 대신 이 함수를 거쳐 의미를 명시한다.
  */
-export function arrivalAt(item: { arrivalSeconds: number }): number {
+export function arrivalAt(item: { arrivalSeconds: number }): number;
+/** #3132 — arrivalSeconds=null(시간 모름, 코레일 barvlDt=0)이면 null: 지어낸 도착 시각을 만들지 않는다. */
+export function arrivalAt(item: { arrivalSeconds: number | null }): number | null;
+export function arrivalAt(item: { arrivalSeconds: number | null }): number | null {
+  if (item.arrivalSeconds === null) return null;
   return Date.now() + item.arrivalSeconds * 1000;
 }

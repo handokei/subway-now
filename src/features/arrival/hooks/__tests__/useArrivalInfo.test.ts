@@ -14,8 +14,8 @@ jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) =>
 });
 
 const mockArrival = {
-  up: [{ destination: '소요산행', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '전역 출발', trainCode: 'T001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-  down: [{ destination: '인천행', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'T002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+  up: [{ destination: '소요산행', stopsAway: null, arrivalSeconds: 120, statusMessage: '전역 출발', trainCode: 'T001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+  down: [{ destination: '인천행', stopsAway: null, arrivalSeconds: 300, statusMessage: '', trainCode: 'T002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
 };
 
 const mockArrivalWithMock = {
@@ -197,8 +197,8 @@ describe('useArrivalInfo', () => {
 
   it('캐시 표시 후 백그라운드 갱신이 데이터를 업데이트한다', async () => {
     const updatedArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'T001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-      down: [{ destination: '인천행', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'T002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '소요산행', stopsAway: null, arrivalSeconds: 300, statusMessage: '', trainCode: 'T001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      down: [{ destination: '인천행', stopsAway: null, arrivalSeconds: 480, statusMessage: '', trainCode: 'T002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
     };
 
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
@@ -316,11 +316,11 @@ describe('useArrivalInfo', () => {
 
   it('폴링 중 stationName이 변경되면 이전 폴링 응답을 무시한다', async () => {
     const staleArrival = {
-      up: [{ destination: '이전역', arrivalMinutes: 99, arrivalSeconds: 5940, statusMessage: '', trainCode: 'OLD', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '이전역', stopsAway: null, arrivalSeconds: 5940, statusMessage: '', trainCode: 'OLD', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
       down: [],
     };
     const freshArrival = {
-      up: [{ destination: '새역', arrivalMinutes: 1, arrivalSeconds: 60, statusMessage: '', trainCode: 'NEW', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '새역', stopsAway: null, arrivalSeconds: 60, statusMessage: '', trainCode: 'NEW', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
       down: [],
     };
 
@@ -467,8 +467,8 @@ describe('useArrivalInfo', () => {
 
   it('포그라운드 복귀 시 캐시를 클리어하고 fresh fetch한다', async () => {
     const freshArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 1, arrivalSeconds: 60, statusMessage: '', trainCode: 'T003', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-      down: [{ destination: '인천행', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'T004', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '소요산행', stopsAway: null, arrivalSeconds: 60, statusMessage: '', trainCode: 'T003', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      down: [{ destination: '인천행', stopsAway: null, arrivalSeconds: 180, statusMessage: '', trainCode: 'T004', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
     };
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
 
@@ -489,11 +489,11 @@ describe('useArrivalInfo', () => {
   describe('cache key by (stationName, lineHint) (#1400)', () => {
     it('같은 stationName 다른 lineHint는 캐시를 공유하지 않는다 (호선별 격리)', async () => {
       const arrivalLine2 = {
-        up: [{ destination: '내선순환', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'L2-A', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        up: [{ destination: '내선순환', stopsAway: null, arrivalSeconds: 120, statusMessage: '', trainCode: 'L2-A', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
         down: [],
       };
       const arrivalLine3 = {
-        up: [{ destination: '대화행', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'L3-B', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        up: [{ destination: '대화행', stopsAway: null, arrivalSeconds: 180, statusMessage: '', trainCode: 'L3-B', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
         down: [],
       };
 
@@ -534,7 +534,7 @@ describe('useArrivalInfo', () => {
 
     it('lineHint가 바뀌면 직전 호선의 캐시 데이터가 표시되지 않는다', async () => {
       const arrivalLine2 = {
-        up: [{ destination: '내선순환', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'L2-A', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        up: [{ destination: '내선순환', stopsAway: null, arrivalSeconds: 120, statusMessage: '', trainCode: 'L2-A', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
         down: [],
       };
       // line=2 캐시 채워 둠.
@@ -592,7 +592,7 @@ describe('useArrivalInfo', () => {
 
       // refetch 완료 시 새 데이터로 교체된다.
       const realtimeLine2 = {
-        up: [{ destination: '까치산행', arrivalMinutes: 1, arrivalSeconds: 60, statusMessage: '', trainCode: 'L2-X', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        up: [{ destination: '까치산행', stopsAway: null, arrivalSeconds: 60, statusMessage: '', trainCode: 'L2-X', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
         down: [],
         source: 'realtime' as const,
       };

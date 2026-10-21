@@ -197,7 +197,7 @@ type UpEntry = StationArrival['up'][number];
 function makeUpEntry(overrides: Partial<UpEntry> = {}): UpEntry {
   return {
     destination: '',
-    arrivalMinutes: 1,
+    stopsAway: null,
     arrivalSeconds: 60,
     statusMessage: '',
     trainCode: 'T1',
@@ -227,8 +227,8 @@ function makeArrivalBothDirections(
 
 // 두 후보 같은 priority 케이스 — ambiguity fallback 측정용 (행동 + telemetry 양쪽 공유).
 const AMBIGUOUS_TRAINS: Partial<UpEntry>[] = [
-  { arrivalMinutes: 1, arrivalSeconds: 60, trainCode: 'T1' },
-  { arrivalMinutes: 2, arrivalSeconds: 120, trainCode: 'T2' },
+  { stopsAway: null, arrivalSeconds: 60, trainCode: 'T1' },
+  { stopsAway: null, arrivalSeconds: 120, trainCode: 'T2' },
 ];
 
 // line 불일치 단일 후보 — empty candidate set 케이스 공유 (행동 + telemetry).
@@ -436,6 +436,21 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   // 9/11·9/21·10/7처럼 "미리 온 프롬프트 → 늦게 응답 → 앞차 lock"이 재발하지 않는다).
   // 이 테스트의 fetchArrivalsForStation 기본 mock(`makeArrival()`)은 chosen=T1로 fresh 재조회가
   // 성공하므로, payload.trainCode('2701', 가짜 embed)가 아니라 T1이 forward돼야 한다.
+  it('#3132 — 시간 모름(arrivalSeconds=null) 후보도 풀에서 제외하지 않고, lock의 initialEtaSeconds는 stamp하지 않는다', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () =>
+        makeArrival({ arrivalSeconds: null, stopsAway: 1, arrivalCode: 1, trainCode: 'T-UNKNOWN' }),
+      ),
+    });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(createLockMock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: 'T-UNKNOWN', initialEtaSeconds: undefined }),
+      true,
+      'boarding-prompt-response',
+    );
+  });
+
   it('#2961/#3028 — payload.trainCode 있어도 fresh 재조회 성공(chosen) 시 그 값이 5번째 인자로 forward', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps();
@@ -852,7 +867,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   });
 
   it.each([
-    ['arrivalSeconds <= 0 (지나간 열차)', [{ arrivalMinutes: 0, arrivalSeconds: 0, trainCode: 'T-old' }]],
+    ['arrivalSeconds <= 0 (지나간 열차)', [{ stopsAway: null, arrivalSeconds: 0, trainCode: 'T-old' }]],
     ['line 불일치', LINE_MISMATCH_TRAIN],
   ])('후보 필터링 — %s → lock 안 함', async (_label, entries) => {
     const deps = makeDeps({

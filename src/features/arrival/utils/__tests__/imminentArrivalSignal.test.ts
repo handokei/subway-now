@@ -5,7 +5,7 @@ import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
 function makeTrain(trainCode: string, arrivalCode: number): ArrivalInfo {
   return {
     destination: '',
-    arrivalMinutes: 0,
+    stopsAway: null,
     arrivalSeconds: 0,
     statusMessage: '',
     trainCode,

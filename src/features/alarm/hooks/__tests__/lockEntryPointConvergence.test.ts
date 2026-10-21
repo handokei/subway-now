@@ -116,7 +116,7 @@ describe('#2722 — 3개 진입점(수동 탭 x2 + notification/LA 공유 handle
     );
     const train1: ArrivalInfo = {
       destination: '성수',
-      arrivalMinutes: 3,
+      stopsAway: null,
       arrivalSeconds: 180,
       statusMessage: '',
       trainCode: 'T-MANUAL-1',
@@ -157,7 +157,7 @@ describe('#2722 — 3개 진입점(수동 탭 x2 + notification/LA 공유 handle
     );
     const train2: ArrivalInfo = {
       destination: '군자',
-      arrivalMinutes: 2,
+      stopsAway: null,
       arrivalSeconds: 120,
       statusMessage: '',
       trainCode: 'T-MANUAL-2',

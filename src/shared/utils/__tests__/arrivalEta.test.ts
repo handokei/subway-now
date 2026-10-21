@@ -1,6 +1,7 @@
 import i18next from 'i18next';
 import {
   formatArrivalEtaPosition,
+  formatDebugEta,
   hasKnownEta,
   isEtaUnknownRow,
   orderKnownEtaFirst,
@@ -143,5 +144,13 @@ describe('formatArrivalEtaPosition', () => {
   it('en인데 stopsAway가 null이면 피드 원문으로 degrade (빈 칸 금지)', async () => {
     await i18next.changeLanguage('en');
     expect(formatArrivalEtaPosition({ statusMessage: '전역 도착', stopsAway: null }).primary).toBe('전역 도착');
+  });
+});
+
+describe('formatDebugEta', () => {
+  it('known은 초, unknown은 ?s (+ stopsAway)', () => {
+    expect(formatDebugEta({ arrivalSeconds: 119.6, stopsAway: null })).toBe('120s');
+    expect(formatDebugEta({ arrivalSeconds: null, stopsAway: 3 })).toBe('?s (3 stops)');
+    expect(formatDebugEta({ arrivalSeconds: null, stopsAway: null })).toBe('?s');
   });
 });

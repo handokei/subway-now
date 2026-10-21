@@ -9,7 +9,7 @@ const NOW = 1_700_000_000_000; // 신선한 receivedAtMs
 function info(arrivalCode: number, overrides?: Partial<ArrivalInfo>): ArrivalInfo {
   return {
     destination: 'X',
-    arrivalMinutes: 0,
+    stopsAway: null,
     arrivalSeconds: 0,
     statusMessage: '',
     trainCode: 'T1',

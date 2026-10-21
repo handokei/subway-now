@@ -69,7 +69,7 @@ const ARRIVAL_TTL_MS = 60_000;
 function makeArrival(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: 'X',
-    arrivalMinutes: 0,
+    stopsAway: null,
     arrivalSeconds: 30,
     statusMessage: '',
     trainCode: '7093',

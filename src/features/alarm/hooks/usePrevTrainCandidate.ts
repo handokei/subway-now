@@ -82,7 +82,8 @@ interface DepartedCandidate {
  * `receivedAtMs`가 0(mock/누락)이면 stamp 불가 — null 반환(호출자가 degrade 처리, 크래시 없음).
  */
 function stampArrivalAtMs(train: ArrivalInfo): number | null {
-  if (train.receivedAtMs <= 0) return null;
+  // #3132 — 시간 모름(null)은 도착 시각을 stamp할 수 없다.
+  if (train.receivedAtMs <= 0 || train.arrivalSeconds === null) return null;
   return train.receivedAtMs + train.arrivalSeconds * 1000;
 }
 
@@ -196,8 +197,10 @@ export function usePrevTrainCandidate({
 
     // 폴링 간격이 배차보다 넓어 한 번에 여러 대가 사라졌다면, 마지막으로 도착 예정이었던(=arrivalSeconds
     // 최솟값) 열차가 가장 나중에 출발한 열차다 — 그 열차를 새 전열차 후보로 채택한다.
+    // #3132 — 시간 모름(null)은 최솟값 비교에서 가장 뒤(Infinity 취급): 초가 있는 열차가 우선.
     const newest = departedTrains.reduce(
-      (min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min),
+      (min, cur) =>
+        (cur.arrivalSeconds ?? Infinity) < (min.arrivalSeconds ?? Infinity) ? cur : min,
       departedTrains[0],
     );
     setDeparted({

@@ -8,6 +8,7 @@ import type { NearestStationResult, LineNumber, Station } from '../../../shared/
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import { parseTrainLineDirection } from './trainLineDirection';
 import { arrivalAt } from '../../../shared/utils/arrivalClock';
+import { formatArrivalEtaPosition, orderKnownEtaFirst } from '../../../shared/utils/arrivalEta';
 import stationsData from '../../../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -179,24 +180,31 @@ export function arrivalInfoToArrivalTrain(
   // 3호선 신사행" 등). 호출자가 line 파라미터를 명시한 컨텍스트에서는 그 line과 다른 row를
   // 노출 자체에서 제외해 잘못된 방면/지난 호선 시간표가 사용자에게 보이지 않도록 한다. BFF가
   // line을 정확히 채우면 본 필터는 no-op(정상 응답)이며, line이 어긋난 row만 차단한다.
-  const filteredItems = items.filter((item) => item.line === line);
+  // #3132 — 시간 모름(코레일 barvlDt=0) 행은 제외하지 않고 초 있는 행 뒤로 stopsAway 순 정렬.
+  const filteredItems = orderKnownEtaFirst(items.filter((item) => item.line === line));
   // item.destination은 서울 열린데이터 API의 trainLineNm 기반("소요산행", "내선순환" 등 방면 표현).
   // parseTrainLineDirection이 패턴(역명+행, 내선/외선순환)을 인식해 현재 언어로 표시한다.
   // #897 Seam A: arrivalAt(item) — BoardingTrainList와 동일한 anchor. useArrivalCountdown tick과 동기.
-  return filteredItems.map((item) => ({
-    direction: item.destination
-      ? parseTrainLineDirection(item.destination, allStations)
-      : direction,
-    line,
-    arrivalAtMs: arrivalAt(item),
-    subtext: item.statusMessage || undefined,
-    isLastTrain: item.isLastTrain,
-    trainType: item.trainType,
-    arrivalCode: item.arrivalCode,
-    stationName: context?.stationName,
-    lineNumber: line,
-    directionKey: context?.directionKey,
-  }));
+  return filteredItems.map((item) => {
+    const arrivalAtMs = arrivalAt(item);
+    const etaUnknown = arrivalAtMs === null;
+    return {
+      direction: item.destination
+        ? parseTrainLineDirection(item.destination, allStations)
+        : direction,
+      line,
+      arrivalAtMs,
+      // 시간 모름 행은 피드 문구를 positionLabel(큰 글씨+역명)로 보여주므로 subtext 중복 제거.
+      positionLabel: etaUnknown ? formatArrivalEtaPosition(item) : undefined,
+      subtext: etaUnknown ? undefined : item.statusMessage || undefined,
+      isLastTrain: item.isLastTrain,
+      trainType: item.trainType,
+      arrivalCode: item.arrivalCode,
+      stationName: context?.stationName,
+      lineNumber: line,
+      directionKey: context?.directionKey,
+    };
+  });
 }
 
 export function nearestResultToNearest(result: NearestStationResult): HandoffNearest {

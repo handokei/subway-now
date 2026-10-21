@@ -3,8 +3,8 @@ import { useArrivalCountdown } from '../useArrivalCountdown';
 import type { StationArrival } from '../../api/arrivalApi';
 
 const mockArrival: StationArrival = {
-  up: [{ destination: '소요산행', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '전역 출발', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-  down: [{ destination: '인천행', arrivalMinutes: 1, arrivalSeconds: 90, statusMessage: '', trainCode: 'T002', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+  up: [{ destination: '소요산행', stopsAway: null, arrivalSeconds: 120, statusMessage: '전역 출발', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+  down: [{ destination: '인천행', stopsAway: null, arrivalSeconds: 90, statusMessage: '', trainCode: 'T002', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
 };
 
 const mockArrivalMock: StationArrival = {
@@ -40,20 +40,18 @@ describe('useArrivalCountdown', () => {
     expect(result.current!.down[0].arrivalSeconds).toBe(89);
   });
 
-  it('3초 후 arrivalSeconds가 3 감소하고 arrivalMinutes가 업데이트된다', () => {
+  it('3초 후 arrivalSeconds가 3 감소한다', () => {
     const { result } = renderHook(() => useArrivalCountdown(mockArrival));
 
     act(() => { jest.advanceTimersByTime(3_000); });
 
     expect(result.current!.up[0].arrivalSeconds).toBe(117);
-    expect(result.current!.up[0].arrivalMinutes).toBe(1); // 117/60 = 1
     expect(result.current!.down[0].arrivalSeconds).toBe(87);
-    expect(result.current!.down[0].arrivalMinutes).toBe(1); // 87/60 = 1
   });
 
   it('arrivalSeconds가 0 이하로 내려가지 않는다', () => {
     const nearArrival: StationArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 0, arrivalSeconds: 2, statusMessage: '곧 도착', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '소요산행', stopsAway: null, arrivalSeconds: 2, statusMessage: '곧 도착', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
       down: [],
     };
 
@@ -62,7 +60,6 @@ describe('useArrivalCountdown', () => {
     act(() => { jest.advanceTimersByTime(5_000); });
 
     expect(result.current!.up[0].arrivalSeconds).toBe(0);
-    expect(result.current!.up[0].arrivalMinutes).toBe(0);
   });
 
   it('source 없는 isMock 데이터(하드코딩 MOCK)는 카운트다운하지 않는다', () => {
@@ -98,8 +95,8 @@ describe('useArrivalCountdown', () => {
 
     // 새 API 데이터 도착
     const newArrival: StationArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 3, arrivalSeconds: 200, statusMessage: '', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-      down: [{ destination: '인천행', arrivalMinutes: 2, arrivalSeconds: 150, statusMessage: '', trainCode: 'T002', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '소요산행', stopsAway: null, arrivalSeconds: 200, statusMessage: '', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      down: [{ destination: '인천행', stopsAway: null, arrivalSeconds: 150, statusMessage: '', trainCode: 'T002', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
     };
 
     rerender({ arrival: newArrival });

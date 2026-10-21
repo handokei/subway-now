@@ -156,10 +156,11 @@ describe('buildScheduleArrival', () => {
     expect(result.up[0].arrivalSeconds).toBeLessThanOrEqual(660);
   });
 
-  it('arrivalMinutes equals floor(arrivalSeconds/60)', () => {
+  it('시간표 fallback은 항상 실값 초(null 아님)를 낸다 (#3132)', () => {
     const now = new Date('2026-05-18T15:00:00+09:00');
     const result = buildScheduleArrival('1', '__missing__', now);
-    expect(result.up[0].arrivalMinutes).toBe(Math.floor(result.up[0].arrivalSeconds / 60));
+    expect(typeof result.up[0].arrivalSeconds).toBe('number');
+    expect(result.up[0].stopsAway).toBeNull();
   });
 
   it('anchors next departure to wall-clock so polling (+5s) returns continuously decreasing ETA', () => {

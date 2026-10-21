@@ -15,12 +15,15 @@ export function EditorialArrivalRow({ train }: Props) {
   const { mm, ss } = useCountdown(train.arrivalAtMs);
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const rowLabel = t('arrival.rowLabel', {
-    line: getLineLabel(train.line),
-    direction: train.direction,
-    mm,
-    ss,
-  });
+  const { positionLabel } = train;
+  const rowLabel =
+    positionLabel == null
+      ? t('arrival.rowLabel', { line: getLineLabel(train.line), direction: train.direction, mm, ss })
+      : t('arrival.rowLabelPosition', {
+          line: getLineLabel(train.line),
+          direction: train.direction,
+          position: [positionLabel.primary, positionLabel.secondary].filter(Boolean).join(' '),
+        });
 
   return (
     <View
@@ -47,12 +50,24 @@ export function EditorialArrivalRow({ train }: Props) {
           direction={train.directionKey}
         />
       </View>
-      {/* Line Glass — 우측 mm:ss (300 weight). 노선 배지는 카드 문맥상 중복이라 제거, 접근성 라벨엔 유지. */}
-      <Text style={[typography.countMM, { color: colors.ink }]}>
-        {mm}
-        <Text style={{ color: colors.subtle }}>:</Text>
-        {ss}
-      </Text>
+      {positionLabel == null ? (
+        /* Line Glass — 우측 mm:ss (300 weight). 노선 배지는 카드 문맥상 중복이라 제거, 접근성 라벨엔 유지. */
+        <Text style={[typography.countMM, { color: colors.ink }]}>
+          {mm}
+          <Text style={{ color: colors.subtle }}>:</Text>
+          {ss}
+        </Text>
+      ) : (
+        /* #3132 — 시간 모름(코레일 barvlDt=0): mm:ss 대신 위치 문구. 큰 글씨 primary + 작은 글씨 역명. */
+        <View style={styles.positionBlock} testID="editorial-arrival-position">
+          <Text style={[typography.bodyBase, { color: colors.ink, fontWeight: '700' }]}>
+            {positionLabel.primary}
+          </Text>
+          {positionLabel.secondary != null && (
+            <Text style={[typography.micro, { color: colors.muted }]}>{positionLabel.secondary}</Text>
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -64,5 +79,9 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingVertical: 10,
     borderBottomWidth: 0,
+  },
+  positionBlock: {
+    alignItems: 'flex-end',
+    gap: 2,
   },
 });

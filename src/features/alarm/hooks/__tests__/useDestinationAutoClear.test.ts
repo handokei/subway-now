@@ -53,7 +53,7 @@ function withDateNow<T>(value: number, fn: () => T): T {
 function makeTrain(arrivalCode: number): ArrivalInfo {
   return {
     destination: '왕십리행',
-    arrivalMinutes: 0,
+    stopsAway: null,
     arrivalSeconds: 0,
     statusMessage: '도착',
     trainCode: 'T-1',

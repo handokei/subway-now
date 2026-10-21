@@ -106,7 +106,7 @@ function setupSurfaceSsotConsensus(): void {
       up: [
         {
           destination: 'dest',
-          arrivalMinutes: 0,
+          stopsAway: null,
           arrivalSeconds: 0,
           statusMessage: '도착',
           trainCode: 'T-LOCK',
@@ -361,7 +361,7 @@ describe('#1932 inferEnvironment 호출자 통합 (SSOT 단일화 + cascade 직�
           up: [
             {
               destination: 'dest',
-              arrivalMinutes: 0,
+              stopsAway: null,
               arrivalSeconds: 0,
               statusMessage: '도착',
               trainCode: 'T-LOCK',

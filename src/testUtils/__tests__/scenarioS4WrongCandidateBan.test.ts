@@ -61,7 +61,7 @@ const HANYANDAE: Station = {
 function makeArrivalInfo(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '',
-    arrivalMinutes: 1,
+    stopsAway: null,
     arrivalSeconds: 60,
     statusMessage: '',
     trainCode: 'T-DEFAULT',
