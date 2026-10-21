@@ -3,6 +3,7 @@
  */
 
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
+import { compareEtaUnknownLast, hasKnownEta, minKnownEtaSeconds } from './arrivalEta';
 import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
 import {
   boardingPromptCollapseId,
@@ -3629,7 +3630,7 @@ async function recordLegBoardingPromptTransition(
   // code-review(medium, #2801) — candidateArvlCds와 같은 pool 순서의 ETA(초). arvlCd 3/5는
   // 체류시간이 역간 주행시간만큼 길 수 있어, 다음 "조기 발사" 불만 때 D1만으로 90초-전 발사인지
   // 4분-전 발사인지 판별 가능해야 한다. 기존 meta 확장만, 신규 KV write 없음.
-  candidateEtaSeconds?: readonly number[],
+  candidateEtaSeconds?: readonly (number | null)[],
 ): Promise<void> {
   if (ssot === null || ssot.legBoardingPromptOutcome === outcome) return;
   await writeSsot(
@@ -3644,12 +3645,12 @@ async function recordLegBoardingPromptTransition(
       kind: 'leg-boarding-prompt',
       ...(station !== undefined ? { station } : {}),
       ...(line !== undefined ? { line } : {}),
-      // code-review(medium, #2801) — candidateEtaSeconds의 0은 "지금 도착"과 barvlDt 부재
-      // (미관측, `parseEntry` seoul.ts)를 구분하지 못한다(Math.max(0, Number(barvlDt ?? 0) || 0)
-      // — 부재 시에도 0). candidateArvlCds와 병독 필수: arvlCd null/99 + eta=0은 미관측,
-      // arvlCd 3/5(approaching) + eta=0은 통상 실값 — 측정 목적(approaching 발사가 실제 몇 초
-      // 전이었나)이 3/5 후보의 eta라서 이 병독 규칙으로 충분하다. parse 레이어 자체는 이 PR
-      // scope 밖.
+      // #3132 — candidateEtaSeconds: null = 시간 모름(코레일 barvlDt=0 + arvlCd∉{0,1,2}), 0 = 진짜
+      // 0초(arvlCd 0/1/2). 예전(#2801 code-review)엔 `Math.max(0, …)`로 둘이 같은 0이라 arvlCd와
+      // 병독해야 했고, "arvlCd 3/5 + eta=0은 통상 실값"이라는 가정을 뒀다. 2026-10-21 실측(서울교통공사
+      // 행 3,318건)에서 barvlDt=0은 arvlCd=1(도착) 56건뿐이었고 arvlCd 3/4/5/99 + 0 은 0건 —
+      // 그 가정은 근거가 없었다(코레일 행만 99+0 31건·5+0 6건·3+0 1건). 이제 파서(seoul.ts
+      // `isEtaUnknownRow`)가 둘을 구분하므로 병독 없이 읽는다.
       meta: {
         outcome,
         ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}),
@@ -3681,7 +3682,7 @@ async function recordOriginBoardingPromptTransition(
   // #2801 (3차 reopen) — leg-2(`recordLegBoardingPromptTransition`)와 동일 의미/필드명.
   gateDecision?: BoardingFireDecision['decision'],
   // code-review(medium, #2801) — leg-2와 동일 의미/필드명(위 함수 헤더 주석 참고).
-  candidateEtaSeconds?: readonly number[],
+  candidateEtaSeconds?: readonly (number | null)[],
 ): Promise<void> {
   if (ssot === null || ssot.originBoardingPromptOutcome === outcome) return;
   await writeSsot(
@@ -3696,9 +3697,8 @@ async function recordOriginBoardingPromptTransition(
       kind: 'leg-boarding-prompt',
       station,
       line,
-      // code-review(medium, #2801) — candidateEtaSeconds 0은 barvlDt 부재(미관측)와 "지금
-      // 도착"을 구분 못함(위 recordLegBoardingPromptTransition 주석 참고) — candidateArvlCds와
-      // 병독 필수.
+      // #3132 — candidateEtaSeconds: null = 시간 모름, 0 = 진짜 0초 (위 recordLegBoardingPromptTransition
+      // 주석 참고).
       meta: {
         leg: 'origin',
         outcome,
@@ -5628,31 +5628,36 @@ export async function runTrainCodeTracking(
     return;
   }
 
-  const { cleanedUp } = await maybeReschedulePush(
-    trip,
-    waypoint,
-    activeLock,
-    estimate.epoch,
-    env,
-    deps,
-    stats,
-    now,
-    log,
-    generatePushId,
-  );
-  // trip이 KV에서 삭제됐다면 후속 putTrip은 resurrection이 되므로 즉시 종료.
-  if (cleanedUp) return;
-  // LA는 reschedule와 독립 평가 — reschedule 임계(15s) 미달이거나 push가 실패해도 LA 임계(30s)는 별도 게이트.
-  const laDirty = await maybeFireLiveActivityUpdate(
-    trip,
-    waypoint,
-    estimate.epoch,
-    deps,
-    stats,
-    now,
-    log,
-    ssot,
-  );
+  // #3132 — 도착 시각을 모르면(epoch=null: 코레일 barvlDt=0 + position 추정 없음) reschedule push와 LA ETA
+  // 갱신(즉시 트리거 포함)을 하지 않는다. 열차는 피드에 보이므로 ETA-missing(vanish) 카운터도 올리지 않는다.
+  let laDirty = false;
+  if (estimate.epoch !== null) {
+    const { cleanedUp } = await maybeReschedulePush(
+      trip,
+      waypoint,
+      activeLock,
+      estimate.epoch,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId,
+    );
+    // trip이 KV에서 삭제됐다면 후속 putTrip은 resurrection이 되므로 즉시 종료.
+    if (cleanedUp) return;
+    // LA는 reschedule와 독립 평가 — reschedule 임계(15s) 미달이거나 push가 실패해도 LA 임계(30s)는 별도 게이트.
+    laDirty = await maybeFireLiveActivityUpdate(
+      trip,
+      waypoint,
+      estimate.epoch,
+      deps,
+      stats,
+      now,
+      log,
+      ssot,
+    );
+  }
   if (laDirty || hadMissCount) {
     await putTrip(env.TRIPS, trip);
   }
@@ -5681,7 +5686,9 @@ export async function runTrainCodeTracking(
  */
 export type BoardingLockArrivalEstimate =
   | { epoch: number; arrived: true; arvlCd: 0 | 1 | null }
-  | { epoch: number; arrived: false; arvlCd: number | null };
+  // #3132 — epoch=null: 열차는 피드에서 보이지만 도착 시각을 모른다(코레일 barvlDt=0, position 추정도 없음).
+  // 호출자는 reschedule/LA ETA 갱신을 하지 않는다(지어낸 now 금지). `estimate===null`(열차 소실)과 구분된다.
+  | { epoch: number | null; arrived: false; arvlCd: number | null };
 
 export async function estimateBoardingLockArrival(
   deps: ScheduledDeps,
@@ -5696,7 +5703,9 @@ export async function estimateBoardingLockArrival(
     matched &&
     (matched.arvlCd === ARRIVAL_CODE.ARRIVED || matched.arvlCd === ARRIVAL_CODE.ENTERING)
   ) {
-    return { epoch: now + matched.arrivalSeconds * 1000, arrived: true, arvlCd: matched.arvlCd };
+    // arvlCd 0/1 자체가 도착 증거 — 이 코드의 barvlDt=0은 진짜 0초라 P3상 arrivalSeconds는 항상 known이지만,
+    // 타입이 null을 열어두므로 "도착 = 지금"(epoch=now)으로 닫는다.
+    return { epoch: now + (matched.arrivalSeconds ?? 0) * 1000, arrived: true, arvlCd: matched.arvlCd };
   }
   // #2571 (2026-09-12 실측 재생 근거) — arrivals에 열차가 잡혔지만 아직 arvlCd∉{0,1}이어도
   // realtimePosition을 확인한다. Seoul arrivals 피드는 realtimePosition보다 lag하는 경우가 있어
@@ -5713,12 +5722,17 @@ export async function estimateBoardingLockArrival(
     // vanish-fallback 발사 경로로 진입, #2571).
     return { epoch: posEstimate.epoch ?? now, arrived: true, arvlCd: null };
   }
-  // 아직 도착 전 — ETA는 arrivals(있으면) 우선, 없으면 position 추정.
-  if (matched) {
+  // 아직 도착 전 — ETA는 arrivals(시간을 아는 행)가 있으면 우선, 없으면 position 추정.
+  // #3132 — 매칭 행이 시간 모름(null)이면 position 추정을 우선하고, 그것도 없으면 epoch=null(열차는 보이나
+  // 시각 불명)로 돌려준다 — 예전엔 0초로 접혀 epoch=now가 LA 즉시 트리거를 발사했다.
+  if (matched && matched.arrivalSeconds !== null) {
     return { epoch: now + matched.arrivalSeconds * 1000, arrived: false, arvlCd: matched.arvlCd };
   }
   if (posEstimate && posEstimate.epoch !== null) {
-    return { epoch: posEstimate.epoch, arrived: false, arvlCd: null };
+    return { epoch: posEstimate.epoch, arrived: false, arvlCd: matched?.arvlCd ?? null };
+  }
+  if (matched) {
+    return { epoch: null, arrived: false, arvlCd: matched.arvlCd };
   }
   return null;
 }
@@ -7229,9 +7243,8 @@ export async function runLocklessIntermediate(
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
-  // 발사 트리거: 해당 역에 진입(ENTERING) 또는 도착(ARRIVED). 그 외 phase는 통과 알림 부적합.
-  const fires =
-    signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
+  // 발사 트리거: 해당 역에 진입(ENTERING) 또는 도착(ARRIVED) + ETA known(#3132). 그 외 phase는 통과 알림 부적합.
+  const fires = isFiringSignal(signal);
   if (!fires) {
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
@@ -7572,8 +7585,24 @@ export function pickActiveWaypoint(trip: Trip): Waypoint | null {
 }
 
 export interface ArrivalSignal {
-  etaSeconds: number;
+  /** null = 시간 모름(코레일 barvlDt=0, #3132). 0은 진짜 0초(arvlCd 0/1/2)만 의미한다. */
+  etaSeconds: number | null;
   arvlCd: number | null;
+}
+
+/** 발사 가능 신호 — arvlCd 0/1 이면서 ETA를 아는 신호. etaSeconds가 number로 좁혀져 push payload에 쓸 수 있다. */
+type FiringArrivalSignal = ArrivalSignal & { etaSeconds: number };
+
+/**
+ * lockless 매역 발사 판정. arvlCd 0/1 + ETA known. #3132 — arvlCd 0/1의 barvlDt=0은 진짜 0초라 wire에서
+ * etaSeconds=null은 도달 불가(P3)지만, 타입이 열어둔 합성 경로에서 ETA를 지어내 push payload/LA 갱신을
+ * 구성하지 않도록 null이면 발사하지 않는다.
+ */
+function isFiringSignal(signal: ArrivalSignal): signal is FiringArrivalSignal {
+  return (
+    signal.etaSeconds !== null &&
+    (signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED)
+  );
 }
 
 /**
@@ -7620,8 +7649,12 @@ export function pickBestArrivalSignal(
     return { etaSeconds: earlyTrain.arrivalSeconds, arvlCd: earlyTrain.arvlCd };
   }
   // 3순위: 실측 신호 없음 → min ETA fallback (기존 동작 유지).
-  let best = pool[0];
-  for (const cur of pool) {
+  // #3132 — 시간 모름(null) 행은 최솟값 후보에서 제외한다(예전: 0으로 접혀 항상 최솟값으로 뽑혔다).
+  // 전부 모르면 etaSeconds=null — 호출자는 ETA 없이 처리한다.
+  const known = pool.filter(hasKnownEta);
+  if (known.length === 0) return { etaSeconds: null, arvlCd: pool[0].arvlCd };
+  let best = known[0];
+  for (const cur of known) {
     if (cur.arrivalSeconds < best.arrivalSeconds) best = cur;
   }
   return { etaSeconds: best.arrivalSeconds, arvlCd: best.arvlCd };
@@ -7879,7 +7912,7 @@ async function fireBoardingPromptForAnchor(inputs: {
     // code-review(medium, #2801) — candidateArvlCds와 같은 pool 순서의 ETA(초). arvlCd 3/5는
     // 체류시간이 역간 주행시간만큼 길 수 있어, 다음 "조기 발사" 불만 때 D1 meta만으로 90초-전
     // 발사인지 4분-전 발사인지 판별 가능해야 한다.
-    candidateEtaSeconds: readonly number[],
+    candidateEtaSeconds: readonly (number | null)[],
   ) => void;
   /**
    * #2838 — fire-once KV key(cron stale-read로 `trip.*PromptState.lastFiredAt`이 소실돼
@@ -7997,17 +8030,16 @@ async function fireBoardingPromptForAnchor(inputs: {
   // 표시용 ETA는 merge된 pool에서 계산한다 — 이미 도착 확정된 열차(arrivalSeconds=0)에 arrival 피드의
   // 미래 ETA가 붙어 "곧 진입" 시각이 틀리게 나가는 것을 막는다.
   const displayPool = mergePositionConfirmedIntoPool(displayFeedPool, positionConfirmedTrains, line);
-  if (displayPool.length > 0) {
-    etaSeconds = displayPool.reduce((min, cur) => Math.min(min, cur.arrivalSeconds), displayPool[0].arrivalSeconds);
-  }
+  // #3132 — 시간을 아는 행의 최솟값만 쓴다(전부 모르면 null -> 푸시 본문 시각 생략, LA etaMinutes 생략).
+  etaSeconds = minKnownEtaSeconds(displayPool);
   candidateTrains = [...pool]
-    .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+    .sort(compareEtaUnknownLast)
     .slice(0, 5)
     .map<BoardingPromptCandidate>((entry) => ({
       trainCode: entry.trainCode,
       line,
       direction: entry.isUp ? 'up' : 'down',
-      nextArrivalEta: Math.max(0, Math.floor(entry.arrivalSeconds)),
+      nextArrivalEta: entry.arrivalSeconds === null ? null : Math.max(0, Math.floor(entry.arrivalSeconds)),
     }));
 
   if (candidateTrains.length === 0) {
@@ -8155,7 +8187,7 @@ async function fireBoardingPromptForAnchor(inputs: {
           // LA [탑승] 버튼이 올바른 trainCode를 backend로 forward할 수 있다.
           ...buildLiveActivityContentState(
             anchorWaypoint,
-            etaSeconds ?? 0,
+            etaSeconds,
             trip.waypoints.length,
             trip,
             currentStationName,
@@ -8486,7 +8518,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   let promptOutcome: OriginBoardingPromptOutcome | null = null;
   let candidateArvlCds: readonly (number | null)[] | undefined;
   // code-review(medium, #2801) — candidateArvlCds와 같은 pool 순서의 ETA(초). D1 meta로 전파.
-  let candidateEtaSeconds: readonly number[] | undefined;
+  let candidateEtaSeconds: readonly (number | null)[] | undefined;
   // #2801 (3차 reopen) — decideBoardingPromptFire decision 라벨. D1 meta(gateDecision)로 전파.
   let gateDecision: BoardingFireDecision['decision'] | undefined;
 
@@ -8722,13 +8754,13 @@ function classifyMissingLegAnchor(
  * 두 경로가 같은 계산을 쓰도록 공유한다 — 사본을 만들면 한쪽만 갱신되는 drift가 생긴다.
  */
 export function buildRecentPromptCandidates(
-  pool: readonly { trainCode: string; arrivalSeconds: number }[],
+  pool: readonly { trainCode: string; arrivalSeconds: number | null; stopsAway?: number | null }[],
   now: number,
 ): { trainCodes: string[]; firedAt: number } {
   return {
     trainCodes: pool
       .slice()
-      .sort((a, b) => a.arrivalSeconds - b.arrivalSeconds)
+      .sort(compareEtaUnknownLast)
       .slice(0, 5)
       .map((entry) => entry.trainCode),
     firedAt: now,
@@ -8876,7 +8908,7 @@ export async function maybeFireLegBoardingPrompt(
   // #2801 — decideBoardingPromptFire 계측(§3.4). suppress/fired 경로에서 채워져 D1 meta로 나간다.
   let candidateArvlCds: readonly (number | null)[] | undefined;
   // code-review(medium, #2801) — candidateArvlCds와 같은 pool 순서의 ETA(초). D1 meta로 전파.
-  let candidateEtaSeconds: readonly number[] | undefined;
+  let candidateEtaSeconds: readonly (number | null)[] | undefined;
   // #2801 (3차 reopen) — decision 라벨. D1 meta(gateDecision)로 전파.
   let gateDecision: BoardingFireDecision['decision'] | undefined;
 

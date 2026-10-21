@@ -7,6 +7,7 @@
  *   동일 사이클 내 중복 호출 차단이 주 목적)
  */
 
+import { isEtaUnknownRow, parseStopsAway } from './arrivalEta';
 import { canonicalLineName, lineNameBySubwayId } from './lineAlias';
 import { fromSeoulStationName, toSeoulQueryName } from './seoulStationNameMap';
 import {
@@ -40,7 +41,17 @@ export const SEOUL_POSITION_PATH_SEGMENT = 'realtimePosition';
 
 export interface ArrivalEntry {
   destination: string;
-  arrivalSeconds: number;
+  /**
+   * 도착까지 남은 초. `null` = 시간 모름 — 코레일 운영 노선이 `barvlDt=0`을 "정보 없음"으로 내려준다
+   * (#3132, 2026-10-21 실측). 0은 진짜 0초(arvlCd 0/1/2 진입·도착·출발)만 의미한다.
+   * 모름을 0으로 접으면 LA 즉시 트리거·푸시 본문 시각·표시 ETA가 오염된다.
+   */
+  arrivalSeconds: number | null;
+  /**
+   * 몇 역 전인지 — `[N]번째 전역`의 N, arvlCd 3/4/5 unknown 행은 1, 그 외 null (#3132).
+   * optional — positions 합성 entry·구 fixture 호환(`subwayId?`/`synthesized?`와 동일 정책).
+   */
+  stopsAway?: number | null;
   trainCode: string;
   /** "상행"/"내선" 인지 여부 */
   isUp: boolean;
@@ -245,12 +256,18 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
   if (!raw || typeof raw !== 'object') return null;
   const item = raw as Record<string, unknown>;
 
-  const rawSeconds = Math.max(0, Number(item.barvlDt ?? 0) || 0);
+  // #3132 — barvlDt는 raw 그대로(NaN 포함) 읽는다. 코레일 운영 노선의 "시간 모름"(barvlDt=0, arvlCd∉{0,1,2})을
+  // 진짜 0초와 구분해야 하므로 `Math.max(0, …)`로 접지 않는다.
+  const rawBarvlDt = Number(item.barvlDt);
+  const arvlCd = parseArvlCd(item.arvlCd);
+  const etaUnknown = isEtaUnknownRow(rawBarvlDt, arvlCd);
+  const rawSeconds = Number.isFinite(rawBarvlDt) ? Math.max(0, rawBarvlDt) : 0;
   const parsedRecvMs = parseRecptnDt(item.recptnDt);
   const rawDriftSec = parsedRecvMs > 0 ? (now - parsedRecvMs) / 1000 : 0;
   const isStale = parsedRecvMs > 0 && rawDriftSec > MAX_RECPTN_DRIFT_SEC;
   const driftSec = isStale ? 0 : Math.max(0, rawDriftSec);
   const seconds = Math.max(0, Math.round(rawSeconds - driftSec));
+  const statusMessage = typeof item.arvlMsg2 === 'string' ? item.arvlMsg2 : '';
 
   const updnLine = typeof item.updnLine === 'string' ? item.updnLine : '';
   const isUp = (UP_DIRECTION_VALUES as readonly string[]).includes(updnLine);
@@ -265,12 +282,13 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
 
   return {
     destination: trainLineNm,
-    arrivalSeconds: seconds,
+    arrivalSeconds: etaUnknown ? null : seconds,
+    stopsAway: parseStopsAway(statusMessage, arvlCd, etaUnknown),
     trainCode: typeof item.btrainNo === 'string' ? item.btrainNo : '',
     isUp,
     subwayNm,
     subwayId,
-    arvlCd: parseArvlCd(item.arvlCd),
+    arvlCd,
     trainType: parseTrainType(item.btrainSttus),
     terminus: parseTerminusFromBstatnNm(item.bstatnNm),
   };

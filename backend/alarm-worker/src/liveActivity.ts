@@ -163,7 +163,8 @@ function resolveDefaultTrainCode(trip: Trip): string | undefined {
 
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
-  etaSeconds: number,
+  /** #3132 — null = 도착 시간 모름(코레일 barvlDt=0). etaMinutes를 emit하지 않는다(Swift `etaMinutes: Int?`). */
+  etaSeconds: number | null,
   stopsRemaining: number,
   trip?: Trip,
   currentStationName?: string,
@@ -189,7 +190,7 @@ export function buildLiveActivityContentState(
     lineName: meta?.canonical ?? displayLine,
     lineColorHex: meta?.color ?? '#888888',
     stopsRemaining,
-    etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
+    ...(etaSeconds === null ? {} : { etaMinutes: Math.max(0, Math.round(etaSeconds / 60)) }),
   };
   // #2962 — override 우선, 없으면 resolveDefaultTrainCode(stamp-먼저, 아래)로 폴백. 둘 다
   // 없으면 필드 자체를 emit하지 않는다(아래 spread) — 기존 MultiHopContext 선택 필드 관례와 동일.

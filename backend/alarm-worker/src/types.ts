@@ -971,8 +971,8 @@ export interface BoardingPromptCandidate {
   line: string;
   /** 방향 ('up' | 'down'). Seoul API isUp 기반. */
   direction: 'up' | 'down';
-  /** 다음 도착 잔여 초 — UI에서 "N분 후 도착" 표시용. 0 이상의 정수. */
-  nextArrivalEta: number;
+  /** 다음 도착 잔여 초 — UI에서 "N분 후 도착" 표시용. 0 이상의 정수, 시간 모름(코레일 barvlDt=0, #3132)이면 null. */
+  nextArrivalEta: number | null;
 }
 
 /**
