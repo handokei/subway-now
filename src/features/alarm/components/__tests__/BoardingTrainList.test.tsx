@@ -1079,19 +1079,21 @@ describe('BoardingTrainList', () => {
       expect(getByText('잠시 후 자동으로 다시 확인합니다.')).toBeTruthy();
     });
 
-    it('data 있을 때 user 탭 → pending banner 노출 + a11y label', () => {
+    it('#3120 data 있을 때 user 탭 → "탑승 등록 중" 문구 미노출 + row highlight는 유지', () => {
       const train = makeTrain({ trainCode: 'T-PEND-BANNER' });
-      const { getByTestId, queryByTestId } = renderWithTheme(
+      const { getByTestId, queryByTestId, queryByText } = renderWithTheme(
         <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
       );
-      // 탭 전: banner 미노출.
-      expect(queryByTestId('boarding-train-list-pending-notice')).toBeNull();
       act(() => {
         fireEvent.press(getByTestId('boarding-train-row-T-PEND-BANNER'));
       });
-      const notice = getByTestId('boarding-train-list-pending-notice');
-      expect(notice).toBeTruthy();
-      expect(notice.props.accessibilityLabel).toBe('탑승 등록을 처리하는 중');
+      expect(queryByTestId('boarding-train-list-pending-notice')).toBeNull();
+      expect(queryByText('탑승 등록 중...')).toBeNull();
+      const { borderWidth, borderColor } = flattenStyle(
+        getByTestId('boarding-train-row-T-PEND-BANNER').props.style,
+      );
+      expect(borderWidth).toBeGreaterThan(0);
+      expect(borderColor).toBeDefined();
     });
 
     it('loading state는 accessibilityState.busy=true', () => {
@@ -1542,12 +1544,13 @@ describe('BoardingTrainList', () => {
 
     it('전열차 row 탭 시 pending 낙관적 UI가 동일하게 적용된다', () => {
       const prevTrain = makePrevTrain();
-      const { getByTestId } = renderWithTheme(
+      const { getByTestId, queryByTestId, queryByText } = renderWithTheme(
         <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} prevTrain={prevTrain} />,
       );
       fireEvent.press(getByTestId('boarding-train-prev-row-T-PREV'));
       expect(getByTestId('boarding-train-prev-pending-T-PREV')).toBeTruthy();
-      expect(getByTestId('boarding-train-list-pending-notice')).toBeTruthy();
+      expect(queryByTestId('boarding-train-list-pending-notice')).toBeNull();
+      expect(queryByText('탑승 등록 중...')).toBeNull();
     });
   });
 
