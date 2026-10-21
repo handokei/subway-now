@@ -109,4 +109,37 @@ describe('live-activity push token / ended listeners', () => {
     expect(mockAddListener).not.toHaveBeenCalled();
     expect(() => sub.remove()).not.toThrow();
   });
+
+  // #3107 — 관측 전용 신규 이벤트. 기존 onActivityEnded/Dismissed 의미는 불변.
+  it.each([
+    ['addActivityEndObservedListener', 'onActivityEndObserved'],
+    ['addActivityAdoptedListener', 'onActivityAdopted'],
+  ])('iOS: %s wires native addListener("%s", cb)', (fn, eventName) => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'ios' });
+    const remove = jest.fn();
+    mockAddListener.mockReturnValue({ remove });
+    mockRequireOptionalNativeModule.mockReturnValue({ addListener: mockAddListener });
+
+    const mod = require('../index');
+    const cb = jest.fn();
+    const sub = mod[fn](cb);
+
+    expect(mockAddListener).toHaveBeenCalledWith(eventName, cb);
+    sub.remove();
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['addActivityEndObservedListener', 'addActivityAdoptedListener'])(
+    'non-iOS: %s returns noop subscription',
+    (fn) => {
+      Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'android' });
+      mockRequireOptionalNativeModule.mockReturnValue(null);
+
+      const mod = require('../index');
+      const sub = mod[fn](() => undefined);
+
+      expect(mockAddListener).not.toHaveBeenCalled();
+      expect(() => sub.remove()).not.toThrow();
+    },
+  );
 });
