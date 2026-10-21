@@ -24,6 +24,7 @@ jest.mock('../../utils/recentLocalStationFires', () => ({
 }));
 
 import { AppState } from 'react-native';
+import type { StationArrival } from '../../../../shared/types/arrival';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import {
   useStationAlarm,
@@ -1032,6 +1033,30 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredAlarm).toHaveBeenCalledWith(
         'fg',
         { ...earlyDest, direction: 'up' },
+        expect.any(String),
+      ),
+    );
+  });
+
+  it('lock 열차의 종착역을 도착 row에서 찾아 event.trainTerminal로 싣는다', async () => {
+    const route = makeDirectRoute(1, '2');
+    const station = makeStation('S1', '역삼');
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    mockResolveAlarmDirection.mockReturnValue('down');
+    mockGetBoardingLock.mockResolvedValue({ ...DEFAULT_LOCK, trainCode: 'T-LOCKED' });
+    const currentStationArrival = {
+      up: [],
+      down: [{ trainCode: 'T-LOCKED', terminalStation: '성수' }],
+    } as unknown as StationArrival;
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({ route, destination, nearestStation: station, currentStationArrival }),
+      ),
+    );
+    await waitFor(() =>
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+        'fg',
+        { ...earlyDest, direction: 'down', trainTerminal: '성수' },
         expect.any(String),
       ),
     );

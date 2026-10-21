@@ -20,3 +20,20 @@ export interface PlatformExitSideEntry {
 
 // station id → entry 맵. 매핑이 없는 역은 키 자체가 없다 (helper가 null 반환).
 export type PlatformExitSideMap = Record<string, PlatformExitSideEntry>;
+
+// 방향별(up/down) 하차문 override 항목. 인용 가능한 문장이 있는 방향만 수록한다(비공식 wiki 등급).
+// sourceUrl은 ko.wikipedia 또는 나무위키 문서, note에 인용·한계를 남긴다.
+export interface DirectionalExitSideEntry {
+  up: PlatformExitSide;
+  down: PlatformExitSide;
+  // 잠긴 열차가 이 역에서 종착할 때만 up/down 값을 덮어쓰는 방향별 override(근거 문장이 있는 방향만).
+  terminating?: Partial<Record<'up' | 'down', PlatformExitSide>>;
+  grade: 'wiki';
+  sourceUrl: string;
+  note: string;
+}
+
+export type DirectionalExitSideMap = Record<string, DirectionalExitSideEntry>;
+
+// 잠긴 열차의 종착역과 알람 대상역의 관계. here=당역 종착, elsewhere=통과, unknown=종착 정보 없음.
+export type TerminusRelation = 'here' | 'elsewhere' | 'unknown';

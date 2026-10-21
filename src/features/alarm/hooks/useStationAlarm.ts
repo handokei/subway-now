@@ -84,6 +84,7 @@ import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { resolveCurrentLine } from '../utils/resolveCurrentLine';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
+import { findLockedTrainTerminal } from '../utils/lockedTrainTerminal';
 import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import type { LineNumber } from '../../../shared/types/station';
 import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
@@ -1096,7 +1097,11 @@ export function useStationAlarm({
           sourceStationName: nearestStation.name,
         })
       : undefined;
-    const event = direction ? { ...rawEvent, direction } : rawEvent;
+    // 잠긴 열차의 종착역 — 대상역 종착 여부로 문 방향이 갈리는 역(성수 외선 등)용. 못 찾으면 미부착.
+    const trainTerminal = findLockedTrainTerminal(currentStationArrival, await getBoardingLock());
+    const event = direction
+      ? { ...rawEvent, direction, ...(trainTerminal && { trainTerminal }) }
+      : rawEvent;
     // AsyncStorage write 완료까지 await — BG/재하이드레이션 race 차단(#699).
     try {
       await setFiredAlarms(activeDestination.id, firedAlarmsRef.current);

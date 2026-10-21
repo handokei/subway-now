@@ -29,9 +29,13 @@ import { getStationDisplayName, getStationDisplayNameByName } from '../../../sha
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../../shared/types/exitSide';
+import type { TerminusRelation } from '../../../shared/types/platformExitSide';
 import { lookupExitSide } from '../../route/utils/exitSide';
 import { hasQuickExitData } from '../../route/utils/quickExit';
-import { lookupPlatformExitSide } from '../../../shared/utils/platformExitSideLookup';
+import {
+  lookupDirectionalExitSide,
+  lookupPlatformExitSide,
+} from '../../../shared/utils/platformExitSideLookup';
 import { findStationByName } from '../../../shared/utils/stationLookup';
 import {
   notificationSourceI18nKey,
@@ -450,9 +454,11 @@ function appendExitSide(body: string, side?: ExitSide | null): string {
 
 // 좌/우 하차 방향 해석 (#1504):
 //   1) Primary — `lookupExitSide(name, direction)` (사용자 검수형 direction-aware SSOT).
-//   2) Fallback — primary가 null이면 stations.json id로 `lookupPlatformExitSide(id)` 조회
+//   2) 방향별 위키 확정값 — direction이 있으면 `lookupDirectionalExitSide(id, direction)`
+//      (인용 문장 근거가 있는 방향별 override, 구조 fallback보다 우선).
+//   3) Fallback — 위가 null이면 stations.json id로 `lookupPlatformExitSide(id)` 조회
 //      (승강장 구조 기반 static SSOT, direction 무관). #1482에서 추가된 265역 커버.
-//   3) 둘 다 null이면 기존처럼 좌/우 라인을 생략한다.
+//   4) 모두 null이면 기존처럼 좌/우 라인을 생략한다.
 //
 // fallback은 direction 부재(motion gate 미확정 등)나 사용자 검수 데이터 누락 케이스에서
 // 좌/우 안내를 살려준다. direction이 있는 경우에도 primary가 우선이라 정확도 회귀 없음.
@@ -463,7 +469,15 @@ function resolveExitSide(event: AlarmEvent): ExitSide | null {
   if (direct) return direct;
   const station = findStationByName(event.stationName);
   if (!station) return null;
-  return lookupPlatformExitSide(station.id);
+  const directional = event.direction
+    ? lookupDirectionalExitSide(station.id, event.direction, resolveTerminusRelation(event))
+    : null;
+  return directional ? directional.side : lookupPlatformExitSide(station.id);
+}
+
+function resolveTerminusRelation({ trainTerminal, stationName }: AlarmEvent): TerminusRelation {
+  if (!trainTerminal) return 'unknown';
+  return isSameStationName(trainTerminal, stationName) ? 'here' : 'elsewhere';
 }
 
 // 알람 본문에 추상적 빠른하차 힌트를 붙일지 결정. 해당 역의 빠른하차 데이터가 있을 때만 표시한다.

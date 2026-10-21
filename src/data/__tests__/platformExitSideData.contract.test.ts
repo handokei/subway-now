@@ -5,6 +5,7 @@
  */
 import platformExitSide from '../platformExitSide.json';
 import byDirection from '../platformExitSideByDirection.json';
+import exitSideByName from '../exitSide.json';
 import stations from '../stations.json';
 
 type Entry = { side: string; grade: string };
@@ -46,6 +47,7 @@ describe('platformExitSideByDirection.json 계약', () => {
     grade: string;
     sourceUrl: string;
     note: string;
+    terminating?: { up?: string; down?: string };
   };
   const entries = Object.entries(byDirection as Record<string, Dir>);
 
@@ -54,8 +56,33 @@ describe('platformExitSideByDirection.json 계약', () => {
     expect(ids).toEqual(expect.arrayContaining(['6-007', '7-003']));
   });
 
-  it('성수(2-011)는 방향별 근거 문서가 없어 시드에 없다', () => {
-    expect((byDirection as Record<string, Dir>)['2-011']).toBeUndefined();
+  it('성수(2-011) 본선은 나무위키 문장 근거로 up/down 모두 right', () => {
+    const entry = (byDirection as Record<string, Dir>)['2-011'];
+    expect(entry.up).toBe('right');
+    expect(entry.down).toBe('right');
+    expect(entry.sourceUrl).toMatch(/^https:\/\/namu\.wiki\//);
+  });
+
+  it('성수 외선(down) 당역 종착은 left, 내선(up)은 종착 값 없음', () => {
+    const entry = (byDirection as Record<string, Dir>)['2-011'];
+    expect(entry.terminating).toEqual({ down: 'left' });
+  });
+
+  it('terminating 값은 left/right뿐이다', () => {
+    for (const [, entry] of entries) {
+      for (const side of Object.values(entry.terminating ?? {})) expect(SIDES).toContain(side);
+    }
+  });
+
+  it('문장 근거 없는 방화·강동·온수·성수지선·1호선은 키가 없다(unknown)', () => {
+    const map = byDirection as Record<string, Dir>;
+    for (const id of ['5-001', '5-039', '7-042']) expect(map[id]).toBeUndefined();
+    expect(Object.keys(map).filter((id) => id.startsWith('1-'))).toEqual([]);
+  });
+
+  it("어떤 하차문 데이터에도 'both'는 없다", () => {
+    expect(JSON.stringify(byDirection)).not.toContain('both');
+    expect(JSON.stringify(exitSideByName)).not.toContain('both');
   });
 
   it('항목마다 stations.json id, left/right, wiki 등급, 인용 URL, 메모를 가진다', () => {
@@ -64,7 +91,7 @@ describe('platformExitSideByDirection.json 계약', () => {
       expect(SIDES).toContain(entry.up);
       expect(SIDES).toContain(entry.down);
       expect(entry.grade).toBe('wiki');
-      expect(entry.sourceUrl).toMatch(/^https:\/\/ko\.wikipedia\.org\/wiki\//);
+      expect(entry.sourceUrl).toMatch(/^https:\/\/(ko\.wikipedia\.org|namu\.wiki)\/(wiki|w)\//);
       expect(entry.note.length).toBeGreaterThan(0);
     }
   });

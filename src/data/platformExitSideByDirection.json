@@ -1,16 +1,32 @@
 {
+  "2-011": {
+    "up": "right",
+    "down": "right",
+    "grade": "wiki",
+    "sourceUrl": "https://namu.wiki/w/%EC%84%B1%EC%88%98%EC%97%AD",
+    "note": "성수(2호선 본선): 나무위키 '대부분의 경우는 오른쪽 문이 열리지만, 외선순환 방향 당역 종착 열차는 왼쪽 문이 열린다.' — 통과 열차는 up(내선)/down(외선) 모두 오른쪽, 외선(down) 당역 종착은 terminating.down=왼쪽. 내선 당역 종착·성수지선은 문장 없음(unknown) — 종착 값이 없으면 문 라인을 생략한다. 비공식, 2026-10-21 재확인.",
+    "terminating": {
+      "down": "left"
+    }
+  },
   "6-007": {
     "up": "right",
     "down": "left",
     "grade": "wiki",
     "sourceUrl": "https://ko.wikipedia.org/wiki/%EC%83%88%EC%A0%88%EC%97%AD",
-    "note": "새절(6호선, 2면 3선 혼합식): 위키 '내리는 문의 위치' — 응암행(up) 오른쪽 / 신내행·당역 종착(down) 왼쪽. 비공식(CC BY-SA), 2026-10-21 조사."
+    "note": "새절(6호선, 2면 3선 혼합식): 위키 '내리는 문의 위치' — 응암행(up) 오른쪽 / 신내행·당역 종착(down) 왼쪽. 비공식(CC BY-SA), 2026-10-21 조사.",
+    "terminating": {
+      "down": "left"
+    }
   },
   "7-003": {
     "up": "right",
     "down": "left",
     "grade": "wiki",
     "sourceUrl": "https://ko.wikipedia.org/wiki/%EC%88%98%EB%9D%BD%EC%82%B0%EC%97%AD",
-    "note": "수락산(7호선, 2면 3선 쌍섬식): 위키 '내리는 문의 위치' — 상행(up, 장암·도봉산 방면) 오른쪽 / 하행(down)·당역 종착 왼쪽. 비공식(CC BY-SA), 2026-10-21 조사."
+    "note": "수락산(7호선, 2면 3선 쌍섬식): 위키 '내리는 문의 위치' — 상행(up, 장암·도봉산 방면) 오른쪽 / 하행(down)·당역 종착 왼쪽. 비공식(CC BY-SA), 2026-10-21 조사.",
+    "terminating": {
+      "down": "left"
+    }
   }
 }

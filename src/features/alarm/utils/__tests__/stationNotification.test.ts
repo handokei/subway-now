@@ -1286,6 +1286,76 @@ describe('stationNotification', () => {
       });
     });
 
+    // 방향별 위키 확정값(platformExitSideByDirection.json, 실데이터)이 알림 본문까지 연결되는지.
+    describe('방향별 위키 확정값 (platformExitSideByDirection)', () => {
+      const seongsu = { phaseId: 'early', type: 'destination', stationName: '성수' } as const;
+
+      it.each([
+        ['up', '오른쪽 문으로 하차하세요'],
+        ['down', '오른쪽 문으로 하차하세요'],
+      ] as const)('성수 본선 통과 %s는 %s', (direction, line) => {
+        expect(buildAlarmContent({ ...seongsu, direction, trainTerminal: '왕십리' }).body).toBe(
+          `다음 역 성수에서 하차하세요!\n${line}`,
+        );
+      });
+
+      it.each([
+        ['up', '오른쪽 문으로 하차하세요'],
+        ['down', '왼쪽 문으로 하차하세요'],
+      ] as const)('새절 %s는 %s', (direction, line) => {
+        expect(
+          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '새절', direction }).body,
+        ).toBe(`다음 역 새절에서 하차하세요!\n${line}`);
+      });
+
+      // 성수 외선=down(2호선 규약). trainTerminal = 잠긴 열차의 종착역(Seoul bstatnNm).
+      const seongsuLine = (direction: 'up' | 'down', trainTerminal?: string) =>
+        buildAlarmContent({ ...seongsu, direction, ...(trainTerminal && { trainTerminal }) }).body;
+      const withLine = (side: string) => `다음 역 성수에서 하차하세요!\n${side} 문으로 하차하세요`;
+      const NO_LINE = '다음 역 성수에서 하차하세요!';
+
+      it('성수 외선 당역 종착 열차는 왼쪽', () => {
+        expect(seongsuLine('down', '성수')).toBe(withLine('왼쪽'));
+      });
+
+      it('성수 외선 통과 열차는 오른쪽', () => {
+        expect(seongsuLine('down', '왕십리')).toBe(withLine('오른쪽'));
+      });
+
+      it('성수 내선은 종착 여부와 무관하게 통과/불명이면 오른쪽', () => {
+        expect(seongsuLine('up', '건대입구')).toBe(withLine('오른쪽'));
+        expect(seongsuLine('up')).toBe(withLine('오른쪽'));
+      });
+
+      it('성수 외선인데 종착역을 모르면 단정하지 않고 문 라인을 생략한다', () => {
+        expect(seongsuLine('down')).toBe(NO_LINE);
+      });
+
+      it('성수 내선 당역 종착은 근거 값이 없어 문 라인을 생략한다', () => {
+        expect(seongsuLine('up', '성수')).toBe(NO_LINE);
+      });
+
+      it('다른 역(새절)은 종착 정보가 있어도 기존 값 그대로', () => {
+        const base = { phaseId: 'early', type: 'destination', stationName: '새절' } as const;
+        expect(buildAlarmContent({ ...base, direction: 'down', trainTerminal: '신내' }).body).toBe(
+          '다음 역 새절에서 하차하세요!\n왼쪽 문으로 하차하세요',
+        );
+        expect(buildAlarmContent({ ...base, direction: 'down' }).body).toBe(
+          '다음 역 새절에서 하차하세요!\n왼쪽 문으로 하차하세요',
+        );
+      });
+
+      it('방향이 없으면 방향별 값은 쓰지 않고 문 라인을 생략한다', () => {
+        expect(buildAlarmContent(seongsu).body).toBe('다음 역 성수에서 하차하세요!');
+      });
+
+      it('문장 근거 없는 방화는 방향이 있어도 문 라인을 생략한다', () => {
+        expect(
+          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '방화', direction: 'up' }).body,
+        ).toBe('다음 역 방화에서 하차하세요!');
+      });
+    });
+
     describe('빠른하차 힌트 (quickExit)', () => {
       // #1504 SonarCloud dedup — quickExit 분기 매트릭스를 it.each로 통합.
       // 각 row: [phaseId, type, stationName, title, body].
