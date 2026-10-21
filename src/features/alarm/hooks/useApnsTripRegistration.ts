@@ -27,6 +27,7 @@ import { registerActiveTrip } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
+import { acknowledgeTripRegistration } from '../utils/liveActivityPushChannel';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip, logSubsurfaceRegisterTransition } from '../utils/alarmLog';
 import {
@@ -1134,6 +1135,8 @@ export function useApnsTripRegistration({
       if (result?.ok) {
         clearRegisterRetry();
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
+        // #3162 — trip register ack는 LA 토큰 불변식 복구의 "다음 기회"다(토큰이 trip보다 먼저 와 ambient 대기 창을 넘겼어도 여기서 붙는다).
+        acknowledgeTripRegistration();
       } else {
         scheduleRegisterRetry(sessionKey);
       }
@@ -1402,6 +1405,8 @@ export function useApnsTripRegistration({
       // useEffect cleanup이 자주 일어나 setItem이 skip되고 DebugModal activeTrip이 (none)으로 표시됨.
       if (result?.ok) {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
+        // #3162 — 위와 동일(재등록 ack 포함).
+        acknowledgeTripRegistration();
         // #1960 — 성공(dedup skip 포함, ok:true)했으면 이 세션에 대한 대기 재시도가 있다면 정리.
         clearRegisterRetry();
         // #2197 — 성공 기준 추적 갱신. 다음 cycle의 route-change debounce 판정이 "이미 등록된

@@ -100,6 +100,15 @@ public class LiveActivityModule: Module {
             return false
         }
 
+        // #3162 — 현재 LA의 push token을 재조회(없으면 nil). adopt된 Activity는 token을 재emit하지 않아
+        // JS가 직접 물어야 "활성 trip + LA 존재 -> backend가 그 token을 가진다" 불변식을 복구할 수 있다.
+        AsyncFunction("requestPushToken") { () async -> String? in
+            if #available(iOS 16.2, *) {
+                return await LiveActivityManager.shared.currentPushTokenHex()
+            }
+            return nil
+        }
+
         AsyncFunction("saveWidgetStation") { (stationName: String, lineColor: String, distanceM: Int, savedAtMs: Double) in
             guard let defaults = UserDefaults(suiteName: APP_GROUP) else { return }
             defaults.set(stationName, forKey: WIDGET_KEY_STATION_NAME)

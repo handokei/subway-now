@@ -6,7 +6,7 @@
  * 구독을 정리하는가"만 본다.
  */
 import { renderHook } from '@testing-library/react-native';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { useLiveActivityTokenRegistration } from '../useLiveActivityTokenRegistration';
 
 const mockStop = jest.fn();
@@ -58,6 +58,44 @@ describe('useLiveActivityTokenRegistration (#2667)', () => {
     );
     rerender({ key: '0228' });
     expect(mockRegisterHeld).toHaveBeenCalledTimes(1);
+  });
+
+  // #3162 — FG 복귀는 토큰 불변식 복구의 "다음 기회" 중 하나다. active 전이마다 복구를 트리거하고,
+  // 그 외 상태 전이와 unmount 이후에는 트리거하지 않는다(리스너 누수 금지).
+  describe('AppState 복귀 (#3162)', () => {
+    let appStateCb: (state: string) => void = () => undefined;
+    const removeAppState = jest.fn();
+
+    beforeEach(() => {
+      removeAppState.mockClear();
+      jest
+        .spyOn(AppState, 'addEventListener')
+        .mockImplementation(((_e: string, cb: (state: string) => void) => {
+          appStateCb = cb;
+          return { remove: removeAppState };
+        }) as unknown as typeof AppState.addEventListener);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('background -> active 전이에서 복구를 트리거한다', () => {
+      renderHook(() => useLiveActivityTokenRegistration(null));
+      expect(mockRegisterHeld).not.toHaveBeenCalled();
+
+      appStateCb('background');
+      expect(mockRegisterHeld).not.toHaveBeenCalled();
+
+      appStateCb('active');
+      expect(mockRegisterHeld).toHaveBeenCalledTimes(1);
+    });
+
+    it('unmount 시 AppState 리스너를 제거한다', () => {
+      const { unmount } = renderHook(() => useLiveActivityTokenRegistration(null));
+      unmount();
+      expect(removeAppState).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('non-iOS에서는 구독도 등록도 하지 않는다', () => {

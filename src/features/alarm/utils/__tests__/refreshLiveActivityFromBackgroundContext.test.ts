@@ -37,9 +37,12 @@ jest.mock('../laDismissSentinel', () => ({
 // 단독 검증하고, 여기서는 refreshLiveActivityFromBackgroundContext가 판정 결과를 존중해 조기
 // return하는지만 wire-up 검증한다.
 const mockShouldSkipDeviceLiveActivityWrite = jest.fn((..._args: unknown[]) => false);
+// #3163 후속 P1-b — FG 복귀 없는 BG-only trip에서도 LA 토큰 불변식을 복구하는 진입점.
+const mockReconcileLiveActivityToken = jest.fn((..._args: unknown[]) => Promise.resolve());
 jest.mock('../liveActivityPushChannel', () => ({
   shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) =>
     mockShouldSkipDeviceLiveActivityWrite(...args),
+  reconcileLiveActivityToken: (...args: unknown[]) => mockReconcileLiveActivityToken(...args),
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -124,6 +127,21 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     expect(AsyncStorage.getItem).not.toHaveBeenCalled();
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
     expect(mockEndLiveActivity).not.toHaveBeenCalled();
+  });
+
+  it('#3163 P1-b — BG refresh 진입 시 토큰 복구를 data 없이(재생성 금지) 호출한다', async () => {
+    await refreshLiveActivityFromBackgroundContext();
+    expect(mockReconcileLiveActivityToken).toHaveBeenCalledTimes(1);
+    expect(mockReconcileLiveActivityToken).toHaveBeenCalledWith();
+  });
+
+  it('#3163 P1-b [거부] LA disabled / dismiss sentinel 활성이면 토큰 복구도 하지 않는다', async () => {
+    mockIsLiveActivityEnabled.mockReturnValue(false);
+    await refreshLiveActivityFromBackgroundContext();
+    mockIsLiveActivityEnabled.mockReturnValue(true);
+    mockIsLaDismissed.mockResolvedValue(true);
+    await refreshLiveActivityFromBackgroundContext();
+    expect(mockReconcileLiveActivityToken).not.toHaveBeenCalled();
   });
 
   it('LA disabled면 storage조차 읽지 않는다', async () => {

@@ -250,6 +250,8 @@ export type AlarmLogReason =
   | 'la-session-teardown'
   | 'la-register-cancelled'
   | 'la-adopt-token-state'
+  //   la-token-recreate     : #3162 토큰을 얻을 수 없는 LA를 FG에서 끝내고 같은 trip으로 재생성(missingForMs)
+  | 'la-token-recreate'
   // PR-3a(#3126) — source='trip-end-notice' 행의 reason. 종료 사유는 stationName에 `reason=<값>`.
   | 'trip-end-notice'
   // #2398 — UNNotificationCategory 등록 실패(setNotificationCategoryAsync reject/throw) stamp.
@@ -1386,6 +1388,7 @@ export type LiveActivityLifecycleReason = Extract<
   | 'la-session-teardown'
   | 'la-register-cancelled'
   | 'la-adopt-token-state'
+  | 'la-token-recreate'
 >;
 
 /**

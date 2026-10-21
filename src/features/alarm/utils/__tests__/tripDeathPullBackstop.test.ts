@@ -36,6 +36,11 @@ jest.mock('../tripGone', () => ({
   hasFutureTripArrivalAlarm: (...args: unknown[]) => mockHasFutureTripArrivalAlarm(...args),
 }));
 
+const mockMarkBackendLaTokenMissing = jest.fn();
+jest.mock('../liveActivityPushChannel', () => ({
+  markBackendLiveActivityTokenMissing: () => mockMarkBackendLaTokenMissing(),
+}));
+
 const mockAppendAlarmLog = jest.fn();
 jest.mock('../alarmLog', () => ({
   appendAlarmLog: (...args: unknown[]) => mockAppendAlarmLog(...args),
@@ -181,6 +186,61 @@ describe('checkTripDeathByPull', () => {
     expect(result).toBe('alive');
     expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', BASE_URL);
     jest.useRealTimers();
+  });
+
+  // #3163 후속 P1-a — backend가 device 몰래 LA 토큰을 지운다(410/종료 dismissal/DELETE /live-activity).
+  // status 응답이 "active인데 LA 토큰 없음"을 알려주면 device는 dedup을 풀고 재등록한다.
+  describe('LA 토큰 소실 신호 (hasLiveActivityToken)', () => {
+    beforeEach(async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    });
+
+    it.each(['silent-push', 'bg-location-tick', 'fg-tick'] as const)(
+      'site=%s active + hasLiveActivityToken=false -> 재등록 트리거, 결과는 alive',
+      async (site) => {
+        mockFetchTripStatus.mockResolvedValue({
+          status: 'active',
+          endedAt: null,
+          endReason: null,
+          hasLiveActivityToken: false,
+        });
+
+        const result = await checkTripDeathByPull(BASE_URL, site);
+
+        expect(result).toBe('alive');
+        expect(mockMarkBackendLaTokenMissing).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([true, undefined])('[거부] hasLiveActivityToken=%s(보유/구 backend)면 건드리지 않는다', async (has) => {
+      mockFetchTripStatus.mockResolvedValue({
+        status: 'active',
+        endedAt: null,
+        endReason: null,
+        ...(has === undefined ? {} : { hasLiveActivityToken: has }),
+      });
+
+      await checkTripDeathByPull(BASE_URL, 'bg-location-tick');
+
+      expect(mockMarkBackendLaTokenMissing).not.toHaveBeenCalled();
+    });
+
+    it('[거부] trip이 ended면 재등록하지 않는다', async () => {
+      mockFetchTripStatus.mockResolvedValue({ status: 'ended', endedAt: 1, endReason: 'destination-arrived' });
+      mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
+
+      await checkTripDeathByPull(BASE_URL, 'fg-tick');
+
+      expect(mockMarkBackendLaTokenMissing).not.toHaveBeenCalled();
+    });
+
+    it('[거부] gone(404/410)이면 재등록하지 않는다', async () => {
+      mockFetchTripStatus.mockResolvedValue({ status: 'gone', code: 404 });
+
+      await checkTripDeathByPull(BASE_URL, 'bg-location-tick');
+
+      expect(mockMarkBackendLaTokenMissing).not.toHaveBeenCalled();
+    });
   });
 
   describe.each(['silent-push', 'bg-location-tick'] as const)(

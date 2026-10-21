@@ -25,9 +25,11 @@ jest.mock('../laDismissSentinel', () => ({
 }));
 
 const mockShouldSkipDeviceLiveActivityWrite = jest.fn((..._args: unknown[]) => false);
+const mockReconcileLiveActivityToken = jest.fn((..._args: unknown[]) => Promise.resolve());
 jest.mock('../liveActivityPushChannel', () => ({
   shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) =>
     mockShouldSkipDeviceLiveActivityWrite(...args),
+  reconcileLiveActivityToken: (...args: unknown[]) => mockReconcileLiveActivityToken(...args),
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -105,6 +107,19 @@ describe('updateLiveActivityFromMirrorStation', () => {
     // #2768 — 성공 tick은 skip 로그를 남기지 않고, 상태 전이 추적을 리셋해 다음 skip이 다시 적재되게 한다.
     expect(mockLogLiveActivityMirrorSkip).not.toHaveBeenCalled();
     expect(mockResetLiveActivityMirrorSkipTracking).toHaveBeenCalledTimes(1);
+  });
+
+  it('#3163 P1-b — mirror sync 진입 시 토큰 복구를 data 없이 호출한다(GPS writer 양보/활성 LA 없음이어도)', async () => {
+    mockHasActiveLiveActivity.mockReturnValue(false);
+    await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+    expect(mockReconcileLiveActivityToken).toHaveBeenCalledTimes(1);
+    expect(mockReconcileLiveActivityToken).toHaveBeenCalledWith();
+  });
+
+  it('#3163 P1-b [거부] dismiss sentinel 활성이면 토큰 복구도 하지 않는다', async () => {
+    mockIsLaDismissed.mockResolvedValue(true);
+    await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+    expect(mockReconcileLiveActivityToken).not.toHaveBeenCalled();
   });
 
   it('route가 null이면 etaMinutes도 null(기존대로) — #2805 거부 케이스', async () => {
