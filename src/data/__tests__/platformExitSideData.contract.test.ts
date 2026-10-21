@@ -47,6 +47,7 @@ describe('platformExitSideByDirection.json 계약', () => {
     grade: string;
     sourceUrl: string;
     note: string;
+    terminating?: { up?: string; down?: string };
   };
   const entries = Object.entries(byDirection as Record<string, Dir>);
 
@@ -60,6 +61,17 @@ describe('platformExitSideByDirection.json 계약', () => {
     expect(entry.up).toBe('right');
     expect(entry.down).toBe('right');
     expect(entry.sourceUrl).toMatch(/^https:\/\/namu\.wiki\//);
+  });
+
+  it('성수 외선(down) 당역 종착은 left, 내선(up)은 종착 값 없음', () => {
+    const entry = (byDirection as Record<string, Dir>)['2-011'];
+    expect(entry.terminating).toEqual({ down: 'left' });
+  });
+
+  it('terminating 값은 left/right뿐이다', () => {
+    for (const [, entry] of entries) {
+      for (const side of Object.values(entry.terminating ?? {})) expect(SIDES).toContain(side);
+    }
   });
 
   it('문장 근거 없는 방화·강동·온수·성수지선·1호선은 키가 없다(unknown)', () => {

@@ -1274,6 +1274,43 @@ describe('stationNotification', () => {
         ).toBe(`다음 역 새절에서 하차하세요!\n${line}`);
       });
 
+      // 성수 외선=down(2호선 규약). trainTerminal = 잠긴 열차의 종착역(Seoul bstatnNm).
+      const seongsuLine = (direction: 'up' | 'down', trainTerminal?: string) =>
+        buildAlarmContent({ ...seongsu, direction, ...(trainTerminal && { trainTerminal }) }).body;
+      const withLine = (side: string) => `다음 역 성수에서 하차하세요!\n${side} 문으로 하차하세요`;
+      const NO_LINE = '다음 역 성수에서 하차하세요!';
+
+      it('성수 외선 당역 종착 열차는 왼쪽', () => {
+        expect(seongsuLine('down', '성수')).toBe(withLine('왼쪽'));
+      });
+
+      it('성수 외선 통과 열차는 오른쪽', () => {
+        expect(seongsuLine('down', '왕십리')).toBe(withLine('오른쪽'));
+      });
+
+      it('성수 내선은 종착 여부와 무관하게 통과/불명이면 오른쪽', () => {
+        expect(seongsuLine('up', '건대입구')).toBe(withLine('오른쪽'));
+        expect(seongsuLine('up')).toBe(withLine('오른쪽'));
+      });
+
+      it('성수 외선인데 종착역을 모르면 단정하지 않고 문 라인을 생략한다', () => {
+        expect(seongsuLine('down')).toBe(NO_LINE);
+      });
+
+      it('성수 내선 당역 종착은 근거 값이 없어 문 라인을 생략한다', () => {
+        expect(seongsuLine('up', '성수')).toBe(NO_LINE);
+      });
+
+      it('다른 역(새절)은 종착 정보가 있어도 기존 값 그대로', () => {
+        const base = { phaseId: 'early', type: 'destination', stationName: '새절' } as const;
+        expect(buildAlarmContent({ ...base, direction: 'down', trainTerminal: '신내' }).body).toBe(
+          '다음 역 새절에서 하차하세요!\n왼쪽 문으로 하차하세요',
+        );
+        expect(buildAlarmContent({ ...base, direction: 'down' }).body).toBe(
+          '다음 역 새절에서 하차하세요!\n왼쪽 문으로 하차하세요',
+        );
+      });
+
       it('방향이 없으면 방향별 값은 쓰지 않고 문 라인을 생략한다', () => {
         expect(buildAlarmContent(seongsu).body).toBe('다음 역 성수에서 하차하세요!');
       });
