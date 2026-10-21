@@ -116,12 +116,17 @@ describe('#3158 트립 173 — 성수 번호 변경 시 lock이 시간표 후속
     expect(timetableRows[0].meta).toMatchObject({ source: 'timetable-successor', to: successor, timetableFrom: oldLock });
   });
 
-  it('기존 vanish-swap 경로는 그대로 동작하고 같은 D1 kind에 source=vanish-swap으로 기록된다 (시간표가 후속을 확정하기 전까지)', async () => {
+  it('유예: 어떤 tick에서도 lock이 지선 열차(1509)가 되지 않고, 최종 3045 — vanish-swap 행 0, timetable-successor 행 1', async () => {
+    const successor = oracleSuccessor();
     const r = await replay173();
-    const vanishRows = reattachEvents(r.events).filter((e) => e.meta.source === 'vanish-swap');
-    expect(vanishRows.length).toBeGreaterThanOrEqual(1);
-    const lastBeforeFinal = r.tickLocks.at(-1)?.code;
-    expect(vanishRows.at(-1)?.meta.to).toBe(lastBeforeFinal);
+    const oldLock = r.tickLocks.find((t) => t.line === '2')?.code as string;
+    // 같은 물리 열차의 번호 변경이므로 lock 코드는 {원래 열차, 후속}만 가능하다 — 휴리스틱이 고른 제3의 열차(1509)는 없다.
+    const codes = new Set(r.tickLocks.map((t) => t.code).filter((c): c is string => c !== undefined && c !== '7031'));
+    expect([...codes].sort()).toEqual([oldLock, successor].sort());
+    expect(r.tickLocks.some((t) => t.code === '1509')).toBe(false);
+    expect(reattachEvents(r.events).filter((e) => e.meta.source === 'vanish-swap')).toEqual([]);
+    expect(r.finalLock?.trainCode).toBe(successor);
+    expect(reattachEvents(r.events).map((e) => e.meta.source)).toEqual(['timetable-successor']);
   });
 
   it('거부: 후속이 라이브 피드에 없으면(마지막 캡처 제거) table 재부착 0, 최종 lock은 후속이 아니다', async () => {

@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   RENUMBER_ARM_TTL_MS,
+  RENUMBER_SWAP_DEFER_TICKS,
+  shouldDeferVanishSwap,
   RENUMBER_OBSERVATION_MAX_AGE_MS,
   RENUMBER_TIMETABLE_BASE_DATE,
   decideTimetableReattach,
@@ -177,5 +179,30 @@ describe('vanish-swap 정정 표식 (RenumberArm)', () => {
   it('nextRenumberArm: 항목 없는 열차/타 노선은 표식 없음(기존 필드 불변)', () => {
     expect(nextRenumberArm('2', undefined, '2999', '3001', WEDNESDAY_0633)).toBeUndefined();
     expect(nextRenumberArm('7', undefined, '3009', '3011', WEDNESDAY_0633)).toBeUndefined();
+  });
+});
+
+describe('shouldDeferVanishSwap — 시간표 후속 대기 유예', () => {
+  const base = { lockLine: '2', lockTrainCode: '3009', arm: undefined, swapThreshold: 2, nowMs: WEDNESDAY_0633 } as const;
+
+  it('항목 있는 열차: 임계~임계+유예 직전 miss까지 유예', () => {
+    expect(shouldDeferVanishSwap({ ...base, missCount: 2 })).toBe(true);
+    expect(shouldDeferVanishSwap({ ...base, missCount: 3 })).toBe(true);
+  });
+
+  it('거부: 유예가 끝나면(후속 미출현) 기존 vanish-swap으로 폴백', () => {
+    expect(shouldDeferVanishSwap({ ...base, missCount: 2 + RENUMBER_SWAP_DEFER_TICKS })).toBe(false);
+    expect(shouldDeferVanishSwap({ ...base, missCount: 9 })).toBe(false);
+  });
+
+  it('거부: 시간표 항목이 없으면(번호/노선/시간창) 즉시 기존 동작', () => {
+    expect(shouldDeferVanishSwap({ ...base, lockTrainCode: '2999', missCount: 2 })).toBe(false);
+    expect(shouldDeferVanishSwap({ ...base, lockLine: '7', missCount: 2 })).toBe(false);
+    expect(shouldDeferVanishSwap({ ...base, nowMs: kst(10, 21, 12, 0), missCount: 2 })).toBe(false);
+  });
+
+  it('vanish-swap이 옮긴 뒤에도(표식) 원 열차 항목으로 판정', () => {
+    const arm = { from: '3009', swappedTo: '1509', armedAt: WEDNESDAY_0633 };
+    expect(shouldDeferVanishSwap({ ...base, lockTrainCode: '1509', arm, missCount: 2 })).toBe(true);
   });
 });
