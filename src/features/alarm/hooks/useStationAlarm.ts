@@ -93,7 +93,6 @@ import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useAlarmEventStore } from '../store/useAlarmEventStore';
 // #2387 — 명시 탭 의향(infoModeEnabled) 환승 계승. lock=null을 "미탭" proxy로 쓰던 게이트가
 // 환승 후 lock release 시 명시 탭 의향까지 함께 억제하던 회귀를 막는다.
-import { useUserIntentStore } from '../store/useUserIntentStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
@@ -197,6 +196,10 @@ function logSuppressedStationPassedLockless(stationName: string): void {
 }
 
 /**
+ * v9 d5 — lock 없음 = 알림 없음. infoModeEnabled(명시 탭 의향) OR를 철거했다: 의향만 있고 lock이
+ * 없으면 이제 억제한다(ADR-023 :25 destination critical의 lockless 배정 철회, #3035 반대 방향 대체).
+ * 아래 #2387/#2792 서술은 철거 전 이력이다.
+ *
  * #2387 — lockless trip + 사용자 명시 의향(infoModeEnabled) 부재 판정 공통 헬퍼.
  * lock=null AND !infoModeEnabled = boardingPrompt 미응답 + BoardingTrainList 미탭.
  * infoModeEnabled=true면 명시 탭 의향이 환승으로 lock release된 후에도 계승돼 device 알람
@@ -209,7 +212,7 @@ function logSuppressedStationPassedLockless(stationName: string): void {
  * 반영돼 있다 — auto-lock으로 탑승 확정된 trip도 이 게이트를 leg-2까지 정상 통과한다.
  */
 function isLocklessNoUserIntent(lock: BoardingLock | null): boolean {
-  return !lock && !useUserIntentStore.getState().infoModeEnabled;
+  return !lock;
 }
 
 /**
