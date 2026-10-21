@@ -15,8 +15,8 @@ import app from '../index';
 import { runScheduled } from '../scheduled';
 import { isBoardingLockActive } from '../scheduled';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { getTrip, putTrip } from '../trips';
-import type { Env, Trip } from '../types';
+import { getTrip } from '../trips';
+import type { Env } from '../types';
 import type { ArrivalEntry, PositionEntry, SeoulArrivalClient } from '../seoul';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -156,12 +156,6 @@ describe('WHOLE 다중환승 E2E — leg-1 발사 → 환승 → leg-2 발사 �
     expect(afterTransfer?.currentLegAnchor).toEqual({ boardingStation: '건대입구', line: '2' });
 
     // 4) 사용자가 leg-2 열차 탭 → device가 /boarding-lock/sync로 leg-2 trainCode 전송 → #2560 승격.
-    // #3144 (v8 D2, ADR-043) — sync 승격은 프롬프트가 제시한 열차만: leg-2 프롬프트가 TB2를 제시하고
-    // 사용자가 그 열차에 응답한 상태를 재현한다(sync는 실 Date.now() 기준).
-    await putTrip(env.TRIPS, {
-      ...(afterTransfer as Trip),
-      recentPromptCandidates: { trainCodes: ['TB2'], firedAt: Date.now() },
-    });
     const syncRes = await app.fetch(
       new Request('http://example.com/boarding-lock/sync', {
         method: 'POST',

@@ -1,12 +1,13 @@
 /**
- * #3144 (v8 D2·D3, ADR-043) — lock은 boarding-prompt 응답으로만 부착된다.
- *   - D2: /boarding-lock/sync 승격은 backend가 프롬프트로 제시한 열차(recentPromptCandidates /
- *         legBoardingFireStamp)일 때만. 증거 없음·streak-only는 거부.
- *   - D3: register-time resolver는 현재 leg 응답 마커(boardingResponse ∨ boardingCommitted)가 있을 때만.
+ * #3144 (v8 D3 + 3-path parity, ADR-043) — lock은 사용자 행위 3경로로만 부착된다:
+ *   LA 탑승 버튼 / 알림 프롬프트 탭 (둘 다 POST boarding-confirm) / 수동 목록 탭 (POST /boarding-lock/sync).
+ *   - D3: 자동 resolver(register-time, cron)는 현재 leg 응답 마커(boardingResponse ∨ boardingCommitted)가
+ *         있을 때만. 세 경로 모두 같은 마커를 세운다.
  *   - 모든 attach 지점이 D1 `lock-attached`(path, hasResponseMarker)를 남긴다.
+ *   (D2 — sync 승격의 프롬프트 제시 열차 한정 — 는 사용자 결정으로 철회: sync 승격은 dev 그대로.)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { app, isPromotionCorroborated } from '../index';
+import { app } from '../index';
 import { currentBoardingLegKey, hasBoardingResponseForCurrentLeg } from '../trips';
 import type { Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -66,68 +67,7 @@ function metaOf(args: unknown[]): Record<string, unknown> {
   return JSON.parse(args[5] as string) as Record<string, unknown>;
 }
 
-describe('v8 D2 — isPromotionCorroborated 엄격화', () => {
-  const NOW = 1_800_000_000_000;
-
-  function baseTrip(overrides: Partial<Trip> = {}): Trip {
-    return {
-      token: 'v8d2-unit',
-      route: { type: 'direct', line: '7', stops: 3 } as unknown as Trip['route'],
-      destination: '군자',
-      waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
-      expiresAt: NOW + 60 * 60_000,
-      createdAt: NOW - 10 * 60_000,
-      alarmAtEpochMs: NOW,
-      ...overrides,
-    };
-  }
-
-  const stamp = (overrides: Record<string, unknown> = {}): Trip['legBoardingFireStamp'] =>
-    ({
-      boardingStation: '건대입구',
-      line: '7',
-      trainCode: '7039',
-      destination: '군자',
-      waypointKeys: [],
-      firedAt: NOW - 60_000,
-      ...overrides,
-    }) as Trip['legBoardingFireStamp'];
-
-  it('양쪽 신호 부재(한 번도 프롬프트 제시 없음) -> false (backward-safe true 폐기)', () => {
-    expect(isPromotionCorroborated('7039', baseTrip(), NOW)).toBe(false);
-  });
-
-  it('legResolveStreak만 일치(프롬프트가 제시한 적 없는 열차) -> false', () => {
-    const trip = baseTrip({ legResolveStreak: { trainCode: '7039', count: 3 } });
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
-  });
-
-  it('legBoardingFireStamp.trainCode 일치 + TTL 내 -> true (발사 이력 증거)', () => {
-    expect(isPromotionCorroborated('7039', baseTrip({ legBoardingFireStamp: stamp() }), NOW)).toBe(true);
-  });
-
-  it('legBoardingFireStamp가 다른 열차 -> false', () => {
-    const trip = baseTrip({ legBoardingFireStamp: stamp({ trainCode: '9999' }) });
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
-  });
-
-  it('legBoardingFireStamp가 TTL(15분) 초과 -> false', () => {
-    const trip = baseTrip({ legBoardingFireStamp: stamp({ firedAt: NOW - 15 * 60_000 - 1 }) });
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
-  });
-
-  it('stamp.trainCode 없음(ambiguity 발사) -> false', () => {
-    const trip = baseTrip({ legBoardingFireStamp: stamp({ trainCode: undefined }) });
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
-  });
-
-  it('recentPromptCandidates 소속 + TTL 내 -> true (유지)', () => {
-    const trip = baseTrip({ recentPromptCandidates: { trainCodes: ['7039'], firedAt: NOW - 60_000 } });
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
-  });
-});
-
-describe('v8 D2 — /boarding-lock/sync 승격은 프롬프트 제시 열차만', () => {
+describe('v8 D3 — 수동 목록 탭(/boarding-lock/sync)도 응답 마커를 세우는 사용자 행위', () => {
   function lockless(overrides: Partial<Trip> = {}): Trip {
     const now = Date.now();
     return {
@@ -160,7 +100,7 @@ describe('v8 D2 — /boarding-lock/sync 승격은 프롬프트 제시 열차만'
       env,
     );
 
-  it('프롬프트 제시 이력 0(목록 탭 lock 3013형) -> 승격 거부 + promotion-rejected-uncorroborated 1건', async () => {
+  it('프롬프트 제시 이력 0인 열차의 수동 목록 탭 sync -> dev와 동일하게 lock 승격 + 응답 마커 + lock-attached(path=sync, hasResponseMarker=true)', async () => {
     const { db, inserts } = captureEventInserts();
     const env = makeKvEnv();
     env.DB = db;
@@ -168,39 +108,28 @@ describe('v8 D2 — /boarding-lock/sync 승격은 프롬프트 제시 열차만'
     const res = await sync(env, '7039');
     expect(res.status).toBe(200);
     const stored = JSON.parse((await env.TRIPS.get('trip:v8d2-tok')) as string);
-    expect(stored.boardingLock).toBeUndefined();
-    const rejected = inserts.filter((a) => a[2] === 'promotion-rejected-uncorroborated');
-    expect(rejected).toHaveLength(1);
-    expect(metaOf(rejected[0])).toEqual({ trainCode: '7039', line: '7' });
-    expect(inserts.filter((a) => a[2] === 'lock-attached')).toEqual([]);
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.boardingResponse).toEqual({ legKey: currentBoardingLegKey(stored), at: expect.any(Number) });
+    expect(inserts.filter((a) => a[2] === 'promotion-rejected-uncorroborated')).toEqual([]);
+    const attached = inserts.filter((a) => a[2] === 'lock-attached');
+    expect(attached).toHaveLength(1);
+    expect(metaOf(attached[0])).toMatchObject({ path: 'sync', trainCode: '7039', hasResponseMarker: true });
   });
 
-  it('streak만 있고 프롬프트 제시 이력 없음 -> 승격 거부', async () => {
-    const env = makeKvEnv();
-    await env.TRIPS.put(
-      'trip:v8d2-tok',
-      JSON.stringify(lockless({ legResolveStreak: { trainCode: '7039', count: 2 } })),
-    );
-    await sync(env, '7039');
-    const stored = JSON.parse((await env.TRIPS.get('trip:v8d2-tok')) as string);
-    expect(stored.boardingLock).toBeUndefined();
-  });
-
-  it('recentPromptCandidates 소속 -> 승격 + lock-attached(path=sync, hasResponseMarker=false) 기록', async () => {
+  it('#2824 corroboration은 dev 그대로: 프롬프트가 다른 열차만 제시했다면 거부 + 마커 없음 + lock-attached 없음', async () => {
     const { db, inserts } = captureEventInserts();
     const env = makeKvEnv();
     env.DB = db;
     await env.TRIPS.put(
       'trip:v8d2-tok',
-      JSON.stringify(lockless({ recentPromptCandidates: { trainCodes: ['7039'], firedAt: Date.now() } })),
+      JSON.stringify(lockless({ recentPromptCandidates: { trainCodes: ['9999'], firedAt: Date.now() } })),
     );
-    const res = await sync(env, '7039');
-    expect(res.status).toBe(200);
+    await sync(env, '7039');
     const stored = JSON.parse((await env.TRIPS.get('trip:v8d2-tok')) as string);
-    expect(stored.boardingLock?.trainCode).toBe('7039');
-    const attached = inserts.filter((a) => a[2] === 'lock-attached');
-    expect(attached).toHaveLength(1);
-    expect(metaOf(attached[0])).toMatchObject({ path: 'sync', trainCode: '7039', hasResponseMarker: false });
+    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.boardingResponse).toBeUndefined();
+    expect(inserts.filter((a) => a[2] === 'promotion-rejected-uncorroborated')).toHaveLength(1);
+    expect(inserts.filter((a) => a[2] === 'lock-attached')).toEqual([]);
   });
 });
 
@@ -335,27 +264,11 @@ describe('v8 D3 — register-time resolver 응답 마커 게이트 + carry + 마
     expect(stored.boardingResponse).toBeUndefined();
   });
 
-  it('same-session 재등록이 recentPromptCandidates를 보존한다 (D2가 의존하는 carry)', async () => {
-    const env = makeKvEnv();
-    await postAndSettle('/trips', tripBody({ infoModeEnabled: false }), env);
-    const seeded = JSON.parse((await env.TRIPS.get('trip:tok-v8d3')) as string);
-    const candidates = { trainCodes: ['7246'], firedAt: CREATED };
-    await env.TRIPS.put('trip:tok-v8d3', JSON.stringify({ ...seeded, recentPromptCandidates: candidates }));
-    await postAndSettle('/trips', tripBody({ infoModeEnabled: false }), env);
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-v8d3')) as string);
-    expect(stored.recentPromptCandidates).toEqual(candidates);
-  });
-
   it('boarding-confirm이 body trainCode로 lock을 붙이면 lock-attached(path=confirm, hasResponseMarker=true)', async () => {
     const { db, inserts } = captureEventInserts();
     const env = makeKvEnv();
     env.DB = db;
     await postAndSettle('/trips', tripBody({ infoModeEnabled: false }), env);
-    const seeded = JSON.parse((await env.TRIPS.get('trip:tok-v8d3')) as string);
-    await env.TRIPS.put(
-      'trip:tok-v8d3',
-      JSON.stringify({ ...seeded, recentPromptCandidates: { trainCodes: ['7246'], firedAt: CREATED - 1000 } }),
-    );
     fetchSpy.mockImplementation(async () => noPositions());
     await post(
       '/trips/tok-v8d3/boarding-confirm',

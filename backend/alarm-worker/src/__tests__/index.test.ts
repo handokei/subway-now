@@ -6457,16 +6457,14 @@ describe('isPromotionCorroborated (#2824) — unit', () => {
     expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
   });
 
-  // #3144 (v8 D2) — (c)·(d)는 ADR-043으로 뒤집혔다: streak-only / 증거 없음은 거부. 상세는
-  // v8_d2_d3_lock_origin.test.ts.
-  it('(c) legResolveStreak.trainCode만 일치 → false (프롬프트 제시 열차가 아니다, #3144)', () => {
+  it('(c) legResolveStreak.trainCode와 일치 → true(승격)', () => {
     const trip = baseTrip({ legResolveStreak: { trainCode: '7039', count: 1 } });
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
   });
 
-  it('(d) 두 신호 모두 부재(프롬프트 제시 이력 없음) → false (backward-safe 폐기, #3144)', () => {
+  it('(d) 두 신호 모두 부재(한 번도 stamp 안 됨) → true(backward-safe 기존대로 승격)', () => {
     const trip = baseTrip();
-    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(false);
+    expect(isPromotionCorroborated('7039', trip, NOW)).toBe(true);
   });
 });
 
@@ -6550,8 +6548,7 @@ describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)
     expect(stored.boardingLock?.trainCode).toBe('7039');
   });
 
-  // #3144 (v8 D2, ADR-043) — (c)·(d)는 뒤집혔다: streak-only / 증거 없음은 승격하지 않는다.
-  it('(c) legResolveStreak.trainCode만 일치하면 승격 거부 (프롬프트 제시 열차가 아님)', async () => {
+  it('(c) legResolveStreak.trainCode와 일치하면 승격', async () => {
     const env = makeKvEnv();
     await env.TRIPS.put(
       'trip:corrob-tok',
@@ -6562,10 +6559,10 @@ describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)
     expect(res.status).toBe(200);
 
     const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
-    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.boardingLock?.trainCode).toBe('7039');
   });
 
-  it('(d) 두 신호 모두 부재 → 승격 거부 (backward-safe 폐기, 171 3013 근본)', async () => {
+  it('(d) 두 신호 모두 부재 → backward-safe 기존대로 승격(false-reject 0, #2560 무회귀)', async () => {
     const env = makeKvEnv();
     await env.TRIPS.put('trip:corrob-tok', JSON.stringify(unlockedTrip()));
 
@@ -6573,7 +6570,7 @@ describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)
     expect(res.status).toBe(200);
 
     const stored = JSON.parse((await env.TRIPS.get('trip:corrob-tok')) as string);
-    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.boardingLock?.trainCode).toBe('7039');
   });
 });
 

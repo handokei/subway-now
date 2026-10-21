@@ -127,8 +127,31 @@ describe('v8 PR-T 트립 171 replay — 현행 코드 자체 검증 (D2-C red/gr
     expect(r.replayer.registers.every((x) => x.status === 200)).toBe(true);
   });
 
-  // #3144 — 구 baseline("06:36:36에 3013 승격 -> 06:36:45 2011 push 0건")은 D2 엄격 corroboration으로
-  // 의도적으로 무효화됐다. 같은 입력의 수정 후 기대는 아래 'v8 D2·D3 트립 171 replay' describe가 단언한다.
+  it('06:36:36 승격: 합쳐진 sync가 3013을 lock으로 승격 -> 그 직후 tick 시작에 boardingLock.trainCode === 3013 (그 전 tick은 lock 없음)', async () => {
+    const r = await replay171();
+    const promoted = r.d1.find((e) => d1Meta(e).promotedLock === true) as { ts: number };
+    const next = r.tickStates.find((s) => s.tick > promoted.ts);
+    const prev = [...r.tickStates].reverse().find((s) => s.tick < promoted.ts);
+    expect(next?.lockTrainCode).toBe('3013');
+    expect(prev?.lockTrainCode).toBeUndefined();
+    // 승격 telemetry도 D1과 같다.
+    expect(r.events.filter((e) => e.meta.promotedLock === true).map((e) => e.meta)).toEqual([
+      { promotedLock: true, trainCode: '3013', line: '2' },
+    ]);
+  });
+
+  it('06:36:45 tick: lock이 있으므로 2호선 열차 2011에 대한 push는 0건 (실측 D1에도 leg-boarding-prompt 행 없음)', async () => {
+    const r = await replay171();
+    const promoted = r.d1.find((e) => d1Meta(e).promotedLock === true) as { ts: number };
+    const cycle = r.result.cycles.find((c) => c.simNowMs > promoted.ts) as { pushes: CapturedPush[] };
+    const mentions2011 = cycle.pushes.filter((p) => JSON.stringify(p.body).includes('"2011"'));
+    expect(mentions2011).toEqual([]);
+    expect(cycle.pushes.some((p) => promptPayload(p) !== undefined)).toBe(false);
+    // 이 tick의 push는 lock 열차(3013)에 대한 reschedule뿐이다 — 오선택 열차에 추적이 붙었다는 증거.
+    const reschedule = cycle.pushes.find((p) => p.body.kind === 'reschedule' || (p.body.data as { kind?: string } | undefined)?.kind === 'reschedule');
+    expect(JSON.stringify(reschedule?.body)).toContain('3013');
+    expect(r.d1.filter((e) => e.kind === 'leg-boarding-prompt')).toEqual([]);
+  });
 
   it('[v7 주장 확인] 06:36:36 승격이 없었다면(lock 부재) 06:36:45 tick에 2011 position-confirmed 프롬프트가 발사된다', async () => {
     const r = await replay171({ withoutPromotedLock: true });
@@ -148,30 +171,20 @@ describe('v8 PR-T 트립 171 replay — 현행 코드 자체 검증 (D2-C red/gr
   });
 });
 
-// #3144 (v8 D2·D3) — 실측 171 입력 그대로, 수정 후 기대(R-B1·R-B2). 입력은 위 baseline과 동일(불변).
-describe('v8 D2·D3 트립 171 replay — 목록 탭 lock 3013은 승격되지 않고 2011 프롬프트가 발사된다', () => {
-  it('R-B1: 06:36:36 sync 3013 -> promotion-rejected-uncorroborated 1건, 승격 없음(tick 시작 lock 없음)', async () => {
+// #3144 (3-path parity, ADR-043) — 실측 171 입력 그대로(불변). 수동 목록 탭 sync는 사용자 행위 3경로 중
+// 하나이므로 오선택 3013도 다시 lock으로 승격된다(171 root인 오선택 자체는 별도 처리 — 숨기지 않고 있는 그대로 단언).
+describe('3-path parity 트립 171 replay — 수동 목록 탭 sync는 3013을 lock하고 응답 마커를 세운다', () => {
+  it('06:36:36 sync 3013 승격은 lock-attached(path=sync, hasResponseMarker=true) 1건이며 거부 행은 없다', async () => {
     const r = await replay171();
-    const promoted = r.d1.find((e) => d1Meta(e).promotedLock === true) as { ts: number };
-    const rejected = r.events.filter((e) => e.kind === 'promotion-rejected-uncorroborated');
-    expect(rejected.map((e) => e.meta)).toEqual([{ trainCode: '3013', line: '2' }]);
-    expect(r.events.filter((e) => e.meta.promotedLock === true)).toEqual([]);
-    const next = r.tickStates.find((s) => s.tick > promoted.ts);
-    expect(next?.lockTrainCode).toBeUndefined();
+    const attached = r.events.filter((e) => e.kind === 'lock-attached');
+    expect(attached.map((e) => e.meta)).toEqual([
+      { path: 'sync', trainCode: '3013', hasResponseMarker: true },
+    ]);
+    expect(r.events.filter((e) => e.kind === 'promotion-rejected-uncorroborated')).toEqual([]);
   });
 
-  it('R-B1: 승격 거부 후 06:36:45 tick에 2호선 2011 프롬프트(position-confirmed)가 발사된다', async () => {
+  it('승격 외 경로(register/cron)로 붙은 lock은 없다 (lock-attached는 sync 1건뿐)', async () => {
     const r = await replay171();
-    const promoted = r.d1.find((e) => d1Meta(e).promotedLock === true) as { ts: number };
-    const cycle = r.result.cycles.find((c) => c.simNowMs > promoted.ts) as { pushes: CapturedPush[] };
-    const prompts = cycle.pushes.map(promptPayload).filter((p) => p !== undefined);
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toMatchObject({ line: '2', trainCode: '2011', triggerKind: 'cron' });
-  });
-
-  it('R-B2: 프롬프트 응답이 없는 171에서는 register/cron 어느 경로로도 lock이 붙지 않는다 (전 tick lock 없음, lock-attached 0)', async () => {
-    const r = await replay171();
-    expect(r.tickStates.filter((s) => s.lockTrainCode !== undefined)).toEqual([]);
-    expect(r.events.filter((e) => e.kind === 'lock-attached')).toEqual([]);
+    expect(r.events.filter((e) => e.kind === 'lock-attached' && e.meta.path !== 'sync')).toEqual([]);
   });
 });

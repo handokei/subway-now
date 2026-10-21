@@ -103,9 +103,6 @@ describe('#2564 다중 환승 — sync 엔드포인트가 leg-2/leg-3 상태에�
       createdAt: NOW - 10 * 60_000,
       alarmAtEpochMs: NOW,
       infoModeEnabled: true,
-      // #3144 (v8 D2, ADR-043) — sync 승격은 backend가 프롬프트로 제시한 열차만. 이 테스트의 주제는
-      // "승격이 leg 번호에 무관하게 균일"이므로 각 leg의 프롬프트가 해당 열차를 제시한 상태를 둔다.
-      recentPromptCandidates: { trainCodes: ['TB', 'TC'], firedAt: Date.now() },
     };
   }
 
