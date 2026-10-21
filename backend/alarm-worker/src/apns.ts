@@ -941,6 +941,13 @@ function buildBoardingPromptPushData(
   };
 }
 
+/**
+ * 탑승 프롬프트 소리 — 일반 알림 프롬프트(`sendBoardingPromptPush`)와 LA 프롬프트 alert
+ * (`fireBoardingPromptForAnchor`의 `fireLiveActivityUpdate` alert)가 공유한다(#3108).
+ * 취침모드 게이트 없음: 두 채널 모두 같은 규칙.
+ */
+export const BOARDING_PROMPT_SOUND = 'default';
+
 export async function sendBoardingPromptPush(
   options: SendBoardingPromptPushOptions,
 ): Promise<SendPushResult> {
@@ -959,7 +966,7 @@ export async function sendBoardingPromptPush(
         // 구 device(필드 무시) 및 subtitle 없는 케이스와 byte-level 호환.
         ...(options.subtitle !== undefined ? { subtitle: options.subtitle } : {}),
       },
-      sound: 'default',
+      sound: BOARDING_PROMPT_SOUND,
       // #2282 — hop-end(disembark) 질문은 승차 질문과 버튼 의미가 달라 전용 category로 분기.
       category:
         options.hopEndKind === 'disembark'

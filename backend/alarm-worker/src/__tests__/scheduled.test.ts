@@ -13816,6 +13816,61 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(body.aps['content-state'].lineColorHex).toBeTruthy();
     });
 
+    // LA prompt alert sound — alert가 있는 LA 갱신은 sound가 없으면 확장 표시/배너가 무음이라
+    // 사용자가 인지하지 못한다. 일반 알림 프롬프트(sendBoardingPromptPush)와 같은 소리를 쓴다.
+    // 출처: https://developer.apple.com/forums/thread/799195
+    describe('LA prompt alert sound', () => {
+      function findRegularPromptCalls(fetchImpl: ReturnType<typeof vi.fn>): [string, RequestInit][] {
+        return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
+          const headers = (c[1]?.headers ?? {}) as Record<string, string>;
+          return headers['apns-push-type'] === 'alert';
+        });
+      }
+
+      async function fireWithLa(tripOverrides: Record<string, unknown> = {}) {
+        const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
+        const trip = makeTrip({
+          activityPushToken: 'la-activity-token',
+          activityState: 'live',
+          originStationName: '용마산',
+          ...tripOverrides,
+        });
+        await maybeFireOriginBoardingPromptGpsFree(
+          trip,
+          makeEnv(new InMemoryKV()),
+          makeDeps(fetchImpl),
+          makeStats(),
+          NOW,
+          () => {},
+          () => 'pid-origin',
+        );
+        return fetchImpl;
+      }
+
+      it('LA 프롬프트 aps.alert.sound는 일반 알림 프롬프트의 sound와 같다 (무음이면 확장 표시가 소리 없이 뜸)', async () => {
+        const fetchImpl = await fireWithLa();
+        const [regular] = findRegularPromptCalls(fetchImpl);
+        const [la] = findLaAlertCalls(fetchImpl);
+        const regularSound = (JSON.parse(regular[1].body as string) as { aps: { sound: string } }).aps.sound;
+        const laAlert = (JSON.parse(la[1].body as string) as { aps: { alert: { sound?: string } } }).aps.alert;
+        expect(regularSound).toBeTruthy();
+        expect(laAlert.sound).toBe(regularSound);
+      });
+
+      it('취침모드: 일반 알림 프롬프트에 sleep 소리 게이트가 없으므로 LA도 같은 sound (규칙 미러)', async () => {
+        const fetchImpl = await fireWithLa({ sleepModeEnabled: true });
+        const regularCalls = findRegularPromptCalls(fetchImpl);
+        const laCalls = findLaAlertCalls(fetchImpl);
+        // 취침모드에서 프롬프트가 아예 억제되면 두 채널 모두 0건(규칙 동일), 발사되면 sound 동일.
+        expect(laCalls).toHaveLength(regularCalls.length);
+        for (const [i, [, init]] of laCalls.entries()) {
+          const laSound = (JSON.parse(init.body as string) as { aps: { alert: { sound?: string } } }).aps.alert.sound;
+          const regularSound = (JSON.parse(regularCalls[i][1].body as string) as { aps: { sound: string } }).aps.sound;
+          expect(laSound).toBe(regularSound);
+        }
+      });
+    });
+
     // #2962 — LA [탑승] 버튼이 backend에 "어느 열차"를 보낼 수 있으려면, 이 프롬프트가 실제로
     // 선택한 열차(selectedTrainCode, 단일 후보라 ambiguity 없음)가 content-state.trainCode에
     // 실려야 한다. ambiguity 발사(R-1, 후보 2개 이상 동률)는 selectedTrainCode=null이라 별도

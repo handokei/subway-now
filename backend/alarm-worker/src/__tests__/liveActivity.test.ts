@@ -656,6 +656,20 @@ describe('fireLiveActivityUpdate', () => {
     expect('alert' in body.aps).toBe(false);
   });
 
+  it('거부: alert 없는 heartbeat 갱신은 어디에도 sound를 싣지 않는다 (#2854 무음 보장)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await fireLiveActivityUpdate(
+      makeTrip(),
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+    );
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.body as string).not.toContain('sound');
+  });
+
   // #1402 — waypoint kind별 staleDate 정합. destination은 짧고(45s) transfer 중간(75s)
   // intermediate 기본(90s). undefined는 legacy 기본값 90s 유지 — 기존 호출자 무영향.
   it.each<[Waypoint['kind'], number]>([
