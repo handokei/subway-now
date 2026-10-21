@@ -47,7 +47,17 @@ interface Observation {
   syncLock: Record<string, string | undefined>;
 }
 
-async function replayAndObserve(): Promise<Observation | null> {
+/** 06:38:45 cap(2011 성수 sts=1) 다음 tick. */
+const FIRST_TICK_AFTER_2011_AT_SEONGSU = 1792445925192 + 30_000;
+
+interface TapResult {
+  headBefore: string[];
+  headAfter: string[];
+  lock: string | undefined;
+  eventsBeforeTap: number;
+}
+
+async function runReplay(mode: 'observe' | 'tap-2011') {
   const fixture = loadCapsFixture(FIXTURE_DIR);
   const d1 = loadD1Events(FIXTURE_DIR, 'events_171.json');
   const withoutPromoted = d1.filter((r) => !(JSON.parse(r.meta ?? '{}') as { promotedLock?: boolean }).promotedLock);
@@ -62,7 +72,7 @@ async function replayAndObserve(): Promise<Observation | null> {
     now: fixture.window.fromMs,
     overrides: { sleepModeEnabled: true, infoModeEnabled: true, activityPushToken: 'ab'.repeat(32), activityState: 'live' },
   });
-  const { db } = makeTripEventSink();
+  const { db, events } = makeTripEventSink();
   const stub = stubReplayFetch(fixture);
   const replayer = createDeviceReplayer({
     rows: withoutPromoted,
@@ -85,6 +95,7 @@ async function replayAndObserve(): Promise<Observation | null> {
   });
 
   let observation: Observation | null = null;
+  let tapped: TapResult | null = null;
   await runCaptureReplay({
     fixture,
     seedTrips: [seedTrip],
@@ -94,6 +105,47 @@ async function replayAndObserve(): Promise<Observation | null> {
       (env as unknown as { DB: D1Database }).DB = db;
       stub.setNow(tick);
       await replayer.beforeTick({ tick, env: env as Env, pushes });
+      if (mode === 'tap-2011') {
+        // 2011이 성수에 도착(sts=1, cap 06:38:45)한 뒤의 첫 tick에서 목록의 2011을 탭한다.
+        if (tapped !== null || tick < FIRST_TICK_AFTER_2011_AT_SEONGSU) return;
+        const spy = vi.spyOn(Date, 'now').mockReturnValue(tick);
+        try {
+          const trip = await getTrip(kv, TOKEN);
+          if (!trip) throw new Error('trip 없음');
+          await putTrip(kv, {
+            ...trip,
+            boardingLock: undefined,
+            recentPromptCandidates: { trainCodes: ['9999-never'], firedAt: tick - 60_000 },
+            legResolveStreak: undefined,
+          });
+          const headBefore = trip.waypoints.map((w) => w.stationName);
+          await app.fetch(
+            new Request('http://example.com/boarding-lock/sync', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                token: TOKEN,
+                observedStationName: '건대입구',
+                observedAtMs: tick,
+                accuracy: 20,
+                trainCode: '2011',
+                boardingLine: '2',
+              }),
+            }),
+            env as Env,
+          );
+          const after = await getTrip(kv, TOKEN);
+          tapped = {
+            headBefore,
+            headAfter: (after?.waypoints ?? []).map((w) => w.stationName),
+            lock: after?.boardingLock?.trainCode,
+            eventsBeforeTap: events.length,
+          };
+        } finally {
+          spy.mockRestore();
+        }
+        return;
+      }
       if (observation !== null || tick < FIRST_TICK_AFTER_DEPARTURE_SEEN) return;
 
       const stamp = await readSelfPollPosition(kv, '2');
@@ -139,7 +191,11 @@ async function replayAndObserve(): Promise<Observation | null> {
       observation = { tick, departedCodes, getBody, syncLock };
     },
   });
-  return observation;
+  return { observation, tapped: tapped as TapResult | null, events };
+}
+
+async function replayAndObserve(): Promise<Observation | null> {
+  return (await runReplay('observe')).observation;
 }
 
 describe('#3155 트립 171 replay — 앵커역(건대입구) 출발 열차 목록', () => {
@@ -164,6 +220,24 @@ describe('#3155 트립 171 replay — 앵커역(건대입구) 출발 열차 목�
   it('출발 목록의 2011을 탭(sync)하면 2011이 lock된다 — 프롬프트 후보에 없어도', async () => {
     const o = await replayAndObserve();
     expect(o?.syncLock['2011']).toBe('2011');
+  });
+
+  // fast-forward — 실측 데이터의 한계(정직): 이 트립에서 2011은 성수에 도착(sts=1)한 상태가 마지막 관측이라
+  // "앵커 이후 지난 중간역"이 0개다. 따라서 이 replay는 회귀 가드(건너뛸 것이 없을 때 아무것도 건드리지 않고,
+  // 늦은 건대입구·성수 시도가 없고, 다음 알림이 뚝섬)이고, 실제로 건너뛰는 경로는 index.test의 fast-forward describe가 증명한다.
+  it('2011이 성수에 도착한 뒤 탭: lock 2011, waypoint는 그대로(head 뚝섬), 이후 건대입구·성수 늦은 시도 0건·첫 매역 시도는 뚝섬', async () => {
+    const r = await runReplay('tap-2011');
+    expect(r.tapped?.lock).toBe('2011');
+    expect(r.tapped?.headAfter).toEqual(r.tapped?.headBefore);
+    // 이 시점 lockless cron이 이미 성수를 소비해 head는 목적지 뚝섬이다(실측 재생 결과).
+    expect(r.tapped?.headAfter).toEqual(['뚝섬']);
+    const station = r.events
+      .slice(r.tapped?.eventsBeforeTap ?? 0)
+      .filter((e) => e.kind === 'cron-fire-attempt' && e.station !== null)
+      .map((e) => e.station);
+    // 재생 창(06:44:45)까지 2011은 뚝섬 전에 피드에서 사라져 매역 시도 자체가 0건일 수 있다 — 시도가 있다면
+    // 전부 다음 역(뚝섬)이어야 한다(지난 역에 대한 늦은 시도 금지).
+    expect(station.every((s) => s === '뚝섬')).toBe(true);
   });
 
   it('앵커에서 한 번도 관측되지 않은 코드(9999)는 계속 거부된다', async () => {

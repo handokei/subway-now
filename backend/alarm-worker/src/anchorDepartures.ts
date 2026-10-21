@@ -27,7 +27,7 @@ import { buildLegSegmentStations } from './lockSwap';
 import { inferLegDirection } from './legDirection';
 import { POSITION_FRESHNESS_MS, resolveActiveLegOrigin } from './boardingAnchorResolver';
 import type { PositionEntry } from './seoul';
-import type { Trip } from './types';
+import type { Trip, Waypoint } from './types';
 
 /** 출발 열차를 목록/corroboration 근거로 유지하는 창(ms) — 사용자 결정(2026-10-21): 10분. */
 export const ANCHOR_DEPARTURE_WINDOW_MS = 10 * 60_000;
@@ -186,6 +186,21 @@ export function anchorFromSegment(
   const direction = inferLegDirection(line, station, next);
   if (direction === null) return null;
   return { station, isUp: direction === 'up', segmentStations };
+}
+
+export interface PromotionFastForward {
+  /** 앞에서부터 건너뛸 waypoint 수. */
+  skip: number;
+  /** 열차가 이미 지나친 환승/도착 waypoint가 있어 fast-forward를 포기한 경우 그 역명. */
+  blockedAt?: string;
+}
+
+export function planPromotionFastForward(
+  _waypoints: readonly Waypoint[],
+  _segmentStations: readonly string[],
+  _position: PositionEntry | undefined,
+): PromotionFastForward {
+  return { skip: 0 };
 }
 
 /**

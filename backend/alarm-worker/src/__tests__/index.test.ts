@@ -6654,6 +6654,100 @@ describe('POST /boarding-lock/sync — 앵커역 관측 corroboration (#3155)', 
   });
 });
 
+// #3155 — 이미 앵커를 지난 열차를 탭해 lock하면, 열차가 이미 지난 중간역은 waypoint에서 건너뛴다
+// (그대로 두면 cron이 tick당 1역씩 늦은 per-station push를 쏜다). 환승/도착을 지났으면 건너뛰지 않고 보고한다.
+describe('POST /boarding-lock/sync — 승격 시 fast-forward (#3155)', () => {
+  const ROUTE_NOW = 1_800_000_000_000;
+  const IS_UP = inferLegDirection('7', '용마산', '중곡') === 'up';
+  type Kind = 'intermediate' | 'transfer' | 'destination';
+
+  function trip(kinds: Kind[]): Trip {
+    const names = ['중곡', '군자', '어린이대공원', '건대입구'];
+    return {
+      token: 'ff-tok',
+      route: { type: 'direct', line: '7', stops: 4 } as unknown as Trip['route'],
+      destination: '건대입구',
+      waypoints: names.map((stationName, i) => ({ stationName, line: '7', kind: kinds[i] })),
+      expiresAt: ROUTE_NOW + 60 * 60_000,
+      createdAt: ROUTE_NOW - 10 * 60_000,
+      alarmAtEpochMs: ROUTE_NOW,
+    };
+  }
+
+  const INTERMEDIATES: Kind[] = ['intermediate', 'intermediate', 'intermediate', 'destination'];
+
+  async function tap(
+    kinds: Kind[],
+    position: { stationName: string; trainSttus: number } | null,
+  ): Promise<{ stored: Trip; inserts: unknown[][] }> {
+    const inserts: unknown[][] = [];
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) inserts.push(args);
+          return { run };
+        },
+      })),
+    } as unknown as Env['DB'];
+    const env = makeKvEnv();
+    env.DB = db;
+    const now = Date.now();
+    await env.TRIPS.put('trip:ff-tok', JSON.stringify(trip(kinds)));
+    await env.TRIPS.put(
+      'realtime-position:7',
+      JSON.stringify({
+        positions: position ? [{ trainCode: '7039', isUp: IS_UP, recptnMs: now - 5_000, ...position }] : [],
+        fetchedAt: now - 5_000,
+        stationLogs: { 용마산: { present: [], departed: [{ trainCode: '7039', isUp: IS_UP, departedAt: now - 3 * 60_000 }] } },
+      }),
+    );
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'ff-tok', observedStationName: '용마산', observedAtMs: now, accuracy: 20, trainCode: '7039', boardingLine: '7' },
+      env,
+    );
+    expect(res.status).toBe(200);
+    return { stored: JSON.parse((await env.TRIPS.get('trip:ff-tok')) as string), inserts };
+  }
+
+  it('열차가 군자를 출발(sts=2)했으면 lock이 붙고 waypoint head가 어린이대공원 — 중곡·군자의 늦은 push 없음', async () => {
+    const { stored } = await tap(INTERMEDIATES, { stationName: '군자', trainSttus: 2 });
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['어린이대공원', '건대입구']);
+  });
+
+  it('열차가 군자에 도착(sts=1)해 있으면 중곡만 건너뛴다 — 다음 알림은 열차가 있는 군자', async () => {
+    const { stored } = await tap(INTERMEDIATES, { stationName: '군자', trainSttus: 1 });
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['군자', '어린이대공원', '건대입구']);
+  });
+
+  it('앵커에 있는 신선 탭(#3056)은 waypoint를 그대로 둔다', async () => {
+    const { stored } = await tap(INTERMEDIATES, { stationName: '용마산', trainSttus: 1 });
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['중곡', '군자', '어린이대공원', '건대입구']);
+  });
+
+  it('열차가 이미 환승역을 지났으면 건너뛰지 않고(발명 금지) lock만 붙이고 trip event로 보고한다', async () => {
+    const { stored, inserts } = await tap(['intermediate', 'transfer', 'intermediate', 'destination'], {
+      stationName: '어린이대공원',
+      trainSttus: 1,
+    });
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['중곡', '군자', '어린이대공원', '건대입구']);
+    const events = inserts.filter((args) => args[2] === 'promotion-fastforward');
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0][5] as string)).toMatchObject({ skipped: 0, blockedAt: '군자' });
+  });
+
+  it('건너뛴 경우도 trip event(skipped 수)로 남긴다', async () => {
+    const { inserts } = await tap(INTERMEDIATES, { stationName: '군자', trainSttus: 2 });
+    const events = inserts.filter((args) => args[2] === 'promotion-fastforward');
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0][5] as string)).toMatchObject({ skipped: 2 });
+  });
+});
+
 describe('GET /trips/:token/anchor-departures (#3155)', () => {
   const IS_UP = inferLegDirection('7', '용마산', '중곡') === 'up';
   const T0 = 1_800_000_000_000;

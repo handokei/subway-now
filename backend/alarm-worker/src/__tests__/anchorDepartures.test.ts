@@ -8,6 +8,7 @@ import {
   anchorFromSegment,
   classifyAnchorSighting,
   departedFromStation,
+  planPromotionFastForward,
   updateStationTrainLogs,
   type AnchorForSighting,
 } from '../anchorDepartures';
@@ -180,6 +181,42 @@ describe('updateStationTrainLogs — recptnMs 누락/중복 경계', () => {
   it('10분 넘게 피드에 안 보인 present는 정리된다', () => {
     const prev = { [ANCHOR]: { present: [{ trainCode: '2011', isUp: true, seenAt: NOW - ANCHOR_DEPARTURE_WINDOW_MS - 1 }], departed: [] } };
     expect(updateStationTrainLogs(prev, [], TRACKED, NOW)).toBeUndefined();
+  });
+});
+
+describe('planPromotionFastForward — 승격 시 열차가 이미 지난 역 건너뛰기', () => {
+  const segment = ['용마산', '중곡', '군자', '어린이대공원', '건대입구'];
+  const wp = (stationName: string, kind: 'intermediate' | 'transfer' | 'destination') => ({ stationName, line: '7', kind });
+  const waypoints = [wp('중곡', 'intermediate'), wp('군자', 'intermediate'), wp('어린이대공원', 'intermediate'), wp('건대입구', 'destination')];
+
+  it('열차가 군자에 도착(sts=1)해 있으면 지난 중곡만 건너뛴다 — 군자는 아직 안 지났다', () => {
+    expect(planPromotionFastForward(waypoints, segment, pos('7039', '군자', ARRIVED))).toEqual({ skip: 1 });
+  });
+
+  it('열차가 군자를 출발(sts=2)했으면 중곡·군자를 건너뛴다', () => {
+    expect(planPromotionFastForward(waypoints, segment, pos('7039', '군자', DEPARTED))).toEqual({ skip: 2 });
+  });
+
+  it('앵커에 있거나 앵커 이전/모르는 역이면 건너뛰지 않는다 (#3056 신선 탭 불변)', () => {
+    expect(planPromotionFastForward(waypoints, segment, pos('7039', '용마산', ARRIVED))).toEqual({ skip: 0 });
+    expect(planPromotionFastForward(waypoints, segment, pos('7039', '사가정', APPROACHING))).toEqual({ skip: 0 });
+    expect(planPromotionFastForward(waypoints, segment, undefined)).toEqual({ skip: 0 });
+  });
+
+  it('열차가 이미 지난 환승/도착 waypoint가 있으면 아무것도 건너뛰지 않고 blockedAt을 보고한다', () => {
+    const withTransfer = [wp('중곡', 'intermediate'), wp('군자', 'transfer'), wp('건대입구', 'destination')];
+    expect(planPromotionFastForward(withTransfer, segment, pos('7039', '어린이대공원', ARRIVED))).toEqual({
+      skip: 0,
+      blockedAt: '군자',
+    });
+    expect(planPromotionFastForward(withTransfer, segment, pos('7039', '건대입구', DEPARTED))).toEqual({
+      skip: 0,
+      blockedAt: '군자',
+    });
+  });
+
+  it('waypoint가 구간에 없으면 거기서 멈춘다', () => {
+    expect(planPromotionFastForward([wp('없는역', 'intermediate')], segment, pos('7039', '군자', DEPARTED))).toEqual({ skip: 0 });
   });
 });
 
