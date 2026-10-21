@@ -6919,6 +6919,61 @@ describe('GET /trips/:tripToken/status (#1339 launch reconciliation)', () => {
       status: 'active',
       endedAt: null,
       endReason: null,
+      hasLiveActivityToken: false,
+    });
+  });
+
+  // #3164 — device가 backend의 조용한 LA 토큰 소실(410/종료 dismissal/DELETE)을 감지하도록 보유 여부를 알린다.
+  describe('hasLiveActivityToken (#3164)', () => {
+    async function deleteLiveActivity(env: Env, token: string): Promise<Response> {
+      return app.fetch(
+        new Request(`http://example.com/live-activity/${token}`, { method: 'DELETE' }),
+        env,
+      );
+    }
+
+    it('LA 토큰이 live로 등록돼 있으면 true', async () => {
+      const env = makeKvEnv();
+      await post('/trips', base(), env);
+      const reg = await post('/live-activity/register', { tripToken: 'tok', activityPushToken: 'la-token' }, env);
+      expect(reg.status).toBe(200);
+
+      const body = (await (await getStatus(env, 'tok')).json()) as Record<string, unknown>;
+      expect(body.hasLiveActivityToken).toBe(true);
+    });
+
+    it('DELETE /live-activity 이후에는 false (토큰이 비워졌다)', async () => {
+      const env = makeKvEnv();
+      await post('/trips', base(), env);
+      await post('/live-activity/register', { tripToken: 'tok', activityPushToken: 'la-token' }, env);
+      await deleteLiveActivity(env, 'tok');
+
+      const body = (await (await getStatus(env, 'tok')).json()) as Record<string, unknown>;
+      expect(body.status).toBe('active');
+      expect(body.hasLiveActivityToken).toBe(false);
+    });
+
+    it('[거부] 토큰은 있으나 state가 ended면(발사 조건 불성립) false', async () => {
+      const env = makeKvEnv();
+      await post('/trips', base(), env);
+      await post('/live-activity/register', { tripToken: 'tok', activityPushToken: 'la-token' }, env);
+      const kv = env.TRIPS as unknown as InMemoryKV;
+      const raw = kv.store.get('trip:tok');
+      const trip = JSON.parse(raw!.value) as Record<string, unknown>;
+      kv.store.set('trip:tok', { ...raw!, value: JSON.stringify({ ...trip, activityState: 'ended' }) });
+
+      const body = (await (await getStatus(env, 'tok')).json()) as Record<string, unknown>;
+      expect(body.hasLiveActivityToken).toBe(false);
+    });
+
+    it('[거부] ended 응답에는 필드를 싣지 않는다', async () => {
+      const env = makeKvEnv();
+      const kv = env.TRIPS as unknown as InMemoryKV;
+      kv.store.set('tripStatus:abc', {
+        value: JSON.stringify({ endedAt: Date.now() - 5_000, endReason: 'destination' }),
+      });
+      const body = (await (await getStatus(env, 'abc')).json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('hasLiveActivityToken');
     });
   });
 
@@ -6971,6 +7026,7 @@ describe('GET /trips/:tripToken/status (#1339 launch reconciliation)', () => {
     expect(Object.keys(body).sort((a, b) => a.localeCompare(b))).toEqual([
       'endedAt',
       'endReason',
+      'hasLiveActivityToken',
       'status',
       'tripToken',
     ]);
