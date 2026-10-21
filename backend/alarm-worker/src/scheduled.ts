@@ -3210,6 +3210,39 @@ export function prepareAlarmFireKey(tripToken: string, targetStation: string): s
 /** #2510 — 준비 진동 dedup TTL (1h, sleep 알람과 동일 정책). */
 export const PREPARE_ALARM_FIRE_DEDUP_TTL_SEC = 60 * 60;
 
+type PrepareAlarmOutcome = 'fired' | 'skipped' | 'rolled-back';
+
+/**
+ * #3110 (진단 계측 only) — `maybeFirePrepareAlarm` 평가 outcome을 D1 `trip_events`
+ * (kind='prepare-alarm')에 1행 append한다. waypoint advance 시점에만 호출되므로 tick 단위
+ * flood가 아니고 KV write는 없다. 발사/advance 판정에는 관여하지 않는다.
+ */
+async function recordPrepareAlarm(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  outcome: PrepareAlarmOutcome,
+  target: Waypoint | undefined,
+  extra: Record<string, unknown>,
+  now: number,
+): Promise<void> {
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'prepare-alarm',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: {
+        outcome,
+        ...(target !== undefined ? { targetStation: target.stationName, targetKind: target.kind } : {}),
+        ...extra,
+      },
+    },
+    now,
+  );
+}
+
 interface MaybeFirePrepareAlarmInputs {
   trip: Trip;
   waypoint: Waypoint;
@@ -3234,12 +3267,17 @@ interface MaybeFirePrepareAlarmInputs {
  */
 async function maybeFirePrepareAlarm(inputs: MaybeFirePrepareAlarmInputs): Promise<void> {
   const { trip, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId } = inputs;
+  // #3110 — 평가 outcome마다 D1 1행(관측 전용, 동작 불변).
+  const record = (outcome: PrepareAlarmOutcome, target?: Waypoint, extra: Record<string, unknown> = {}) =>
+    recordPrepareAlarm(env, trip, waypoint, outcome, target, extra, now);
   if (trip.sleepModeEnabled === true) {
     // sleep trip은 maybeFireSleepAlarm이 동일 형태의 알람을 전담 — 상호 배타.
+    await record('skipped', undefined, { reason: 'sleep' });
     return;
   }
   const trigger = evaluatePrepareAlarmTrigger(waypoint, nextWaypoint);
   if (!trigger.fire) {
+    await record('skipped', undefined, { reason: trigger.reason });
     return;
   }
   const target = trigger.target;
@@ -3252,6 +3290,7 @@ async function maybeFirePrepareAlarm(inputs: MaybeFirePrepareAlarmInputs): Promi
       station: waypoint.stationName,
       target: target.stationName,
     });
+    await record('skipped', target, { reason: 'dedup' });
     return;
   }
   // claim 먼저 — cron tick 겹침 보호. 실패 시 아래에서 rollback.
@@ -3294,10 +3333,16 @@ async function maybeFirePrepareAlarm(inputs: MaybeFirePrepareAlarmInputs): Promi
       station: waypoint.stationName,
       target: target.stationName,
     });
+    await record('fired', target, { pushId });
     return;
   }
   stats.prepareAlarmRolledBack += 1;
   await env.TRIPS.delete(dedupKey);
+  await record('rolled-back', target, {
+    pushId,
+    status: heal.result.status,
+    pushReason: heal.result.reason,
+  });
   log('prepare-alarm: visible push failed (dedup rolled back)', {
     token: trip.token.slice(0, 8),
     target: target.stationName,
