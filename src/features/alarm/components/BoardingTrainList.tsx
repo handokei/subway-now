@@ -645,20 +645,6 @@ export function BoardingTrainList({
           </Text>
         </View>
       )}
-      {/* #1177 — pending lock state list-level 안내. row outline highlight와 별도로 list 헤더 영역에
-          상태 텍스트를 노출해 사용자에게 "탭이 처리 중" 임을 명시. row outline만으로는 작은 시각적
-          시그널이라 접근성과 명료성을 위해 텍스트 라인 추가. */}
-      {pendingTrainCode != null && (
-        <View
-          style={styles.pendingNotice}
-          testID="boarding-train-list-pending-notice"
-          accessibilityLabel={t('a11y.alarm.boardingTrainListPendingLabel')}
-        >
-          <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
-            {t('home.boardingTrainListPending')}
-          </Text>
-        </View>
-      )}
       {prevTrain != null &&
         renderRow(
           prevTrain.train,
@@ -803,10 +789,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   // #1177 — pending list-level notice. row outline 외에 list 영역 상단에 텍스트 한 줄 노출.
-  pendingNotice: {
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.xs,
-  },
   // #897 — outline 칩. ArrivalStatusBadge의 outline variant와 동일 외형(borderWidth 1 + radius 3).
   delayChip: {
     alignSelf: 'flex-start',
