@@ -14,10 +14,10 @@
  *  - `extendTripExpiryOnActivity`(`index.ts:3819`): 잔여 < 30분일 때 `now + 2h`로 **올리기만** 한다
  *
  * 결론이 되는 불변식 둘(테스트로 고정):
- *  (I1) 시간순으로 도착하는 재등록은 expiresAt을 낮추지 않는다
+ *  (I1) 재등록(도착 순서 무관)은 expiresAt을 낮추지 않는다
  *  (I2) 어떤 도착 순서·sliding 조합이어도 expiresAt ≥ 최초 전송 시각 + 2h  (= B의 하한)
- * 순서가 뒤집혀 도착한(늦게 도착한 옛 전송) 재등록은 expiresAt을 **전송 시각 차(수 초) 만큼** 낮출 수
- * 있다 — 이는 (I2) 아래로는 내려가지 않으므로 B 하한에 영향이 없다. 그 사실도 별도 케이스로 고정한다.
+ * 순서가 뒤집혀 도착한(늦게 도착한 옛 전송) 재등록도 expiresAt을 낮추지 못한다 — #3135 이전에는 전송 시각
+ * 차(수 초)만큼 낮췄다(시작+2h 아래로는 내려가지 않아 B 하한은 안전했다). 지금은 max(existing, incoming).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -132,7 +132,7 @@ describe('PR-0 — backend trip expiresAt 하한(시작 + 2h) 불변식 (U6)', (
     expect(await storedExpiresAt(env)).toBeGreaterThanOrEqual(slid);
   });
 
-  it('(I2) 순서가 뒤집혀 늦게 도착한 옛 전송은 expiresAt을 전송 시각 차만큼 낮출 수 있으나 시작 + 2h 아래로는 내려가지 않는다', async () => {
+  it('(I2) 순서가 뒤집혀 늦게 도착한 옛 전송은 expiresAt을 낮추지 못한다(max 보존, #3135) — 최신 값 유지·시작 + 2h 이상', async () => {
     vi.useFakeTimers();
     const env = makeKvEnv();
     await registerAt(env, T0);
@@ -149,10 +149,8 @@ describe('PR-0 — backend trip expiresAt 하한(시작 + 2h) 불변식 (U6)', (
     expect(res.status).toBe(200);
 
     const after = await storedExpiresAt(env);
-    // 현재 동작의 사실: merge가 expiresAt을 existing에서 보존하지 않으므로 옛 전송값이 채택된다.
-    expect(after).toBe(T0 + 60_000 + DEVICE_TTL_MS);
-    expect(after).toBeLessThan(freshExp);
-    // 그러나 B 하한에는 영향이 없다 — 가장 옛 전송이어도 시작 시각 + 2h 이상.
+    // #3135 — same-session merge는 expiresAt = max(existing, incoming). 옛 전송이 늦게 와도 낮아지지 않는다.
+    expect(after).toBe(freshExp);
     expect(after).toBeGreaterThanOrEqual(T0 + DEVICE_TTL_MS);
   });
 
