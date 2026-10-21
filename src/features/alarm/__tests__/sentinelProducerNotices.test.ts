@@ -17,7 +17,8 @@ import * as path from 'path';
 
 const SRC_ROOT = path.resolve(__dirname, '../../..');
 const SENTINEL_CALL = 'setTripEndedSentinel(';
-const NOTICE_CALL = 'notifyTripEnded(';
+/** 알림 호출 표식 — `notifyAutoEnd`는 useStateRehydration의 로컬 래퍼(9h/일시정지 공용). */
+const NOTICE_CALLS = ['notifyTripEnded(', 'await notifyAutoEnd('];
 /** 정의 파일 — 생산자가 아니다. */
 const DEFINITION_FILE = 'features/alarm/utils/tripEndedSentinel.ts';
 
@@ -66,11 +67,11 @@ function listSourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 /** 주석 줄(`//`, `*`, `/*` 시작)은 호출이 아니므로 제외하고 호출 수를 센다. */
-function countCalls(source: string, needle: string): number {
+function countCalls(source: string, needles: readonly string[]): number {
   return source
     .split('\n')
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
-    .reduce((n, line) => n + (line.includes(needle) ? 1 : 0), 0);
+    .reduce((n, line) => n + (needles.some((needle) => line.includes(needle)) ? 1 : 0), 0);
 }
 
 describe('sentinel 생산자 전수 — 알림 정책 분류 (PR-3b)', () => {
@@ -79,7 +80,7 @@ describe('sentinel 생산자 전수 — 알림 정책 분류 (PR-3b)', () => {
     const rel = path.relative(SRC_ROOT, file).split(path.sep).join('/');
     if (rel === DEFINITION_FILE) continue;
     const source = fs.readFileSync(file, 'utf8');
-    const sites = countCalls(source, SENTINEL_CALL);
+    const sites = countCalls(source, [SENTINEL_CALL]);
     if (sites > 0) found[rel] = { sites, source };
   }
 
@@ -100,7 +101,7 @@ describe('sentinel 생산자 전수 — 알림 정책 분류 (PR-3b)', () => {
     Object.entries(EXPECTED_PRODUCERS).filter(([, { policy }]) => policy === 'notifies'),
   )('%s — notifies 정책이면 생산 지점 수 이상 notifyTripEnded를 호출한다', (file, { sites }) => {
     const { source } = found[file];
-    expect(countCalls(source, NOTICE_CALL)).toBeGreaterThanOrEqual(sites);
+    expect(countCalls(source, NOTICE_CALLS)).toBeGreaterThanOrEqual(sites);
   });
 
   it.each(
@@ -112,11 +113,11 @@ describe('sentinel 생산자 전수 — 알림 정책 분류 (PR-3b)', () => {
   it('sentinel 소비 지점(rehydration cycle)은 알림 주체가 아니다 — 생산자 분기 밖에서 notifyTripEnded를 부르지 않는다', () => {
     const { source } = found['shared/hooks/useStateRehydration.ts'];
     const consumeStart = source.indexOf('async function runRehydrationCycle');
-    const lifecycleStart = source.indexOf('async function runLifecycleBackstop');
+    const lifecycleStart = source.indexOf('function notifyAutoEnd');
     expect(consumeStart).toBeGreaterThan(-1);
     expect(lifecycleStart).toBeGreaterThan(consumeStart);
     const consumeBody = source.slice(consumeStart, lifecycleStart);
     // runRehydrationCycle 본문에는 생산자 호출이 있어서는 안 된다(소비 + 위임만).
-    expect(consumeBody).not.toContain(NOTICE_CALL);
+    for (const call of NOTICE_CALLS) expect(consumeBody).not.toContain(call);
   });
 });
