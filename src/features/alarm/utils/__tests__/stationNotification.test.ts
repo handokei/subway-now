@@ -273,17 +273,51 @@ describe('stationNotification', () => {
       expect(result.shouldPlaySound).toBe(false);
     });
 
-    it('#2591 — prompt 카테고리여도 sound가 없으면(null) shouldPlaySound=false', async () => {
+    // #3146 (#2591 개정) — backend가 LA alert 성공 시 일반 프롬프트 알림을 무음(payload sound 없음)으로
+    // 보낸다. 앱이 FG면 LA가 안 보이므로 소리는 payload가 아니라 카테고리가 결정해야 한다
+    // (3단 우선순위: 프롬프트=소리 필수). 구 "sound 없으면 무음" 테스트를 반전한다.
+    it.each(['BOARDING_PROMPT', 'DISEMBARK_PROMPT'])(
+      '#3146 — %s 카테고리는 payload sound가 null이어도 FG shouldPlaySound=true',
+      async (categoryIdentifier) => {
+        setupNotificationHandler();
+        const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+
+        const result = await handleNotification({
+          request: {
+            identifier: 'boarding-prompt-remote-1',
+            content: { sound: null, categoryIdentifier },
+          },
+        });
+        expect(result.shouldPlaySound).toBe(true);
+      },
+    );
+
+    it('#3146 — 비-prompt 카테고리 + sound null 이면 여전히 shouldPlaySound=false (거부)', async () => {
       setupNotificationHandler();
       const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
 
       const result = await handleNotification({
         request: {
-          identifier: 'boarding-prompt-local-1',
-          content: { sound: null, categoryIdentifier: 'BOARDING_PROMPT' },
+          identifier: 'station-notif-abc',
+          content: { sound: null, categoryIdentifier: 'STATION_TRACKING' },
         },
       });
       expect(result.shouldPlaySound).toBe(false);
+    });
+
+    it('#3146 — 매역(station-passed) 알림 FG 동작 불변: 카테고리 없는 kind 알림은 sound 유무와 무관하게 false', async () => {
+      setupNotificationHandler();
+      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+
+      for (const sound of [null, true]) {
+        const result = await handleNotification({
+          request: {
+            identifier: 'station-notif-xyz',
+            content: { sound, data: { kind: 'intermediate', nextWaypoint: '강남' } },
+          },
+        });
+        expect(result.shouldPlaySound).toBe(false);
+      }
     });
 
     it('#574 P2e — pushId가 firedPushIds에 있으면 모든 show 플래그 false로 suppress', async () => {

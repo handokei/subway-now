@@ -1888,3 +1888,46 @@ describe('buildSilentPushData contractVersion stamp (#2253, ADR-029 Phase 5 G1)'
     expect(data.contractVersion).toBe(PUSH_CONTRACT_VERSION);
   });
 });
+
+// #3146 — LA 프롬프트 alert 성공 시 일반 알림 무음. sound 옵션: 미전달=기존 'default'(hop-end 호출부
+// 2곳 불변), null=aps.sound 키 생략(`sendAlertPush` #2063 의미 승계), 문자열=그대로.
+describe('sendBoardingPromptPush sound 옵션 (#3146)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  async function sendAndParse(extra: { sound?: string | null }) {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p-sound',
+      title: 't',
+      body: 'b',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      sentAt: 1234,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      ...extra,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    return JSON.parse(call[1].body as string) as { aps: Record<string, unknown> };
+  }
+
+  it('sound 미전달 → aps.sound = BOARDING_PROMPT_SOUND (hop-end 호출부 불변, 거부 케이스)', async () => {
+    const parsed = await sendAndParse({});
+    expect(parsed.aps.sound).toBe('default');
+  });
+
+  it('sound=null → aps.sound 키 자체가 없다 (사유=키 부재), 나머지 aps는 유지', async () => {
+    const parsed = await sendAndParse({ sound: null });
+    expect('sound' in parsed.aps).toBe(false);
+    expect(parsed.aps['interruption-level']).toBe('time-sensitive');
+    expect(parsed.aps.category).toBe('BOARDING_PROMPT');
+  });
+
+  it('sound 문자열 → 그대로 실린다', async () => {
+    const parsed = await sendAndParse({ sound: 'custom.wav' });
+    expect(parsed.aps.sound).toBe('custom.wav');
+  });
+});
