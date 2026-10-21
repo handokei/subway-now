@@ -139,12 +139,14 @@ describe('runFallbackPushes (#572 P2c)', () => {
     expect(url).toBe(`https://${APNS_HOSTS.production}/3/device/devicetoken-hex`);
   });
 
-  it('intermediate kind는 phase 무관 단일 본문', async () => {
+  // #3140 — intermediate("역 통과") fallback alert는 더 이상 발사되지 않는다(lock 없는 트립 알림 제거).
+  // 본문 렌더(buildAlertContent intermediate)는 alertContent 단위 테스트가 고정한다.
+  it('intermediate kind는 #3140 이후 발사 없이 entry 삭제 (phase 무관)', async () => {
     const tripsKv = new InMemoryKV();
     await putTrip(tripsKv as unknown as KVNamespace, makeTripFixture({ token: 'tok-auto' }));
     await putPending(
       kv as unknown as KVNamespace,
-      makeEntry({ kind: 'intermediate', stationName: '중곡', phase: 'imminent' }),
+      makeEntry({ pushId: 'p-inter', kind: 'intermediate', stationName: '중곡', phase: 'imminent' }),
     );
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     await runFallbackPushes(makeEnv(kv, tripsKv), {
@@ -153,10 +155,8 @@ describe('runFallbackPushes (#572 P2c)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW,
     });
-    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    const body = JSON.parse(init.body as string);
-    expect(body.aps.alert.title).toBe('역 통과');
-    expect(body.aps.alert.body).toBe('중곡역을 지나고 있어요');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(kv.store.has(pendingKey('p-inter'))).toBe(false);
   });
 
   it('영구 실패(BadDeviceToken)는 entry 즉시 삭제 + errors 카운트', async () => {
