@@ -120,9 +120,10 @@ describe('#3158 트립 173 — 성수 번호 변경 시 lock이 시간표 후속
     const successor = oracleSuccessor();
     const r = await replay173();
     const oldLock = r.tickLocks.find((t) => t.line === '2')?.code as string;
-    // 같은 물리 열차의 번호 변경이므로 lock 코드는 {원래 열차, 후속}만 가능하다 — 휴리스틱이 고른 제3의 열차(1509)는 없다.
+    // tick 시작 시점 lock은 원래 열차뿐이다(후속 부착은 마지막 tick에서 일어나 finalLock으로 관측) — 휴리스틱이 고른
+    // 제3의 열차(1509)가 한 tick이라도 lock이었던 적은 없다.
     const codes = new Set(r.tickLocks.map((t) => t.code).filter((c): c is string => c !== undefined && c !== '7031'));
-    expect([...codes].sort()).toEqual([oldLock, successor].sort());
+    expect([...codes]).toEqual([oldLock]);
     expect(r.tickLocks.some((t) => t.code === '1509')).toBe(false);
     expect(reattachEvents(r.events).filter((e) => e.meta.source === 'vanish-swap')).toEqual([]);
     expect(r.finalLock?.trainCode).toBe(successor);

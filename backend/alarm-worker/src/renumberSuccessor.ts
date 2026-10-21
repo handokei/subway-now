@@ -174,3 +174,25 @@ export function nextRenumberArm(
   const chained = prev !== undefined && from === prev.from;
   return { from, swappedTo: newCode, armedAt: chained ? prev.armedAt : nowMs };
 }
+
+/** vanish-swap을 시간표 후속 대기를 위해 유예하는 최대 tick 수(= swap 시도 임계 이후 추가 miss tick). */
+export const RENUMBER_SWAP_DEFER_TICKS = 2;
+
+/**
+ * 시간표 후속 항목(요일·시간창)을 가진 번호 변경 열차가 사라졌으면 vanish-swap을 `RENUMBER_SWAP_DEFER_TICKS` tick
+ * 유예한다. 항목이 없으면 즉시 기존 동작(false). 유예 안에 후속이 관측되면 시간표 재부착이 먼저 처리하고,
+ * 유예가 끝나도 안 나타나면 기존 vanish-swap이 실행된다. `missCount` = 이번 tick 포함 연속 miss 수.
+ */
+export function shouldDeferVanishSwap(input: {
+  lockLine: LineNumber;
+  lockTrainCode: string;
+  arm: RenumberArm | undefined;
+  missCount: number;
+  swapThreshold: number;
+  nowMs: number;
+}): boolean {
+  const { lockLine, lockTrainCode, arm, missCount, swapThreshold, nowMs } = input;
+  if (missCount >= swapThreshold + RENUMBER_SWAP_DEFER_TICKS) return false;
+  const origin = resolveRenumberOrigin(lockTrainCode, arm, nowMs);
+  return lookupRenumberSuccessor(lockLine, origin, nowMs) !== null;
+}

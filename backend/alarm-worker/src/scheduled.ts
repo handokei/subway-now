@@ -73,6 +73,7 @@ import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg, SWAP_LOCK_TTL_MS } from './lockSwap';
 import {
+  shouldDeferVanishSwap,
   decideTimetableReattach,
   lookupRenumberSuccessor,
   nextRenumberArm,
@@ -5386,9 +5387,11 @@ interface HandleEtaMissingInputs {
   now: number;
   log: Logger;
   generatePushId: () => string;
+  /** #3158 — vanish-swap 유예 중(시간표 후속 대기)이면 시간 기반 fallback advance도 함께 유예한다. */
+  holdFallback?: boolean;
 }
 async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
-  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId } = inputs;
+  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId, holdFallback } = inputs;
   stats.etaMissing += 1;
   const previousMissCount = trip.consecutiveEtaMissing ?? 0;
   const nextMissCount = previousMissCount + 1;
@@ -5406,7 +5409,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
   // 이 분기는 auto-end 임계(threshold) 전에 평가되어 무한 동결을 막는다.
   const fallbackTrigger = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
   const lastEpoch = trip.lastTrackedArrivalEpoch;
-  if (nextMissCount >= fallbackTrigger && lastEpoch !== undefined) {
+  if (holdFallback !== true && nextMissCount >= fallbackTrigger && lastEpoch !== undefined) {
     const hopElapsed = now >= lastEpoch + FALLBACK_HOP_SEC * 1000;
     if (hopElapsed) {
       // #1386 — hop 시간이 경과했더라도 device motion이 명확히 stationary면 advance 보류.
@@ -5638,7 +5641,20 @@ export async function runTrainCodeTracking(
   // 이어서 사용 — 바로 아래 recordVanishSwapAttemptTransition이 같은 tick에서 stale 스냅샷으로
   // 이 write를 덮어쓰지 않게 한다.
   ssot = await recordVanishEstimateTransition(env, trip, waypoint, ssot, estimate === null, now);
-  if (estimate === null) {
+  // #3158 — lock 열차가 시간표 후속 항목(번호 변경 열차)을 가졌으면 vanish-swap을 최대 RENUMBER_SWAP_DEFER_TICKS tick
+  // 유예하고 후속이 피드에 나타나길 기다린다(휴리스틱 swap이 1509 같은 지선 열차를 먼저 붙이는 173 방지). 유예 상태는
+  // 기존 miss 카운터(`consecutiveEtaMissing`, 이미 매 miss tick putTrip)가 담아 추가 KV write가 없다.
+  const deferVanishSwap =
+    estimate === null &&
+    shouldDeferVanishSwap({
+      lockLine: activeLock.line,
+      lockTrainCode: activeLock.trainCode,
+      arm: trip.renumberSuccessor,
+      missCount: (trip.consecutiveEtaMissing ?? 0) + 1,
+      swapThreshold: VANISH_RE_ATTACH_THRESHOLD,
+      nowMs: now,
+    });
+  if (estimate === null && !deferVanishSwap) {
     // #2869 (E) — attemptVanishSwap이 실제로 시도되는지(threshold 도달) 여부를 호출 전에 미리
     // 계산한다 — "시도 안 함"과 "시도했으나 실패"를 D1에서 구분하기 위해 필요(threshold
     // 미도달이면 swap-attempt 전이를 기록하지 않는다).
@@ -5696,6 +5712,7 @@ export async function runTrainCodeTracking(
       now,
       log,
       generatePushId,
+      holdFallback: deferVanishSwap,
     });
     return;
   }
