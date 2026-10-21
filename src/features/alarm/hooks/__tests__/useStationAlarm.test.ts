@@ -351,13 +351,14 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     const onRouteStation = makeStation('S2-DST', '강남'); // route+dest 매칭
 
-    it('GPS 게이트 차단 + arrivalConfidence=arrival-confirmed → station-passed 감지 (#2064 알림은 미발사)', async () => {
+    it('GPS 게이트 차단 + arrivalConfidence=arrival-confirmed + lockless(infoMode ON) → 억제 (v9 d5)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       // ADR-039 §5 4단계 (#2728) — lock 활성이면 gate-phase-accuracy가 더 이상 phase 알람을
       // 차단하지 않는다(요구사항 1). 이 테스트의 의도(station-passed는 GPS 정확도와 무관하게
       // 감지되고, phase 알람은 GPS 게이트로 차단된다는 대비)를 보존하려면 lockless로 고정해야
       // 한다 — lockless trip은 여전히 GPS 거리 기반 ETA에 의존하므로 게이트가 그대로 유지된다.
-      // infoModeEnabled=true로 #1816 lockless-no-user-intent 가드(본 테스트의 관심사 밖)를 우회.
+      // v9 d5 — infoModeEnabled=true여도 lock=null이면 억제된다(infoMode 우회 철거). lock 활성
+      // station-passed 감지는 바로 아래 boarding-lock 케이스(DEFAULT_LOCK)가 검증한다.
       mockGetBoardingLock.mockResolvedValue(null);
       useUserIntentStore.setState({ infoModeEnabled: true });
       renderHook(() =>
@@ -371,9 +372,8 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
-      // #2064 (Phase 1-device) — station-passed 로컬 알림 제거. 감지 성공은 dedup bookkeeping
-      // (setLastNotifiedStationId) 호출로 검증한다.
-      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalled());
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       // Phase 알람은 GPS 필요하므로 호출 안 됨
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
@@ -5275,7 +5275,7 @@ describe('useStationAlarm', () => {
       });
     }
 
-    it('subsurfaceStationDetected=true + 새 station → station-passed 발사 (GPS 게이트 무관)', async () => {
+    it('subsurfaceStationDetected=true + 새 station + lockless(infoMode ON) → 억제 (v9 d5)', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       mockResolveNextTarget.mockReturnValue({
         nextStationName: '강남',
@@ -5287,14 +5287,14 @@ describe('useStationAlarm', () => {
       // 차단하지 않는다. 이 테스트의 의도(station-passed는 subsurface verdict로 GPS 게이트를
       // 우회하지만 phase 알람은 여전히 GPS 게이트로 차단된다는 대비)를 보존하려면 lockless로
       // 고정해야 한다 — lockless trip은 게이트가 그대로 유지된다(요구사항 2).
-      // infoModeEnabled=true로 #1816 lockless-no-user-intent 가드(본 테스트의 관심사 밖)를 우회.
+      // v9 d5 — infoModeEnabled=true여도 lock=null이면 억제된다(infoMode 우회 철거).
       mockGetBoardingLock.mockResolvedValue(null);
       useUserIntentStore.setState({ infoModeEnabled: true });
 
       renderHook(() => useStationAlarm(subsurfaceInputs()));
 
-      // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
-      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalled());
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       // GPS phase 알람은 accuracyMeters=500으로 차단
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
@@ -6155,10 +6155,9 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    // #2387 — 명시 탭 의향(infoModeEnabled) 환승 계승. 환승서 lock release 후에도 사용자가
-    // 이전에 명시 탭(BoardingTrainList)했으면 infoModeEnabled=true가 살아있어 device 알람 권위를
-    // 유지해야 한다(lock 재생성 아님, CLAUDE.md "명시 탭=lock 동급" 정합).
-    describe('#2387 infoModeEnabled 계승 — lock=null + infoModeEnabled=true → 게이트 통과', () => {
+    // v9 d5 — 이전(#2387)에는 infoModeEnabled=true가 lock release 후에도 device 알람 권위를 유지했으나,
+    // "lock 없음=알림 없음"으로 계승을 철거했다. 의향이 있어도 lock=null이면 3개 게이트 모두 억제한다.
+    describe('v9 d5 — lock=null + infoModeEnabled=true → 게이트 억제 (infoMode 계승 철거, #2387 대체)', () => {
       // 게이트 3곳(832/1420/1664) 각각에 도달하는 이벤트/mock 조합만 다르고 arrange(lock=null +
       // infoModeEnabled 세팅)·act(renderHook)·최종 공통 assert(logSuppressedLocklessNoUserIntent
       // 미호출)는 동일 — it.each로 축약(SonarCloud dup 회피). 분기 실행(각 게이트의 true-path)은
@@ -6182,11 +6181,6 @@ describe('useStationAlarm', () => {
             accuracyMeters: 50,
             speedMps: 10,
           }),
-          assertFired: async () => {
-            // #2064 — 로컬 알림 제거. dedup bookkeeping(setLastNotifiedStationId)으로 성공을 검증.
-            await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
-            expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-          },
         },
         {
           name: 'transfer phase ETA (게이트 832)',
@@ -6206,9 +6200,6 @@ describe('useStationAlarm', () => {
             speedMps: 10,
             accuracyMeters: 50,
           }),
-          assertFired: async () => {
-            await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-          },
         },
         {
           name: 'destination phase ETA (게이트 832)',
@@ -6222,9 +6213,6 @@ describe('useStationAlarm', () => {
             speedMps: 10,
             accuracyMeters: 50,
           }),
-          assertFired: async () => {
-            await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
-          },
         },
         {
           name: 'subsurface station-passed (게이트 1664)',
@@ -6237,21 +6225,19 @@ describe('useStationAlarm', () => {
             nearestStation: makeStation('S-SUB-2387', '지하역2', 37.5, 127.0),
             subsurfaceStationDetected: true,
           }),
-          assertFired: async () => {
-            await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
-          },
         },
       ];
 
-      it.each(gateCases)('lock=null + infoModeEnabled=true → $name 정상 발사', async ({ setup, inputs, assertFired }) => {
+      it.each(gateCases)('lock=null + infoModeEnabled=true → $name 억제', async ({ setup, inputs }) => {
         mockGetBoardingLock.mockResolvedValue(null);
         useUserIntentStore.setState({ infoModeEnabled: true });
         setup();
 
         renderHook(() => useStationAlarm(defaultInputs(inputs())));
 
-        await assertFired();
-        expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
+        await waitFor(() => expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalled());
+        expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+        expect(mockLogFiredAlarm).not.toHaveBeenCalled();
       });
 
       it('lock=null + infoModeEnabled=true + sleep ON → 무크래시 (첫 hop suppress는 sleep rule이 담당, lockless 게이트가 아님)', async () => {
@@ -6383,7 +6369,7 @@ describe('useStationAlarm', () => {
       expect(mockLogSuppressedPendingLockUnresolved).not.toHaveBeenCalled();
     });
 
-    it('lock=null(순수 lockless) + infoModeEnabled=true → 기존대로 발사 (변경 없음 확인, 거부 케이스)', async () => {
+    it('v9 d5 — lock=null(순수 lockless) + infoModeEnabled=true → 억제 (infoMode OR 철거)', async () => {
       mockGetBoardingLock.mockResolvedValue(null);
       useUserIntentStore.setState({ infoModeEnabled: true });
       mockGetLastNotifiedStationId.mockResolvedValue(null);
@@ -6406,9 +6392,12 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() => expect(mockSetLastNotifiedStationId).toHaveBeenCalled());
+      await waitFor(() => expect(mockLogSuppressedLocklessNoUserIntent).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: 'station-passed' }),
+        ),
+      );
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
       expect(mockLogSuppressedPendingLockUnresolved).not.toHaveBeenCalled();
-      expect(mockLogSuppressedLocklessNoUserIntent).not.toHaveBeenCalled();
     });
   });
 

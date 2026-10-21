@@ -16,6 +16,7 @@ import {
 } from '../utils/safetyNetScheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useSilentPushHealthCheck } from './useSilentPushHealthCheck';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -30,6 +31,8 @@ export interface UseSafetyNetSchedulerInputs {
  * #2089 — OS 예약 스케줄러 3종(alarmScheduler/tripBoundScheduler/boardingLockScheduler)의
  * 단일 후속 owner. `safetyNetScheduler`를 호출해 sleepMode ON인 trip에 한해 안전망 알람을
  * 등록/취소한다.
+ *
+ * v9 d5 — 무장 전제에 boarding lock 활성이 추가됐다(`lockActive`). lockless면 sleepMode여도 cancel-only.
  *
  * 정책(새 역할 — "취침모드일 때만 등록"):
  * - sleepMode가 꺼져 있으면 항상 cancel-only(등록 없음). 기존 boardingLockScheduler는
@@ -52,6 +55,8 @@ export interface UseSafetyNetSchedulerInputs {
  */
 export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSchedulerInputs): void {
   const sleepMode = useSettingsStore((s) => s.sleepMode);
+  // v9 d5 — lock 없음=알림 없음. lock 활성일 때만 무장하고, 해제/부재 시 armed 예약을 cancel한다.
+  const lockActive = useBoardingLockStore((s) => s.lock !== null);
   const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
   // 마지막으로 성공 등록(또는 명시적으로 cancel-only 처리)한 identity. null이면
   // "현재 큐에 안전망 알람 없음" 상태.
@@ -68,7 +73,7 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
       const routeSig = routeSignature(route);
       const nextIdentityBase = `${routeSig}|${destinationName ?? ''}|sleep:${sleepMode}`;
 
-      if (!sleepMode || route === null || destinationName === null) {
+      if (!sleepMode || !lockActive || route === null || destinationName === null) {
         if (registeredIdentityRef.current !== null && registeredTripTokenRef.current) {
           await cancelAllSafetyNetAlarms(registeredTripTokenRef.current);
         }
@@ -128,5 +133,5 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
     run().catch((e: unknown) => {
       logger.error('safetyNetScheduler 전환 실패:', e);
     });
-  }, [route, destinationName, sleepMode, silentPushHealthy]);
+  }, [route, destinationName, sleepMode, lockActive, silentPushHealthy]);
 }

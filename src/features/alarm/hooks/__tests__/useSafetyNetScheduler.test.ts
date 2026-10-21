@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafetyNetScheduler } from '../useSafetyNetScheduler';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
+import { useBoardingLockStore } from '../../store/useBoardingLockStore';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 
@@ -40,11 +42,21 @@ const mockAsyncGetItem = AsyncStorage.getItem as jest.Mock;
 const GANGNAM = canonicalStationName('강남', '2');
 const TRIP_TOKEN = 'TOKEN-A';
 const ROUTE = makeDirectRoute(5, '2');
+const ACTIVE_LOCK: BoardingLock = {
+  destinationId: 'dest',
+  trainCode: '2001',
+  boardingStationId: 'board',
+  boardingLine: '2',
+  boardedAt: 1_000_000,
+  expectedDurationMs: 600_000,
+};
 
 describe('useSafetyNetScheduler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     useSettingsStore.setState({ sleepMode: false });
+    // v9 d5 — 기본은 lock 활성(기존 테스트의 "등록된다" 기대 보존). lockless는 개별 테스트에서 null.
+    useBoardingLockStore.setState({ lock: ACTIVE_LOCK });
     mockAsyncGetItem.mockResolvedValue(TRIP_TOKEN);
     mockGetTripStartedAt.mockResolvedValue(1_000_000);
     mockRegisterSafetyNetAlarms.mockResolvedValue({ scheduled: 1 });
@@ -386,6 +398,37 @@ describe('useSafetyNetScheduler', () => {
       await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
       // 이전에 무장된 적이 없으므로 cancel은 호출되지 않는다.
       expect(mockCancelAllSafetyNetAlarms).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('v9 d5 — lock 활성일 때만 무장 (lock 없음=알림 없음)', () => {
+    it('lockless + outage + sleepMode → 안전망을 무장하지 않는다', async () => {
+      useBoardingLockStore.setState({ lock: null });
+      useSettingsStore.setState({ sleepMode: true });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+
+      await waitFor(() => expect(mockAsyncGetItem).not.toHaveBeenCalled());
+      expect(mockRegisterSafetyNetAlarms).not.toHaveBeenCalled();
+    });
+
+    it('lock 활성 + outage + sleepMode → 무장한다 (기존 동작 불변, 거부 케이스)', async () => {
+      useSettingsStore.setState({ sleepMode: true });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+    });
+
+    it('무장된 뒤 lock이 해제되면 armed 예약을 cancel하고 재무장하지 않는다', async () => {
+      useSettingsStore.setState({ sleepMode: true });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+
+      act(() => {
+        useBoardingLockStore.setState({ lock: null });
+      });
+
+      await waitFor(() => expect(mockCancelAllSafetyNetAlarms).toHaveBeenCalledWith(TRIP_TOKEN));
+      expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1);
     });
   });
 });
