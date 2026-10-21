@@ -23,7 +23,7 @@ jest.mock('expo-haptics', () => ({
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '상행 종착역',
-    arrivalMinutes: 3,
+    stopsAway: null,
     arrivalSeconds: 180,
     statusMessage: '',
     trainCode: 'T-1',
@@ -53,7 +53,7 @@ describe('BoardingTrainList', () => {
   it('#749 각 train마다 종착(○○행) 표기 + 카운터 + 시각', () => {
     // destination은 Seoul API trainLineNm 원본 포맷(예: "강남행"). #792에서 parseTrainLineDirection으로
     // 정규화하므로 기존 raw 값을 그대로 전달.
-    const trains = [makeTrain({ trainCode: 'T-A', destination: '강남행', arrivalMinutes: 2 })];
+    const trains = [makeTrain({ trainCode: 'T-A', destination: '강남행', stopsAway: null })];
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
     );

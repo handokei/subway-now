@@ -140,7 +140,9 @@ function asLineNumber(raw: string): LineNumber | null {
  * 있어 음수만 차단. 음수 train은 createLockFromTrain에서도 의미가 없어 #666 가드를 갈음한다.
  * directionalArrivals / boardingListArrivals 두 파생값이 같은 정책을 공유하는 SSOT.
  */
-const isReachable = (train: ArrivalInfo): boolean => train.arrivalSeconds >= 0;
+const isReachable = (train: ArrivalInfo): boolean =>
+  // #3132 — 시간 모름(null, 코레일 barvlDt=0)은 "지나간 열차"가 아니므로 목록에 포함.
+  train.arrivalSeconds === null || train.arrivalSeconds >= 0;
 
 /**
  * #2407 — lock이 이미 확정된(pending 아닌) trainCode로 존재하면 lockSuggestion 채택을 skip.
@@ -481,7 +483,8 @@ export function useBoardingLockController({
         expectedDurationMs: durationMin * 60_000,
         // #897 Seam A: 탑승 시점 ETA 스냅샷. 동일 trainCode가 유지되는 동안 새 폴링의 arrivalSeconds가
         // 이 값보다 크게 늘면 그 차이가 지연(분). BoardingTrainList가 "+N분 지연" 칩으로 노출.
-        initialEtaSeconds: train.arrivalSeconds,
+        // #3132 — 시간 모름(null)이면 지연 기준 스냅샷 없음(undefined) → 지연 칩 미노출.
+        initialEtaSeconds: train.arrivalSeconds ?? undefined,
       // #2290 P1 — user-tap은 "미래 열차 선택"일 뿐 탑승 확정 evidence가 아니므로 evidence=false.
       // `hasConsumedOriginWait`가 위 initialEtaSeconds 경과 여부로 별도 판정한다.
       }, false, 'user-tap').then(() => {

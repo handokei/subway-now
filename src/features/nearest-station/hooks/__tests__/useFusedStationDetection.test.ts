@@ -19,7 +19,7 @@ const TRAIN_CODE = 'T1234';
 function arrivalRow(overrides: Partial<ArrivalInfo>): ArrivalInfo {
   return {
     destination: '왕십리',
-    arrivalMinutes: 1,
+    stopsAway: null,
     arrivalSeconds: 0,
     statusMessage: '',
     trainCode: TRAIN_CODE,

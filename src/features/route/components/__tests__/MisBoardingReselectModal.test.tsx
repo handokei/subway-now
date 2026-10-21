@@ -6,7 +6,7 @@ import type { ArrivalInfo } from '../../../../shared/types/arrival';
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '종착',
-    arrivalMinutes: 3,
+    stopsAway: null,
     arrivalSeconds: 180,
     statusMessage: '',
     trainCode: 'T-1',

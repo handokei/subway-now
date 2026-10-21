@@ -47,8 +47,8 @@ export interface ArrivalEtaProjectionResult {
   index: number;
   /** index에 해당하는 역. */
   station: Station;
-  /** 매칭 row의 `arrivalSeconds` (다음 역까지 남은 초). */
-  etaSeconds: number;
+  /** 매칭 row의 `arrivalSeconds` (다음 역까지 남은 초). null = 시간 모름(코레일 barvlDt=0, #3132). */
+  etaSeconds: number | null;
   /** 신호 출처 라벨. estimator 합성 단에서 confidence 매핑에 사용. */
   source: 'arrival-eta';
 }

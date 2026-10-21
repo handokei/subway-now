@@ -7,7 +7,7 @@ const KORAIL_RESULT: StationArrival = {
   up: [
     {
       destination: '청량리',
-      arrivalMinutes: 2,
+      stopsAway: null,
       arrivalSeconds: 120,
       statusMessage: '',
       trainCode: 'KR-001',
@@ -26,7 +26,7 @@ const FALLBACK_RESULT: StationArrival = {
   up: [
     {
       destination: '서울역',
-      arrivalMinutes: 4,
+      stopsAway: null,
       arrivalSeconds: 240,
       statusMessage: '',
       trainCode: 'SO-001',

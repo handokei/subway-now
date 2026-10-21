@@ -16,6 +16,12 @@ import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import { formatClockTime } from '../../../shared/utils/formatTime';
 import { arrivalAt } from '../../../shared/utils/arrivalClock';
+import {
+  formatArrivalEtaPosition,
+  hasKnownEta,
+  orderKnownEtaFirst,
+  type KnownEtaRow,
+} from '../../../shared/utils/arrivalEta';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { recordLockCorrection } from '../utils/lockCorrectionMetrics';
 import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
@@ -364,12 +370,16 @@ export function BoardingTrainList({
   // #915 후속: 헤더 라벨/empty placeholder를 i18n으로 분리.
   // 4 locales(ko/en/ja/zh) 비-한국어 사용자가 핵심 baseline UX("탑승할 열차 선택")를 모국어로 본다.
   const headerTitle = title ?? t('home.boardingTrainListTitle');
+  // #3132 — 시간 모름(null) 행은 도보 버퍼와 비교할 수 없다 → unreachable 아님(비활성화하지 않는다).
   const isUnreachable = (train: ArrivalInfo): boolean =>
-    walkingBufferSeconds != null && train.arrivalSeconds < walkingBufferSeconds;
+    walkingBufferSeconds != null &&
+    hasKnownEta(train) &&
+    train.arrivalSeconds < walkingBufferSeconds;
 
   // #664: 환승역 statnNm 응답에 같은 이름 다른 노선 열차가 섞여 들어오므로 헤더 line 기준 필터.
   // train.line은 어댑터가 subwayId로 row마다 정확히 결정한 값(#663). 일치하는 row만 표시.
-  const filteredArrivals = arrivals.filter((train) => train.line === line);
+  // #3132 — 시간 모름 행은 제외하지 않고 초 있는 행 뒤에 stopsAway 순으로 둔다.
+  const filteredArrivals = orderKnownEtaFirst(arrivals.filter((train) => train.line === line));
 
   /**
    * row 렌더 — 일반 도착 row와 #2139 "전열차" row가 공유하는 Pressable 구조.
@@ -662,6 +672,12 @@ export function BoardingTrainList({
         // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 mock/schedule fallback 경로 —
         // #855에서 fallback 라벨을 "약 N정거장 전 (약 M분 후)"로 단위 명시. arrivalSeconds가 0
         // 이하면 분 라벨 생략.
+        if (!hasKnownEta(train)) {
+          // #3132 — 시간 모름(코레일 barvlDt=0): 가짜 시각 대신 피드 위치 문구 + 역명, 도착 예정 라인 생략.
+          const { primary, secondary } = formatArrivalEtaPosition(train);
+          const positionText = secondary ? `${primary} (${secondary})` : primary;
+          return renderRow(train, positionText, null, 'boarding-train');
+        }
         const parsedDistance = parseArrivalDistance(train.statusMessage);
         const sequenceText =
           parsedDistance.length > 0
@@ -681,7 +697,7 @@ export function BoardingTrainList({
  * useArrivalCountdown이 tick마다 arrivalSeconds를 1씩 줄이는 동안 시계도 1초 흐르므로 anchor가 stable.
  * ArrivalRow(useCountdown 기반)와 같은 row의 시각이 항상 일치한다.
  */
-function formatArrivalClock(train: ArrivalInfo): string {
+function formatArrivalClock(train: KnownEtaRow<ArrivalInfo>): string {
   return formatClockTime(arrivalAt(train));
 }
 
@@ -697,8 +713,9 @@ function computeDelayMinutes(
   initialEtaSeconds: number | undefined,
 ): number | null {
   if (initialEtaSeconds == null || initialEtaSeconds <= 0) return null;
-  if (arrivals.length === 0) return null;
-  const [head, ...rest] = arrivals;
+  // #3132 — 시간 모름(null) 행은 "가장 가까운 도착" 후보가 아니다.
+  const [head, ...rest] = arrivals.filter(hasKnownEta);
+  if (head === undefined) return null;
   const nearest = rest.reduce(
     (min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min),
     head,

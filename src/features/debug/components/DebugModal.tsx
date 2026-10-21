@@ -211,6 +211,7 @@ import {
 // → inferAutoLockCandidate 결과를 dump에 노출. 동작 변경 0: lock 산출/sync 호출 없음.
 import { createConsensusStabilityBuffer } from '../../nearest-station/utils/consensusStabilityBuffer';
 import { verifyTrainDirection } from '../../nearest-station/utils/verifyTrainDirection';
+import { formatDebugEta } from '../../../shared/utils/arrivalEta';
 import {
   inferAutoLockCandidate,
   type DeviceAutoLockCandidate,
@@ -2801,10 +2802,10 @@ function DebugModalInner({
     const up = arrival.up[0];
     const down = arrival.down[0];
     const upText = up
-      ? `up: ${up.destination} · ${Math.round(up.arrivalSeconds)}s${up.statusMessage ? ` (${up.statusMessage})` : ''}`
+      ? `up: ${up.destination} · ${formatDebugEta(up)}${up.statusMessage ? ` (${up.statusMessage})` : ''}`
       : 'up: -';
     const downText = down
-      ? `down: ${down.destination} · ${Math.round(down.arrivalSeconds)}s${down.statusMessage ? ` (${down.statusMessage})` : ''}`
+      ? `down: ${down.destination} · ${formatDebugEta(down)}${down.statusMessage ? ` (${down.statusMessage})` : ''}`
       : 'down: -';
     return `${upText}\n${downText}`;
   })();

@@ -5,12 +5,9 @@ const COUNTDOWN_INTERVAL_MS = 1_000;
 
 function tickItems(items: ArrivalInfo[]): ArrivalInfo[] {
   return items.map((item) => {
-    const seconds = Math.max(0, item.arrivalSeconds - 1);
-    return {
-      ...item,
-      arrivalSeconds: seconds,
-      arrivalMinutes: Math.floor(seconds / 60),
-    };
+    // #3132 — 시간 모름(null)은 감산하지 않는다. 0으로 접으면 다시 00:00이 된다.
+    if (item.arrivalSeconds === null) return item;
+    return { ...item, arrivalSeconds: Math.max(0, item.arrivalSeconds - 1) };
   });
 }
 

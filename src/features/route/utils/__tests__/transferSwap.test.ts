@@ -204,3 +204,30 @@ describe('buildAutoLockCandidate', () => {
     expect(buildAutoLockCandidate('9', arrival, '강남')?.trainCode).toBe('T-norm-soon');
   });
 });
+
+describe('#3132 시간 모름(arrivalSeconds=null, 코레일 barvlDt=0) 행', () => {
+  it('collectOtherLineArrivals: 환승 임박 판정 후보에서 제외 (지어낸 0초 금지)', () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: null, line: '4', trainCode: 'T-unknown' }),
+      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '4', trainCode: 'T-known' }),
+    ]);
+    expect(collectOtherLineArrivals(arrival, '2')).toEqual([
+      { line: '4', arrivalSeconds: 90, arrivalCode: -1 },
+    ]);
+  });
+
+  it('buildAutoLockCandidate: 시간 모름 행은 "가장 임박한 열차" 순위를 매길 수 없어 후보에서 제외', () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '서울역', arrivalSeconds: null, line: '4', trainCode: 'T-unknown' }),
+      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 120, line: '4', trainCode: 'T-known' }),
+    ]);
+    expect(buildAutoLockCandidate('4', arrival, null)?.trainCode).toBe('T-known');
+  });
+
+  it('buildAutoLockCandidate: 전부 시간 모름이면 후보 없음 (null)', () => {
+    const arrival = makeArrival([
+      makeArrivalInfo({ destination: '서울역', arrivalSeconds: null, line: '4', trainCode: 'T-unknown' }),
+    ]);
+    expect(buildAutoLockCandidate('4', arrival, null)).toBeNull();
+  });
+});

@@ -27,7 +27,8 @@ export function pickArrivalAtOrigin(
     const first = list[0];
     if (!first) continue;
     if (first.receivedAtMs <= 0) continue;
-    if (first.arrivalSeconds < 0) continue;
+    // #3132 — 시간 모름(null)은 "가장 빨리 오는 열차" 후보가 될 수 없다.
+    if (first.arrivalSeconds === null || first.arrivalSeconds < 0) continue;
     if (!best || first.arrivalSeconds < best.arrivalSeconds) {
       best = { arrivalSeconds: first.arrivalSeconds, receivedAtMs: first.receivedAtMs };
     }

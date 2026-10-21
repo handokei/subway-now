@@ -1,5 +1,6 @@
 import type { LineNumber } from '../../../shared/types/station';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
+import type { KnownEtaRow } from '../../../shared/utils/arrivalEta';
 import { getDateParts } from '../../../shared/utils/intlDateParts';
 import headways from '../../../data/lineHeadways.json';
 import terminals from '../../../data/lineTerminals.json';
@@ -12,6 +13,13 @@ import line6Timetable from '../../../data/timetables/line-6.json';
 import line7Timetable from '../../../data/timetables/line-7.json';
 import line8Timetable from '../../../data/timetables/line-8.json';
 import line9Timetable from '../../../data/timetables/line-9.json';
+
+/** 시간표/헤드웨이 fallback은 항상 실값 초를 만든다 — 시간 모름(null)이 없는 ArrivalInfo. */
+type ScheduledArrivalInfo = KnownEtaRow<ArrivalInfo>;
+type ScheduledStationArrival = StationArrival & {
+  up: ScheduledArrivalInfo[];
+  down: ScheduledArrivalInfo[];
+};
 
 export type DayType = 'weekday' | 'saturday' | 'sunday';
 export type Period = 'peak' | 'offPeak' | 'late' | 'closed';
@@ -164,11 +172,11 @@ function makeTrain(
   nowMs: number,
   destination: string,
   line: LineNumber,
-): ArrivalInfo {
+): ScheduledArrivalInfo {
   return {
     destination,
-    arrivalMinutes: Math.max(0, Math.floor(secondsFromNow / 60)),
     arrivalSeconds: secondsFromNow,
+    stopsAway: null,
     statusMessage: '',
     trainCode: `${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}${suffix}`,
     line,
@@ -259,7 +267,7 @@ export function buildScheduleArrival(
   line: LineNumber,
   stationName: string,
   now: Date,
-): StationArrival {
+): ScheduledStationArrival {
   const dayType = classifyDayType(now);
   const nowMs = now.getTime();
   const terminal = TERMINALS[line];

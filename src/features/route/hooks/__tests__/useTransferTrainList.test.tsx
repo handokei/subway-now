@@ -99,7 +99,7 @@ function arrivalRet(arrival: StationArrival | null, loading = false) {
 function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
   return {
     destination: '여의나루',
-    arrivalMinutes: 5,
+    stopsAway: null,
     arrivalSeconds: 300,
     statusMessage: '',
     trainCode: 'T-NEW',
@@ -189,6 +189,26 @@ describe('useTransferTrainList', () => {
       }),
       false,
       // #2722 — reason='user-tap' 명시(기존 누락, 소거법 진단 구분 불가 회귀 fix).
+      'user-tap',
+    );
+  });
+
+  it('#3132 시간 모름(null) 열차를 탭해도 lock 생성, initialEtaSeconds는 stamp하지 않는다', () => {
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [makeTrain({ trainCode: 'NEW' })], down: [] }));
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    act(() =>
+      result.current.createTransferLock(makeTrain({ trainCode: 'NEW', arrivalSeconds: null, stopsAway: 2 })),
+    );
+    expect(mockCreateLock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: 'NEW', initialEtaSeconds: undefined }),
+      false,
       'user-tap',
     );
   });

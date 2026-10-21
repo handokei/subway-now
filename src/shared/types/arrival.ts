@@ -10,8 +10,15 @@ import type { TrainType } from '../constants/trainTypes';
  */
 export interface ArrivalInfo {
   destination: string;
-  arrivalMinutes: number;
-  arrivalSeconds: number;
+  /**
+   * 도착까지 남은 초. `null` = 시간 모름(코레일 운영 노선이 barvlDt=0을 "정보 없음"으로 내려줌, 2026-10-21 실측).
+   * 0은 "진짜 0초"(arvlCd 0/1/2 진입·도착·출발)만 의미한다 — 모름을 0으로 접으면 화면에 00:00이 뜬다.
+   */
+  arrivalSeconds: number | null;
+  /** 몇 역 전인지 — `[N]번째 전역`의 N, arvlCd 3/4/5(전역 출발/진입/도착) unknown 행은 1, 그 외 null. */
+  stopsAway: number | null;
+  /** 피드 `arvlMsg3` — 열차가 있는 역명("전역 도착"이면 직전 역). 표시 보조 라인용. 구버전 BFF는 누락(undefined). */
+  locationStation?: string;
   statusMessage: string;
   trainCode: string;
   /**

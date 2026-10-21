@@ -37,7 +37,10 @@ export interface Stop {
 export interface ArrivalTrain {
   direction: string;
   line: string;
-  arrivalAtMs: number;
+  /** 도착 절대 시각. `null` = 시간 모름(코레일 barvlDt=0) — 이때 `positionLabel`로 위치 문구를 표시한다. */
+  arrivalAtMs: number | null;
+  /** arrivalAtMs가 null일 때 mm:ss 대신 보여줄 위치 문구(큰 글씨 primary + 작은 글씨 secondary). */
+  positionLabel?: { primary: string; secondary?: string };
   subtext?: string;
   /** 막차 여부 — UI 안전성 배지. */
   isLastTrain?: boolean;

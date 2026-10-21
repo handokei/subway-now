@@ -19,7 +19,7 @@ const OTHER_TRAIN_CODE = '9999';
 function makeArrival(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '장암행',
-    arrivalMinutes: 0,
+    stopsAway: null,
     arrivalSeconds: 30,
     statusMessage: '',
     trainCode: TRAIN_CODE,

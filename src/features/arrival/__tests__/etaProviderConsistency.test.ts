@@ -34,7 +34,7 @@ function setNow(t: number) {
 }
 
 function boardingTrainListClock(item: { arrivalSeconds: number }): string {
-  return formatClockTime(arrivalAt(item));
+  return formatClockTime(arrivalAt(item) as number);
 }
 
 function arrivalRowAnchor(item: { arrivalSeconds: number }): number {
@@ -46,7 +46,7 @@ function arrivalRowAnchor(item: { arrivalSeconds: number }): number {
     '상행',
     '6',
   );
-  return train.arrivalAtMs;
+  return train.arrivalAtMs as number;
 }
 
 describe('D7 #1213 ETA provider consistency', () => {

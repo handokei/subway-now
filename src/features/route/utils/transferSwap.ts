@@ -27,6 +27,7 @@
 import { detectTransfer } from './transferDetect';
 import { isExpressStop } from './expressLookup';
 import { lineToSubwayId } from '../../../shared/constants/lineApiNames';
+import { hasKnownEta, type KnownEtaRow } from '../../../shared/utils/arrivalEta';
 import type { OtherLineArrival } from './transferDetect';
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
@@ -118,6 +119,8 @@ export function collectOtherLineArrivals(
   const out: OtherLineArrival[] = [];
   for (const t of all) {
     if (boardingLine !== null && t.line === boardingLine) continue;
+    // #3132 — 시간 모름(null)은 환승 임박 판정 후보가 될 수 없다 (지어낸 0초 금지).
+    if (t.arrivalSeconds === null) continue;
     out.push({ line: t.line, arrivalSeconds: t.arrivalSeconds, arrivalCode: t.arrivalCode });
   }
   return out;
@@ -161,10 +164,12 @@ function pickImminentTrainCode(
 ): string | null {
   if (!arrival) return null;
   const all: ArrivalInfo[] = [...arrival.up, ...arrival.down];
-  let preferred: ArrivalInfo | null = null;
-  let fallback: ArrivalInfo | null = null;
+  let preferred: KnownEtaRow<ArrivalInfo> | null = null;
+  let fallback: KnownEtaRow<ArrivalInfo> | null = null;
   for (const t of all) {
     if (t.line !== line) continue;
+    // #3132 — 시간 모름(null)은 "가장 임박한 열차" 순위를 매길 수 없다.
+    if (!hasKnownEta(t)) continue;
     /* istanbul ignore next -- detectTransfer는 음수 arrivalSeconds를 후보에서 제외한 뒤 line을
        반환하므로, 그 line의 음수 train이 있더라도 양수 train이 이미 적어도 하나 존재. 양수만
        best로 선택되어 음수 분기는 도달하지 않는다. 방어 코드. */

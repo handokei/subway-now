@@ -10,6 +10,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { parseTrainType } from '../../../shared/constants/trainTypes';
 import { subwayIdToLine } from '../../../shared/constants/lineApiNames';
 import { toSeoulQueryName } from '../../../shared/constants/seoulStationNameMap';
+import { isEtaUnknownRow, parseStopsAway } from '../../../shared/utils/arrivalEta';
 import { findLineByStationName } from '../../../shared/utils/stationLookup';
 import { buildScheduleArrival, hasHeadwayData } from '../../alarm/utils/scheduleFallback';
 import type { LineNumber } from '../../../shared/types/station';
@@ -23,12 +24,12 @@ const log = createLogger('arrivalApi');
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
-    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '상행 종착역' },
-    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '상행 종착역' },
+    { destination: '상행 종착역', arrivalSeconds: 120, stopsAway: null, statusMessage: '', trainCode: 'UP-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '상행 종착역' },
+    { destination: '상행 종착역', arrivalSeconds: 480, stopsAway: null, statusMessage: '', trainCode: 'UP-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '상행 종착역' },
   ],
   down: [
-    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '하행 종착역' },
-    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '하행 종착역' },
+    { destination: '하행 종착역', arrivalSeconds: 240, stopsAway: null, statusMessage: '', trainCode: 'DN-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '하행 종착역' },
+    { destination: '하행 종착역', arrivalSeconds: 660, stopsAway: null, statusMessage: '', trainCode: 'DN-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const, terminalStation: '하행 종착역' },
   ],
   isMock: true,
 });
@@ -170,7 +171,7 @@ export async function fetchArrivalInfo(
         });
         continue;
       }
-      const rawSeconds = Math.max(0, item.barvlDt ?? 0);
+      const barvlDt = Number(item.barvlDt);
       // recptnDt(데이터 생성시각)와 현재시각의 차이만큼 열차가 더 진행한 것으로 보정.
       // xls 스펙 주의사항에 명시된 처리. recptnDt 누락 또는 비정상 drift는 stale로 강등.
       const parsedRecvMs = parseRecptnDt(item.recptnDt);
@@ -178,26 +179,32 @@ export async function fetchArrivalInfo(
       const isStale = parsedRecvMs > 0 && rawDriftSec > MAX_RECPTN_DRIFT_SEC;
       const receivedAtMs = isStale ? 0 : parsedRecvMs;
       const driftSec = isStale ? 0 : Math.max(0, rawDriftSec);
-      const seconds = Math.max(0, Math.round(rawSeconds - driftSec));
       const parsedCode =
         typeof item.arvlCd === 'number'
           ? item.arvlCd
           : typeof item.arvlCd === 'string'
             ? Number.parseInt(item.arvlCd, 10)
             : NaN;
+      const arrivalCode = Number.isFinite(parsedCode) ? parsedCode : -1;
+      const statusMessage = item.arvlMsg2 ?? '';
+      // #3132 — 코레일 운영 노선은 시간을 모르면 barvlDt=0을 보낸다. 0초로 접지 않고 null(모름).
+      const etaUnknown = isEtaUnknownRow(barvlDt, arrivalCode);
+      // known 행(arvlCd 0/1/2 또는 barvlDt>0)인데 barvlDt가 비숫자면 기존처럼 0초.
+      const knownBarvlDt = Number.isFinite(barvlDt) ? barvlDt : 0;
       const info: ArrivalInfo = {
         destination: item.trainLineNm ?? '',
-        arrivalMinutes: Math.floor(seconds / 60),
-        arrivalSeconds: seconds,
-        statusMessage: item.arvlMsg2 ?? '',
+        arrivalSeconds: etaUnknown ? null : Math.max(0, Math.round(knownBarvlDt - driftSec)),
+        stopsAway: parseStopsAway(statusMessage, arrivalCode, etaUnknown),
+        statusMessage,
         trainCode: item.btrainNo ?? '',
         line,
         receivedAtMs,
-        arrivalCode: Number.isFinite(parsedCode) ? parsedCode : -1,
+        arrivalCode,
         isLastTrain: item.lstcarAt === '1' || item.lstcarAt === 1,
         trainType: parseTrainType(item.btrainSttus),
         // #2696 — bstatnNm(종착역). 조기 종착 판정용, destination(raw trainLineNm)과는 별개.
         terminalStation: typeof item.bstatnNm === 'string' && item.bstatnNm.length > 0 ? item.bstatnNm : undefined,
+        locationStation: typeof item.arvlMsg3 === 'string' && item.arvlMsg3.length > 0 ? item.arvlMsg3 : undefined,
       };
       if (UP_DIRECTION_VALUES.includes(item.updnLine)) {
         up.push(info);

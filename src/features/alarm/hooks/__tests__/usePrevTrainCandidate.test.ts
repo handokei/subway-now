@@ -16,7 +16,7 @@ jest.mock('../../../route/utils/tripDirection', () => ({
 function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
   return {
     destination: '종착',
-    arrivalMinutes: 2,
+    stopsAway: null,
     arrivalSeconds: 120,
     statusMessage: '',
     trainCode: 'T-DEFAULT',
@@ -131,6 +131,40 @@ describe('usePrevTrainCandidate (#2689 — 다음 열차 출발 기준 만료)',
       expect(result.current.prevTrain?.train.trainCode).toBe('T-UPDATED');
       // 마지막 관측 stamp = 195_000 + 5*1000 = 200_000. 첫 관측(1_000+200_000=201_000)이 아님.
       expect(result.current.prevTrain?.arrivedAtMs).toBe(200_000);
+    });
+
+    it('#3132 마지막 관측이 시간 모름(arrivalSeconds=null)이면 stamp 불가 — arrivedAtMs null', () => {
+      jest.setSystemTime(0);
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: {
+          ...baseProps,
+          currentArrivals: [makeTrain({ trainCode: 'T-UNKNOWN', arrivalSeconds: null, stopsAway: 1, receivedAtMs: 1_000 })],
+        },
+      });
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-UNKNOWN');
+      expect(result.current.prevTrain?.arrivedAtMs).toBeNull();
+    });
+
+    it.each([
+      ['시간 모름이 먼저', ['T-UNKNOWN', 'T-KNOWN']],
+      ['시간 모름이 나중', ['T-KNOWN', 'T-UNKNOWN']],
+    ])('#3132 한 번에 여러 대가 사라지면 초가 있는 열차를 전열차로 채택 (%s)', (_label, order) => {
+      jest.setSystemTime(0);
+      const byCode: Record<string, ArrivalInfo> = {
+        'T-UNKNOWN': makeTrain({ trainCode: 'T-UNKNOWN', arrivalSeconds: null, stopsAway: 1, receivedAtMs: 1_000 }),
+        'T-KNOWN': makeTrain({ trainCode: 'T-KNOWN', arrivalSeconds: 20, receivedAtMs: 1_000 }),
+      };
+      const { result, rerender } = renderHook((props: UsePrevTrainCandidateInputs) => usePrevTrainCandidate(props), {
+        initialProps: {
+          ...baseProps,
+          currentArrivals: order.map((code) => byCode[code]),
+        },
+      });
+      act(() => rerender({ ...baseProps, currentArrivals: [] }));
+
+      expect(result.current.prevTrain?.train.trainCode).toBe('T-KNOWN');
     });
 
     it('마지막 관측의 receivedAtMs=0(mock/누락)이면 stamp 불가 — arrivedAtMs null (degrade, 크래시 없음)', () => {

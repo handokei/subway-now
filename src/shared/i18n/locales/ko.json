@@ -231,7 +231,10 @@
   "arrival": {
     "upbound": "상행",
     "downbound": "하행",
-    "rowLabel": "{{line}} {{direction}} {{mm}}분 {{ss}}초 후 도착"
+    "stopsAway_one": "{{count}}번째 전역",
+    "stopsAway_other": "{{count}}번째 전역",
+    "rowLabel": "{{line}} {{direction}} {{mm}}분 {{ss}}초 후 도착",
+    "rowLabelPosition": "{{line}} {{direction}} {{position}}"
   },
   "notifications": {
     "channelStation": "현재 역",

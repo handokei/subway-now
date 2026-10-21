@@ -31,7 +31,7 @@ describe('fetchArrivalInfo', () => {
     expect(result.up.length).toBeGreaterThan(0);
     expect(result.down.length).toBeGreaterThan(0);
     expect(result.up[0]).toHaveProperty('destination');
-    expect(result.up[0]).toHaveProperty('arrivalMinutes');
+    expect(result.up[0]).toHaveProperty('stopsAway');
     expect(result.up[0]).toHaveProperty('arrivalSeconds');
     expect(result.up[0]).toHaveProperty('statusMessage');
     expect(result.up[0]).toHaveProperty('trainCode');
@@ -60,7 +60,6 @@ describe('fetchArrivalInfo', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(result.up).toHaveLength(2);
     expect(result.down).toHaveLength(2);
-    expect(result.up[0].arrivalMinutes).toBe(2); // 120초 → 2분
     expect(result.up[0].arrivalSeconds).toBe(120);
     expect(result.up[0].statusMessage).toBe('');
     expect(result.isMock).toBeUndefined();
@@ -163,20 +162,19 @@ describe('fetchArrivalInfo', () => {
     expect(MOCK_ARRIVALS.down.length).toBeGreaterThan(0);
   });
 
-  it('arrivalMinutes가 0초이면 0분을 반환한다', async () => {
+  it('barvlDt=0 + arvlCd=1(도착)이면 진짜 0초를 반환한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         realtimeArrivalList: [
-          { trainLineNm: '소요산행', barvlDt: 0, btrainNo: 'T001', updnLine: '상행', subwayId: '1001' },
+          { trainLineNm: '소요산행', barvlDt: 0, arvlCd: '1', btrainNo: 'T001', updnLine: '상행', subwayId: '1001' },
         ],
       }),
     } as Response);
 
     const result = await fetchArrivalInfo('강남');
-    expect(result.up[0].arrivalMinutes).toBe(0);
     expect(result.up[0].arrivalSeconds).toBe(0);
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
@@ -280,7 +278,6 @@ describe('fetchArrivalInfo', () => {
     const result = await fetchArrivalInfo('강남');
     expect(result.up[0].statusMessage).toBe('전역 출발');
     expect(result.up[0].arrivalSeconds).toBe(90);
-    expect(result.up[0].arrivalMinutes).toBe(1);
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
@@ -316,7 +313,6 @@ describe('fetchArrivalInfo', () => {
       mockArrivalAt(120, '2026-05-12 12:00:00', '2026-05-12T03:00:30Z');
       const result = await fetchArrivalInfo('강남');
       expect(result.up[0].arrivalSeconds).toBe(90);
-      expect(result.up[0].arrivalMinutes).toBe(1);
       expect(result.up[0].receivedAtMs).toBe(Date.parse('2026-05-12T03:00:00Z'));
     });
 
@@ -332,7 +328,6 @@ describe('fetchArrivalInfo', () => {
       mockArrivalAt(60, '2026-05-12 12:00:00', '2026-05-12T03:01:30Z');
       const result = await fetchArrivalInfo('강남');
       expect(result.up[0].arrivalSeconds).toBe(0);
-      expect(result.up[0].arrivalMinutes).toBe(0);
     });
 
     it('recptnDt가 미래 시각(시계 어긋남)이면 보정 없이 raw 값을 사용한다', async () => {
@@ -600,8 +595,8 @@ describe('fetchArrivalInfo', () => {
 
     const result = await fetchArrivalInfo('강남');
     expect(result.up[0].destination).toBe('');
-    expect(result.up[0].arrivalMinutes).toBe(0);
-    expect(result.up[0].arrivalSeconds).toBe(0);
+    // #3132 — barvlDt/arvlCd 모두 누락 = 시간 모름(P3). 예전엔 0초로 접었다.
+    expect(result.up[0].arrivalSeconds).toBeNull();
     expect(result.up[0].statusMessage).toBe('');
     expect(result.up[0].trainCode).toBe('');
 

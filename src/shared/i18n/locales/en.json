@@ -231,7 +231,10 @@
   "arrival": {
     "upbound": "Upbound",
     "downbound": "Downbound",
-    "rowLabel": "{{line}} {{direction}} arriving in {{mm}} min {{ss}} sec"
+    "stopsAway_one": "{{count}} stop away",
+    "stopsAway_other": "{{count}} stops away",
+    "rowLabel": "{{line}} {{direction}} arriving in {{mm}} min {{ss}} sec",
+    "rowLabelPosition": "{{line}} {{direction}} {{position}}"
   },
   "notifications": {
     "channelStation": "Current station",
