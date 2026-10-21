@@ -970,6 +970,8 @@ describe('runScheduled', () => {
       arrivals?: ArrivalEntry[];
       apnsOk?: boolean;
       motion?: PositionPoint['motion'] | 'none';
+      /** #3132 — SeoulArrivalClient wire 파서를 거치면 만들 수 없는 합성 entry(arvlCd 1 + null ETA) 주입용. */
+      seoulOverride?: SeoulArrivalClient;
     }) {
       const kv = new InMemoryKV();
       await putTrip(kv as unknown as KVNamespace, input.trip);
@@ -982,7 +984,7 @@ describe('runScheduled', () => {
       // origin-prompt가 originStationName('시청')으로 교차 조회해도 이 mock은 빈 응답을 줘
       // 교차 발사를 내지 않는다(이 helper의 목적인 lockless intermediate 검증만 영향받는다).
       const intermediateStation = input.trip.waypoints[0]?.stationName;
-      const seoul = input.arrivals
+      const seoul = input.seoulOverride ?? (input.arrivals
         ? intermediateStation !== undefined
           ? makeStationAwareSeoul(intermediateStation, input.arrivals)
           : makeSeoul(input.arrivals)
@@ -991,7 +993,7 @@ describe('runScheduled', () => {
             host: 'h',
             now: () => NOW,
             fetchImpl: seoulFetch as unknown as typeof fetch,
-          });
+          }));
       const apnsFetch = input.apnsOk ? makeApnsFetchOk() : vi.fn();
       const stats = await runScheduled(makeEnv(kv), {
         seoul,
@@ -1086,6 +1088,24 @@ describe('runScheduled', () => {
         expect(apnsFetch).not.toHaveBeenCalled();
       }
       if (seoulCalled === false) expect(seoulFetch).not.toHaveBeenCalled();
+    });
+
+    // #3132 — arvlCd 0/1 + ETA 모름(null)은 P3상 wire에서 도달 불가(진입/도착의 barvlDt=0은 진짜 0)지만,
+    // 타입이 열어둔 합성 경로에서 etaSeconds를 지어내 push payload/LA 갱신을 구성하지 않는다 -> 발사 skip.
+    it('#3132 arvlCd=1 + arrivalSeconds=null(합성 entry) → 발사 skip, push payload에 지어낸 ETA 없음', async () => {
+      const synthetic: ArrivalEntry = { ...ARVL_ARRIVED, arrivalSeconds: null };
+      const seoulStub = {
+        fetchArrivals: async () => [synthetic],
+        fetchPositions: async () => [],
+      } as unknown as SeoulArrivalClient;
+      const { stats, apnsFetch } = await runLocklessCycle({
+        trip: intermediateTrip(),
+        apnsOk: true,
+        seoulOverride: seoulStub,
+      });
+      expect(stats.pushed).toBe(0);
+      expect(stats.locklessIntermediateFired).toBe(0);
+      expect(apnsFetch).not.toHaveBeenCalled();
     });
 
     // #2524 — 탑승 커밋(PENDING lock, boardingCommitted===true) trip은 실 lock으로 승격되기
@@ -4581,6 +4601,24 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(contentState.alarmType).toBeUndefined();
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
+  });
+
+  // #3132 — 코레일 운영 노선은 시간을 모르면 barvlDt=0을 보낸다(arvlCd=99). 예전엔 이를 0초로 접어
+  // epoch=now -> destination LA 즉시 트리거(etaSeconds<=60) + reschedule push 가 "곧 도착"으로 오발했다.
+  // 열차는 피드에서 보이므로 ETA-missing(vanish) 카운터도 올리면 안 된다.
+  it('#3132 매칭 열차가 시간 모름(barvlDt=0, arvlCd=99) -> LA push 0, reschedule push 0, ETA-missing 카운터 불변', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 99), fetchImpl });
+    expect(stats.laPushSent).toBe(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
+    expect(stats.pushed).toBe(0);
+    expect(stats.etaMissing).toBe(0);
+    expect(stats.scheduleEtaFallback).toBe(0);
+    const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
+    expect(stored.consecutiveEtaMissing ?? 0).toBe(0);
+    expect(stored.lastLaPushEpoch).toBeUndefined();
   });
 
   // #2962 follow-up (코디네이터 정정, 2026-10-12) — content-state.trainCode 기본값이 단순히
