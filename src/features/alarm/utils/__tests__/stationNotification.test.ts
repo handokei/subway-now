@@ -1259,8 +1259,8 @@ describe('stationNotification', () => {
       it.each([
         ['up', '오른쪽 문으로 하차하세요'],
         ['down', '오른쪽 문으로 하차하세요'],
-      ] as const)('성수 본선 %s는 %s', (direction, line) => {
-        expect(buildAlarmContent({ ...seongsu, direction }).body).toBe(
+      ] as const)('성수 본선 통과 %s는 %s', (direction, line) => {
+        expect(buildAlarmContent({ ...seongsu, direction, trainTerminal: '왕십리' }).body).toBe(
           `다음 역 성수에서 하차하세요!\n${line}`,
         );
       });

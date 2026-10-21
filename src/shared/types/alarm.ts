@@ -22,6 +22,9 @@ export interface AlarmEvent {
   // 알람 대상역에 진입하는 진행방향(상행/하행). 좌/우 하차 방향을 결정하는 데 쓰인다.
   // 노선/탑승역/목적역 중 하나라도 불명이면 undefined — 알람 본문에서 좌/우 라인을 생략한다.
   direction?: TravelDirection;
+  // 사용자가 잠근 열차의 종착역명(Seoul `bstatnNm`). 대상역에서 종착하는 열차만 문 방향이 달라지는
+  // 역(예: 성수 외선 당역 종착)에서 쓴다. lock 열차 row를 못 찾으면 undefined — 종착 불명으로 처리.
+  trainTerminal?: string;
 }
 
 /**

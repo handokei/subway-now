@@ -26,9 +26,14 @@ export type PlatformExitSideMap = Record<string, PlatformExitSideEntry>;
 export interface DirectionalExitSideEntry {
   up: PlatformExitSide;
   down: PlatformExitSide;
+  // 잠긴 열차가 이 역에서 종착할 때만 up/down 값을 덮어쓰는 방향별 override(근거 문장이 있는 방향만).
+  terminating?: Partial<Record<'up' | 'down', PlatformExitSide>>;
   grade: 'wiki';
   sourceUrl: string;
   note: string;
 }
 
 export type DirectionalExitSideMap = Record<string, DirectionalExitSideEntry>;
+
+// 잠긴 열차의 종착역과 알람 대상역의 관계. here=당역 종착, elsewhere=통과, unknown=종착 정보 없음.
+export type TerminusRelation = 'here' | 'elsewhere' | 'unknown';

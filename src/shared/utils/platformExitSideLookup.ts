@@ -5,6 +5,7 @@ import type {
   DirectionalExitSideMap,
   PlatformExitSide,
   PlatformExitSideMap,
+  TerminusRelation,
 } from '../types/platformExitSide';
 
 // JSON import는 side를 string으로 추론하므로 PlatformExitSideMap으로 명시 캐스팅한다.
@@ -21,11 +22,21 @@ export function lookupPlatformExitSide(stationId: string): PlatformExitSide | nu
   return PLATFORM_EXIT_SIDE_MAP[stationId]?.side ?? null;
 }
 
-// station id + 진행방향으로 인용 문장 근거가 있는 방향별 하차문 방향을 조회한다(wiki 등급).
-// 항목이 없으면 null — 구조 기반 fallback(lookupPlatformExitSide) 또는 라인 생략은 caller 몫.
+// station id + 진행방향 + 종착 관계로 인용 문장 근거가 있는 방향별 하차문 방향을 조회한다(wiki 등급).
+//   null          — 항목 없음: caller가 구조 기반 fallback(lookupPlatformExitSide)을 쓴다.
+//   { side: null } — 항목은 있으나 이 열차의 문 방향을 단정할 근거가 없음: 문 라인을 생략한다.
+//     · 당역 종착인데 terminating 값이 없다.
+//     · 종착 여부를 모르는데 terminating 값이 통과 값과 다르다(어느 쪽인지 알 수 없다).
 export function lookupDirectionalExitSide(
   stationId: string,
   direction: TravelDirection,
-): PlatformExitSide | null {
-  return DIRECTIONAL_EXIT_SIDE_MAP[stationId]?.[direction] ?? null;
+  terminus: TerminusRelation,
+): { side: PlatformExitSide | null } | null {
+  const entry = DIRECTIONAL_EXIT_SIDE_MAP[stationId];
+  if (!entry) return null;
+  const through = entry[direction];
+  const terminating = entry.terminating?.[direction];
+  if (terminus === 'here') return { side: terminating ?? null };
+  if (terminus === 'unknown' && terminating && terminating !== through) return { side: null };
+  return { side: through };
 }

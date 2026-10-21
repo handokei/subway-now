@@ -29,6 +29,7 @@ import { getStationDisplayName, getStationDisplayNameByName } from '../../../sha
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../../shared/types/exitSide';
+import type { TerminusRelation } from '../../../shared/types/platformExitSide';
 import { lookupExitSide } from '../../route/utils/exitSide';
 import { hasQuickExitData } from '../../route/utils/quickExit';
 import {
@@ -466,9 +467,14 @@ function resolveExitSide(event: AlarmEvent): ExitSide | null {
   const station = findStationByName(event.stationName);
   if (!station) return null;
   const directional = event.direction
-    ? lookupDirectionalExitSide(station.id, event.direction)
+    ? lookupDirectionalExitSide(station.id, event.direction, resolveTerminusRelation(event))
     : null;
-  return directional ?? lookupPlatformExitSide(station.id);
+  return directional ? directional.side : lookupPlatformExitSide(station.id);
+}
+
+function resolveTerminusRelation({ trainTerminal, stationName }: AlarmEvent): TerminusRelation {
+  if (!trainTerminal) return 'unknown';
+  return isSameStationName(trainTerminal, stationName) ? 'here' : 'elsewhere';
 }
 
 // 알람 본문에 추상적 빠른하차 힌트를 붙일지 결정. 해당 역의 빠른하차 데이터가 있을 때만 표시한다.
