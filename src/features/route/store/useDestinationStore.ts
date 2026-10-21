@@ -18,6 +18,7 @@ import {
 } from '../../../shared/constants/storageKeys';
 import { RECENT_ROUTES_LIMIT } from '../../../shared/constants/recentDestinations';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
+import type { TripEndReason } from '../../../shared/types/tripEnd';
 import { setTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import { scheduleTripEndOffer } from '../../alarm/utils/tripEndOffer';
 import {
@@ -98,7 +99,12 @@ export interface DestinationState {
   tripOrigin: Station | null;
   routePreference: RoutePreference;
 
-  setDestination: (station: Station | null) => void;
+  /**
+   * `endReason`는 해제(station===null)일 때만 쓰인다 — 자동 종료 호출부가 자기 사유를 넘겨
+   * backend end_reason으로 귀속된다(#3109). 생략 시 'user-clear'. 전환(station≠null)은
+   * 항상 'destination-switch'.
+   */
+  setDestination: (station: Station | null, endReason?: TripEndReason) => void;
   loadDestination: () => Promise<void>;
   addRecentDestination: (station: Station) => void;
   removeRecentDestination: (stationId: string) => void;
@@ -136,7 +142,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
   tripOrigin: null,
   routePreference: 'optimal' as RoutePreference,
 
-  setDestination: (station: Station | null) => {
+  setDestination: (station: Station | null, endReason: TripEndReason = 'user-clear') => {
     // #1324 — 목적지 == 출발역이면 degenerate trip(0-waypoint → 방향 null → 빈 탑승목록)이
     // 생성된다. UX 경계(DestinationPicker.onSelect)에서 effectiveOrigin(=customOrigin ∪ GPS)을
     // 기준으로 우선 차단하지만, store가 권위적으로 아는 customOrigin과 같은 역을 목적지로
@@ -192,7 +198,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       if (station) {
         addDomainBreadcrumb('trip', 'start', { destination: station.name });
       } else {
-        addDomainBreadcrumb('trip', 'end', { reason: 'user-clear' });
+        addDomainBreadcrumb('trip', 'end', { reason: endReason });
       }
       // #919 + cleanup + 새 trip 기록을 순서대로 chain. 각 단계는 자체 catch를 가져
       // 한 단계 실패가 다음 단계를 막지 않도록 한다 — 측정 인프라가 cleanup의 critical
@@ -223,7 +229,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         .then(() =>
           station
             ? runTripBoundCleanups('destination-switch', { preserveCustomOrigin: true })
-            : runTripBoundCleanups('user-clear'),
+            : runTripBoundCleanups(endReason),
         )
         .catch(noop)
         // #1597 — cleanup 후, 새 trip의 storage write 전에 ground-truth prompt enqueue.

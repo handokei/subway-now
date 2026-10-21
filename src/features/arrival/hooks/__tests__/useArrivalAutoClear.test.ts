@@ -435,4 +435,77 @@ describe('useArrivalAutoClear', () => {
       expect(onClear).not.toHaveBeenCalled();
     });
   });
+
+  // #3109 — route-progress는 arc 파생 추정 거리(실측 아님)다. #2716(backend-ssot)/#2741(placeholder)이
+  // 누락한 편측 — 10/21 trip 173(뚝섬)에서 열차가 아직 성수일 때 추정 거리 < 500m로 조기 종료.
+  describe('추정 거리 source(route-progress) — ARRIVED 확증 필수 (#3109)', () => {
+    // 덤프 텍스트-C54B12CBECB9-1.txt L556 (불변 fixture): 06:33:58 fused 2-010 뚝섬,
+    // source=route-progress, arvlCd=5(전역 도착=열차는 성수) → 확증 false, 추정 거리 < 500m.
+    const trip173 = (overrides: Partial<Params> = {}): Params =>
+      baseProps({
+        currentStationName: '뚝섬',
+        destinationName: '뚝섬',
+        distanceKm: 0.305,
+        distanceSource: 'route-progress',
+        distanceIsPlaceholder: false,
+        destinationArrivalConfirmed: false,
+        ...overrides,
+      });
+
+    it('trip 173 실측 입력(arvlCd=5 → 미확증): 10s 경과해도 종료하지 않는다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: trip173({ onClear }),
+      });
+      act(() => { jest.advanceTimersByTime(10_000); });
+
+      expect(result.current.arrivedBanner).toBe(false);
+      expect(onClear).not.toHaveBeenCalled();
+      expect(mockLogArrivalAutoClearFired).not.toHaveBeenCalled();
+    });
+
+    it('거부: route-progress + ARRIVED 확증 → 종료한다', () => {
+      const onClear = jest.fn();
+      const { result } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: trip173({ destinationArrivalConfirmed: true, onClear }),
+      });
+      expect(result.current.arrivedBanner).toBe(true);
+      act(() => { jest.advanceTimersByTime(2_000); });
+
+      expect(onClear).toHaveBeenCalledTimes(1);
+      expect(mockLogArrivalAutoClearFired).toHaveBeenCalledWith('뚝섬');
+    });
+
+    it('거부: 확증이 나중에 도착하면(미확증 → 확증) 그때 종료한다', () => {
+      const onClear = jest.fn();
+      const { result, rerender } = renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: trip173({ onClear }),
+      });
+      expect(result.current.arrivedBanner).toBe(false);
+      rerender(trip173({ destinationArrivalConfirmed: true, onClear }));
+      act(() => { jest.advanceTimersByTime(2_000); });
+
+      expect(onClear).toHaveBeenCalledTimes(1);
+    });
+
+    it('불변: 실측 GPS source는 확증 없이 거리 게이트만으로 종료한다', () => {
+      const onClear = jest.fn();
+      renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: trip173({ distanceSource: 'gps', onClear }),
+      });
+      act(() => { jest.advanceTimersByTime(2_000); });
+
+      expect(onClear).toHaveBeenCalledTimes(1);
+    });
+
+    it('불변: backend-ssot는 확증 없으면 종료하지 않는다', () => {
+      const onClear = jest.fn();
+      renderHook((props: Params) => useArrivalAutoClear(props), {
+        initialProps: trip173({ distanceSource: 'backend-ssot', distanceKm: 0, onClear }),
+      });
+      act(() => { jest.advanceTimersByTime(10_000); });
+
+      expect(onClear).not.toHaveBeenCalled();
+    });
+  });
 });

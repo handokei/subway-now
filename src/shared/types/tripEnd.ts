@@ -22,6 +22,10 @@
 export type TripEndReason =
   /** 사용자가 목적지를 해제했다(`setDestination(null)`) — "안내 종료" 버튼 포함. */
   | 'user-clear'
+  /** 도착 배너 자동 해제(`useArrivalAutoClear`)가 `setDestination(null)`을 호출했다(#3109). */
+  | 'arrival-auto-clear'
+  /** 4신호 도착 자동 종료(`useDestinationAutoClear`)가 `setDestination(null)`을 호출했다(#3109). */
+  | 'destination-auto-clear'
   /** 사용자가 다른 목적지로 전환했다(`setDestination(station)`) — 이전 trip 종료분. */
   | 'destination-switch'
   /** backend가 `trip-ended` silent push로 종료를 통지했다. */
