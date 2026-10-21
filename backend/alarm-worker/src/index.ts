@@ -16,6 +16,8 @@ import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 // #2655 — 역명 정규화(#1410/#2566 drift 흡수). scheduled.ts의 transfer anchor 비교와 동일 함수를
 // 써야 "sync가 stamp한 역명"과 "cron이 advance하는 waypoint 역명"이 조용히 어긋나지 않는다.
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
+import { isTrainSeenAtAnchor, loadAnchorDepartures, loadTrainPosition } from './anchorDeparturesQuery';
+import { planPromotionFastForward } from './anchorDepartures';
 import {
   attemptBoardingAnchorResolution,
   buildLockFromKnownTrainCode,
@@ -3585,15 +3587,60 @@ app.post('/boarding-lock/sync', async (c) => {
       now,
     );
     if (promoted && isBoardingLockConsistentWithWaypoints(promoted, working.waypoints)) {
-      if (isPromotionCorroborated(payload.trainCode, working, now)) {
+      // #3155 — 수동 목록 탭은 "화면에 보이는 열차 = 탭한 열차". 프롬프트에 제시된 적 없어도 backend가
+      // 앵커역에서 직접 본 코드(접근 중/정차/10분 내 출발)면 corroborated. 한 번도 못 본 코드는 계속 거부.
+      const corroborated =
+        isPromotionCorroborated(payload.trainCode, working, now) ||
+        (await isTrainSeenAtAnchor(
+          c.env.TRIPS,
+          payload.trainCode,
+          payload.boardingLine,
+          promoted.segmentStations,
+          now,
+        ));
+      if (corroborated) {
+        // #3155 — 열차가 이미 앵커를 지나 몇 역 앞에 있으면 지난 중간역 waypoint를 건너뛴다(늦은 매역 push
+        // 방지). 지난 역에 환승/도착이 있으면 건너뛰지 않고 보고만 한다.
+        const { position: trainPosition, passedAnchor } = await loadTrainPosition(
+          c.env.TRIPS,
+          payload.trainCode,
+          payload.boardingLine,
+          promoted.segmentStations,
+          now,
+        );
+        const fastForward = planPromotionFastForward(
+          working.waypoints,
+          promoted.segmentStations,
+          trainPosition,
+          passedAnchor,
+        );
         working = {
           ...working,
+          waypoints: working.waypoints.slice(fastForward.skip),
           boardingLock: promoted,
           lastTrackedArrivalEpoch: undefined,
           lastLaPushEpoch: undefined,
           lastLaPushAt: undefined,
           consecutiveEtaMissing: 0,
         };
+        if (fastForward.skip > 0 || fastForward.blockedAt !== undefined) {
+          if (fastForward.skip > 0) {
+            await maybeMirrorLockSyncProgress(c.env.TRIPS, working, fastForward.skip);
+          }
+          scheduleTripEvent(
+            c,
+            recordTripEvent(c.env.DB, {
+              tokenHash,
+              kind: 'promotion-fastforward',
+              station: working.waypoints[0]?.stationName,
+              meta: {
+                trainCode: promoted.trainCode,
+                skipped: fastForward.skip,
+                ...(fastForward.blockedAt !== undefined ? { blockedAt: fastForward.blockedAt } : {}),
+              },
+            }),
+          );
+        }
         scheduleTripEvent(
           c,
           recordTripEvent(c.env.DB, {
@@ -4192,6 +4239,27 @@ app.get('/trips/:tripToken/status', async (c) => {
     endedAt: ended.endedAt,
     endReason: ended.endReason,
   });
+});
+
+/**
+ * #3155 — 탑승 열차 목록의 "이미 출발" 섹션 데이터. 현재 leg 앵커역을 최근 10분 내 출발한 같은 방향 열차를
+ * 최근 출발 순으로 반환한다(출발 시각 + 지금 있는 역). 읽기 전용(KV read만, write 0).
+ *
+ * 200 `{ ok, station, line, departed[] }` — 앵커/방향/stamp를 모르면 `{ ok, departed: [] }`.
+ * 404 — trip 없음(`/status`와 동일하게 deviceToken 역인덱스도 조회). 소비자는 어떤 실패에서도 섹션을 그리지 않는다.
+ */
+app.get('/trips/:tripToken/anchor-departures', async (c) => {
+  const tripToken = c.req.param('tripToken');
+  if (!tripToken) return c.json({ error: 'missing_token' }, 400);
+  const now = Date.now();
+  let trip = await getTrip(c.env.TRIPS, tripToken);
+  if (!trip) {
+    const indexedToken = await getDeviceTripIndex(c.env.TRIPS, tripToken);
+    trip = indexedToken !== null ? await getTrip(c.env.TRIPS, indexedToken) : null;
+  }
+  if (!trip) return c.json({ error: 'trip_not_found' }, 404);
+  const view = await loadAnchorDepartures(c.env.TRIPS, trip, now);
+  return c.json(view ? { ok: true, ...view } : { ok: true, departed: [] });
 });
 
 app.delete('/trips/:token', async (c) => {

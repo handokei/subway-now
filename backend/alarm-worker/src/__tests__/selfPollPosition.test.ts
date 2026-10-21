@@ -539,3 +539,39 @@ describe('pollLinesAndStamp 위치 갱신 주기 (#3118, #2073 스펙: 매 tick 
     expect((await readSelfPollPosition(kv, '7'))?.fetchedAt).toBe(ticks[2]);
   });
 });
+
+describe('pollLinesAndStamp 앵커역 출발 기록 (#3155)', () => {
+  const TRACKED = new Map([['7', new Set(['용마산'])]]) as ReadonlyMap<string, ReadonlySet<string>>;
+
+  it('같은 stamp(추가 KV write 0)에 stationLogs를 싣는다 — 이전 stamp와 비교해 용마산 출발을 기록', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const putSpy = vi.spyOn(kv, 'put');
+    await pollLinesAndStamp(
+      kv,
+      makeSeoulClient({ positions: [makePosition({ trainCode: '7246', stationName: '용마산', trainSttus: 1 })] }),
+      new Set(['7']),
+      NOW,
+      TRACKED,
+    );
+    await pollLinesAndStamp(
+      kv,
+      makeSeoulClient({ positions: [makePosition({ trainCode: '7246', stationName: '중곡', trainSttus: 1 })] }),
+      new Set(['7']),
+      NOW + 60_000,
+      TRACKED,
+    );
+    // tick당 put 1회 — stationLogs 때문에 별도 write가 늘지 않는다.
+    expect(putSpy).toHaveBeenCalledTimes(2);
+    const entry = await readSelfPollPosition(kv, '7');
+    expect(entry?.stationLogs?.['용마산'].departed).toEqual([
+      { trainCode: '7246', isUp: true, departedAt: NOW + 30_000 },
+    ]);
+  });
+
+  it('추적 역 인자를 안 주면 stationLogs 필드가 없다 (기존 stamp 형태 불변)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await pollLinesAndStamp(kv, makeSeoulClient({ positions: [makePosition()] }), new Set(['7']), NOW);
+    const entry = await readSelfPollPosition(kv, '7');
+    expect(entry).not.toHaveProperty('stationLogs');
+  });
+});

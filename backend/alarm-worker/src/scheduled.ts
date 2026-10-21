@@ -1434,6 +1434,34 @@ function collectActiveLines(trips: readonly Trip[], now: number): Set<LineNumber
 }
 
 /**
+ * #3155 — 노선별 "앵커역 출발 기록" 추적 대상 역 수집. trip의 남은 waypoint 역 + 현재 leg 앵커
+ * (currentLegAnchor/promptDisplay)를 trip이 다닐 수 있는 모든 노선에 걸어 둔다. 환승역은 이전 leg 노선의
+ * waypoint로만 나타나므로(건대입구 = 7호선 transfer waypoint, 이후 2호선 앵커) 노선 한정 없이 이름만 모은다 —
+ * 그 노선 피드에 없는 이름은 기록할 열차가 없어 무해하다. `collectActiveLines`와 동일한 활성 필터.
+ */
+export function collectTrackedStations(
+  trips: readonly Trip[],
+  now: number,
+): Map<LineNumber, Set<string>> {
+  const byLine = new Map<LineNumber, Set<string>>();
+  for (const trip of trips) {
+    if (trip.expiresAt <= now) continue;
+    if (tripLifecyclePhase(trip, now) !== 'normal') continue;
+    const names = new Set(trip.waypoints.map(({ stationName }) => stationName));
+    const anchorStations = [trip.currentLegAnchor?.boardingStation, trip.promptDisplay?.originStation];
+    for (const name of anchorStations) {
+      if (name) names.add(name);
+    }
+    for (const line of computeAllowedLines(trip.route, trip.waypoints)) {
+      const tracked = byLine.get(line) ?? new Set<string>();
+      for (const name of names) tracked.add(name);
+      byLine.set(line, tracked);
+    }
+  }
+  return byLine;
+}
+
+/**
  * #1828 Phase 5 — 활성 trip route의 다음 N개 역 name union 수집.
  *
  * #2073 (Issue B) — `collectActiveLines`와 동일하게 병합된 `trips` 배열을 순회하는 순수
@@ -1672,7 +1700,14 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // cross-match에 사용. idle tick은 trips가 비어 있어 아래 두 collect가 empty Set을 반환하고
   // pollLinesAndStamp/pollStationsAndStamp는 empty set에서 자연히 KV 호출 없이 조기 반환한다.
   const activeLines = collectActiveLines(trips, now);
-  const selfPollStats = await pollLinesAndStamp(env.TRIPS, deps.seoul, activeLines, now);
+  // #3155 — 앵커역 출발 기록은 같은 stamp put에 실린다(추가 KV write 0).
+  const selfPollStats = await pollLinesAndStamp(
+    env.TRIPS,
+    deps.seoul,
+    activeLines,
+    now,
+    collectTrackedStations(trips, now),
+  );
   stats.realtimePositionFetch += selfPollStats.fetched;
   stats.selfPollCacheHit += selfPollStats.cacheHit;
   stats.realtimePositionFetchError += selfPollStats.error;

@@ -6565,6 +6565,272 @@ describe('POST /boarding-lock/sync — sync-promotion corroboration gate (#2824)
   });
 });
 
+// #3155 — 수동 목록 탭(sync)의 corroboration 확장: backend가 앵커역에서 직접 본 코드
+// (접근 중 / 정차 / 10분 내 출발)는 프롬프트에 제시된 적이 없어도 corroborated. 한 번도 못 본 코드는 계속 거부.
+describe('POST /boarding-lock/sync — 앵커역 관측 corroboration (#3155)', () => {
+  const ROUTE_NOW = 1_800_000_000_000;
+  const IS_UP = inferLegDirection('7', '용마산', '중곡') === 'up';
+
+  function trip(): Trip {
+    return {
+      token: 'sight-tok',
+      route: { type: 'direct', line: '7', stops: 3 } as unknown as Trip['route'],
+      destination: '군자',
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'destination' },
+      ],
+      expiresAt: ROUTE_NOW + 60 * 60_000,
+      createdAt: ROUTE_NOW - 10 * 60_000,
+      alarmAtEpochMs: ROUTE_NOW,
+      // 프롬프트는 다른 열차(9999)만 제시했다 — 목록에는 보이지만 프롬프트에는 없던 열차를 탭한 상황.
+      recentPromptCandidates: { trainCodes: ['9999'], firedAt: Date.now() - 60_000 },
+    };
+  }
+
+  async function seed(
+    positions: Array<{ trainCode: string; stationName: string; trainSttus: number; isUp: boolean }>,
+    departed: Array<{ trainCode: string; isUp: boolean; departedAt: number }> = [],
+  ): Promise<Env> {
+    const env = makeKvEnv();
+    const now = Date.now();
+    await env.TRIPS.put('trip:sight-tok', JSON.stringify(trip()));
+    await env.TRIPS.put(
+      'realtime-position:7',
+      JSON.stringify({
+        positions: positions.map((p) => ({ ...p, recptnMs: now - 5_000 })),
+        fetchedAt: now - 5_000,
+        ...(departed.length > 0 ? { stationLogs: { 용마산: { present: [], departed } } } : {}),
+      }),
+    );
+    return env;
+  }
+
+  async function syncTap(env: Env, trainCode: string) {
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'sight-tok', observedStationName: '용마산', observedAtMs: Date.now(), accuracy: 20, trainCode, boardingLine: '7' },
+      env,
+    );
+    expect(res.status).toBe(200);
+    return JSON.parse((await env.TRIPS.get('trip:sight-tok')) as string);
+  }
+
+  it('프롬프트에 없던 열차라도 앵커 직전 역에서 접근 중인 같은 방향 열차를 탭하면 승격한다', async () => {
+    const env = await seed([{ trainCode: '7039', stationName: '사가정', trainSttus: 0, isUp: IS_UP }]);
+    expect((await syncTap(env, '7039')).boardingLock?.trainCode).toBe('7039');
+  });
+
+  it('앵커를 10분 이내에 출발한 열차(지금은 다음 역)를 탭하면 승격한다', async () => {
+    const env = await seed(
+      [{ trainCode: '7039', stationName: '중곡', trainSttus: 1, isUp: IS_UP }],
+      [{ trainCode: '7039', isUp: IS_UP, departedAt: Date.now() - 4 * 60_000 }],
+    );
+    expect((await syncTap(env, '7039')).boardingLock?.trainCode).toBe('7039');
+  });
+
+  it('앵커를 한 번도 거친 기록이 없는 코드(진행 구간 안에 있음)는 계속 거부한다', async () => {
+    const env = await seed([{ trainCode: '7039', stationName: '중곡', trainSttus: 1, isUp: IS_UP }]);
+    expect((await syncTap(env, '7039')).boardingLock).toBeUndefined();
+  });
+
+  it('출발한 지 10분이 넘은 코드는 거부한다', async () => {
+    const env = await seed(
+      [{ trainCode: '7039', stationName: '군자', trainSttus: 1, isUp: IS_UP }],
+      [{ trainCode: '7039', isUp: IS_UP, departedAt: Date.now() - 11 * 60_000 }],
+    );
+    expect((await syncTap(env, '7039')).boardingLock).toBeUndefined();
+  });
+
+  it('반대 방향 열차는 앵커에 서 있어도 거부한다', async () => {
+    const env = await seed([{ trainCode: '7039', stationName: '용마산', trainSttus: 1, isUp: !IS_UP }]);
+    expect((await syncTap(env, '7039')).boardingLock).toBeUndefined();
+  });
+
+  it('position stamp가 아예 없으면 기존 거부 동작 그대로(관측 근거 없음)', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put('trip:sight-tok', JSON.stringify(trip()));
+    expect((await syncTap(env, '7039')).boardingLock).toBeUndefined();
+  });
+});
+
+// #3155 — 이미 앵커를 지난 열차를 탭해 lock하면, 열차가 이미 지난 중간역은 waypoint에서 건너뛴다
+// (그대로 두면 cron이 tick당 1역씩 늦은 per-station push를 쏜다). 환승/도착을 지났으면 건너뛰지 않고 보고한다.
+describe('POST /boarding-lock/sync — 승격 시 fast-forward (#3155)', () => {
+  const ROUTE_NOW = 1_800_000_000_000;
+  const IS_UP = inferLegDirection('7', '용마산', '중곡') === 'up';
+  type Kind = 'intermediate' | 'transfer' | 'destination';
+
+  function trip(kinds: Kind[]): Trip {
+    const names = ['중곡', '군자', '어린이대공원', '건대입구'];
+    return {
+      token: 'ff-tok',
+      route: { type: 'direct', line: '7', stops: 4 } as unknown as Trip['route'],
+      destination: '건대입구',
+      waypoints: names.map((stationName, i) => ({ stationName, line: '7', kind: kinds[i] })),
+      expiresAt: ROUTE_NOW + 60 * 60_000,
+      createdAt: ROUTE_NOW - 10 * 60_000,
+      alarmAtEpochMs: ROUTE_NOW,
+    };
+  }
+
+  const INTERMEDIATES: Kind[] = ['intermediate', 'intermediate', 'intermediate', 'destination'];
+
+  async function tap(
+    kinds: Kind[],
+    position: { stationName: string; trainSttus: number } | null,
+  ): Promise<{ stored: Trip; inserts: unknown[][] }> {
+    const inserts: unknown[][] = [];
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) inserts.push(args);
+          return { run };
+        },
+      })),
+    } as unknown as Env['DB'];
+    const env = makeKvEnv();
+    env.DB = db;
+    const now = Date.now();
+    await env.TRIPS.put('trip:ff-tok', JSON.stringify(trip(kinds)));
+    await env.TRIPS.put(
+      'realtime-position:7',
+      JSON.stringify({
+        positions: position ? [{ trainCode: '7039', isUp: IS_UP, recptnMs: now - 5_000, ...position }] : [],
+        fetchedAt: now - 5_000,
+        stationLogs: { 용마산: { present: [], departed: [{ trainCode: '7039', isUp: IS_UP, departedAt: now - 3 * 60_000 }] } },
+      }),
+    );
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'ff-tok', observedStationName: '용마산', observedAtMs: now, accuracy: 20, trainCode: '7039', boardingLine: '7' },
+      env,
+    );
+    expect(res.status).toBe(200);
+    return { stored: JSON.parse((await env.TRIPS.get('trip:ff-tok')) as string), inserts };
+  }
+
+  it('열차가 군자를 출발(sts=2)했으면 lock이 붙고 waypoint head가 어린이대공원 — 중곡·군자의 늦은 push 없음', async () => {
+    const { stored } = await tap(INTERMEDIATES, { stationName: '군자', trainSttus: 2 });
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['어린이대공원', '건대입구']);
+  });
+
+  it('열차가 군자에 도착(sts=1)해 있으면 중곡만 건너뛴다 — 다음 알림은 열차가 있는 군자', async () => {
+    const { stored } = await tap(INTERMEDIATES, { stationName: '군자', trainSttus: 1 });
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['군자', '어린이대공원', '건대입구']);
+  });
+
+  it('앵커에 있는 신선 탭(#3056)은 waypoint를 그대로 둔다', async () => {
+    const { stored } = await tap(INTERMEDIATES, { stationName: '용마산', trainSttus: 1 });
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['중곡', '군자', '어린이대공원', '건대입구']);
+  });
+
+  it('열차가 이미 환승역을 지났으면 건너뛰지 않고(발명 금지) lock만 붙이고 trip event로 보고한다', async () => {
+    const { stored, inserts } = await tap(['intermediate', 'transfer', 'intermediate', 'destination'], {
+      stationName: '어린이대공원',
+      trainSttus: 1,
+    });
+    expect(stored.boardingLock?.trainCode).toBe('7039');
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(['중곡', '군자', '어린이대공원', '건대입구']);
+    const events = inserts.filter((args) => args[2] === 'promotion-fastforward');
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0][5] as string)).toMatchObject({ skipped: 0, blockedAt: '군자' });
+  });
+
+  it('건너뛴 경우도 trip event(skipped 수)로 남긴다', async () => {
+    const { inserts } = await tap(INTERMEDIATES, { stationName: '군자', trainSttus: 2 });
+    const events = inserts.filter((args) => args[2] === 'promotion-fastforward');
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0][5] as string)).toMatchObject({ skipped: 2 });
+  });
+});
+
+describe('GET /trips/:token/anchor-departures (#3155)', () => {
+  const IS_UP = inferLegDirection('7', '용마산', '중곡') === 'up';
+  const T0 = 1_800_000_000_000;
+
+  async function seedTrip(departed: Array<{ trainCode: string; isUp: boolean; departedAt: number }>): Promise<Env> {
+    const env = makeKvEnv();
+    const now = Date.now();
+    const tripBody = {
+      token: 'dep-tok',
+      route: { type: 'direct', line: '7', stops: 3 },
+      destination: '군자',
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'destination' },
+      ],
+      expiresAt: T0 + 60 * 60_000,
+      createdAt: T0 - 10 * 60_000,
+      alarmAtEpochMs: T0,
+      promptDisplay: { originStation: '용마산', line: '7' },
+    };
+    await env.TRIPS.put('trip:dep-tok', JSON.stringify(tripBody));
+    await env.TRIPS.put(
+      'realtime-position:7',
+      JSON.stringify({
+        positions: [{ trainCode: '7039', stationName: '중곡', trainSttus: 1, isUp: IS_UP, recptnMs: now - 3_000 }],
+        fetchedAt: now - 3_000,
+        stationLogs: { 용마산: { present: [], departed } },
+      }),
+    );
+    return env;
+  }
+
+  async function get(env: Env, token = 'dep-tok') {
+    return app.fetch(new Request(`http://example.com/trips/${token}/anchor-departures`), env);
+  }
+
+  it('앵커역 출발 열차를 최근 출발 순으로, 현재 역과 함께 반환한다 (반대 방향/10분 초과 제외)', async () => {
+    const now = Date.now();
+    const env = await seedTrip([
+      { trainCode: '7039', isUp: IS_UP, departedAt: now - 5 * 60_000 },
+      { trainCode: '7035', isUp: IS_UP, departedAt: now - 9 * 60_000 },
+      { trainCode: 'opp', isUp: !IS_UP, departedAt: now - 60_000 },
+      { trainCode: 'old', isUp: IS_UP, departedAt: now - 11 * 60_000 },
+    ]);
+    const res = await get(env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      station: string;
+      line: string;
+      departed: Array<{ trainCode: string; departedAt: number; currentStation: string | null }>;
+    };
+    expect(body.station).toBe('용마산');
+    expect(body.line).toBe('7');
+    expect(body.departed.map((d) => d.trainCode)).toEqual(['7039', '7035']);
+    expect(body.departed[0].currentStation).toBe('중곡');
+    expect(body.departed[1].currentStation).toBeNull();
+  });
+
+  it('trip이 없으면 404', async () => {
+    const res = await get(makeKvEnv(), 'nope');
+    expect(res.status).toBe(404);
+  });
+
+  it('앵커(promptDisplay/currentLegAnchor)가 없으면 빈 목록', async () => {
+    const env = makeKvEnv();
+    await env.TRIPS.put(
+      'trip:dep-tok',
+      JSON.stringify({
+        token: 'dep-tok',
+        route: { type: 'direct', line: '7', stops: 3 },
+        destination: '군자',
+        waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+        expiresAt: T0 + 60 * 60_000,
+        createdAt: T0 - 1,
+        alarmAtEpochMs: T0,
+      }),
+    );
+    const res = await get(env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, departed: [] });
+  });
+});
+
 // #2308 — applyProgress/resolveProgressWaypoints 단조 전진 불변식.
 // 아침 07:37~07:44 trip_events 되감김 재현: count 기반(shiftedCount) slice는 POST /trips 재등록
 // 사이 incoming.waypoints 시퀀스가 바뀌면(route 재계산) 유효 범위 안에서도 완전히 다른(구노선)
