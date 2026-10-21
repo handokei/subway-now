@@ -29,6 +29,15 @@ import { InMemoryKV } from '../inMemoryKv';
 /** Seoul 갱신 주기 근사 — 이 창 안의 최신 관측만 유효(#2571 하네스와 동일 정책). */
 const DEFAULT_FRESH_MS = 20_000;
 
+/**
+ * #3118 — position 전용 stale fallback 창(ms) = `SELF_POLL_TTL_SEC`(90s).
+ * 실캡처는 옛 2-tick 갱신 동작에서 녹화돼 홀수 tick엔 position fetch entry가 없다(그 tick은 직전
+ * stamp를 재사용했음). 매 tick fetch하는 현행 코드에서 그 tick을 빈 응답으로 서빙하면 stamp가 빈
+ * 배열로 덮여 실세계에 없던 position 유실이 생긴다. 옛 동작에서 소비자가 보던 값(≤90s 전 stamp)과
+ * 같은 데이터를 서빙해 fixture 의미를 보존한다. fixture 데이터는 건드리지 않는다.
+ */
+const POSITION_STALE_FALLBACK_MS = 90_000;
+
 const APNS_HOSTS = { production: 'api.push.apple.com', sandbox: 'api.sandbox.push.apple.com' };
 
 /** cron 재생 중 발사(APNs 전송)된 push 1건 — fetchImpl로 가로챈 실제 요청. */
@@ -135,10 +144,11 @@ export function makeCaptureFetch(
 
     const simNow = getNow();
     const ceilingMs = opts?.ceilingMs ?? simNow;
+    const freshWindowMs = classified.kind === 'position' ? Math.max(freshMs, POSITION_STALE_FALLBACK_MS) : freshMs;
     let latest: ReplayFixture['entries'][number] | null = null;
     for (const entry of fixture.entries) {
       if (entry.kind !== classified.kind || entry.target !== classified.target) continue;
-      if (entry.tMs > ceilingMs || simNow - entry.tMs >= freshMs) continue;
+      if (entry.tMs > ceilingMs || simNow - entry.tMs >= freshWindowMs) continue;
       if (!latest || entry.tMs > latest.tMs) latest = entry;
     }
 
