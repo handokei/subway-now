@@ -185,6 +185,12 @@ export type AlarmLogSource =
   // 덤프로 보이지 않았다 — 등록 경로가 끊긴 것인지 push 단계가 끊긴 것인지 구별 불가.
   // reason 슬롯에 outcome(registered / no-active-trip / not-ok / exhausted / cancelled)을 싣는다.
   | 'live-activity-token-register'
+  // #3107 — LA 라이프사이클 관측 stamp. sentinel(la-mirror-skip-dismissed)이 3개 독립 트립에서 LA 갱신을
+  // 막았지만 "누가 sentinel을 썼는가"(swipe / backend end push / iOS 8h)와 토큰 미등록 원인(세션 취소 vs
+  // adopt 토큰 부재)이 덤프로 구별되지 않았다. reason 슬롯에 la-end-observed / la-sentinel-written /
+  // la-session-teardown / la-register-cancelled / la-adopt-token-state를 싣고 detail은 stationName 슬롯에
+  // 인코딩한다(`live-activity-token-register`와 동형). 관측 전용 — 정책 변경 없음.
+  | 'live-activity-lifecycle'
   // #2768 (게이트 전수감사 C, ⑤) — LA mirror 갱신 skip 사유. 기존 콘솔 전용
   // logger.info(liveActivityMirrorSync.ts)를 대체하지 않고 alarmLog에도 적재한다.
   // mirror sync는 5s 폴링 경로라 매 tick 적재 시 ring(200-cap)을 점령한다 — 호출자가
@@ -229,6 +235,17 @@ export type AlarmLogReason =
   | 'la-token-not-ok'
   | 'la-token-exhausted'
   | 'la-token-cancelled'
+  // #3107 — LA 라이프사이클 관측(source='live-activity-lifecycle').
+  //   la-end-observed       : native가 Activity .ended/.dismissed를 관측(state, expectingSystemEnd, id)
+  //   la-sentinel-written   : dismiss sentinel(markLaDismissed) 쓰기 완료(at=native dismissedAt)
+  //   la-session-teardown   : ambient 등록 세션 cancel/teardown(heldToken=대기 중 토큰 유무)
+  //   la-register-cancelled : 취소된 세션이 무음 반환한 지점(attempt=N)
+  //   la-adopt-token-state  : native adoptExistingActivityIfNeeded 시점의 id/state/pushToken 유무
+  | 'la-end-observed'
+  | 'la-sentinel-written'
+  | 'la-session-teardown'
+  | 'la-register-cancelled'
+  | 'la-adopt-token-state'
   // #2398 — UNNotificationCategory 등록 실패(setNotificationCategoryAsync reject/throw) stamp.
   | 'category-registration-failed'
   | 'dedup-station'
@@ -1348,6 +1365,35 @@ export function resetLaTokenRegisterDedupForTest(): void {
   lastLaTokenRegisterKey = null;
 }
 
+/** #3107 — `live-activity-lifecycle` source에 허용되는 reason (AlarmLogReason의 부분집합). */
+export type LiveActivityLifecycleReason = Extract<
+  AlarmLogReason,
+  | 'la-end-observed'
+  | 'la-sentinel-written'
+  | 'la-session-teardown'
+  | 'la-register-cancelled'
+  | 'la-adopt-token-state'
+>;
+
+/**
+ * #3107 — LA 라이프사이클 관측 1건 적재(관측 전용). detail은 `key=value;key=value` 문자열로
+ * stationName 슬롯에 싣는다. 이 함수 고유의 dedup은 없다 — 종료/teardown/adopt는 트립당 드물고,
+ * 같은 값의 반복 자체가 신호(예: 8h 종료 vs swipe 연타)다. `appendAlarmLog` 공통의 연속 중복
+ * 합산(`count`)만 적용되어 반복 횟수는 보존된다.
+ */
+export function logLiveActivityLifecycle(
+  reason: LiveActivityLifecycleReason,
+  detail: string,
+): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'live-activity-lifecycle',
+    outcome: 'received',
+    reason,
+    stationName: detail,
+  });
+}
+
 export function logLiveActivityAuthorityState(
   state:
     | 'live-activity-authority-device-write'
@@ -1917,6 +1963,8 @@ export function formatFusionPickerTierDistribution(
 const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcomeCounts | null> = {
   // #2977 — silent push 집계 대상이 아니다(진단 stamp).
   'live-activity-token-register': null,
+  // #3107 — 진단 stamp.
+  'live-activity-lifecycle': null,
   'silent-push-received': 'received',
   'silent-push-fired': 'fired',
   'silent-push-skipped': 'skipped',
@@ -2005,6 +2053,8 @@ export function countSilentPushOutcomes(
 export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   // #2977 — 사용자 노출 알람이 아니라 진단 stamp다. recall/정확도 KPI 분모에 섞이면 안 된다.
   'live-activity-token-register': false,
+  // #3107 — 진단 stamp. KPI 분모 오염 금지.
+  'live-activity-lifecycle': false,
   fg: true,
   bg: true,
   'fg-evaluated': true,

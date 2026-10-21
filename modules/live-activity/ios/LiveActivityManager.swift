@@ -20,6 +20,11 @@ actor LiveActivityManager {
     /// 사용자가 LA를 직접 swipe-to-dismiss 한 경우만 emit (#967).
     /// 앱이 `end()`를 호출해 종료된 경우는 emit 되지 않는다 — dismiss sentinel은 사용자 의도만 반영.
     var onActivityDismissed: ((_ dismissedAtMs: Double) -> Void)?
+    /// #3107 관측 전용 — 모든 `.ended`/`.dismissed` 관측을 `expectingSystemEnd` 분류와 무관하게 emit.
+    /// 기존 `onActivityEnded`/`onActivityDismissed`의 발사 조건·의미는 바꾸지 않는다.
+    var onActivityEndObserved: ((_ state: String, _ expectingSystemEnd: Bool, _ activityId: String, _ observedAtMs: Double) -> Void)?
+    /// #3107 관측 전용 — `adoptExistingActivityIfNeeded`가 Activity를 채택한 시점의 pushToken 유무.
+    var onActivityAdopted: ((_ activityId: String, _ state: String, _ hasPushToken: Bool) -> Void)?
 
     /// `end()` 호출 직전 set 되는 플래그. observer가 `.ended`/`.dismissed`로 전이된 시점에
     /// 이 값이 true면 system end로 분류 → dismiss emit skip. false면 사용자 swipe로 분류.
@@ -51,11 +56,15 @@ actor LiveActivityManager {
     func setEventHandlers(
         onPushTokenHex: @escaping (String) -> Void,
         onActivityEnded: @escaping () -> Void,
-        onActivityDismissed: @escaping (_ dismissedAtMs: Double) -> Void
+        onActivityDismissed: @escaping (_ dismissedAtMs: Double) -> Void,
+        onActivityEndObserved: @escaping (_ state: String, _ expectingSystemEnd: Bool, _ activityId: String, _ observedAtMs: Double) -> Void,
+        onActivityAdopted: @escaping (_ activityId: String, _ state: String, _ hasPushToken: Bool) -> Void
     ) {
         self.onPushTokenHex = onPushTokenHex
         self.onActivityEnded = onActivityEnded
         self.onActivityDismissed = onActivityDismissed
+        self.onActivityEndObserved = onActivityEndObserved
+        self.onActivityAdopted = onActivityAdopted
     }
 
     /// 현재 추적 중인 Activity + 이전 세션에서 남은 고아 Activity 일괄 종료.
@@ -82,7 +91,14 @@ actor LiveActivityManager {
             .first(where: { $0.activityState == .active || $0.activityState == .stale })
         else { return }
         currentActivity = adopted
+        // #3107 관측 전용 — 채택 시점에 pushToken이 이미 있는지(없으면 토큰 emit 유실 가설 H1 후보).
+        onActivityAdopted?(Self.shortId(adopted.id), "\(adopted.activityState)", adopted.pushToken != nil)
         startObservers(for: adopted)
+    }
+
+    /// #3107 — 덤프 가독용 Activity id 앞 8자.
+    private static func shortId(_ id: String) -> String {
+        return String(id.prefix(8))
     }
 
     private func cancelObservers() {
@@ -107,7 +123,10 @@ actor LiveActivityManager {
             for await state in activity.activityStateUpdates {
                 if Task.isCancelled { return }
                 if state == .ended || state == .dismissed {
-                    await self?.handleObservedEnd()
+                    await self?.handleObservedEnd(
+                        state: state == .ended ? "ended" : "dismissed",
+                        activityId: activity.id
+                    )
                     return
                 }
             }
@@ -117,7 +136,14 @@ actor LiveActivityManager {
     /// observer에서 `.ended`/`.dismissed`를 받은 시점에 호출.
     /// `expectingSystemEnd` 플래그가 false면 사용자 swipe로 분류 → dismiss emit.
     /// 어느 경우든 기존 `onActivityEnded`는 호출 (backend deregister 호환).
-    private func handleObservedEnd() {
+    private func handleObservedEnd(state: String, activityId: String) {
+        // #3107 관측 전용 — 분류(리셋) 이전의 expectingSystemEnd 값을 그대로 emit.
+        onActivityEndObserved?(
+            state,
+            expectingSystemEnd,
+            Self.shortId(activityId),
+            Date().timeIntervalSince1970 * 1000
+        )
         let wasUserDismiss = !expectingSystemEnd
         expectingSystemEnd = false
         if wasUserDismiss {

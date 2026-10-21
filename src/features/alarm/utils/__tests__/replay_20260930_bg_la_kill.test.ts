@@ -60,6 +60,8 @@ jest.mock('../alarmLog', () => ({
     mockLogFiredLaFallbackNotification(...args),
   logSuppressedLaFallbackContentDedup: (...args: unknown[]) =>
     mockLogSuppressedLaFallbackContentDedup(...args),
+  // #3107 — liveActivityPushChannel의 teardown 관측 호출(이 replay의 관심사 아님).
+  logLiveActivityLifecycle: jest.fn(),
 }));
 
 // #1288 register 재시도(REGISTER_RETRY_BASE_DELAY_MS 등)의 backend 왕복만 끊는다 — LA

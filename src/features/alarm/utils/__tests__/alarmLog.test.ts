@@ -1364,14 +1364,17 @@ describe('alarmLog', () => {
         ]);
       });
 
-      // dedup 하지 않는다 — 종료 관측은 드물고, 같은 값이 반복되는 것 자체가 신호(8h 종료 vs swipe 연타).
-      it('[거부] 같은 reason+detail 반복도 모두 적재한다 (dedup 없음)', async () => {
+      // 별도 dedup은 없다 — appendAlarmLog 공통 연속 중복 합산(count)만 적용되어 반복 횟수가 보존된다
+      // (8h 종료 vs swipe 연타 같은 반복 자체가 신호).
+      it('같은 reason+detail 반복은 count로 보존된다 (별도 dedup으로 유실되지 않음)', async () => {
         logLiveActivityLifecycle('la-session-teardown', 'heldToken=false');
         logLiveActivityLifecycle('la-session-teardown', 'heldToken=false');
         await flushAlarmLog();
 
         const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-        expect(JSON.parse(savedJson)).toHaveLength(2);
+        expect(JSON.parse(savedJson)).toMatchObject([
+          { reason: 'la-session-teardown', stationName: 'heldToken=false', count: 2 },
+        ]);
       });
 
       it('FIRED_ALARM_SOURCES에서 false다 (진단 stamp — recall/정확도 분모 오염 금지)', () => {

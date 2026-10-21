@@ -23,7 +23,7 @@ public class LiveActivityModule: Module {
     public func definition() -> ModuleDefinition {
         Name("LiveActivity")
 
-        Events("onPushToken", "onActivityEnded", "onActivityDismissed")
+        Events("onPushToken", "onActivityEnded", "onActivityDismissed", "onActivityEndObserved", "onActivityAdopted")
 
         OnCreate {
             if #available(iOS 16.2, *) {
@@ -39,6 +39,22 @@ public class LiveActivityModule: Module {
                             self?.sendEvent("onActivityDismissed", [
                                 "dismissedAt": dismissedAtMs,
                                 "reason": "user",
+                            ])
+                        },
+                        // #3107 관측 전용 — 기존 이벤트 의미 불변.
+                        onActivityEndObserved: { [weak self] state, expectingSystemEnd, activityId, observedAtMs in
+                            self?.sendEvent("onActivityEndObserved", [
+                                "state": state,
+                                "expectingSystemEnd": expectingSystemEnd,
+                                "activityId": activityId,
+                                "observedAt": observedAtMs,
+                            ])
+                        },
+                        onActivityAdopted: { [weak self] activityId, state, hasPushToken in
+                            self?.sendEvent("onActivityAdopted", [
+                                "activityId": activityId,
+                                "state": state,
+                                "hasPushToken": hasPushToken,
                             ])
                         }
                     )
