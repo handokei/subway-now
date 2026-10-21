@@ -1,0 +1,16 @@
+{
+  "6-007": {
+    "up": "right",
+    "down": "left",
+    "grade": "wiki",
+    "sourceUrl": "https://ko.wikipedia.org/wiki/%EC%83%88%EC%A0%88%EC%97%AD",
+    "note": "새절(6호선, 2면 3선 혼합식): 위키 '내리는 문의 위치' — 응암행(up) 오른쪽 / 신내행·당역 종착(down) 왼쪽. 비공식(CC BY-SA), 2026-10-21 조사."
+  },
+  "7-003": {
+    "up": "right",
+    "down": "left",
+    "grade": "wiki",
+    "sourceUrl": "https://ko.wikipedia.org/wiki/%EC%88%98%EB%9D%BD%EC%82%B0%EC%97%AD",
+    "note": "수락산(7호선, 2면 3선 쌍섬식): 위키 '내리는 문의 위치' — 상행(up, 장암·도봉산 방면) 오른쪽 / 하행(down)·당역 종착 왼쪽. 비공식(CC BY-SA), 2026-10-21 조사."
+  }
+}

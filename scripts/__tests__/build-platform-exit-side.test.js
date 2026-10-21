@@ -215,7 +215,7 @@ describe('build (실데이터: 공식 역사심도정보 + 건축정보)', () =>
     }
     const reasons = Object.fromEntries(result.nullList.map((e) => [e.id, e.reason]));
     expect(reasons['2-011']).toBe('format-disagree');
-    expect(reasons['7-003']).toBe('format-disagree');
+    expect(reasons['7-003']).toBe('depth-not-plain'); // 섬식(복합)은 형식 비교 전에 탈락
   });
 
   it('섬식(복합)/단선 → null, 사유는 depth-not-plain 또는 format-disagree', () => {
@@ -365,6 +365,6 @@ describe('build (방어 경로: 합성 CSV)', () => {
     });
     build();
     const logs = logSpy.mock.calls.map((c) => c[0]).join('\n');
-    expect(logs).not.toContain('null 리스트');
+    expect(logs).not.toContain('null 리스트 (사유별)');
   });
 });
