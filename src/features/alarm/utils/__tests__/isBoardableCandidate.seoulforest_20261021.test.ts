@@ -6,6 +6,7 @@
 import fixture from '../../../../testUtils/fixtures/seoulforest_bundang_20261021_1450.json';
 import { fetchArrivalInfo } from '../../../arrival/api/arrivalApi';
 import { isCandidateInBoardingScope } from '../isBoardableCandidate';
+import { pickAutoTrainCodeFromArrivals } from '../boardingPromptAutoLock';
 
 describe('replay 10/21 서울숲 수인분당 (#3122)', () => {
   beforeEach(() => {
@@ -45,6 +46,31 @@ describe('replay 10/21 서울숲 수인분당 (#3122)', () => {
       }),
     );
     expect(inScope.map((t) => t.trainCode).sort()).toEqual(['6112', '6546']);
+  });
+
+  // 프롬프트 auto-lock(pickAutoTrainCodeFromArrivals)·usePrevTrainCandidate도 같은 isBoardableCandidate 사용.
+  // 실측 6139는 arrivalCode=5라 상태 게이트에서 어차피 제외(영향 없음) — 같은 열차가 도착(1) 상태였다면
+  // 수정 전에는 범위 판정에서 먼저 탈락해 auto-lock이 null이었다(영향 있음).
+  it('auto-lock: 실측 그대로(arrivalCode 5)면 상태 게이트로 null — 범위 수정과 무관', async () => {
+    const { down } = await fetchArrivalInfo('서울숲', { maxPerDirection: 10 });
+    expect(
+      pickAutoTrainCodeFromArrivals(down, {
+        line: 'bundang',
+        direction: 'down',
+        nextTargetStationName: '압구정로데오',
+      }),
+    ).toBeNull();
+  });
+
+  it('auto-lock: 6139가 도착(arrivalCode 1) 상태였다면 선택된다 — 수정 전엔 범위에서 탈락', async () => {
+    const { down } = await fetchArrivalInfo('서울숲', { maxPerDirection: 10 });
+    const arrived = down.map((t) => ({ ...t, arrivalCode: 1 }));
+    const picked = pickAutoTrainCodeFromArrivals(arrived, {
+      line: 'bundang',
+      direction: 'down',
+      nextTargetStationName: '압구정로데오',
+    });
+    expect(picked?.trainCode).toBe('6139');
   });
 
   it('거부: 같은 하행 열차라도 종착이 목표역 뒤쪽(서울숲)이면 조기종착으로 제외', async () => {
