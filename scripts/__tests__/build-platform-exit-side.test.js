@@ -1,43 +1,27 @@
 /**
- * #1482 — build-platform-exit-side 헬퍼 + 실제 데이터 회귀 점검.
+ * #3129 — build-platform-exit-side: 공식 역사심도정보 기반 재빌드.
  *
- * 사용자 통찰: 하차문 방향은 승강장 구조로 결정되는 고정 정보.
- *   상대식 → right, 섬식 → left, 복합식/단선/시종착 → both.
+ * 스펙(이슈 #3129):
+ *   - 'both'는 어떤 경로로도 만들지 않는다 (종착역 override 제거, 복합식/단선도 both 아님).
+ *   - 심도 CSV와 건축 CSV가 둘 다 단순 섬식/상대식으로 일치할 때만 left/right 도출.
+ *     불일치·섬식(복합)·단선·건축 CSV 미수록은 null (추정 금지).
+ *   - 우측통행: 상대식=right / 섬식=left. 좌측통행 노선은 반전. 주행방향 근거 없는 노선은 null.
+ *   - 항목마다 출처 등급(grade)을 가진다.
  */
 'use strict';
 
 const fs = require('node:fs');
-const path = require('node:path');
 
 const {
   build,
   mapFormatToSide,
+  resolveStationSide,
   parseCsvLine,
   buildNameAliases,
   stripParens,
-  FORMAT_TO_SIDE,
   SUPPORTED_LINES,
+  GRADE_OFFICIAL_DERIVED,
 } = require('../build-platform-exit-side');
-
-describe('FORMAT_TO_SIDE', () => {
-  it('상대식 → right', () => {
-    expect(FORMAT_TO_SIDE['상대식']).toBe('right');
-  });
-
-  it('섬식 → left', () => {
-    expect(FORMAT_TO_SIDE['섬식']).toBe('left');
-  });
-
-  it('복합식/섬식(복합)/단선 → both', () => {
-    expect(FORMAT_TO_SIDE['복합식']).toBe('both');
-    expect(FORMAT_TO_SIDE['섬식(복합)']).toBe('both');
-    expect(FORMAT_TO_SIDE['단선']).toBe('both');
-  });
-
-  it('Object.freeze 봉인 (재할당 방지)', () => {
-    expect(Object.isFrozen(FORMAT_TO_SIDE)).toBe(true);
-  });
-});
 
 describe('SUPPORTED_LINES', () => {
   it('1~8호선 8개 노선', () => {
@@ -49,55 +33,87 @@ describe('SUPPORTED_LINES', () => {
   });
 });
 
-describe('mapFormatToSide', () => {
+describe('mapFormatToSide (주행방향별 형식 → 좌/우)', () => {
   it.each([
-    ['상대식', 'right'],
-    ['섬식', 'left'],
-    ['복합식', 'both'],
-    ['섬식(복합)', 'both'],
-    ['단선', 'both'],
-  ])('"%s" → %s', (input, expected) => {
-    expect(mapFormatToSide(input)).toBe(expected);
+    ['상대식', 'right', 'right'],
+    ['섬식', 'right', 'left'],
+    ['상대식', 'left', 'left'],
+    ['섬식', 'left', 'right'],
+  ])('"%s" + %s통행 → %s', (format, running, expected) => {
+    expect(mapFormatToSide(format, running)).toBe(expected);
   });
 
-  it('알 수 없는 형식은 null', () => {
-    expect(mapFormatToSide('지하4층식')).toBeNull();
-    expect(mapFormatToSide('')).toBeNull();
-  });
+  it.each(['섬식(복합)', '단선', '복합식', '지하4층식', '', null, undefined])(
+    '단순형이 아닌 형식 %p는 null (both 아님)',
+    (format) => {
+      expect(mapFormatToSide(format, 'right')).toBeNull();
+    },
+  );
 
-  it('null/undefined은 null', () => {
-    expect(mapFormatToSide(null)).toBeNull();
-    expect(mapFormatToSide(undefined)).toBeNull();
+  it.each([null, undefined, 'both', 'unknown'])('주행방향 %p는 null', (running) => {
+    expect(mapFormatToSide('상대식', running)).toBeNull();
+    expect(mapFormatToSide('섬식', running)).toBeNull();
   });
 
   it('앞뒤 공백은 trim 후 매칭', () => {
-    expect(mapFormatToSide('  상대식  ')).toBe('right');
-    expect(mapFormatToSide('\t섬식\n')).toBe('left');
+    expect(mapFormatToSide('  상대식  ', 'right')).toBe('right');
+  });
+});
+
+describe('resolveStationSide (실패 사유까지 판정)', () => {
+  const base = { depthFormat: '상대식', archFormat: '상대식', runningSide: 'right' };
+
+  it('두 CSV가 일치하는 단순형이면 derived', () => {
+    expect(resolveStationSide(base)).toEqual({ side: 'right', reason: 'derived' });
+    expect(resolveStationSide({ ...base, depthFormat: '섬식', archFormat: '섬식' })).toEqual({
+      side: 'left',
+      reason: 'derived',
+    });
+  });
+
+  it('심도 행이 없으면 no-depth-row', () => {
+    expect(resolveStationSide({ ...base, depthFormat: null })).toEqual({
+      side: null,
+      reason: 'no-depth-row',
+    });
+  });
+
+  it.each(['섬식(복합)', '단선'])('심도 형식 %s는 depth-not-plain', (depthFormat) => {
+    expect(resolveStationSide({ ...base, depthFormat })).toEqual({
+      side: null,
+      reason: 'depth-not-plain',
+    });
+  });
+
+  it('건축 CSV에 없으면 arch-missing (교차 검증 불가 → null)', () => {
+    expect(resolveStationSide({ ...base, archFormat: null })).toEqual({
+      side: null,
+      reason: 'arch-missing',
+    });
+  });
+
+  it('두 CSV가 다르면 format-disagree', () => {
+    expect(resolveStationSide({ ...base, archFormat: '복합식' })).toEqual({
+      side: null,
+      reason: 'format-disagree',
+    });
+    expect(resolveStationSide({ ...base, depthFormat: '섬식', archFormat: '상대식' })).toEqual({
+      side: null,
+      reason: 'format-disagree',
+    });
+  });
+
+  it('주행방향 근거가 없으면 running-side-unknown', () => {
+    expect(resolveStationSide({ ...base, runningSide: null })).toEqual({
+      side: null,
+      reason: 'running-side-unknown',
+    });
   });
 });
 
 describe('parseCsvLine', () => {
   it('따옴표로 감싼 컬럼을 분리', () => {
-    expect(parseCsvLine('"1","서울","섬식","210","B2","10805","1974"')).toEqual([
-      '1',
-      '서울',
-      '섬식',
-      '210',
-      'B2',
-      '10805',
-      '1974',
-    ]);
-  });
-
-  it('따옴표 없는 컬럼도 처리', () => {
-    expect(parseCsvLine('1,1,서울,B2,섬식,129.99')).toEqual([
-      '1',
-      '1',
-      '서울',
-      'B2',
-      '섬식',
-      '129.99',
-    ]);
+    expect(parseCsvLine('"1","서울","섬식","B2"')).toEqual(['1', '서울', '섬식', 'B2']);
   });
 
   it('따옴표 안의 쉼표는 보존', () => {
@@ -116,50 +132,24 @@ describe('parseCsvLine', () => {
   });
 });
 
-describe('stripParens', () => {
+describe('stripParens / buildNameAliases', () => {
   it.each([
-    ['괄호 없음', '한양대', '한양대'],
-    ['단일 괄호 부제', '청량리(서울시립대입구)', '청량리'],
-    ['다중 괄호', '서울(메인)(B)역', '서울역'],
-    ['짝 안 맞는 여는 괄호는 원본 보존', '동대문(역사', '동대문(역사'],
-    ['빈 문자열', '', ''],
-    ['빈 괄호', '서울()역', '서울역'],
-  ])('%s: "%s" → "%s"', (_label, input, expected) => {
+    ['한양대', '한양대'],
+    ['청량리(서울시립대입구)', '청량리'],
+    ['서울(메인)(B)역', '서울역'],
+    ['동대문(역사', '동대문(역사'],
+    ['', ''],
+  ])('stripParens "%s" → "%s"', (input, expected) => {
     expect(stripParens(input)).toBe(expected);
   });
-});
 
-describe('buildNameAliases', () => {
-  it('원본만 있는 경우 alias 1개', () => {
+  it('buildNameAliases: 괄호·역 접미사 변형', () => {
     expect(buildNameAliases('한양대')).toEqual(['한양대']);
-  });
-
-  it('괄호 부제 제거 alias', () => {
-    expect(buildNameAliases('청량리(서울시립대입구)')).toEqual([
-      '청량리(서울시립대입구)',
-      '청량리',
-    ]);
-  });
-
-  it('"역" 접미사 제거 alias', () => {
-    expect(buildNameAliases('서울역')).toEqual(['서울역', '서울']);
-  });
-
-  it('괄호+역 동시 제거', () => {
-    // 흔치 않지만 표기 가능성 보장
     expect(buildNameAliases('서울역(중앙)')).toEqual(['서울역(중앙)', '서울역', '서울']);
   });
-
-  it('alias 중복은 set으로 제거', () => {
-    // baseName === name 이면 한 개만
-    const aliases = buildNameAliases('한양대');
-    expect(aliases).toHaveLength(1);
-  });
 });
 
-describe('build (integration with real CSV + stations.json)', () => {
-  // build()는 fs.writeFileSync로 src/data/platformExitSide.json을 덮어쓴다.
-  // 테스트 격리를 위해 spy로 write 차단 + 결과만 검증.
+describe('build (실데이터: 공식 역사심도정보 + 건축정보)', () => {
   let writeSpy;
   let logSpy;
   let result;
@@ -175,75 +165,132 @@ describe('build (integration with real CSV + stations.json)', () => {
     logSpy.mockRestore();
   });
 
-  it('1~8호선 stations.json 354개 역 처리', () => {
-    const total = result.stats.right + result.stats.left + result.stats.both + result.stats.unknown;
-    expect(total).toBe(354);
+  const sideOf = (id) => result.output[id]?.side ?? null;
+
+  it("'both'는 출력 어디에도 없다", () => {
+    const sides = Object.values(result.output).map((entry) => entry.side);
+    expect(sides).not.toContain('both');
+    expect(new Set(sides)).toEqual(new Set(['left', 'right']));
+    expect(JSON.stringify(result.output)).not.toContain('both');
   });
 
-  it('사용자 trip 검증 표본 매핑 정확 (상대식/섬식/복합식)', () => {
-    expect(result.output['1-034']).toBe('left'); // 서울역 (섬식, alias)
-    expect(result.output['2-008']).toBe('right'); // 왕십리 (상대식)
-    expect(result.output['2-009']).toBe('right'); // 한양대 (상대식)
-    expect(result.output['2-011']).toBe('both'); // 성수 (복합식)
-    expect(result.output['5-032']).toBe('right'); // 마장 (상대식)
-  });
-
-  it('시종착역 override 적용 (lineTerminals 양쪽 문)', () => {
-    const lineTerminals = require('../../src/data/lineTerminals.json');
-    const stations = require('../../src/data/stations.json');
-    for (const line of SUPPORTED_LINES) {
-      const terminals = lineTerminals[line];
-      if (!terminals) continue;
-      for (const role of ['up', 'down']) {
-        const name = terminals[role];
-        // 2호선 내선/외선은 개념적 역명이라 stations.json에 없음 → skip
-        const station = stations.find((s) => s.line === line && s.name === name);
-        if (!station) continue;
-        expect(result.output[station.id]).toBe('both');
-      }
+  it('모든 항목은 출처 등급을 가진다', () => {
+    for (const entry of Object.values(result.output)) {
+      expect(entry.grade).toBe(GRADE_OFFICIAL_DERIVED);
     }
   });
 
-  it('right/left/both 합계 + unknown으로 354 stations 모두 분류', () => {
-    expect(result.stats.right).toBeGreaterThan(0);
-    expect(result.stats.left).toBeGreaterThan(0);
-    expect(result.stats.both).toBeGreaterThan(0);
+  it('사용자 단골역: 공식 형식과 일치하는 값', () => {
+    expect(sideOf('7-015')).toBe('right'); // 용마산 (상대식)
+    expect(sideOf('2-012')).toBe('right'); // 건대입구 2호선 (상대식)
+    expect(sideOf('7-019')).toBe('right'); // 건대입구 7호선 (상대식)
+    expect(sideOf('2-010')).toBe('right'); // 뚝섬 (상대식)
+    expect(sideOf('7-022')).toBe('right'); // 강남구청 7호선 (상대식)
+    expect(sideOf('5-035')).toBe('left'); // 군자 5호선 (섬식)
+    expect(sideOf('7-017')).toBe('right'); // 군자 7호선 (상대식)
+    expect(sideOf('7-018')).toBe('right'); // 어린이대공원 (상대식)
   });
 
-  it('unknownList는 각 항목이 stations.json id 포맷', () => {
-    for (const entry of result.unknownList) {
-      expect(entry).toHaveProperty('id');
-      expect(entry).toHaveProperty('line');
-      expect(entry).toHaveProperty('name');
-      expect(SUPPORTED_LINES).toContain(entry.line);
+  it('서울숲(수인분당)은 본 데이터셋(1~8호선) 밖이라 키가 없다', () => {
+    expect(result.output['bundang-052']).toBeUndefined();
+  });
+
+  it('두 CSV가 불일치하는 13개 역은 전부 null (성수 포함: 추정 금지)', () => {
+    const disagree = [
+      '2-011', // 성수 (심도 섬식 / 건축 복합식)
+      '2-034', // 신도림
+      '3-041', // 수서
+      '5-001', // 방화
+      '5-039', // 강동
+      '6-007', // 새절
+      '6-033', // 상월곡
+      '6-038', // 봉화산
+      '6-039', // 신내
+      '7-003', // 수락산
+      '7-021', // 청담
+      '7-042', // 온수
+    ];
+    for (const id of disagree) {
+      expect(result.output[id]).toBeUndefined();
     }
+    const reasons = Object.fromEntries(result.nullList.map((e) => [e.id, e.reason]));
+    expect(reasons['2-011']).toBe('format-disagree');
+    expect(reasons['7-003']).toBe('format-disagree');
   });
 
-  it('output JSON 키는 id 사전순(정렬)으로 출력', () => {
-    const writtenJson = writeSpy.mock.calls[0][1];
-    const parsed = JSON.parse(writtenJson);
-    const keys = Object.keys(parsed);
-    const sorted = keys.slice().sort((a, b) => a.localeCompare(b));
-    expect(keys).toEqual(sorted);
+  it('섬식(복합)/단선 → null, 사유는 depth-not-plain 또는 format-disagree', () => {
+    const reasons = Object.fromEntries(result.nullList.map((e) => [e.id, e.reason]));
+    expect(['depth-not-plain', 'format-disagree']).toContain(reasons['7-003']); // 수락산 섬식(복합)
+    expect(['depth-not-plain', 'format-disagree']).toContain(reasons['6-039']); // 신내 단선
   });
 
-  it('output 파일은 마지막 newline으로 끝남 (POSIX 호환)', () => {
+  it('종착역도 override 없이 CSV 형식대로 (암사·모란·마천·오금·응암)', () => {
+    expect(sideOf('8-001')).toBe('right'); // 암사 (상대식)
+    expect(sideOf('8-018')).toBe('right'); // 모란 (상대식)
+    expect(sideOf('5-046')).toBe('right'); // 마천 (상대식)
+    expect(sideOf('3-044')).toBe('right'); // 오금 (상대식)
+    expect(sideOf('6-001')).toBe('left'); // 응암 (섬식)
+  });
+
+  it('주행방향 미검증 1호선은 전부 null (running-side-unknown)', () => {
+    const line1 = Object.keys(result.output).filter((id) => id.startsWith('1-'));
+    expect(line1).toEqual([]);
+    const reasons = result.nullList.filter((e) => e.line === '1').map((e) => e.reason);
+    expect(reasons).toContain('running-side-unknown');
+  });
+
+  it('이름 불일치 13쌍이 별칭으로 매칭된다 (을지3가→을지로3가 등)', () => {
+    expect(sideOf('2-003')).toBe('right'); // 을지로3가
+    expect(sideOf('2-004')).toBe('right'); // 을지로4가
+    expect(sideOf('2-032')).toBe('right'); // 구로디지털단지 (depth: 구로디지털, 상대식)
+    const noRow = result.nullList.filter((e) => e.reason === 'no-depth-row').map((e) => e.name);
+    expect(noRow).not.toContain('을지로3가');
+    expect(noRow).not.toContain('구로디지털단지');
+  });
+
+  it('커밋된 src/data/platformExitSide.json은 build() 결과와 일치한다 (drift 방지)', () => {
+    const committed = JSON.parse(
+      fs.readFileSync(require('node:path').join(__dirname, '../../src/data/platformExitSide.json'), 'utf8'),
+    );
+    expect(committed).toEqual(result.output);
+  });
+
+  it('출력 키는 id 사전순, 파일 끝 newline', () => {
     const writtenJson = writeSpy.mock.calls[0][1];
+    const keys = Object.keys(JSON.parse(writtenJson));
+    expect(keys).toEqual(keys.slice().sort((a, b) => a.localeCompare(b)));
     expect(writtenJson.endsWith('\n')).toBe(true);
   });
 
-  it('unknown 리스트 콘솔 출력 — 90건 미만(데이터 회귀 detection)', () => {
-    // CSV 매핑이 깨지면 unknown이 폭증한다. 회귀 경보 게이트.
-    expect(result.stats.unknown).toBeLessThan(100);
+  it('stats: 1~8호선 354역 전부 분류(left+right+null)', () => {
+    const { left, right, unknown } = result.stats;
+    expect(left + right + unknown).toBe(354);
+    expect(result.stats).not.toHaveProperty('both');
   });
 });
 
-describe('build (defensive CSV/terminal edge paths)', () => {
-  // CSV defensive skip 경로(빈 행/짧은 행)와 lineTerminals 누락 분기 커버.
+describe('build (방어 경로: 합성 CSV)', () => {
+  const realRead = fs.readFileSync;
   let readSpy;
   let writeSpy;
   let logSpy;
-  const realRead = fs.readFileSync;
+
+  const DEPTH_HEADER = '연번,호선,역명,층수,형식,지반고\n';
+  const ARCH_HEADER = '"호선","역명","형식","층수"\n';
+
+  function mockFiles({ depth, arch, stations, aliases = {}, running }) {
+    readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, enc) => {
+      const name = String(file);
+      if (name.endsWith('서울교통공사_역사심도정보_20241104.csv')) return DEPTH_HEADER + depth;
+      if (name.endsWith('seoul-station-architecture.csv')) return ARCH_HEADER + arch;
+      if (name.endsWith('src/data/stations.json')) return JSON.stringify(stations);
+      if (name.endsWith('platform-name-aliases.json')) return JSON.stringify(aliases);
+      if (name.endsWith('line-running-side.json')) return JSON.stringify(running);
+      return realRead(file, enc);
+    });
+    writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => undefined);
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  }
 
   afterEach(() => {
     readSpy?.mockRestore();
@@ -251,110 +298,73 @@ describe('build (defensive CSV/terminal edge paths)', () => {
     logSpy?.mockRestore();
   });
 
-  it('CSV의 빈 행/짧은 행 + lineTerminals null 역명을 건너뛴다', () => {
-    // 두 CSV 모두 빈 행 + 헤더 외 1줄, depth는 컬럼 4개로 절단 → 모두 skip.
-    const archCsvWithEmpty =
-      '"호선","역명","형식","길이(M)","층수","면적(㎡)","준공년도"\n' +
-      '\n' + // 빈 행
-      '"x","y"\n' + // 짧은 행 (3 미만)
-      '"1","서울","섬식","210","B2","10805","1974"';
-    const depthCsvShort = '연번,호선,역명,층수\n' + '\n' + '1,1,서울,B2';
-    readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, enc) => {
-      if (String(file).endsWith('seoul-station-architecture.csv')) {
-        return archCsvWithEmpty;
-      }
-      if (String(file).endsWith('seoul-station-depth.csv')) {
-        return depthCsvShort;
-      }
-      if (String(file).endsWith('stations.json')) {
-        return JSON.stringify([{ id: '1-034', line: '1', name: '서울역' }]);
-      }
-      if (String(file).endsWith('lineTerminals.json')) {
-        // up은 정상, down은 null/undefined → !name 분기 트리거
-        return JSON.stringify({
-          1: { up: '서울역', down: null },
-          // SUPPORTED_LINES 밖 → 무시 분기 트리거
-          gyeongui: { up: '운천', down: '지평' },
-        });
-      }
-      return realRead(file, enc);
+  const RUNNING = {
+    1: { side: 'left' },
+    2: { side: 'right' },
+  };
+
+  it('좌측통행 노선은 좌/우가 반전된다 (테이블 주도)', () => {
+    mockFiles({
+      depth: '1,1,시청,B2,상대식,1\n2,1,서울,B2,섬식,1\n',
+      arch: '"1","시청","상대식","B2"\n"1","서울","섬식","B2"\n',
+      stations: [
+        { id: '1-001', line: '1', name: '시청' },
+        { id: '1-002', line: '1', name: '서울역' },
+      ],
+      running: RUNNING,
     });
-    writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => undefined);
-    logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
-    const { build: buildFn } = require('../build-platform-exit-side');
-    const r = buildFn();
-    // 1-034 = 서울역(섬식) + lineTerminals up='서울역' override → both
-    expect(r.output['1-034']).toBe('both');
-    expect(r.stats.both).toBe(1);
-    expect(r.stats.terminalOverride).toBe(1);
+    const r = build();
+    expect(r.output['1-001']).toEqual({ side: 'left', grade: GRADE_OFFICIAL_DERIVED });
+    expect(r.output['1-002']).toEqual({ side: 'right', grade: GRADE_OFFICIAL_DERIVED });
   });
 
-  it('CSV 미매칭 역은 rawFormat=null인 unknown 엔트리로 누적', () => {
-    readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, enc) => {
-      if (String(file).endsWith('seoul-station-architecture.csv')) {
-        return '"호선","역명","형식"';
-      }
-      if (String(file).endsWith('seoul-station-depth.csv')) {
-        return '연번,호선,역명,층수,형식';
-      }
-      if (String(file).endsWith('stations.json')) {
-        // CSV에 없는 역
-        return JSON.stringify([{ id: '9-001', line: '1', name: '가상역' }]);
-      }
-      if (String(file).endsWith('lineTerminals.json')) {
-        return JSON.stringify({});
-      }
-      return realRead(file, enc);
+  it('주행방향 테이블에 없는 노선/null 노선은 running-side-unknown', () => {
+    mockFiles({
+      depth: '1,2,시청,B2,상대식,1\n',
+      arch: '"2","시청","상대식","B2"\n',
+      stations: [{ id: '2-001', line: '2', name: '시청' }],
+      running: { 2: { side: null } },
     });
-    writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => undefined);
-    logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
-    const { build: buildFn } = require('../build-platform-exit-side');
-    const r = buildFn();
+    const r = build();
+    expect(r.output).toEqual({});
+    expect(r.nullList).toEqual([
+      { id: '2-001', line: '2', name: '시청', reason: 'running-side-unknown', depthFormat: '상대식', archFormat: '상대식' },
+    ]);
+  });
+
+  it('별칭: 심도 CSV 표기를 건축/stations 표기로 정규화한다', () => {
+    mockFiles({
+      depth: '1,2,을지3가,B2,상대식,1\n',
+      arch: '"2","을지로3가","상대식","B2"\n',
+      stations: [{ id: '2-003', line: '2', name: '을지로3가' }],
+      aliases: { '2|을지3가': '을지로3가' },
+      running: RUNNING,
+    });
+    const r = build();
+    expect(r.output['2-003']).toEqual({ side: 'right', grade: GRADE_OFFICIAL_DERIVED });
+  });
+
+  it('빈 행·짧은 행은 건너뛰고, 행이 없는 역은 no-depth-row', () => {
+    mockFiles({
+      depth: '\n1,2\n',
+      arch: '\n"x"\n',
+      stations: [{ id: '2-001', line: '2', name: '가상역' }],
+      running: RUNNING,
+    });
+    const r = build();
+    expect(r.nullList[0]).toMatchObject({ id: '2-001', reason: 'no-depth-row' });
     expect(r.stats.unknown).toBe(1);
-    expect(r.unknownList[0]).toEqual({
-      id: '9-001',
-      line: '1',
-      name: '가상역',
-      rawFormat: null, // lookup 자체가 null → rawFormat: null 분기
-    });
-  });
-});
-
-describe('build (no unknown list short-circuit)', () => {
-  // unknownList가 비어 있을 때 "사용자 검수 필요" 헤더 출력하지 않는 경로 커버.
-  // 실데이터로는 unknown=89 → fs.readFileSync mock으로 stations.json을 CSV 매칭 가능한
-  // 2개 역만으로 축소한 환경을 구성.
-  let writeSpy;
-  let logSpy;
-  let readSpy;
-  const realRead = fs.readFileSync;
-
-  afterEach(() => {
-    writeSpy?.mockRestore();
-    logSpy?.mockRestore();
-    readSpy?.mockRestore();
   });
 
-  it('unknownList가 비어 있으면 검수 헤더를 출력하지 않는다', () => {
-    readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, enc) => {
-      if (String(file).endsWith('stations.json')) {
-        return JSON.stringify([
-          { id: '2-008', line: '2', name: '왕십리' },
-          { id: '2-009', line: '2', name: '한양대' },
-        ]);
-      }
-      if (String(file).endsWith('lineTerminals.json')) {
-        // 시종착 override 없음 (2호선 내선/외선은 어차피 stations.json에 없음)
-        return JSON.stringify({});
-      }
-      return realRead(file, enc);
+  it('unknown이 비면 검수 헤더를 출력하지 않는다', () => {
+    mockFiles({
+      depth: '1,2,시청,B2,상대식,1\n',
+      arch: '"2","시청","상대식","B2"\n',
+      stations: [{ id: '2-001', line: '2', name: '시청' }],
+      running: RUNNING,
     });
-    writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => undefined);
-    logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
-    const { build: buildFn } = require('../build-platform-exit-side');
-    const r = buildFn();
-    expect(r.stats.unknown).toBe(0);
-    const allLogs = logSpy.mock.calls.map((c) => c[0]).join('\n');
-    expect(allLogs).not.toContain('unknown 리스트 (사용자 검수 필요)');
+    build();
+    const logs = logSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(logs).not.toContain('null 리스트');
   });
 });
