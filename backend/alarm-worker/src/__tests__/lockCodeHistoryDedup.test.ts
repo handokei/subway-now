@@ -296,14 +296,14 @@ describe('#3141 same-session register — lockCodeHistory carry / append / 새 �
     expect(stored?.lockCodeHistory).toEqual([OLD_CODE]);
   });
 
-  it('incoming lock이 다른 trainCode로 교체하면 old code가 append된다', async () => {
+  it('거부 케이스 — incoming이 다른 trainCode lock을 싣고 오면 새 세션이라 history를 이어받지 않는다', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, live({ lockCodeHistory: undefined }));
+    await putTrip(kv as unknown as KVNamespace, live());
     const res = await post(makeEnv(kv), body({ boardingLock: makeLock({ trainCode: '3048' }) }));
     expect(res.status).toBe(200);
     const stored = await getTrip(kv as unknown as KVNamespace, TOKEN);
     expect(stored?.boardingLock?.trainCode).toBe('3048');
-    expect(stored?.lockCodeHistory).toEqual([NEW_CODE]);
+    expect(stored?.lockCodeHistory).toBeUndefined();
   });
 
   it('거부 케이스 — 같은 trainCode 재송신은 history를 늘리지 않는다', async () => {

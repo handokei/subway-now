@@ -71,7 +71,7 @@ import {
 } from './liveActivity';
 import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
-import { attachTrainCodeForLeg } from './lockSwap';
+import { appendLockCodeHistory, attachTrainCodeForLeg } from './lockSwap';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
@@ -2632,6 +2632,29 @@ export function stationPassedFiredKey(
 }
 
 /**
+ * #3141 — station-passed 발사 여부 조회(현재 lock 번호 + `trip.lockCodeHistory`).
+ *
+ * 마커 키가 trainCode 단위라, lock 번호가 교체(vanish-swap / 재등록 교체 — 2호선 성수 renumber
+ * 3009→3045 실측)되면 옛 번호로 이미 알린 역이 새 번호로 재발사됐다. 이전 번호들의 키까지 함께
+ * 조회해 하나라도 있으면 "이미 발사"로 본다. KV read만 병렬(Promise.all)이고 신규 write는 없다.
+ * read 실패는 호출부의 기존 정책(보수적 진행 / 전파)을 그대로 따르도록 throw를 삼키지 않는다.
+ */
+async function isStationPassedFired(
+  env: Env,
+  trip: Trip,
+  lock: BoardingLockMeta,
+  stationName: string,
+): Promise<boolean> {
+  const codes = new Set([lock.trainCode, ...(trip.lockCodeHistory ?? [])]);
+  const found = await Promise.all(
+    [...codes].map(
+      async (code) => (await env.TRIPS.get(stationPassedFiredKey(trip.token, code, stationName))) !== null,
+    ),
+  );
+  return found.some(Boolean);
+}
+
+/**
  * #1370 — station-passed imminent push payload 빌더. arvlCd path와 vanish-fallback path가
  * 같은 payload 모양을 공유 (lock self-describing, subsurface flag, hopIndex forward 등). SonarCloud
  * 중복 차단 + 새 필드 추가 시 단일 지점 갱신을 위해 헬퍼로 추출.
@@ -3909,7 +3932,7 @@ export async function fireArvlCdStationPush(
   // 트리거 무관하게 보장한다(진입이 먼저 발사되면 뒤이은 도착은 dedup). 공용 마커는 arvlCd/position/
   // vanish-fallback 3경로가 모두 공유 → 경로 간 이중발사도 차단.
   const stationFiredKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
-  if ((await env.TRIPS.get(stationFiredKey)) !== null) {
+  if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) {
     stats.arvlCdFireDedup += 1;
     log('arvlcd-fire: station-passed dedup skip (already fired this station)', {
       token: trip.token.slice(0, 8),
@@ -4249,7 +4272,7 @@ export async function runMidCycleFireOnly(
     // 발사 *전* 그 키 하나만 조회하는 것은 새 KV 소비 유형이 아니라 기존 write에 대응하는 read를
     // 앞으로 당긴 것뿐이다 — listTrips/readSsot 등 광역 재조회 금지(F2/F3/F4)와는 무관.
     try {
-      if ((await env.TRIPS.get(dedupKey)) !== null) continue;
+      if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) continue;
     } catch {
       // read 실패는 보수적으로 계속 진행(발사 시도) — swallow.
     }
@@ -4446,7 +4469,7 @@ export async function fireSyncSkippedStationPasses(
     const dedupKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
     let alreadyFired = false;
     try {
-      alreadyFired = (await env.TRIPS.get(dedupKey)) !== null;
+      alreadyFired = await isStationPassedFired(env, trip, lock, waypoint.stationName);
     } catch {
       // read 실패는 보수적으로 계속 진행(발사 시도) — runMidCycleFireOnly와 동일 정책.
     }
@@ -4819,7 +4842,7 @@ export async function fireVanishFallbackStationPush(
   // #2571 — 경로 무관 station-passed dedup. arvlCd/position 경로가 이미 이 역을 발사했으면 skip
   // (역당 1개, #2506 유지 + 경로 간 이중발사 차단).
   const stationFiredKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
-  if ((await env.TRIPS.get(stationFiredKey)) !== null) {
+  if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) {
     log('vanish-fallback-fire: station-passed dedup skip (already fired this station)', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -5065,6 +5088,8 @@ async function attemptVanishSwap(
     trainCode: swapped.trainCode,
     expiresAt: Math.max(activeLock.expiresAt, swapped.expiresAt),
   };
+  // #3141 — 번호가 바뀐 lock: 옛 번호로 이미 알린 역을 새 번호가 재발사하지 않도록 이력에 남긴다.
+  trip.lockCodeHistory = appendLockCodeHistory(trip.lockCodeHistory, activeLock.trainCode);
   trip.boardingLock = newLock;
   trip.consecutiveEtaMissing = 0;
   return newLock;
@@ -6247,6 +6272,8 @@ export async function completeWaypointAdvance(
   const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;
   if (lockReleasedOnTransfer) {
     trip.boardingLock = undefined;
+    // #3141 — leg 전환: 이전 leg의 lock 번호 이력은 새 leg(다른 역·다른 열차)에 무의미하다.
+    trip.lockCodeHistory = undefined;
     trip.consecutiveEtaMissing = 0;
     await deleteProgress(env.TRIPS, trip.token);
   }

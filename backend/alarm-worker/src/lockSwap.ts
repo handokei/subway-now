@@ -43,6 +43,25 @@ import type { BoardingLockMeta, LineNumber, Trip, Waypoint } from './types';
 export const SWAP_LOCK_TTL_MS = 30 * 60 * 1000;
 
 /**
+ * #3141 — `Trip.lockCodeHistory` 상한. renumber는 한 trip에서 드물어(실측 leg당 1회) 작은 값으로
+ * 충분하다 — dedup 조회가 이 개수만큼 KV read를 늘리므로 상한이 곧 read 비용 상한이다.
+ */
+export const LOCK_CODE_HISTORY_MAX = 5;
+
+/**
+ * #3141 — 교체되는 이전 lock trainCode를 history 끝에 append한다(순수). 중복은 넣지 않고,
+ * 상한 초과 시 가장 오래된 것부터 버린다.
+ */
+export function appendLockCodeHistory(
+  history: readonly string[] | undefined,
+  previousTrainCode: string,
+): string[] {
+  const prior = history ?? [];
+  if (prior.includes(previousTrainCode)) return [...prior];
+  return [...prior, previousTrainCode].slice(-LOCK_CODE_HISTORY_MAX);
+}
+
+/**
  * 새 lock의 segmentStations 산출.
  *
  * `trip.waypoints[0]`(=새 line의 첫 waypoint)부터 시작해 같은 line이 유지되는 동안 stationName을 모은다.

@@ -129,6 +129,14 @@ export interface Trip {
    */
   boardingLock?: BoardingLockMeta;
   /**
+   * #3141 — 현 leg에서 lock trainCode가 교체되기 전의 이전 번호들(오래된 순, 상한
+   * `LOCK_CODE_HISTORY_MAX`). `stationPassedFiredKey`는 trainCode 단위라 renumber(vanish-swap,
+   * 재등록 교체) 후 옛 번호로 이미 알린 역이 새 번호로 재발사되던 것을, station-passed dedup이
+   * 현재 번호 + 이 history를 함께 조회해 막는다. same-session 재등록은 보존(index.ts), 새 세션과
+   * 환승 release(leg 전환)에서는 소거된다.
+   */
+  lockCodeHistory?: string[];
+  /**
    * 마지막으로 디바이스에 reschedule push로 통지한 도착 시각 (epoch ms) — boardingLock 추적용.
    * 새 관측이 이 값과 의미있게 어긋날 때만 push를 발사해 노이즈를 줄인다.
    */

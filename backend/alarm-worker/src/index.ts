@@ -1355,6 +1355,11 @@ app.post('/trips', async (c) => {
           // 유무만 봄)가 커버 못하는 "과거에 부착됐었다"는 사실이 소실된다. 명시 보존으로 방지.
           lockEverAttached: existing.lockEverAttached,
           boardingPromptResponded: existing.boardingPromptResponded,
+          // #3141 — lock 번호 교체 이력도 backend-only state. 재등록마다 `...incoming`(보내지 않는
+          // 필드)으로 덮이면 renumber 후 옛 번호로 알린 역의 dedup 근거가 사라진다. 교체 자체는
+          // append 지점(vanish-swap, scheduled.ts)에서 일어난다 — incoming이 다른 trainCode lock을
+          // 싣고 오면 `evaluateSameSession`이 새 세션으로 판정해 이 분기에 오지 않는다(아래 else).
+          lockCodeHistory: existing.lockCodeHistory,
         }
       : {
           ...incoming,
