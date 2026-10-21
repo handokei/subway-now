@@ -113,6 +113,11 @@ jest.mock('../../utils/lastSilentPushReceivedAt', () => ({
 const mockGetTripDeathPullBackendUrl = jest.fn<string | null, []>(() => null);
 const mockShouldCheckTripDeathOnSilentPush = jest.fn<boolean, unknown[]>(() => false);
 const mockCheckTripDeathByPull = jest.fn().mockResolvedValue('skipped');
+const mockHasFutureTripArrivalAlarm = jest.fn();
+jest.mock('../../utils/tripGone', () => ({
+  hasFutureTripArrivalAlarm: (...args: unknown[]) => mockHasFutureTripArrivalAlarm(...args),
+}));
+
 jest.mock('../../utils/tripDeathPullBackstop', () => ({
   getBackendUrl: () => mockGetTripDeathPullBackendUrl(),
   shouldCheckTripDeathOnSilentPush: (...args: unknown[]) =>
@@ -453,6 +458,7 @@ describe('silentPushTask', () => {
     mockCancelTripBoundOsQueue.mockResolvedValue(undefined);
     // #919 / #1370 — clearAllMocks가 mockImplementation을 reset하지 않으므로 명시 복구.
     mockRunTripBoundCleanups.mockResolvedValue(undefined);
+    mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
     // #2069 — trip-ended dedup 기록 기본값.
     mockAddFiredPushId.mockResolvedValue(undefined);
     // #2018 γ' — 기본 BG로 설정해 기존 테스트가 FG 분기 진입하지 않도록.
@@ -2835,6 +2841,60 @@ describe('silentPushTask', () => {
         mockGetCurrentTripCorrIdSync.mockReturnValueOnce('corr-abc');
         await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
         expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number), 'corr-abc');
+      });
+
+      describe('#3143 — 미발사 도착 알람이 있으면 유예(BG 안전: 알람은 OS가 발사, 정리는 다음 FG/launch)', () => {
+        it('대기 알람 있음 -> queue cancel/cleanup/sentinel/dedup 모두 안 함 + skipped ack + 유예 로그', async () => {
+          mockHasFutureTripArrivalAlarm.mockResolvedValue(true);
+          await handleSilentPush(
+            tripEndedPayload({ pushId: 'te-def', reason: 'expired', tripToken: 'tok-1' }),
+          );
+          expect(mockHasFutureTripArrivalAlarm).toHaveBeenCalledWith('tok-1');
+          expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
+          expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+          expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+          expect(mockSetTripEndedSentinel).not.toHaveBeenCalled();
+          expect(mockAddFiredPushId).not.toHaveBeenCalled();
+          expect(mockLogSilentPushSkipped).toHaveBeenCalledWith({
+            stationName: 'trip-ended:expired',
+            kind: undefined,
+            reason: 'trip-ended-defer-alarm',
+          });
+          expect(mockSendPushAck).toHaveBeenCalledWith({
+            pushId: 'te-def',
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'skipped',
+            reason: 'trip-ended:expired:defer-alarm',
+            permissionMode: 'always',
+          });
+        });
+
+        it('payload에 tripToken이 없으면 ACTIVE_TRIP_KEY로 조회한다', async () => {
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+            if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ACTIVE_TRIP_KEY) return 'active-tk';
+            return null;
+          });
+          mockHasFutureTripArrivalAlarm.mockResolvedValue(true);
+          await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+          expect(mockHasFutureTripArrivalAlarm).toHaveBeenCalledWith('active-tk');
+          expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+        });
+
+        it('대기 알람 없음(거부 케이스) -> 기존대로 cancel + cleanup', async () => {
+          mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
+          await handleSilentPush(tripEndedPayload({ reason: 'expired', tripToken: 'tok-1' }));
+          expect(mockCancelTripBoundOsQueue).toHaveBeenCalledTimes(1);
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('silent-push-trip-ended');
+        });
+
+        it('유예된 trip-ended는 알람 발사 후 재수신(또는 FG pull)에서 정리된다', async () => {
+          mockHasFutureTripArrivalAlarm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+          await handleSilentPush(tripEndedPayload({ reason: 'expired', tripToken: 'tok-1' }));
+          expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+          await handleSilentPush(tripEndedPayload({ reason: 'expired', tripToken: 'tok-1' }));
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        });
       });
 
       // #2120 (#2114 근본 수리 Phase 2) — corrId 인스턴스 가드.

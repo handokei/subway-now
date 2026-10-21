@@ -36,6 +36,7 @@ import { TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS } from '../../../shared/constants
 import { fetchTripStatus } from '../api/tripStatus';
 import { cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import { cleanupBackendConfirmedEndedTrip } from './tripEndedCleanupSequence';
+import { hasFutureTripArrivalAlarm } from './tripGone';
 import { handleTripGone } from './tripGoneSelfEnd';
 import { appendAlarmLog } from './alarmLog';
 import { createLogger } from '../../../shared/utils/logger';
@@ -132,7 +133,19 @@ export async function checkTripDeathByPull(
   }
   if (result.status === 'active') return 'alive';
 
-  // status === 'ended' — death 확정.
+  // status === 'ended' — death 확정. 단 미발사 도착 알람이 남아 있으면 유예(#3143): cancel도 cleanup도
+  // 하지 않는다. 알람 발사 후 다음 체크(FG tick/launch)에서 정리, 최후 보루는 9h backstop.
+  if (await hasFutureTripArrivalAlarm(activeTripToken)) {
+    appendAlarmLog({
+      ts: now,
+      source: 'lifecycle-backstop',
+      outcome: 'suppressed',
+      reason: 'trip-ended-defer-alarm',
+      stationName: `site=${site}`,
+    });
+    logger.info(`ended 유예: 대기 중 도착 알람 (site=${site})`);
+    return 'alive';
+  }
   logger.info(
     `trip dead confirmed via pull (site=${site}) reason=${result.endReason ?? 'unknown'}`,
   );

@@ -68,6 +68,11 @@ jest.mock('../../utils/tripGoneSelfEnd', () => ({
   handleTripGone: (...args: unknown[]) => mockHandleTripGone(...args),
 }));
 
+const mockHasFutureTripArrivalAlarm = jest.fn();
+jest.mock('../../utils/tripGone', () => ({
+  hasFutureTripArrivalAlarm: (...args: unknown[]) => mockHasFutureTripArrivalAlarm(...args),
+}));
+
 const mockFlushSignalDumpOutbox = jest.fn();
 jest.mock('../../api/signalDumpBackend', () => ({
   flushSignalDumpOutbox: (...args: unknown[]) => mockFlushSignalDumpOutbox(...args),
@@ -116,6 +121,7 @@ beforeEach(async () => {
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
   mockClearBackendSsotMirror.mockResolvedValue(undefined);
+  mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
   // #2045 Signal 4 — 기본은 null(판정 skip). 각 test가 필요 시 override.
   mockGetLastSilentPushReceivedAt.mockResolvedValue(null);
   mockGetTripStartedAt.mockResolvedValue(null);
@@ -210,6 +216,44 @@ describe('runLaunchTripReconciliation', () => {
       await runLaunchTripReconciliation();
       expect(mockClearSentinel).not.toHaveBeenCalled();
       expect(mockFetchTripStatus).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#3143 — ended 분기도 미발사 도착 알람이 있으면 유예', () => {
+    beforeEach(async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockFetchTripStatus.mockResolvedValue({
+        status: 'ended',
+        endedAt: 1_700_000_000_000,
+        endReason: 'destination-arrived',
+      });
+    });
+
+    it('대기 중 도착 알람 있음 -> cleanup 안 함 + ACTIVE_TRIP_KEY/destination 보존', async () => {
+      mockHasFutureTripArrivalAlarm.mockResolvedValue(true);
+      await runLaunchTripReconciliation();
+      expect(mockHasFutureTripArrivalAlarm).toHaveBeenCalledWith('tk');
+      expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+      expect(useDestinationStore.getState().destination).not.toBeNull();
+    });
+
+    it('대기 알람 없음(거부 케이스) -> 기존대로 cleanup', async () => {
+      mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+    });
+
+    it('유예된 트립은 알람 발사 후 다음 launch에서 정리된다', async () => {
+      mockHasFutureTripArrivalAlarm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
     });
   });
 
