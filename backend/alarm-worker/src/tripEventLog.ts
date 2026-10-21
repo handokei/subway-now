@@ -130,10 +130,9 @@ import { captureXEvent, hashTripToken } from './sentry';
  *
  * `promotion-rejected-uncorroborated` (#2824) — `/boarding-lock/sync`(index.ts)의 sync-promotion
  * (`isPromotionCorroborated`)이 device가 보낸 `payload.trainCode`가 `trip.recentPromptCandidates`
- * (TTL 15분)에도 `trip.legBoardingFireStamp.trainCode`에도 없어 lock 승격을 거부한 시점에 1건
- * append한다. `meta`에 `{ trainCode, line }`을 싣는다. #3144(v8 D2) — 두 신호가 모두 부재(프롬프트
- * 제시 이력 없음)여도 이제 거부하고 이 kind를 append한다(구 backward-safe 승격 폐기; 구 빌드 목록 탭
- * lock 거부 건수 = 이 kind). 신 빌드에서 >0이면 응답 lock 오거부 회귀 신호.
+ * (TTL 15분)에도 `trip.legResolveStreak.trainCode`에도 없어 lock 승격을 거부한 시점에 1건
+ * append한다. `meta`에 `{ trainCode, line }`을 싣는다. 두 신호가 모두 부재(한 번도 stamp된 적
+ * 없음)면 이 kind는 append되지 않고 기존대로 승격한다(backward-safe).
  *
  * `vanish-swap` (#2869, 진단 계측 전용) — 10/3 신당 고착 RCA의 "지상 attempt 0행" 블라인드
  * (RCA 하루 지연, R2 수동 소급 필요) 재발 방지. `meta.phase`로 두 전이를 구분한다:
@@ -235,8 +234,8 @@ export type TripEventKind =
   // #3144 (v8 D3, ADR-043) — backend가 trip.boardingLock을 **부착한 모든 지점** 1건. 171 leg-1 backend
   // lock의 출처(sync/boarding-confirm/ register resolver / cron resolver)를 D1만으로 가릴 수 없었던
   // 계측 공백을 메운다. `meta`={ path: LockAttachPath, trainCode, hasResponseMarker }, `station`=
-  // lock.segmentStations[0], `line`=lock.line. 목표(ADR-043): vanish-swap 외에 hasResponseMarker=false인
-  // 신규 attach 0(sync 승격은 프롬프트 제시 열차 corroboration으로 정당화되므로 false가 정상일 수 있다).
+  // lock.segmentStations[0], `line`=lock.line. 목표(ADR-043): 사용자 행위 3경로(confirm/sync)와 그 파생(vanish-swap)
+  // 외의 attach 0 — register/cron-leg1/cron-leg2는 hasResponseMarker=true일 때만 나타나야 한다.
   // 부착 시점 1회만 적재(tick 반복 아님) — KV write 추가 0.
   | 'lock-attached';
 

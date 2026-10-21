@@ -1371,12 +1371,9 @@ app.post('/trips', async (c) => {
           // 유무만 봄)가 커버 못하는 "과거에 부착됐었다"는 사실이 소실된다. 명시 보존으로 방지.
           lockEverAttached: existing.lockEverAttached,
           boardingPromptResponded: existing.boardingPromptResponded,
-          // #3144 (v8 D2·D3) — backend-only state 2종. device는 보내지 않는 필드라 `...incoming`이
-          // 항상 undefined로 덮는다(위 lockEverAttached/legResolveStreak 계열과 같은 클래스):
-          // - recentPromptCandidates: 프롬프트가 제시한 열차 목록. 재등록(~30s)마다 소실되면
-          //   `isPromotionCorroborated`(D2)가 정당한 응답 승격까지 거부한다.
-          // - boardingResponse: 현재 leg 응답 마커. 소실되면 D3 resolver 게이트가 영구히 닫힌다.
-          recentPromptCandidates: existing.recentPromptCandidates,
+          // #3144 (v8 D3) — boardingResponse: 현재 leg 응답 마커. backend-only state라 device가 보내지 않아
+          // `...incoming`이 항상 undefined로 덮는다(위 lockEverAttached/legResolveStreak 계열과 같은 클래스).
+          // 소실되면 D3 resolver 게이트가 영구히 닫힌다.
           boardingResponse: existing.boardingResponse,
         }
       : {
@@ -2739,7 +2736,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
     }
-    // #3144 (v8 D3-A, ADR-043) — 응답 마커의 유일한 writer. lock 해소 성공 여부와 무관하게 "[탑승] 응답이
+    // #3144 (v8 D3-A, ADR-043) — 응답 마커 writer 1/2(다른 하나는 /boarding-lock/sync 승격 = 수동 목록 탭). lock 해소 성공 여부와 무관하게 "[탑승] 응답이
     // 있었다"를 현재 leg(해소 후 최종 상태 기준, tapAdvance 반영)에 기록한다 — 해소 실패 시 이후
     // register/cron resolver가 이 마커를 근거로 재시도한다(10/13형 15분 뒤 해소 보존).
     working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
@@ -3673,12 +3670,14 @@ app.post('/boarding-lock/sync', async (c) => {
   // #2824 (#2780 형제, sync 경로) — 2026-09-28 D1 확정: 위 line 일치 검증만으로는 backend가 한 번도
   // 제시/관측한 적 없는 trainCode도 그대로 승격됐다(용마산7 leg-2에서 2018을 승격했으나 backend
   // live resolver는 3056만 봄, legResolveStreak 비어있음). `isPromotionCorroborated`가
-  // trip.recentPromptCandidates(boarding-prompt 발사 시 제시한 후보, TTL 내)/trip.legBoardingFireStamp
-  // 가 그 trainCode를 뒷받침할 때만 승격을 허용한다.
+  // trip.recentPromptCandidates(boarding-prompt 발사 시 제시한 후보, TTL 내)/trip.legResolveStreak
+  // (cron 자동 resolve streak) 중 하나라도 그 trainCode를 뒷받침할 때만 승격을 허용한다. 두 신호가
+  // 모두 부재(한 번도 stamp된 적 없음)면 검증 불가 상태이므로 backward-safe로 기존대로 승격한다
+  // (#2820 프롬프트 embed 열차 = candidateTrains 소속 → 항상 통과, 정당 반복열차도 후보에 있어 통과).
   //
-  // #3144 (v8 D2, ADR-043) — 과거엔 두 신호 부재 시 backward-safe로 승격했으나 171(10/20)에서 구 빌드
-  // 목록 탭 lock 3013이 그 분기로 승격돼 2011 프롬프트를 억제했다. 이제 증거 없음 = 거부, streak-only
-  // 도 거부(프롬프트가 제시한 열차가 아니다). 응답 유래 lock은 boarding-confirm 경로가 담당한다.
+  // #3144 (ADR-043) — 이 승격은 사용자 행위 3경로(LA 버튼 / 알림 프롬프트 탭 = boarding-confirm, 수동 목록
+  // 탭 = 이 sync) 중 하나다. 승격 성공 시 boarding-confirm과 같은 응답 마커를 세워 세 경로가 자동 resolver
+  // 게이트(D3)에서 동급이 되게 한다. corroboration 규칙 자체는 변경 없음(dev 그대로).
   if (
     working.boardingLock === undefined &&
     payload.trainCode !== undefined &&
@@ -3728,6 +3727,7 @@ app.post('/boarding-lock/sync', async (c) => {
           lastLaPushAt: undefined,
           consecutiveEtaMissing: 0,
         };
+        working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
         if (fastForward.skip > 0 || fastForward.blockedAt !== undefined) {
           if (fastForward.skip > 0) {
             await maybeMirrorLockSyncProgress(c.env.TRIPS, working, fastForward.skip);
@@ -3994,31 +3994,28 @@ export function extendTripExpiryOnActivity(trip: Trip, now: number): Trip {
 export const RECENT_PROMPT_CANDIDATES_TTL_MS = 15 * 60 * 1000;
 
 /**
- * #2824 (#2780 형제, sync 경로) — device가 `/boarding-lock/sync`(및 boarding-confirm body)로 보낸
- * `trainCode`가 backend가 **boarding-prompt로 실제 제시한** 열차인지 검증한다.
+ * #2824 (#2780 형제, sync 경로) — device가 `/boarding-lock/sync`로 보낸 `trainCode`가 backend가
+ * 실제로 제시/관측한 적 있는 열차인지 검증한다.
  *
- * #3144 (v8 D2, ADR-043) — "lock은 프롬프트 응답으로만". 통과 조건(OR, 둘 다 TTL 15분):
- * - `trip.recentPromptCandidates.trainCodes`에 포함 (프롬프트 발사 시 제시한 후보)
- * - `trip.legBoardingFireStamp.trainCode === trainCode` (leg 프롬프트 발사 stamp)
+ * 통과 조건(OR):
+ * - `trip.recentPromptCandidates.trainCodes`에 포함 && `now - firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS`
+ * - `trip.legResolveStreak?.trainCode === trainCode`
  *
- * 이전 판 대비 **뺀 것**:
- * - 두 신호 부재 시 backward-safe `true` — 171(10/20)에서 구 빌드 목록 탭 lock 3013이 이 분기로
- *   승격돼 2011 프롬프트를 억제했다. 증거 없음 = 거부.
- * - `legResolveStreak` 일치 — cron 자동 resolve가 관측한 열차이지 사용자에게 제시된 열차가 아니다
- *   (171류 "다음 열차"가 streak에 들어갈 수 있다).
- * 거부된 정당 응답은 boarding-confirm 경로에서 stamp/live 해소로 폴백한다.
+ * 두 신호가 모두 `undefined`(한 번도 stamp된 적 없음)면 검증 불가 상태이므로 backward-safe로
+ * `true`(기존대로 승격)를 반환한다 — false-reject 0 보장(#2820 프롬프트 embed 열차/정당 반복열차
+ * 무회귀). 신호가 하나라도 존재하는데 그 trainCode와 일치하지 않으면(완전 외래 값) `false`.
  */
 export function isPromotionCorroborated(trainCode: string, working: Trip, now: number): boolean {
-  const { recentPromptCandidates, legBoardingFireStamp } = working;
+  const { recentPromptCandidates, legResolveStreak } = working;
+  if (recentPromptCandidates === undefined && legResolveStreak === undefined) {
+    return true;
+  }
   const withinCandidateWindow =
     recentPromptCandidates !== undefined &&
     now - recentPromptCandidates.firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS &&
     recentPromptCandidates.trainCodes.includes(trainCode);
-  const withinStampWindow =
-    legBoardingFireStamp !== undefined &&
-    legBoardingFireStamp.trainCode === trainCode &&
-    now - legBoardingFireStamp.firedAt <= RECENT_PROMPT_CANDIDATES_TTL_MS;
-  return withinCandidateWindow || withinStampWindow;
+  const streakMatch = legResolveStreak?.trainCode === trainCode;
+  return withinCandidateWindow || streakMatch;
 }
 
 interface BoardingLockSyncPayload {
