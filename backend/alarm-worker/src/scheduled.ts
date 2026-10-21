@@ -4581,7 +4581,7 @@ export async function fireSyncSkippedStationPasses(
  *
  * 대상 = 소비 구간(`0..shiftedCount-1`) intermediate 중 `existing.waypoints[i+1]`(타깃)이 **미소비**
  * (`i+1 >= shiftedCount`)인 것. 타깃이 소비됐으면(관측역이 타깃 자신) 사용자가 이미 도착한 것이라 "곧
- * 도착" 알람은 무의미하다. 호출자는 `isBoardingLockActive`일 때만 부른다(lockless = 알림 없음).
+ * 도착" 알람은 무의미하다. lockless = 알림 없음(#3140)은 `maybeFire*`의 lock 게이트가 처리한다.
  * 트리거 평가는 `maybeFire*`가 소유한다 — 이 함수는 소비 구간에서 (직전역, 다음 waypoint) 쌍만 뽑는다.
  * 1역 전 고정은 `evaluate*Trigger`(waypoint, next 쌍 평가)에만 있다 — #3100(N역 전)은 거기서 쌍을 N칸으로
  * 넓히고 이 함수의 "타깃 미소비" 규칙은 그대로 쓴다.

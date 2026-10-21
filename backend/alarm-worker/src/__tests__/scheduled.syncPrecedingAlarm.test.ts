@@ -17,7 +17,7 @@ import {
   sleepAlarmFireKey,
   type SyncSkippedFireDeps,
 } from '../scheduled';
-import type { Env, Trip, Waypoint } from '../types';
+import type { BoardingLockMeta, Env, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
@@ -51,6 +51,15 @@ const I = (stationName: string): Waypoint => ({ stationName, line: '2', kind: 'i
 const T = (stationName: string): Waypoint => ({ stationName, line: '2', kind: 'transfer' });
 const D = (stationName: string): Waypoint => ({ stationName, line: '2', kind: 'destination' });
 
+const LOCK: BoardingLockMeta = {
+  trainCode: '2011',
+  line: '2',
+  subwayId: '1002',
+  selectedDepartureTime: NOW,
+  segmentStations: ['강남', '역삼', '선릉'],
+  expiresAt: NOW + 60 * 60_000,
+};
+
 function makeTrip(waypoints: Waypoint[], overrides: Partial<Trip> = {}): Trip {
   return {
     token: 'sync-alarm-tok',
@@ -61,6 +70,7 @@ function makeTrip(waypoints: Waypoint[], overrides: Partial<Trip> = {}): Trip {
     createdAt: NOW,
     alarmAtEpochMs: NOW - 60_000,
     sleepModeEnabled: true,
+    boardingLock: LOCK,
     ...overrides,
   };
 }
@@ -126,6 +136,11 @@ describe('#3157 — fireSyncConsumedPrecedingAlarms', () => {
     const r = await run(makeTrip([I('강남'), I('역삼'), I('삼성'), D('선릉')]), 3);
     // 소비 3개(강남, 역삼, 삼성) 중 타깃(선릉)의 직전역은 삼성뿐 — 알람 1회
     expect(r.collapseIds).toHaveLength(1);
+  });
+
+  it('거부 — lockless(boardingLock 없음): 발사 0 ("lock 없음 = 알림 없음")', async () => {
+    const r = await run(makeTrip([I('강남'), I('역삼'), D('선릉')], { boardingLock: undefined }), 2);
+    expect(r.pushTypes).toEqual([]);
   });
 
   it('이중 발사 없음 — cron이 이미 같은 타깃 키를 선점했으면 0', async () => {
