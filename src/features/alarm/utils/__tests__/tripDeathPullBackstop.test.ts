@@ -31,6 +31,11 @@ jest.mock('../tripGoneSelfEnd', () => ({
   handleTripGone: (...args: unknown[]) => mockHandleTripGone(...args),
 }));
 
+const mockHasFutureTripArrivalAlarm = jest.fn();
+jest.mock('../tripGone', () => ({
+  hasFutureTripArrivalAlarm: (...args: unknown[]) => mockHasFutureTripArrivalAlarm(...args),
+}));
+
 const mockAppendAlarmLog = jest.fn();
 jest.mock('../alarmLog', () => ({
   appendAlarmLog: (...args: unknown[]) => mockAppendAlarmLog(...args),
@@ -236,6 +241,54 @@ describe('checkTripDeathByPull', () => {
 
     expect(result).toBe('alive');
     expect(mockCleanupBackendConfirmedEndedTrip).not.toHaveBeenCalled();
+  });
+
+  describe('#3143 — ended 분기도 미발사 도착 알람이 있으면 유예(B의 deferred(alarm)와 동일)', () => {
+    beforeEach(async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockFetchTripStatus.mockResolvedValue({
+        status: 'ended',
+        endedAt: 1_700_000_000_000,
+        endReason: 'expired',
+      });
+    });
+
+    it('대기 중 도착 알람 있음 -> queue cancel/cleanup 모두 안 함, alive, 유예 로그', async () => {
+      mockHasFutureTripArrivalAlarm.mockResolvedValue(true);
+
+      await expect(checkTripDeathByPull(BASE_URL, 'fg-tick')).resolves.toBe('alive');
+
+      expect(mockHasFutureTripArrivalAlarm).toHaveBeenCalledWith('tk');
+      expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
+      expect(mockCleanupBackendConfirmedEndedTrip).not.toHaveBeenCalled();
+      expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'lifecycle-backstop',
+          outcome: 'suppressed',
+          reason: 'trip-ended-defer-alarm',
+        }),
+      );
+    });
+
+    it('대기 알람 없음(거부 케이스) -> 기존대로 cancel + cleanup', async () => {
+      mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
+
+      await expect(checkTripDeathByPull(BASE_URL, 'fg-tick')).resolves.toBe('ended');
+
+      expect(mockCancelTripBoundOsQueue).toHaveBeenCalledTimes(1);
+      expect(mockCleanupBackendConfirmedEndedTrip).toHaveBeenCalledWith(1_700_000_000_000);
+    });
+
+    it('유예된 트립은 알람 발사 후 다음 체크에서 정리된다', async () => {
+      mockHasFutureTripArrivalAlarm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      await expect(checkTripDeathByPull(BASE_URL, 'fg-tick')).resolves.toBe('alive');
+      await AsyncStorage.removeItem(TRIP_DEATH_PULL_LAST_CHECK_AT_KEY);
+
+      await expect(checkTripDeathByPull(BASE_URL, 'fg-tick')).resolves.toBe('ended');
+
+      expect(mockCancelTripBoundOsQueue).toHaveBeenCalledTimes(1);
+      expect(mockCleanupBackendConfirmedEndedTrip).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("status ended → death 확정: OS queue cancel + cleanup + alarmLog", async () => {
