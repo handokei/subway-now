@@ -15,6 +15,7 @@ import {
   selfPollKey,
   selfPollStationKey,
   SELF_POLL_POSITION_MAX_AGE_SEC,
+  SELF_POLL_REFRESH_MS,
   SELF_POLL_TTL_SEC,
   writeSelfPollPosition,
   writeSelfPollStationArrivals,
@@ -186,26 +187,16 @@ describe('readFreshSelfPollPosition (#2079 P2 — staleness 게이트)', () => {
     expect(stamp).toBeNull();
   });
 
-  it('pollLinesAndStamp의 내부 cache-hit 체크(raw readSelfPollPosition)는 60s 게이트 영향 없음 — write 감축 유지', async () => {
-    // #2079 P2 doc — readFreshSelfPollPosition의 staleness 게이트를 pollLinesAndStamp의 내부
-    // existing 체크에 적용하면 cron 60s tick과 60s 임계값이 겹쳐 #2073 회귀(매 tick 재fetch)가
-    // 재발한다. raw readSelfPollPosition은 게이트 없이 TTL(90s)만 본다.
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(NOW);
-      const kv = new InMemoryKV() as unknown as KVNamespace;
-      const seoul = makeSeoulClient({ positions: [makePosition()] });
-      await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
-      // 61s 후 — readFreshSelfPollPosition consumer 관점에선 stale이지만, raw reader는 여전히
-      // TTL(90s) 안쪽이라 cache-hit → 재fetch/재write 없음.
-      vi.setSystemTime(NOW + 61_000);
-      const putSpy = vi.spyOn(kv, 'put');
-      const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 61_000);
-      expect(putSpy).not.toHaveBeenCalled();
-      expect(stats).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
-    } finally {
-      vi.useRealTimers();
-    }
+  it('pollLinesAndStamp의 내부 cache-hit 체크는 readFreshSelfPollPosition 60s 게이트가 아니라 SELF_POLL_REFRESH_MS(45s)를 쓴다 (#3118)', async () => {
+    // #2079 P2 doc — 60s 게이트를 쓰면 cron 60s tick과 겹쳐 지터로 불안정. 45s 임계값은 :45~:46
+    // 지터를 흡수하면서 매 tick 재fetch를 보장한다. 30s 전 항목은 여전히 hit.
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const seoul = makeSeoulClient({ positions: [makePosition()] });
+    await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
+    const putSpy = vi.spyOn(kv, 'put');
+    const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 30_000);
+    expect(putSpy).not.toHaveBeenCalled();
+    expect(stats).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
   });
 });
 
@@ -344,7 +335,7 @@ describe('pollLinesAndStamp', () => {
     spy.mockRestore();
   });
 
-  it('#2073 (Issue TTL) — re-received (within TTL) tick performs 0 KV puts', async () => {
+  it('#2073/#3118 — 다음 tick(60s 후, TTL 90s 내)도 위치를 재fetch + put 1회 (구: 0 puts, 2-tick 갱신)', async () => {
     // InMemoryKV expiry is wall-clock based — fake timers required to simulate tick spacing.
     vi.useFakeTimers();
     try {
@@ -353,12 +344,12 @@ describe('pollLinesAndStamp', () => {
       const seoul = makeSeoulClient({ positions: [makePosition()] });
       await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
       // Next cron tick (60s later) — well within SELF_POLL_TTL_SEC(90s), so entry is still alive:
-      // existing !== null → cache-hit → fetch and put both skipped (0 writes this tick).
+      // entry는 살아있지만 fetchedAt 60s 경과 ≥ SELF_POLL_REFRESH_MS(45s) → 재fetch + put 1회 (#3118).
       vi.setSystemTime(NOW + 60_000);
       const putSpy = vi.spyOn(kv, 'put');
       const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 60_000);
-      expect(putSpy).not.toHaveBeenCalled();
-      expect(stats).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      expect(stats).toEqual({ fetched: 1, cacheHit: 0, error: 0 });
     } finally {
       vi.useRealTimers();
     }
@@ -494,5 +485,57 @@ describe('pollStationsAndStamp (#1828 Phase 5)', () => {
     );
     expect(stats.fetched).toBe(3);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('pollLinesAndStamp 위치 갱신 주기 (#3118, #2073 스펙: 매 tick fetch)', () => {
+  function countingSeoul() {
+    const seoul = makeSeoulClient({ positions: [makePosition()] });
+    const spy = vi.spyOn(seoul, 'fetchPositions');
+    return { seoul, spy };
+  }
+
+  it('fetchedAt 60s 전 항목 → 재fetch 1회 + put 1회 (cron 1 tick 경과)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await writeSelfPollPosition(kv, '7', [makePosition()], NOW);
+    const { seoul, spy } = countingSeoul();
+    const putSpy = vi.spyOn(kv, 'put');
+    const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 60_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(putSpy).toHaveBeenCalledTimes(1);
+    expect(stats).toEqual({ fetched: 1, cacheHit: 0, error: 0 });
+  });
+
+  it('fetchedAt 30s 전 항목 → fetch 0회 (이중 호출 흡수)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    await writeSelfPollPosition(kv, '7', [makePosition()], NOW);
+    const { seoul, spy } = countingSeoul();
+    const stats = await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW + 30_000);
+    expect(spy).not.toHaveBeenCalled();
+    expect(stats).toEqual({ fetched: 0, cacheHit: 1, error: 0 });
+  });
+
+  it('항목 없음 → fetch 1회', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const { seoul, spy } = countingSeoul();
+    await pollLinesAndStamp(kv, seoul, new Set(['7']), NOW);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('SELF_POLL_REFRESH_MS는 45s (cron :45~:46 지터 흡수)', () => {
+    expect(SELF_POLL_REFRESH_MS).toBe(45_000);
+  });
+
+  it('연속 3 tick(60s 간격, 지터 ±1s) 모두 위치 재fetch — 짝수/홀수 tick 무관', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const { seoul, spy } = countingSeoul();
+    const ticks = [NOW, NOW + 60_900, NOW + 120_100];
+    const results = [];
+    for (const t of ticks) {
+      results.push(await pollLinesAndStamp(kv, seoul, new Set(['7']), t));
+    }
+    expect(spy).toHaveBeenCalledTimes(ticks.length);
+    expect(results.map((r) => r.fetched)).toEqual([1, 1, 1]);
+    expect((await readSelfPollPosition(kv, '7'))?.fetchedAt).toBe(ticks[2]);
   });
 });

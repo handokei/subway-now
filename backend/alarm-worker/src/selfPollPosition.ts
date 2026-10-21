@@ -56,13 +56,23 @@ const SELF_POLL_STATION_PREFIX = 'selfPoll:station:';
  * `existing` cache-hit이 절대 성립하지 않고 line/station마다 매 tick 강제 재fetch + 재write를
  * 유발했다(활성 trip 1개 = write 600~900/시간, station stamp ×5가 지배적, 2026-07-29 quota audit).
  *
- * 90s로 상향(cron 60s의 1.5배)하면 direct 다음 tick(60s 후)엔 entry가 아직 살아있어
- * `pollLinesAndStamp`/`pollStationsAndStamp`의 기존 `existing` 캐시-히트 분기가 자연스럽게
- * fetch·write를 모두 skip한다("조건부 put" — TTL이 다음 tick까지 생존하므로 재기록 불필요).
- * entry가 실제로 만료된 tick(값이 바뀌었을 가능성이 있는 시점)에만 재fetch + 즉시 put해
- * 신선도를 유지한다. Seoul API rate limit 보호는 그대로 유지 — 90s에 1회 fetch 보장.
+ * 90s로 상향(cron 60s의 1.5배)하면 다음 tick(60s 후)에도 entry가 살아있어 소비자(`readFreshSelfPollPosition`)가
+ * 읽을 수 있다. 단 이 TTL은 "fetch 주기"가 아니라 "생존 기간"이다 — 위치 fetch 주기는
+ * `SELF_POLL_REFRESH_MS`가 정한다(#3118).
+ *
+ * 2026-10-21 발견(#3118): 원래 `pollLinesAndStamp`는 entry 존재만으로 cache hit 처리해, TTL 90s 때문에
+ * 위치가 2 tick에 1회만 갱신됐다(실제 동작은 "120s에 1회 fetch"). #2073 스펙은 매 tick fetch였으므로
+ * 위치 경로는 스펙 이탈이었고 `SELF_POLL_REFRESH_MS`로 복원했다. 역 stamp(`pollStationsAndStamp`, #1829)는
+ * 여전히 entry 존재 기준(변경 없음).
  */
 export const SELF_POLL_TTL_SEC = 90;
+
+/**
+ * #3118 — 위치 KV stamp 재fetch 임계(ms). `now - fetchedAt`이 이 값 이상이면 cache hit이 아니라 재fetch.
+ * cron tick이 :45~:46에 도착하므로 45s면 매 tick 재fetch가 보장되면서, 같은 tick의 이중 호출
+ * (수십 ms~수 초 간격)은 계속 흡수한다. 위치(`pollLinesAndStamp`) 전용 — 역 stamp는 해당 없음.
+ */
+export const SELF_POLL_REFRESH_MS = 45_000;
 
 /**
  * #2079 (P2, #2077 사후 리뷰 follow-up) — position consumer용 staleness 게이트(초).
@@ -277,7 +287,7 @@ export async function pollLinesAndStamp(
     Array.from(lines).map(async (line) => {
       try {
         const existing = await readSelfPollPosition(kv, line);
-        if (existing) {
+        if (existing && now - existing.fetchedAt < SELF_POLL_REFRESH_MS) {
           stats.cacheHit += 1;
           return;
         }
