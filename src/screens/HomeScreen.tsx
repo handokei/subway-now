@@ -87,6 +87,8 @@ import { useTripDeathForegroundBackstop } from '../features/alarm/hooks/useTripD
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
 import { usePrevTrainCandidate } from '../features/alarm/hooks/usePrevTrainCandidate';
+import { useAnchorDepartures } from '../features/alarm/hooks/useAnchorDepartures';
+import { buildDepartedTrainRows } from '../features/alarm/utils/departedTrainRows';
 import { useSafetyNetScheduler } from '../features/alarm/hooks/useSafetyNetScheduler';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useDestinationAutoClear, pickDestinationArvlCd } from '../features/alarm/hooks/useDestinationAutoClear';
@@ -1167,6 +1169,31 @@ export default function HomeScreen() {
     line: transferContext?.nextLine ?? null,
     currentArrivals: transferArrivals,
   });
+  // #3155 — 앵커역을 최근 10분 내 출발한 열차(backend 관측). 한 번 읽어 origin/transfer 두 목록이 공유하고,
+  // 슬롯별 필터(역·노선 일치, 10분 재검증)는 buildDepartedTrainRows가 한다. 필드 부재/실패는 빈 배열.
+  const anchorDepartures = useAnchorDepartures({ enabled: Boolean(destination && route) });
+  const originDepartedTrains = useMemo(
+    () =>
+      effectiveOrigin
+        ? buildDepartedTrainRows(
+            anchorDepartures,
+            { stationName: effectiveOrigin.name, line: approachLine ?? effectiveOrigin.line },
+            Date.now(),
+          )
+        : [],
+    [anchorDepartures, effectiveOrigin, approachLine],
+  );
+  const transferDepartedTrains = useMemo(
+    () =>
+      transferContext
+        ? buildDepartedTrainRows(
+            anchorDepartures,
+            { stationName: transferContext.transferStationInToLine.name, line: transferContext.nextLine },
+            Date.now(),
+          )
+        : [],
+    [anchorDepartures, transferContext],
+  );
   // #924 D1 — route 미설정 환승 자동 detect. 환승역 walking + 다른 노선 임박 ArrivalRow 신호 결합.
   // useFusedNearestStation은 NearestStationResult(단수)만 노출 — 본 hook 입력 NearestStationsResult로 재조합.
   const nearestStationsForDetect = useMemo(() => {
@@ -1962,6 +1989,8 @@ export default function HomeScreen() {
                                     // #2139 — 전열차(출발역을 방금 떠난 열차) 후보. 식별 불가 시 null이라
                                     // 기존 [현열차 | 다음열차] 렌더가 그대로 보존된다.
                                     prevTrain={prevTrain}
+                                    // #3155 — 앵커역을 최근 10분 내 출발한 열차("이미 출발" 섹션). 빈 배열이면 섹션 없음.
+                                    departedTrains={originDepartedTrains}
                                     // #2330 — backend legConsensus confirmed 제안. null이면 배지 미노출.
                                     consensusSuggestion={consensusSuggestion}
                                   />
@@ -2012,6 +2041,8 @@ export default function HomeScreen() {
                                   // #2179 — 전열차(환승역을 방금 떠난 열차) 후보. 식별 불가 시 null이라
                                   // 기존 [현열차 | 다음열차] 렌더가 그대로 보존된다.
                                   prevTrain={transferPrevTrain}
+                                  // #3155 — 환승역을 최근 10분 내 출발한 열차("이미 출발" 섹션).
+                                  departedTrains={transferDepartedTrains}
                                   // #2330 — 환승 leg도 동일 legConsensus SSOT(lockSuggestion)를 공유.
                                   consensusSuggestion={consensusSuggestion}
                                 />

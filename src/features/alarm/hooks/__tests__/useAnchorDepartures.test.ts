@@ -34,6 +34,31 @@ describe('useAnchorDepartures (#3155)', () => {
     expect(mockedFetch).toHaveBeenCalledWith('tk', 'https://api.test.dev');
   });
 
+  it('30초마다 다시 조회하고, enabled=false인 동안의 tick은 조회하지 않는다', async () => {
+    jest.useFakeTimers();
+    try {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockedFetch.mockResolvedValue(VIEW);
+      const { rerender } = renderHook(
+        ({ enabled }: { enabled: boolean }) => useAnchorDepartures({ enabled }),
+        { initialProps: { enabled: true } },
+      );
+      await act(async () => {});
+      expect(mockedFetch).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(30_000);
+      });
+      expect(mockedFetch).toHaveBeenCalledTimes(2);
+      rerender({ enabled: false });
+      await act(async () => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(mockedFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('enabled=false면 조회하지 않는다', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     renderHook(() => useAnchorDepartures({ enabled: false }));

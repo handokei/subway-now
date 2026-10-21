@@ -59,6 +59,35 @@ describe('fetchAnchorDepartures (#3155)', () => {
     ).toBeNull();
   });
 
+  it('fetchImpl 미지정이면 전역 fetch를 쓴다', async () => {
+    const globalFetch = jest.fn().mockResolvedValue(jsonResponse({ station: 'A', line: '2', departed: [] }));
+    const original = global.fetch;
+    global.fetch = globalFetch as unknown as typeof fetch;
+    try {
+      expect(await fetchAnchorDepartures('tk', 'https://api.test.dev')).toEqual({ station: 'A', line: '2', departed: [] });
+      expect(globalFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      global.fetch = original;
+    }
+  });
+
+  it('5초 안에 응답이 없으면 abort하고 null — 목록 렌더를 막지 않는다', async () => {
+    jest.useFakeTimers();
+    try {
+      const hanging = jest.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      );
+      const pending = fetchAnchorDepartures('tk', 'https://api.test.dev', hanging as unknown as typeof fetch);
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(await pending).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('네트워크 오류/JSON 파싱 오류도 throw 없이 null', async () => {
     expect(
       await fetchAnchorDepartures('tk', 'https://api.test.dev', jest.fn().mockRejectedValue(new Error('net'))),

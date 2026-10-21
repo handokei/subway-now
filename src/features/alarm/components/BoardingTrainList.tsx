@@ -34,6 +34,7 @@ import {
   buildPrevTrainLabel,
 } from '../../../shared/constants/labels';
 import type { PrevTrainCandidate } from '../hooks/usePrevTrainCandidate';
+import type { DepartedTrainRow } from '../utils/departedTrainRows';
 import stationsData from '../../../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -211,6 +212,12 @@ interface Props {
    * 100% 보존(모든 row가 nextStationLabel 사용).
    */
   offRouteTrainCodes?: ReadonlySet<string>;
+  /**
+   * #3155 — 이 목록의 역을 최근 10분 내 이미 출발한 열차(backend 관측, 최근 출발 순). 접근 중 목록 아래
+   * "이미 출발" 섹션으로 렌더하고, 탭은 다른 행과 동일하게 onSelect(row.train) — 수동 탭 경로 재사용.
+   * 미전달/빈 배열이면 섹션 없음(기존 렌더 100% 보존, 구버전 backend 호환).
+   */
+  departedTrains?: readonly DepartedTrainRow[];
 }
 
 /**
@@ -260,7 +267,10 @@ export function BoardingTrainList({
   prevTrain = null,
   consensusSuggestion = null,
   offRouteTrainCodes,
+  departedTrains: departedTrainsProp = [],
 }: Props) {
+  // #3155 — 호출자가 정렬해 넘겨도 최근 출발이 맨 위라는 계약은 표시 쪽에서도 보장한다.
+  const departedTrains = [...departedTrainsProp].sort((a, b) => b.departedAtMs - a.departedAtMs);
   const { colors } = useTheme();
   const { t } = useTranslation();
   // #1165 낙관적 탭 — 즉시 시각 피드백 + 중복 탭 방지.
@@ -397,7 +407,7 @@ export function BoardingTrainList({
     train: ArrivalInfo,
     sequenceText: string,
     arrivalText: string | null,
-    testKeyPrefix: 'boarding-train' | 'boarding-train-prev',
+    testKeyPrefix: 'boarding-train' | 'boarding-train-prev' | 'boarding-train-departed',
     isPrev = false,
   ) => {
     const unreachable = !isPrev && isUnreachable(train);
@@ -530,7 +540,13 @@ export function BoardingTrainList({
   const consensusMatchedInList =
     consensusSuggestion != null &&
     (filteredArrivals.some((t) => t.trainCode === consensusSuggestion.trainCode) ||
-      prevTrain?.train.trainCode === consensusSuggestion.trainCode);
+      prevTrain?.train.trainCode === consensusSuggestion.trainCode ||
+      departedTrains.some(({ train }) => train.trainCode === consensusSuggestion.trainCode));
+  // #3155 — backend 출발 기록이 같은 열차를 이미 담고 있으면 device 추정 전열차 행은 중복이라 생략.
+  const prevTrainRow =
+    prevTrain != null && !departedTrains.some(({ train }) => train.trainCode === prevTrain.train.trainCode)
+      ? prevTrain
+      : null;
   const showConsensusTrackingBadge = consensusSuggestion != null && !consensusMatchedInList;
 
   // #1177: 4가지 state 구분 — error > loading > empty > data. 낙관적 UI 도입(#1165) 후
@@ -609,7 +625,8 @@ export function BoardingTrainList({
 
   // #2139 — prevTrain(전열차)이 있으면 도착 예정 목록이 비어도 선택 가능한 row가 최소 1개 있으므로
   // empty placeholder 대신 아래 정상 list 렌더(전열차 row만 노출)로 진행한다.
-  if (filteredArrivals.length === 0 && prevTrain == null) {
+  // #3155 — 출발 섹션 행이 있어도 선택 가능한 row가 있으므로 empty placeholder 대신 정상 list 렌더.
+  if (filteredArrivals.length === 0 && prevTrainRow == null && departedTrains.length === 0) {
     return (
       <View
         style={compact ? styles.emptyCompact : styles.empty}
@@ -655,14 +672,14 @@ export function BoardingTrainList({
           </Text>
         </View>
       )}
-      {prevTrain != null &&
+      {prevTrainRow != null &&
         renderRow(
-          prevTrain.train,
-          buildPrevTrainLabel(prevTrain.elapsedSeconds),
+          prevTrainRow.train,
+          buildPrevTrainLabel(prevTrainRow.elapsedSeconds),
           // #2697 — stamp된 실제 A역 도착 시각이 있으면 노출(과거형 라벨). stamp 불가(degrade)면
           // 기존 동작대로 시각 라인 생략(elapsedSeconds 기반 상대 라벨만 위 sequenceText로 유지).
-          prevTrain.arrivedAtMs != null
-            ? buildPrevTrainArrivalLabel(formatClockTime(prevTrain.arrivedAtMs))
+          prevTrainRow.arrivedAtMs != null
+            ? buildPrevTrainArrivalLabel(formatClockTime(prevTrainRow.arrivedAtMs))
             : null,
           'boarding-train-prev',
           true,
@@ -686,6 +703,27 @@ export function BoardingTrainList({
         const arrivalText = `${formatArrivalClock(train)} 도착 예정`;
         return renderRow(train, sequenceText, arrivalText, 'boarding-train');
       })}
+      {/* #3155 — 이미 출발한 열차(최근 10분, 최근 출발 순). 접근 중 목록 아래에 헤더로 구분해 둔다 —
+          첫 행이 다음 열차라 오선택한 trip 171 재발 방지. 탭은 다른 행과 같은 수동 탭 경로. */}
+      {departedTrains.length > 0 && (
+        <Text
+          style={[typography.label, { color: colors.muted }, styles.departedHeader]}
+          testID="boarding-train-departed-header"
+        >
+          {t('home.boardingTrainDepartedTitle')}
+        </Text>
+      )}
+      {departedTrains.map(({ train, departedAtMs, currentStation }) =>
+        renderRow(
+          train,
+          currentStation
+            ? t('home.boardingTrainDepartedAt', { time: formatClockTime(departedAtMs), station: currentStation })
+            : t('home.boardingTrainDepartedAtNoStation', { time: formatClockTime(departedAtMs) }),
+          null,
+          'boarding-train-departed',
+          true,
+        ),
+      )}
     </View>
   );
 }
@@ -736,6 +774,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  departedHeader: {
+    paddingTop: spacing.sm,
   },
   row: {
     flexDirection: 'row',

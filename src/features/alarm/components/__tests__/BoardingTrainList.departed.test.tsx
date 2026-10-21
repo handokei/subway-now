@@ -116,6 +116,20 @@ describe('BoardingTrainList — 이미 출발 섹션 (#3155)', () => {
     expect(getByTestId('boarding-train-departed-row-2011')).toBeTruthy();
   });
 
+  it('consensus 제안 열차가 출발 섹션에 있으면 "다음 열차 추적 중" 배지를 따로 띄우지 않고 그 행에 "추정" 배지를 단다', () => {
+    const { queryByTestId, getByTestId } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[makeTrain()]}
+        line="2"
+        onSelect={() => {}}
+        consensusSuggestion={{ trainCode: '2011' }}
+        departedTrains={[makeDeparted('2011', T_2011, '성수')]}
+      />,
+    );
+    expect(queryByTestId('boarding-train-list-consensus-tracking')).toBeNull();
+    expect(getByTestId('boarding-train-departed-consensus-badge-2011')).toBeTruthy();
+  });
+
   it('device prevTrain(전열차)과 같은 열차가 출발 섹션에 있으면 전열차 행은 중복 노출하지 않는다', () => {
     const { queryByTestId, getByTestId } = renderWithTheme(
       <BoardingTrainList
