@@ -879,6 +879,12 @@ export interface SendBoardingPromptPushOptions {
    */
   trainCode?: string;
   /**
+   * #3146 — aps.sound 제어. 미지정=`BOARDING_PROMPT_SOUND`(hop-end 호출부 불변), `null`=aps.sound
+   * 키 생략(무음 배너, `sendAlertPush` #2063 의미 승계). LA 프롬프트 alert가 성공한 경우에만
+   * 호출부가 null을 넘겨 이중 울림을 막는다.
+   */
+  sound?: string | null;
+  /**
    * #2034 — hop-end (환승역 하차) 프롬프트 분기 신호. 미지정 = 일반 boarding prompt (승차).
    * 'disembark' = "하차했나요?" 프롬프트. device 가 payload 를 파싱해 title/body/버튼 액션 매핑을
    * 분기 처리. hop-end 시 caller 는 `nextLine` / `nextStation` 도 함께 전달해 UI 에 "다음 열차:
@@ -966,7 +972,7 @@ export async function sendBoardingPromptPush(
         // 구 device(필드 무시) 및 subtitle 없는 케이스와 byte-level 호환.
         ...(options.subtitle !== undefined ? { subtitle: options.subtitle } : {}),
       },
-      sound: BOARDING_PROMPT_SOUND,
+      ...(options.sound === null ? {} : { sound: options.sound ?? BOARDING_PROMPT_SOUND }),
       // #2282 — hop-end(disembark) 질문은 승차 질문과 버튼 의미가 달라 전용 category로 분기.
       category:
         options.hopEndKind === 'disembark'

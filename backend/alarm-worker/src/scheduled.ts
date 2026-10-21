@@ -7969,43 +7969,110 @@ async function fireBoardingPromptForAnchor(inputs: {
   );
 
   const pushId = generatePushId();
-  const heal = await sendWithEnvHeal(
-    (host) =>
-      sendBoardingPromptPush({
-        deviceToken: resolveTripDeviceToken(trip),
-        pushId,
-        title,
-        body,
-        originStation: station,
-        line,
-        tripToken: trip.token,
-        sentAt: now,
-        triggerKind: 'cron',
-        destinationDirection: direction ?? undefined,
-        subtitle:
-          direction !== null ? `${line}호선 ${direction === 'up' ? '상행' : '하행'}방면` : undefined,
-        candidateTrains,
-        trainCode: selectedTrainCode ?? undefined,
-        collapseId: boardingPromptCollapseId(trip.token),
-        config: deps.apnsConfig,
-        host,
-        fetchImpl: deps.fetchImpl,
-        now,
-      }),
-    trip.apnsEnv,
-    deps.apnsHosts,
-    log,
-    trip.token.slice(0, 8),
-    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  let dirty = false;
+
+  // #3146 — LA alert를 **먼저** 보내고, 성공(+신선)이면 일반 알림을 무음으로 보낸다(이중 울림 제거).
+  // 신선도 가드(b): LA 200은 "APNs 수락"일 뿐이라 사용자가 LA를 안 볼 수 있다. heartbeat가
+  // `LA_STALE_AUTO_END_MS`(backend 자체의 stale 정의) 넘게 침묵했거나 heartbeat 기록 자체가 없거나
+  // (`lastLaPushAt` waypoint shift reset → fail-closed) activityState!=='live'면 소리를 유지한다.
+  // 한계(추정): swipe dismiss된 LA는 heartbeat가 200을 받는 한 이 가드를 통과한다.
+  const laPushAgeMs = trip.lastLaPushAt === undefined ? null : now - trip.lastLaPushAt;
+  const laLive = Boolean(trip.activityPushToken) && trip.activityState === 'live';
+  const soundGuard: PromptSoundGuard = !laLive
+    ? 'not-live'
+    : laPushAgeMs === null || laPushAgeMs > LA_STALE_AUTO_END_MS
+      ? 'stale'
+      : 'none';
+  const laStartedAt = Date.now();
+  const la: PromptLaAlertOutcome = laLive
+    ? await firePromptLaAlertWithinBudget({ trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body })
+    : { sent: false, dirty: false, budgetExceeded: false };
+  const laMs = Date.now() - laStartedAt;
+  if (la.dirty) dirty = true;
+  const silenceNotification = la.sent && soundGuard === 'none';
+
+  let heal: EnvHealResult | undefined;
+  try {
+    heal = await sendWithEnvHeal(
+      (host) =>
+        sendBoardingPromptPush({
+          deviceToken: resolveTripDeviceToken(trip),
+          pushId,
+          title,
+          body,
+          originStation: station,
+          line,
+          tripToken: trip.token,
+          sentAt: now,
+          triggerKind: 'cron',
+          destinationDirection: direction ?? undefined,
+          subtitle:
+            direction !== null ? `${line}호선 ${direction === 'up' ? '상행' : '하행'}방면` : undefined,
+          candidateTrains,
+          trainCode: selectedTrainCode ?? undefined,
+          collapseId: boardingPromptCollapseId(trip.token),
+          sound: silenceNotification ? null : BOARDING_PROMPT_SOUND,
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+      { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+    );
+  } catch (e) {
+    // LA가 이미 나갔다면 사용자는 프롬프트를 받았다 — 예외로 fire-once stamp를 건너뛰면 다음
+    // cycle이 소리 있는 LA를 또 쏜다. LA도 못 나갔으면 기존처럼 전파(단 LA 단계의 dirty는 보존).
+    if (!la.sent) {
+      if (dirty) await putTrip(env.TRIPS, trip);
+      throw e;
+    }
+    log(`${logPrefix}: notification threw after la alert`, {
+      token: trip.token.slice(0, 8),
+      error: String(e),
+    });
+  }
+
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'prompt-sound-channel',
+      station,
+      line,
+      meta: {
+        laOk: la.sent,
+        notificationSilenced: silenceNotification,
+        guard: soundGuard,
+        laPushAgeMs,
+        laBudgetExceeded: la.budgetExceeded,
+        laMs,
+      },
+    },
+    now,
   );
 
-  let dirty = false;
-  if (heal.correctedEnv) {
+  const notificationOk = heal?.result.ok === true;
+  if (heal?.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;
     dirty = true;
     stats.envCorrected += 1;
   }
-  if (heal.result.ok) {
+  if (heal !== undefined && !notificationOk) {
+    stats.errors += 1;
+    log(`${logPrefix}: push failed`, {
+      token: trip.token.slice(0, 8),
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+    await logBoardingPromptPushFailure(env, trip, heal);
+  }
+  // 알림 ok OR LA ok — 어느 채널이든 사용자에게 프롬프트가 나갔으면 fire-once를 stamp한다(알림 실패 +
+  // LA 성공에서 다음 cycle이 소리 있는 LA를 재발사하는 이중 울림 방지).
+  if (notificationOk || la.sent) {
     stats.silentPushFiredByKind.boardingPrompt += 1;
     // #2838 — 발사 성공 직후에만 stamp(매 cycle write 금지, #2073 quota).
     await stampBoardingPromptFireOnce(env.TRIPS, trip.token, fireOnceAnchorKey, now);
@@ -8021,80 +8088,120 @@ async function fireBoardingPromptForAnchor(inputs: {
       line,
       gateDecision: gate.decision,
     });
-    // #2854 — 발사 성공 순간 LA도 alert(배너+소리)로 병행 갱신. 이 발사 성공 분기 안에서만
-    // 시도하므로 dedup/게이트는 위에서 이미 처리된 것을 그대로 상속(신규 게이트 추가 없음).
-    // 실패는 무해 — notification 프롬프트는 이미 발사됐으므로 LA push 실패가 이 흐름을
-    // 막으면 안 된다(try/catch + stats만).
-    if (trip.activityPushToken && trip.activityState === 'live') {
-      try {
-        const ssot = await readSsot(env.TRIPS, trip.token, {
-          cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-        });
-        const currentStationName = resolveCurrentStationName(trip, ssot);
-        const anchorWaypoint: Waypoint =
-          trip.waypoints[0] ?? { stationName: station, line, kind: 'intermediate' };
-        const laContentState: LiveActivityContentState = {
-          // #2962 — 6번째 인자로 이 발사의 selectedTrainCode를 override. pre-boarding 단계는
-          // trip.boardingLock이 아직 없어(사용자가 아직 탑승 확인 전) 기본 폴백이 undefined가
-          // 되므로, 이 특정 alert가 어느 열차를 가리키는지(27분차/30분차 등)를 명시해야
-          // LA [탑승] 버튼이 올바른 trainCode를 backend로 forward할 수 있다.
-          ...buildLiveActivityContentState(
-            anchorWaypoint,
-            etaSeconds,
-            trip.waypoints.length,
-            trip,
-            currentStationName,
-            selectedTrainCode ?? undefined,
-          ),
-          // #2434 — BoardingPromptView/BoardingIntents(→boarding-confirm)가 렌더/처리하는
-          // 버튼 컨텍스트. Swift ContentState 필드명과 정확히 일치해야 decode된다.
-          boardingPhase: 'pre-boarding',
-          boardingPromptTripToken: trip.token,
-          boardingPromptOriginStation: station,
-          boardingPromptLine: line,
-          boardingAlertTitle: title,
-          boardingAlertBody: body,
-        };
-        const laPushSentBefore = stats.laPushSent;
-        const laResult = await fireLiveActivityUpdate(
-          trip,
-          laContentState,
-          deps,
-          stats,
-          now,
-          log,
-          undefined,
-          // #3108 — 소리 없는 alert는 확장 표시/배너가 무음이라 인지 불가. 일반 알림 프롬프트와 동일 소리.
-          { title, body, sound: BOARDING_PROMPT_SOUND },
-        );
-        if (laResult.dirty) dirty = true;
-        if (stats.laPushSent > laPushSentBefore) {
-          stats.boardingPromptLaAlertFired += 1;
-          log(`${logPrefix}: la alert fired`, {
-            token: trip.token.slice(0, 8),
-            station,
-            line,
-          });
-        }
-      } catch (e) {
-        log(`${logPrefix}: la alert threw`, {
-          token: trip.token.slice(0, 8),
-          error: String(e),
-        });
-      }
-    }
-  } else {
-    stats.errors += 1;
-    log(`${logPrefix}: push failed`, {
-      token: trip.token.slice(0, 8),
-      status: heal.result.status,
-      reason: heal.result.reason,
-    });
-    await logBoardingPromptPushFailure(env, trip, heal);
   }
 
   if (dirty) {
     await putTrip(env.TRIPS, trip);
+  }
+}
+
+/** #3146 — 프롬프트 LA alert 단계 시간 예산. 초과 시 일반 알림이 소리를 유지한 채 즉시 나간다. */
+export const LA_PROMPT_BUDGET_MS = 1500;
+
+/** #3146 — 일반 알림 무음 결정 가드. none=통과, stale=heartbeat 신선도 실패, not-live=LA 미시도. */
+type PromptSoundGuard = 'none' | 'stale' | 'not-live';
+
+interface PromptLaAlertOutcome {
+  sent: boolean;
+  dirty: boolean;
+  budgetExceeded: boolean;
+}
+
+interface PromptLaAlertInputs {
+  trip: Trip;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  logPrefix: string;
+  station: string;
+  line: string;
+  etaSeconds: number | null;
+  selectedTrainCode: string | null;
+  title: string;
+  body: string;
+}
+
+/**
+ * #3146 — `firePromptLaAlert`를 `LA_PROMPT_BUDGET_MS` 안에서만 기다린다. 초과하면 sent=false로
+ * 간주(→ 일반 알림 소리 유지); 늦게 성공한 LA는 이중 울림이 될 수 있으나 수용(소리 miss보다 낫다).
+ * `firePromptLaAlert`는 예외를 삼키므로 race에서 진 promise가 unhandled rejection이 되지 않는다.
+ */
+async function firePromptLaAlertWithinBudget(inputs: PromptLaAlertInputs): Promise<PromptLaAlertOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<'budget-exceeded'>((resolve) => {
+    timer = setTimeout(() => resolve('budget-exceeded'), LA_PROMPT_BUDGET_MS);
+  });
+  try {
+    const outcome = await Promise.race([firePromptLaAlert(inputs), budget]);
+    return outcome === 'budget-exceeded' ? { sent: false, dirty: false, budgetExceeded: true } : outcome;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * #2854 — 프롬프트 순간 LA도 alert(배너+소리)로 병행 갱신. 실패는 무해(예외 삼킴, stats만) —
+ * 호출부는 `sent`로 일반 알림 소리 여부를 결정한다(#3146).
+ */
+async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaAlertOutcome> {
+  const { trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body } = inputs;
+  try {
+    const ssot = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    const currentStationName = resolveCurrentStationName(trip, ssot);
+    const anchorWaypoint: Waypoint =
+      trip.waypoints[0] ?? { stationName: station, line, kind: 'intermediate' };
+    const laContentState: LiveActivityContentState = {
+      // #2962 — 6번째 인자로 이 발사의 selectedTrainCode를 override. pre-boarding 단계는
+      // trip.boardingLock이 아직 없어(사용자가 아직 탑승 확인 전) 기본 폴백이 undefined가
+      // 되므로, 이 특정 alert가 어느 열차를 가리키는지(27분차/30분차 등)를 명시해야
+      // LA [탑승] 버튼이 올바른 trainCode를 backend로 forward할 수 있다.
+      ...buildLiveActivityContentState(
+        anchorWaypoint,
+        etaSeconds,
+        trip.waypoints.length,
+        trip,
+        currentStationName,
+        selectedTrainCode ?? undefined,
+      ),
+      // #2434 — BoardingPromptView/BoardingIntents(→boarding-confirm)가 렌더/처리하는
+      // 버튼 컨텍스트. Swift ContentState 필드명과 정확히 일치해야 decode된다.
+      boardingPhase: 'pre-boarding',
+      boardingPromptTripToken: trip.token,
+      boardingPromptOriginStation: station,
+      boardingPromptLine: line,
+      boardingAlertTitle: title,
+      boardingAlertBody: body,
+    };
+    const laResult = await fireLiveActivityUpdate(
+      trip,
+      laContentState,
+      deps,
+      stats,
+      now,
+      log,
+      undefined,
+      // #3108 — 소리 없는 alert는 확장 표시/배너가 무음이라 인지 불가. 일반 알림 프롬프트와 동일 소리.
+      { title, body, sound: BOARDING_PROMPT_SOUND },
+    );
+    if (laResult.sent) {
+      stats.boardingPromptLaAlertFired += 1;
+      log(`${logPrefix}: la alert fired`, {
+        token: trip.token.slice(0, 8),
+        station,
+        line,
+      });
+    }
+    return { sent: laResult.sent, dirty: laResult.dirty, budgetExceeded: false };
+  } catch (e) {
+    log(`${logPrefix}: la alert threw`, {
+      token: trip.token.slice(0, 8),
+      error: String(e),
+    });
+    return { sent: false, dirty: false, budgetExceeded: false };
   }
 }
 

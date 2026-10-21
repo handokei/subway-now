@@ -59,6 +59,8 @@ import {
   advanceBoardingLockWaypoint,
   createEmptyScheduledStats,
   restrictArrivalsByLegDirection,
+  LA_STALE_AUTO_END_MS,
+  LA_PROMPT_BUDGET_MS,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -13787,6 +13789,204 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       });
     });
 
+    // #3146 — LA 프롬프트 alert push 성공 시 일반 알림을 무음으로(이중 울림 제거). #3111 대체.
+    // 안전장치: 신선도 가드(lastLaPushAt ≤ LA_STALE_AUTO_END_MS & activityState=live)와 LA 시간 예산.
+    // 둘 중 하나라도 어긋나면 일반 알림이 소리를 유지한다(프롬프트 소리 miss 방지).
+    describe('#3146 — LA 성공 시 일반 알림 무음 / 실패·미시도·stale·timeout이면 소리 유지', () => {
+      type Hook = { la?: number | 'hang'; notif?: number | 'throw' };
+
+      function makeHookedFetch(hook: Hook) {
+        const arrivals = makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]);
+        const order: string[] = [];
+        const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+          const type = ((init?.headers ?? {}) as Record<string, string>)['apns-push-type'];
+          if (type === 'liveactivity') {
+            order.push('la');
+            if (hook.la === 'hang') return new Promise<Response>(() => {});
+            if (typeof hook.la === 'number') return new Response('{"reason":"InternalServerError"}', { status: hook.la });
+          }
+          if (type === 'alert') {
+            order.push('notif');
+            if (hook.notif === 'throw') throw new Error('net down');
+            if (typeof hook.notif === 'number') return new Response('{"reason":"InternalServerError"}', { status: hook.notif });
+          }
+          return (arrivals as unknown as (u: string, i?: RequestInit) => Promise<Response>)(url, init);
+        });
+        return { fetchImpl, order };
+      }
+
+      function apnsBodies(fetchImpl: ReturnType<typeof vi.fn>, type: 'alert' | 'liveactivity') {
+        return (fetchImpl.mock.calls as unknown as [string, RequestInit][])
+          .filter((c) => ((c[1]?.headers ?? {}) as Record<string, string>)['apns-push-type'] === type)
+          .map((c) => JSON.parse(c[1].body as string) as { aps: Record<string, unknown> & { alert?: { sound?: string } } });
+      }
+
+      async function run(
+        hook: Hook,
+        tripOverrides: Record<string, unknown> = {},
+        kv: InMemoryKV = new InMemoryKV(),
+      ) {
+        const { fetchImpl, order } = makeHookedFetch(hook);
+        const { db, inserts } = makeFireLogDb();
+        const trip = makeTrip({
+          activityPushToken: 'la-activity-token',
+          activityState: 'live',
+          originStationName: '용마산',
+          lastLaPushAt: NOW - 30_000,
+          ...tripOverrides,
+        });
+        const stats = makeStats();
+        const promise = maybeFireOriginBoardingPromptGpsFree(
+          trip,
+          makeEnv(kv, undefined, db),
+          makeDeps(fetchImpl as unknown as typeof fetch),
+          stats,
+          NOW,
+          () => {},
+          () => 'pid-origin',
+        );
+        return { fetchImpl, order, inserts, trip, stats, kv, promise };
+      }
+
+      function soundRows(inserts: unknown[][]) {
+        return inserts
+          .filter((args) => args[2] === 'prompt-sound-channel')
+          .map((args) => JSON.parse(args[5] as string) as Record<string, unknown>);
+      }
+
+      it('LA 200 + 신선(30s 전 heartbeat) → 일반 알림 aps에 sound 키가 없다 / LA alert는 소리 유지 / LA가 먼저 전송', async () => {
+        const r = await run({});
+        await r.promise;
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect('sound' in notif.aps).toBe(false);
+        expect(notif.aps['interruption-level']).toBe('time-sensitive');
+        const [la] = apnsBodies(r.fetchImpl, 'liveactivity');
+        expect(la.aps.alert?.sound).toBe('default');
+        expect(r.order).toEqual(['la', 'notif']);
+        expect(soundRows(r.inserts)).toEqual([
+          expect.objectContaining({ laOk: true, notificationSilenced: true, guard: 'none', laBudgetExceeded: false, laPushAgeMs: 30_000 }),
+        ]);
+      });
+
+      it('경계: lastLaPushAt이 정확히 LA_STALE_AUTO_END_MS 전 → 아직 신선(> 비교) → 무음', async () => {
+        const r = await run({}, { lastLaPushAt: NOW - LA_STALE_AUTO_END_MS });
+        await r.promise;
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect('sound' in notif.aps).toBe(false);
+      });
+
+      it('LA 5xx 실패 → 일반 알림 sound=default (사유=laOk false)', async () => {
+        const r = await run({ la: 500 });
+        await r.promise;
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect(notif.aps.sound).toBe('default');
+        expect(soundRows(r.inserts)).toEqual([
+          expect.objectContaining({ laOk: false, notificationSilenced: false, guard: 'none' }),
+        ]);
+      });
+
+      it('activityPushToken 없음 → LA 미시도, 일반 알림 sound=default', async () => {
+        const r = await run({}, { activityPushToken: undefined });
+        await r.promise;
+        expect(r.order).toEqual(['notif']);
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect(notif.aps.sound).toBe('default');
+        expect(soundRows(r.inserts)).toEqual([expect.objectContaining({ laOk: false, guard: 'not-live' })]);
+      });
+
+      it('activityState !== live → LA 미시도, 일반 알림 sound=default', async () => {
+        const r = await run({}, { activityState: 'ended' });
+        await r.promise;
+        expect(r.order).toEqual(['notif']);
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect(notif.aps.sound).toBe('default');
+      });
+
+      it('stale: lastLaPushAt이 LA_STALE_AUTO_END_MS 초과 → LA 200이어도 일반 알림 sound=default (guard=stale)', async () => {
+        const r = await run({}, { lastLaPushAt: NOW - LA_STALE_AUTO_END_MS - 1 });
+        await r.promise;
+        expect(r.order).toEqual(['la', 'notif']);
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect(notif.aps.sound).toBe('default');
+        expect(soundRows(r.inserts)).toEqual([
+          expect.objectContaining({ laOk: true, notificationSilenced: false, guard: 'stale' }),
+        ]);
+      });
+
+      it('lastLaPushAt undefined(fail-closed) → LA 200이어도 일반 알림 sound=default', async () => {
+        const r = await run({}, { lastLaPushAt: undefined });
+        await r.promise;
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect(notif.aps.sound).toBe('default');
+        expect(soundRows(r.inserts)).toEqual([expect.objectContaining({ guard: 'stale', laPushAgeMs: null })]);
+      });
+
+      it('LA 응답 지연(예산 LA_PROMPT_BUDGET_MS 초과) → 일반 알림이 sound=default로 나간다 + laBudgetExceeded', async () => {
+        vi.useFakeTimers();
+        try {
+          const r = await run({ la: 'hang' });
+          await vi.advanceTimersByTimeAsync(LA_PROMPT_BUDGET_MS + 100);
+          await r.promise;
+          const [notif] = apnsBodies(r.fetchImpl, 'alert');
+          expect(notif.aps.sound).toBe('default');
+          expect(soundRows(r.inserts)).toEqual([
+            expect.objectContaining({ laOk: false, laBudgetExceeded: true, notificationSilenced: false }),
+          ]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('fire-once: LA ok + 알림 ok → stamp 정확히 1회', async () => {
+        const kv = new InMemoryKV();
+        const putSpy = vi.spyOn(kv, 'put');
+        const r = await run({}, {}, kv);
+        await r.promise;
+        const stamps = putSpy.mock.calls.filter(([key]) => String(key).startsWith('promptFireOnce:'));
+        expect(stamps).toHaveLength(1);
+        expect(r.stats.originGpsFreeBoardingPromptFired).toBe(1);
+      });
+
+      it('fire-once: LA ok + 알림 5xx → stamp 됨, 다음 cycle은 재발사(소리 있는 LA 재전송) 안 한다', async () => {
+        const kv = new InMemoryKV();
+        const putSpy = vi.spyOn(kv, 'put');
+        const first = await run({ notif: 500 }, {}, kv);
+        await first.promise;
+        expect(apnsBodies(first.fetchImpl, 'liveactivity')).toHaveLength(1);
+        expect(putSpy.mock.calls.filter(([key]) => String(key).startsWith('promptFireOnce:'))).toHaveLength(1);
+        expect(first.stats.errors).toBeGreaterThanOrEqual(1);
+
+        const second = await run({ notif: 500 }, {}, kv);
+        await second.promise;
+        expect(apnsBodies(second.fetchImpl, 'liveactivity')).toHaveLength(0);
+        expect(apnsBodies(second.fetchImpl, 'alert')).toHaveLength(0);
+      });
+
+      it('fire-once: LA ok + 알림 전송 throw → stamp 됨(재발사 방지), 예외는 삼키고 trip은 영속', async () => {
+        const kv = new InMemoryKV();
+        const putSpy = vi.spyOn(kv, 'put');
+        const r = await run({ notif: 'throw' }, {}, kv);
+        await expect(r.promise).resolves.toBeUndefined();
+        expect(putSpy.mock.calls.filter(([key]) => String(key).startsWith('promptFireOnce:'))).toHaveLength(1);
+      });
+
+      it('거부: LA 실패 + 알림 throw → 기존처럼 예외 전파, stamp 없음', async () => {
+        const kv = new InMemoryKV();
+        const putSpy = vi.spyOn(kv, 'put');
+        const r = await run({ la: 500, notif: 'throw' }, {}, kv);
+        await expect(r.promise).rejects.toThrow('net down');
+        expect(putSpy.mock.calls.filter(([key]) => String(key).startsWith('promptFireOnce:'))).toHaveLength(0);
+      });
+
+      it('LA 410(토큰 clear) → 일반 알림 sound=default + laTokenCleared', async () => {
+        const r = await run({ la: 410 });
+        await r.promise;
+        const [notif] = apnsBodies(r.fetchImpl, 'alert');
+        expect(notif.aps.sound).toBe('default');
+        expect(r.trip.activityPushToken).toBeUndefined();
+      });
+    });
+
     // #2962 — LA [탑승] 버튼이 backend에 "어느 열차"를 보낼 수 있으려면, 이 프롬프트가 실제로
     // 선택한 열차(selectedTrainCode, 단일 후보라 ambiguity 없음)가 content-state.trainCode에
     // 실려야 한다. ambiguity 발사(R-1, 후보 2개 이상 동률)는 selectedTrainCode=null이라 별도
@@ -13885,7 +14085,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(findLaAlertCalls(fetchImpl)).toHaveLength(0);
     });
 
-    it('notification push(boarding prompt) 실패 시 LA alert push도 발사하지 않는다', async () => {
+    it('#3146 — 두 채널(notification·LA) 모두 실패하면 fired 아님 (LA는 notification보다 먼저 시도됨)', async () => {
       const fetchImpl = vi.fn(async (url: string) => {
         if (String(url).includes('/3/device/')) {
           return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
@@ -13919,7 +14119,10 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         () => 'pid-origin',
       );
       expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
-      expect(findLaAlertCalls(fetchImpl)).toHaveLength(0);
+      // #3146 — 순서가 LA 먼저로 바뀌어 notification 실패와 무관하게 LA가 시도된다(실패 응답,
+      // BadDeviceToken은 opposite host 1회 재시도 포함).
+      expect(findLaAlertCalls(fetchImpl).length).toBeGreaterThanOrEqual(1);
+      expect(stats.boardingPromptLaAlertFired).toBe(0);
     });
 
     it('LA alert push가 throw해도 notification 발사 흐름은 막히지 않는다(catch, stats만)', async () => {
