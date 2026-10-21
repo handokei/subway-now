@@ -174,6 +174,14 @@ export type TripEventKind =
   | 'promotion-rejected-uncorroborated'
   | 'vanish-swap'
   | 'cooldown-bypass'
+  // #3110 — 준비 알람(`maybeFirePrepareAlarm`, "곧 OO 도착") 평가 outcome. 발사/skip/rollback이
+  // `log()`·`stats`뿐이라 10/21 trip 173 06:28:45 '곧 뚝섬' 조기 발사를 사후 판별할 수 없었다.
+  // 이 함수는 tick마다가 아니라 waypoint advance 시점에만 호출되므로(트립당 정거장 수 이하)
+  // outcome마다 1행을 append해도 D1 quota 위험이 낮다(KV write 추가 0, #2073/#3006).
+  // `station`/`line`=직전 intermediate waypoint. `meta`={ outcome: 'fired'|'skipped'|'rolled-back',
+  // reason?(skipped: sleep|dedup|not-preceding), targetStation?, targetKind?, pushId?, status? }.
+  // 관측 전용 — 발사/advance 판정에는 관여하지 않는다.
+  | 'prepare-alarm'
   // #2977 — LA push 채널 진단. `laPushDelivery=0/0`(backend LA push 시도 0건)이 #2667 fix
   // 이후에도 재발했는데(2026-10-13 실측) 어디서 끊겼는지 판정할 수 없었다: device 등록 결과는
   // `log.info`에만 남고(`liveActivityPushChannel.ts:201/209/141/128`), backend 저장 라우트
