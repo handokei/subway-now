@@ -212,7 +212,10 @@ export function setupNotificationHandler(): void {
         shouldShowAlert: true,
         shouldShowBanner: true,
         shouldShowList: true,
-        shouldPlaySound: (isAlarm || isPromptCategory) && hasSound,
+        // #3146 — prompt 카테고리는 payload sound가 아니라 카테고리가 FG 소리를 결정한다. backend가
+        // LA alert 성공 시 일반 프롬프트 알림을 무음(sound 키 없음)으로 보내는데, 앱이 FG면 LA가
+        // 안 보여 소리가 사라지기 때문(3단 우선순위: 프롬프트=소리 필수). 알람은 기존대로 hasSound.
+        shouldPlaySound: isAlarm ? hasSound : isPromptCategory,
         shouldSetBadge: false,
       };
     },
