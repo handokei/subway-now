@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { deleteProgress, getProgress, progressKey, putProgress, type TripProgress } from '../progress';
+import {
+  deleteProgress,
+  getProgress,
+  isProgressWriteRedundant,
+  progressKey,
+  putProgress,
+  type TripProgress,
+} from '../progress';
 import { InMemoryKV } from './inMemoryKv';
 
 function makeKv(): KVNamespace {
@@ -87,5 +94,45 @@ describe('progress KV (#705)', () => {
     // trainCode가 문자열이면 validTrainCode=true → 통과 (lock 경로로 처리)
     expect(result).not.toBeNull();
     expect(result?.trainCode).toBe('T1');
+  });
+});
+
+// #3169 — write-on-change 판정. stale 읽기는 "쓰지 않는" 방향으로만 작동하므로 오래된 값을 새로 남기지 않는다.
+describe('isProgressWriteRedundant (#3169)', () => {
+  const BASED: TripProgress = { ...SAMPLE, ttlBasisExpiresAt: 1_000 };
+
+  it('기존 값 없음 -> 쓴다', () => {
+    expect(isProgressWriteRedundant(null, BASED)).toBe(false);
+  });
+
+  it('값과 basis 동일 -> 생략', () => {
+    expect(isProgressWriteRedundant(BASED, { ...BASED })).toBe(true);
+  });
+
+  it('만료가 줄어든 경우(basis 감소)도 기존 TTL이 더 길어 생략', () => {
+    expect(isProgressWriteRedundant(BASED, { ...BASED, ttlBasisExpiresAt: 900 })).toBe(true);
+  });
+
+  it('만료 연장(basis 증가) -> 쓴다', () => {
+    expect(isProgressWriteRedundant(BASED, { ...BASED, ttlBasisExpiresAt: 1_001 })).toBe(false);
+  });
+
+  it('legacy(기존 basis 없음) -> 쓴다', () => {
+    expect(isProgressWriteRedundant(SAMPLE, BASED)).toBe(false);
+  });
+
+  it.each([
+    ['shiftedCount', { shiftedCount: 3 }],
+    ['lastLaPushEpoch', { lastLaPushEpoch: 201 }],
+    ['consecutiveEtaMissing', { consecutiveEtaMissing: 2 }],
+    ['trainCode', { trainCode: 'T2' }],
+    ['한쪽에만 있는 필드', { headHopIndex: 4 }],
+  ])('%s 변화 -> 쓴다', (_label, patch) => {
+    expect(isProgressWriteRedundant(BASED, { ...BASED, ...patch })).toBe(false);
+  });
+
+  it('필드가 사라진 경우(next에서 undefined)도 변화 -> 쓴다', () => {
+    const { consecutiveEtaMissing: _omit, ...withoutMiss } = BASED;
+    expect(isProgressWriteRedundant(BASED, withoutMiss)).toBe(false);
   });
 });

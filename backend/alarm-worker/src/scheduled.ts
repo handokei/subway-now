@@ -111,7 +111,13 @@ import { resolvePromptAnchor } from './promptAnchor';
 import { assertCronCacheTtl } from './kvConsistency';
 import { logPushFailure } from './pushFailureLog';
 import { enqueueRetryIfTransient } from './retryPushes';
-import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
+import {
+  deleteProgress,
+  getProgress,
+  isProgressWriteRedundant,
+  putProgress,
+  type TripProgress,
+} from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import {
   N_STATION_LOOKAHEAD,
@@ -2530,7 +2536,10 @@ async function mirrorProgress(
     // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
     lastLaPushAt: trip.lastLaPushAt,
     consecutiveEtaMissing: trip.consecutiveEtaMissing,
+    // #3169 — TTL 산정 기준 만료. 값/만료 불변이면 put 생략(isProgressWriteRedundant).
+    ttlBasisExpiresAt: trip.expiresAt,
   };
+  if (isProgressWriteRedundant(existing, next)) return;
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
   await putProgress(kv, trip.token, next, ttlSec);
 }
