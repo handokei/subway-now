@@ -73,8 +73,8 @@ import { stampBoardingPromptFireOnce } from '../boardingPromptFireOnce';
 import { stampPushActivity, readPushActivityRecent } from '../cronIdleGate';
 import {
   ACTIVE_TRIPS_MARKER_KEY,
-  hasActiveTripsMarker,
   markTripRegistered,
+  readActiveTripsMarker,
 } from '../activeTripsGate';
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
 import { putTrip, waypointSignatureKey } from '../trips';
@@ -15022,7 +15022,7 @@ describe('runScheduled — #2452 listTrips() list-quota 게이트', () => {
   it('마커 有 but listTrips 결과 0건(stale marker) — 마커를 delete해 다음 idle tick부터 skip 재개', async () => {
     const kv = new InMemoryKV();
     await markTripRegistered(kv as unknown as KVNamespace, NOW + 60_000, NOW);
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(true);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(true);
 
     await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
@@ -15032,14 +15032,14 @@ describe('runScheduled — #2452 listTrips() list-quota 게이트', () => {
       now: () => NOW,
     });
 
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(false);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(false);
   });
 
   it('POST /trips REGISTER(markTripRegistered)가 마커를 stamp — cron이 그걸 보고 listTrips를 실행', async () => {
     const kv = new InMemoryKV();
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(false);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(false);
     await markTripRegistered(kv as unknown as KVNamespace, NOW + 30 * 60 * 1000, NOW);
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(true);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(true);
   });
 });
 
