@@ -27,7 +27,7 @@ export class InMemoryKV {
     private readonly now: () => number = () => Date.now(),
     /**
      * #3057 — 키 접두사별 시계 override. replay 하네스는 trip 키 TTL을 고정 시계로 못박지만
-     * (위 설명) self-poll 키(`realtime-position:`/`selfPoll:station:`)까지 고정하면 90s TTL이
+     * (위 설명) self-poll 키(`realtime-position:`)까지 고정하면 90s TTL이
      * 영구 미만료 -> 영구 cache-hit -> 이후 position을 다시 fetch하지 않아 9/13 실캡처에 있는
      * 도착 확정 position이 재생에서 유실된다. 해당 접두사 키만 이 시계(simNow)로 만료 판정한다.
      */

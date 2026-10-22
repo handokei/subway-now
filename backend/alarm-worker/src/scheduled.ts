@@ -121,9 +121,7 @@ import { enqueueRetryIfTransient } from './retryPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import {
-  N_STATION_LOOKAHEAD,
   pollLinesAndStamp,
-  pollStationsAndStamp,
   readFreshSelfPollPosition,
   readSelfPollPosition,
 } from './selfPollPosition';
@@ -1156,21 +1154,6 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   realtimePositionFetchError: number;
   /**
-   * #1828 Phase 5 — station-level Seoul fetchArrivals fetch 횟수 (KV cache miss).
-   * trip route 다음 N개 역 union에 대해 Seoul realtimeStationArrival 1회 호출.
-   * line call(max 100 trains) 대신 station call(max 10 arrivals)로 API 비용 1/10 이하.
-   */
-  stationPollFetch: number;
-  /**
-   * #1828 Phase 5 — station arrivals KV stamp 살아있어 fetch skip한 횟수.
-   */
-  stationPollCacheHit: number;
-  /**
-   * #1828 Phase 5 — station arrivals fetch 실패 횟수.
-   * 0이 아니면 Seoul API 오류 또는 KV write 실패 신호.
-   */
-  stationPollError: number;
-  /**
    * ADR-022 Phase 1-1 (#1985) — flag=ON 시 fire-once TTL 게이트가 차단한 누적 횟수.
    * 같은 (tripToken, stationName, arvlCd cycle) 조합에서 이미 5분 이내 fire 된 경우 skip.
    * flag=OFF (default) 상태에서는 항상 0 — Phase 0 (#1982) 머지 후속 PR 에서 실제 wire.
@@ -1469,30 +1452,6 @@ export function collectTrackedStations(
 }
 
 /**
- * #1828 Phase 5 — 활성 trip route의 다음 N개 역 name union 수집.
- *
- * #2073 (Issue B) — `collectActiveLines`와 동일하게 병합된 `trips` 배열을 순회하는 순수
- * 함수로 전환 (기존 별도 listTrips iterate 제거).
- *
- * `trip.waypoints`는 이미 shift된 잔여 waypoints 배열 — 맨 앞이 다음 알람 대상 역.
- * 각 trip에서 `N_STATION_LOOKAHEAD`개(최대)를 추출해 union dedup. 같은 역을 여러 trip이
- * 공유해도 Set으로 자연 dedup — Seoul fetchArrivals 중복 호출 방지.
- *
- * #1652 line-union과 동일 필터 — 만료 / lifecycle-abnormal trip은 skip.
- */
-function collectActiveStations(trips: readonly Trip[], now: number): Set<string> {
-  const stations = new Set<string>();
-  for (const trip of trips) {
-    if (trip.expiresAt <= now) continue;
-    if (tripLifecyclePhase(trip, now) !== 'normal') continue;
-    for (const waypoint of trip.waypoints.slice(0, N_STATION_LOOKAHEAD)) {
-      stations.add(waypoint.stationName);
-    }
-  }
-  return stations;
-}
-
-/**
  * #2645 — `ScheduledStats` 빈 초기값 factory. 원래 `runScheduled` 내부 inline literal이었으나,
  * `/boarding-lock/sync`(index.ts)가 `advanceBoardingLockWaypoint`를 직접 호출하려면 동일 모양의
  * stats 객체가 필요해 extract-function으로 재사용 가능하게 뽑았다(새 채널이 아니라 기존 초기화
@@ -1584,10 +1543,6 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     realtimePositionFetch: 0,
     selfPollCacheHit: 0,
     realtimePositionFetchError: 0,
-    // #1828 Phase 5 — station-level arrivals self-poll stats.
-    stationPollFetch: 0,
-    stationPollCacheHit: 0,
-    stationPollError: 0,
     // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 차단 (flag=OFF 시 항상 0).
     arvlCdFireOnceSkipped: 0,
     // #1652 — staged lifecycle backstop (X8). 6h~9h skip / 9h+ force-end.
@@ -1705,7 +1660,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // #2073 (Issue B) — 위에서 병합한 `trips` 배열에서 파생(순수 함수, KV 재호출 없음). 폴링 ·
   // push 발사 흐름은 그대로 유지. KV stamp는 advanceTripPosition site들이 lock.trainCode
   // cross-match에 사용. idle tick은 trips가 비어 있어 아래 두 collect가 empty Set을 반환하고
-  // pollLinesAndStamp/pollStationsAndStamp는 empty set에서 자연히 KV 호출 없이 조기 반환한다.
+  // pollLinesAndStamp는 empty set에서 자연히 KV 호출 없이 조기 반환한다.
   const activeLines = collectActiveLines(trips, now);
   // #3155 — 앵커역 출발 기록은 같은 stamp put에 실린다(추가 KV write 0).
   const selfPollStats = await pollLinesAndStamp(
@@ -1724,23 +1679,6 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       fetched: selfPollStats.fetched,
       cacheHit: selfPollStats.cacheHit,
       error: selfPollStats.error,
-    });
-  }
-
-  // #1828 Phase 5 — 활성 trip route 다음 N개 역 union 추출 + Seoul fetchArrivals station-level stamp.
-  // line-unit polling(max 100 trains/call) 대신 station-unit(max 10 arrivals/call)으로 전환.
-  // route bound 폴링으로 trip 무관 trains candidate-reject 감소 (Day 2 evidence: 53건/시간).
-  const activeStations = collectActiveStations(trips, now);
-  const stationPollStats = await pollStationsAndStamp(env.TRIPS, deps.seoul, activeStations, now);
-  stats.stationPollFetch += stationPollStats.fetched;
-  stats.stationPollCacheHit += stationPollStats.cacheHit;
-  stats.stationPollError += stationPollStats.error;
-  if (activeStations.size > 0) {
-    log('self-poll: stationArrivals', {
-      stations: activeStations.size,
-      fetched: stationPollStats.fetched,
-      cacheHit: stationPollStats.cacheHit,
-      error: stationPollStats.error,
     });
   }
 

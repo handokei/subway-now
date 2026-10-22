@@ -384,7 +384,6 @@ export async function runCaptureReplay(opts: {
   // cron이 매 cycle 새 position을 fetch한다(고정하면 영구 cache-hit로 이후 position 유실).
   const kv = new InMemoryKV(() => startMs, [
     { prefix: 'realtime-position:', now: () => simNow },
-    { prefix: 'selfPoll:station:', now: () => simNow },
   ]);
   for (const trip of opts.seedTrips) {
     await putTrip(kv as unknown as KVNamespace, trip);
