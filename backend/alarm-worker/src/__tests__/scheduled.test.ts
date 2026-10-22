@@ -207,7 +207,6 @@ function makeFullEmptyStats(): ScheduledStats {
     vanishFallbackMotionGateBlocked: 0,
     cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0, rescheduleDedupSkipped: 0, destinationBackstopForceEnded: 0, destinationStaleGpsSurvivedSilence: 0,
     realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
-    stationPollFetch: 0, stationPollCacheHit: 0, stationPollError: 0,
     // ADR-022 Phase 1-1 (#1985) — arvlCd fire-once TTL 게이트 (flag=OFF 시 항상 0).
     arvlCdFireOnceSkipped: 0,
     lifecycleSilenceSkipped: 0, lifecycleForceEnded: 0,
@@ -14904,7 +14903,7 @@ describe('runScheduled — #2073 listTrips 병합 (Issue B)', () => {
     expect(tripGetCalls.length).toBe(2);
   });
 
-  it('collectActiveLines/collectActiveStations 파생 결과는 병합 전과 동등 — self-poll fetch가 여전히 발생한다', async () => {
+  it('collectActiveLines 파생 결과는 병합 전과 동등 — self-poll fetch가 여전히 발생한다', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeTrip());
     const stats = await runScheduled(makeEnv(kv), {
@@ -14914,11 +14913,10 @@ describe('runScheduled — #2073 listTrips 병합 (Issue B)', () => {
       fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
       now: () => NOW,
     });
-    // line union(2호선) + station union(강남) 이 여전히 병합된 trips 배열에서 파생돼
-    // self-poll fetch/stationPollFetch가 발생한다(0이 아님) — collectActiveLines/Stations가
-    // 여전히 정상 동작함을 간접 검증.
+    // line union(2호선)이 여전히 병합된 trips 배열에서 파생돼 self-poll fetch가 발생한다(0이 아님)
+    // — collectActiveLines가 여전히 정상 동작함을 간접 검증. (#3166: 역 도착정보 stamp 제거로
+    // stationPoll* 검증은 삭제 — 아래 테스트가 KV put 0건을 단언한다.)
     expect(stats.realtimePositionFetch + stats.selfPollCacheHit).toBeGreaterThan(0);
-    expect(stats.stationPollFetch + stats.stationPollCacheHit).toBeGreaterThan(0);
   });
 
   // #3166 — 읽는 곳 없는 역 도착정보 KV stamp(`selfPoll:station:`) 제거. 유일 reader는 stamp 자신의
