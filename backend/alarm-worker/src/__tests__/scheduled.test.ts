@@ -73,8 +73,8 @@ import { stampBoardingPromptFireOnce } from '../boardingPromptFireOnce';
 import { stampPushActivity, readPushActivityRecent } from '../cronIdleGate';
 import {
   ACTIVE_TRIPS_MARKER_KEY,
-  hasActiveTripsMarker,
   markTripRegistered,
+  readActiveTripsMarker,
 } from '../activeTripsGate';
 import { JITTER_SAMPLE_EVERY_N_TICKS, readJitterSamples } from '../cronJitterAggregate';
 import { putTrip, waypointSignatureKey } from '../trips';
@@ -15051,7 +15051,7 @@ describe('runScheduled — #2452 listTrips() list-quota 게이트', () => {
   it('마커 有 but listTrips 결과 0건(stale marker) — 마커를 delete해 다음 idle tick부터 skip 재개', async () => {
     const kv = new InMemoryKV();
     await markTripRegistered(kv as unknown as KVNamespace, NOW + 60_000, NOW);
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(true);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(true);
 
     await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
@@ -15061,14 +15061,113 @@ describe('runScheduled — #2452 listTrips() list-quota 게이트', () => {
       now: () => NOW,
     });
 
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(false);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(false);
   });
 
   it('POST /trips REGISTER(markTripRegistered)가 마커를 stamp — cron이 그걸 보고 listTrips를 실행', async () => {
     const kv = new InMemoryKV();
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(false);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(false);
     await markTripRegistered(kv as unknown as KVNamespace, NOW + 30 * 60 * 1000, NOW);
-    expect(await hasActiveTripsMarker(kv as unknown as KVNamespace)).toBe(true);
+    expect((await readActiveTripsMarker(kv as unknown as KVNamespace)).mayHaveActiveTrips).toBe(true);
+  });
+});
+
+describe('runScheduled — #3167 활성 트립 마커는 만료 증가 시에만 재기록', () => {
+  const MARKER_TTL_MS = 60 * 60_000;
+  const EXTENDED_EXPIRES_AT = NOW + 31 * 60_000 + 2 * 60 * 60_000; // /position 연장(now+2h) 후 값
+
+  function tick(kv: InMemoryKV, now: number) {
+    return runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => now,
+    });
+  }
+
+  it('만료가 변하지 않은 트립으로 여러 tick — 마커 put 0회 (매 tick 재기록 금지)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await markTripRegistered(kv as unknown as KVNamespace, trip.expiresAt, NOW);
+    const putSpy = vi.spyOn(kv, 'put');
+    for (let i = 1; i <= 3; i += 1) {
+      const stats = await tick(kv, NOW + i * 60_000);
+      expect(stats.scanned).toBe(1);
+    }
+    expect(putSpy.mock.calls.filter(([key]) => key === ACTIVE_TRIPS_MARKER_KEY)).toHaveLength(0);
+    putSpy.mockRestore();
+  });
+
+  it('트립 만료가 연장되면(/position 시뮬) 정확히 1회 재기록 + 새 만료 저장, 원 만료 이후에도 cron이 트립을 서비스', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(NOW);
+      const kv = new InMemoryKV();
+      const original = makeTrip({ expiresAt: NOW + MARKER_TTL_MS });
+      await putTrip(kv as unknown as KVNamespace, original);
+      await markTripRegistered(kv as unknown as KVNamespace, original.expiresAt, NOW);
+      const putSpy = vi.spyOn(kv, 'put');
+
+      // 잔여 29분 시점(<30분) /position이 만료를 now+2h로 연장.
+      const extendAt = original.expiresAt - 29 * 60_000;
+      vi.setSystemTime(extendAt);
+      const extendedExpiresAt = extendAt + 2 * 60 * 60_000;
+      await putTrip(kv as unknown as KVNamespace, { ...original, expiresAt: extendedExpiresAt });
+      putSpy.mockClear();
+
+      await tick(kv, extendAt + 60_000);
+      await tick(kv, extendAt + 120_000);
+      const markerWrites = putSpy.mock.calls.filter(([key]) => key === ACTIVE_TRIPS_MARKER_KEY);
+      expect(markerWrites).toHaveLength(1);
+      expect(markerWrites[0][1]).toBe(String(extendedExpiresAt));
+
+      // 원 만료 이후 — 마커가 연장을 따라왔으므로 listTrips가 실행돼 트립이 서비스된다.
+      vi.setSystemTime(original.expiresAt + 5 * 60_000);
+      const stats = await tick(kv, original.expiresAt + 5 * 60_000);
+      expect(stats.scanned).toBe(1);
+      putSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('legacy 마커 값 "1" — 첫 tick에 만료 epoch로 업그레이드', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await kv.put(ACTIVE_TRIPS_MARKER_KEY, '1', { expirationTtl: 3600 });
+    const stats = await tick(kv, NOW + 60_000);
+    expect(stats.scanned).toBe(1);
+    expect(kv.store.get(ACTIVE_TRIPS_MARKER_KEY)?.value).toBe(String(trip.expiresAt));
+  });
+
+  it('cacheTtl로 낡은(더 이른 만료) 마커를 읽어도 필요한 재기록을 건너뛰지 않는다', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ expiresAt: EXTENDED_EXPIRES_AT });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // 진짜 값은 더 최신일 수 있으나 cron은 ~30s 낡은 더 이른 만료를 읽는다.
+    const staleExpiry = NOW + MARKER_TTL_MS;
+    await kv.put(ACTIVE_TRIPS_MARKER_KEY, String(EXTENDED_EXPIRES_AT - 1), { expirationTtl: 7200 });
+    const getSpy = vi.spyOn(kv, 'get').mockImplementation(async (key: string, opts?: unknown) => {
+      if (key === ACTIVE_TRIPS_MARKER_KEY) return String(staleExpiry);
+      return InMemoryKV.prototype.get.call(kv, key, opts as { cacheTtl?: number });
+    });
+    const putSpy = vi.spyOn(kv, 'put');
+    await tick(kv, NOW + 60_000);
+    const markerWrites = putSpy.mock.calls.filter(([key]) => key === ACTIVE_TRIPS_MARKER_KEY);
+    expect(markerWrites).toHaveLength(1);
+    expect(markerWrites[0][1]).toBe(String(EXTENDED_EXPIRES_AT));
+    getSpy.mockRestore();
+    putSpy.mockRestore();
+  });
+
+  it('더 짧은 만료의 신규 트립 등록은 마커를 단축하지 않는다', async () => {
+    const kv = new InMemoryKV();
+    await markTripRegistered(kv as unknown as KVNamespace, NOW + 120 * 60_000, NOW);
+    await markTripRegistered(kv as unknown as KVNamespace, NOW + 10 * 60_000, NOW);
+    expect(kv.store.get(ACTIVE_TRIPS_MARKER_KEY)?.value).toBe(String(NOW + 120 * 60_000));
   });
 });
 

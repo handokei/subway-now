@@ -176,7 +176,7 @@ import {
   stampHeartbeat,
 } from './cronJitterAggregate';
 import { readPushActivityRecent, stampPushActivity } from './cronIdleGate';
-import { hasActiveTripsMarker, refreshActiveTripsMarker } from './activeTripsGate';
+import { readActiveTripsMarker, refreshActiveTripsMarker } from './activeTripsGate';
 import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
 import {
   cleanupTripEvents,
@@ -1610,7 +1610,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // 활성 trip을 아예 못 찾는다. 값싼 KV GET 마커로 "활성 trip이 있을 수 있는가"를 먼저 판정해
   // 마커 부재(진짜 idle)일 때만 listTrips 호출 자체를 skip한다. 마커 GET 실패는 보수적으로
   // listTrips를 강행(activeTripsGate.ts 헤더 참조) — 실 라이더 miss는 불허.
-  const mayHaveActiveTrips = await hasActiveTripsMarker(env.TRIPS);
+  const { mayHaveActiveTrips, storedExpiresAt } = await readActiveTripsMarker(env.TRIPS);
   const scannedTrips: Trip[] = [];
   if (mayHaveActiveTrips) {
     for await (const trip of listTrips(env.TRIPS)) {
@@ -1627,7 +1627,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // false였던 tick은 scannedTrips가 항상 []이므로, 여기서 delete를 또 부르면 부재 마커에 대한
   // 낭비 write가 매 idle tick 반복된다 — 그 write는 스킵한다).
   if (mayHaveActiveTrips) {
-    await refreshActiveTripsMarker(env.TRIPS, trips, now);
+    await refreshActiveTripsMarker(env.TRIPS, trips, now, storedExpiresAt);
   }
 
   // #2073 (Issue A) — 진짜 idle 판정. 활성 trip이 하나도 없고, 직전 tick 근방 fire/retry 기록도
