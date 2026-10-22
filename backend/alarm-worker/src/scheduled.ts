@@ -71,7 +71,14 @@ import {
 } from './liveActivity';
 import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
-import { attachTrainCodeForLeg } from './lockSwap';
+import { attachTrainCodeForLeg, SWAP_LOCK_TTL_MS } from './lockSwap';
+import {
+  shouldDeferVanishSwap,
+  decideTimetableReattach,
+  lookupRenumberSuccessor,
+  nextRenumberArm,
+  resolveRenumberOrigin,
+} from './renumberSuccessor';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
@@ -5170,6 +5177,91 @@ async function attemptVanishSwap(
   };
   trip.boardingLock = newLock;
   trip.consecutiveEtaMissing = 0;
+  // #3158 — 번호 변경 열차(2호선 성수)였다면 시간표 후속이 나중에 관측될 때 정정할 수 있게 표식을 남긴다.
+  // 호출자가 swap 직후 putTrip하므로 추가 KV write 0.
+  trip.renumberSuccessor = nextRenumberArm(
+    activeLock.line,
+    trip.renumberSuccessor,
+    activeLock.trainCode,
+    swapped.trainCode,
+    now,
+  );
+  await recordLockReattach(env, trip, waypoint, now, {
+    source: 'vanish-swap',
+    from: activeLock.trainCode,
+    to: swapped.trainCode,
+  });
+  return newLock;
+}
+
+/**
+ * #3158 — lock 열차 번호 교체 D1 관측(`trip_events` kind='lock-reattach'). 교체 1건당 1행.
+ * source: 'timetable-successor'(시간표 후속) | 'vanish-swap'(기존 휴리스틱). 판정에는 관여하지 않는다.
+ */
+async function recordLockReattach(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  now: number,
+  meta: { source: 'timetable-successor' | 'vanish-swap'; from: string; to: string; timetableFrom?: string },
+): Promise<void> {
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'lock-reattach',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta,
+    },
+    now,
+  );
+}
+
+/**
+ * #3158 — 2호선 성수 번호 변경: lock 열차가 소멸/성수 종착이고 시간표 후속이 같은 노선·방향·시간창에서
+ * 라이브 피드에 관측되면 lock을 후속으로 옮긴다(미관측·항목 없음·타 노선이면 null — 기존 vanish-swap 불변).
+ * 시간표 판정이 가능한 열차(순수 사전 조회 통과)일 때만 self-poll KV를 읽는다. 호출자가 swap 시 putTrip.
+ */
+export async function attemptTimetableSuccessorReattach(
+  trip: Trip,
+  waypoint: Waypoint,
+  activeLock: BoardingLockMeta,
+  env: Env,
+  now: number,
+  log: Logger,
+): Promise<BoardingLockMeta | null> {
+  const origin = resolveRenumberOrigin(activeLock.trainCode, trip.renumberSuccessor, now);
+  if (lookupRenumberSuccessor(activeLock.line, origin, now) === null) return null;
+  const fresh = await readFreshSelfPollPosition(env.TRIPS, activeLock.line, now);
+  const decision = decideTimetableReattach({
+    lockLine: activeLock.line,
+    lockTrainCode: activeLock.trainCode,
+    arm: trip.renumberSuccessor,
+    positions: fresh?.positions ?? null,
+    nowMs: now,
+  });
+  if (!decision.ok || decision.successorCode === activeLock.trainCode) return null;
+  log('boarding-lock: timetable successor reattach', {
+    token: trip.token.slice(0, 8),
+    previousTrainCode: activeLock.trainCode,
+    newTrainCode: decision.successorCode,
+    timetableFrom: decision.fromCode,
+  });
+  const newLock: BoardingLockMeta = {
+    ...activeLock,
+    trainCode: decision.successorCode,
+    expiresAt: Math.max(activeLock.expiresAt, now + SWAP_LOCK_TTL_MS),
+  };
+  trip.boardingLock = newLock;
+  trip.consecutiveEtaMissing = 0;
+  trip.renumberSuccessor = undefined;
+  await recordLockReattach(env, trip, waypoint, now, {
+    source: 'timetable-successor',
+    from: activeLock.trainCode,
+    to: decision.successorCode,
+    timetableFrom: decision.fromCode,
+  });
   return newLock;
 }
 
@@ -5295,9 +5387,11 @@ interface HandleEtaMissingInputs {
   now: number;
   log: Logger;
   generatePushId: () => string;
+  /** #3158 — vanish-swap 유예 중(시간표 후속 대기)이면 시간 기반 fallback advance도 함께 유예한다. */
+  holdFallback?: boolean;
 }
 async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
-  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId } = inputs;
+  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId, holdFallback } = inputs;
   stats.etaMissing += 1;
   const previousMissCount = trip.consecutiveEtaMissing ?? 0;
   const nextMissCount = previousMissCount + 1;
@@ -5315,7 +5409,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
   // 이 분기는 auto-end 임계(threshold) 전에 평가되어 무한 동결을 막는다.
   const fallbackTrigger = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
   const lastEpoch = trip.lastTrackedArrivalEpoch;
-  if (nextMissCount >= fallbackTrigger && lastEpoch !== undefined) {
+  if (holdFallback !== true && nextMissCount >= fallbackTrigger && lastEpoch !== undefined) {
     const hopElapsed = now >= lastEpoch + FALLBACK_HOP_SEC * 1000;
     if (hopElapsed) {
       // #1386 — hop 시간이 경과했더라도 device motion이 명확히 stationary면 advance 보류.
@@ -5534,13 +5628,33 @@ export async function runTrainCodeTracking(
   ssot: TripPositionSSoT | null = null,
 ): Promise<void> {
   let activeLock = lock;
+  // #3158 — 번호 변경 시간표 후속 재부착은 estimate보다 먼저: 옛 번호 arrival 행이 stale로 계속 매칭되면
+  // estimate가 null이 되지 않아 vanish-swap이 영영 시도되지 않는다(173).
+  const timetableLock = await attemptTimetableSuccessorReattach(trip, waypoint, activeLock, env, now, log);
+  if (timetableLock) {
+    activeLock = timetableLock;
+    await putTrip(env.TRIPS, trip);
+  }
   let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
   // #2869 (E) — estimate===null 상태 전이 계측(전이 시에만, #2073 quota 보호). swap 시도/성공
   // 여부와 무관하게 "이번 tick 진입 시점" 값을 기록한다. 반환된(가능하면 갱신된) ssot를
   // 이어서 사용 — 바로 아래 recordVanishSwapAttemptTransition이 같은 tick에서 stale 스냅샷으로
   // 이 write를 덮어쓰지 않게 한다.
   ssot = await recordVanishEstimateTransition(env, trip, waypoint, ssot, estimate === null, now);
-  if (estimate === null) {
+  // #3158 — lock 열차가 시간표 후속 항목(번호 변경 열차)을 가졌으면 vanish-swap을 최대 RENUMBER_SWAP_DEFER_TICKS tick
+  // 유예하고 후속이 피드에 나타나길 기다린다(휴리스틱 swap이 1509 같은 지선 열차를 먼저 붙이는 173 방지). 유예 상태는
+  // 기존 miss 카운터(`consecutiveEtaMissing`, 이미 매 miss tick putTrip)가 담아 추가 KV write가 없다.
+  const deferVanishSwap =
+    estimate === null &&
+    shouldDeferVanishSwap({
+      lockLine: activeLock.line,
+      lockTrainCode: activeLock.trainCode,
+      arm: trip.renumberSuccessor,
+      missCount: (trip.consecutiveEtaMissing ?? 0) + 1,
+      swapThreshold: VANISH_RE_ATTACH_THRESHOLD,
+      nowMs: now,
+    });
+  if (estimate === null && !deferVanishSwap) {
     // #2869 (E) — attemptVanishSwap이 실제로 시도되는지(threshold 도달) 여부를 호출 전에 미리
     // 계산한다 — "시도 안 함"과 "시도했으나 실패"를 D1에서 구분하기 위해 필요(threshold
     // 미도달이면 swap-attempt 전이를 기록하지 않는다).
@@ -5598,6 +5712,7 @@ export async function runTrainCodeTracking(
       now,
       log,
       generatePushId,
+      holdFallback: deferVanishSwap,
     });
     return;
   }

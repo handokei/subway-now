@@ -176,6 +176,9 @@ export type TripEventKind =
   // 경우(`blockedAt`). 건너뛰면 늦은 매역 push가 없어야 한다.
   | 'promotion-fastforward'
   | 'vanish-swap'
+  // #3158 — lock 열차 번호 교체 1건마다 1행. meta={ source: 'timetable-successor'|'vanish-swap', from, to,
+  // timetableFrom?(시간표 조회 원 열차) }. 관측 전용 — swap 빈도는 낮아(성수 renumber/소멸 시만) D1 quota 위험 낮음.
+  | 'lock-reattach'
   | 'cooldown-bypass'
   // #3110 — 준비 알람(`maybeFirePrepareAlarm`, "곧 OO 도착") 평가 outcome. 발사/skip/rollback이
   // `log()`·`stats`뿐이라 10/21 trip 173 06:28:45 '곧 뚝섬' 조기 발사를 사후 판별할 수 없었다.
