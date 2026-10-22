@@ -280,6 +280,16 @@ export interface Trip {
    */
   boardingCommitted?: boolean;
   /**
+   * #3144 (v8 D3-A, ADR-043) — "사용자가 현재 leg의 boarding-prompt에 [탑승] 응답했다"는 backend-only
+   * 마커. writer는 사용자 행위 2곳: `POST /trips/:token/boarding-confirm` 'boarded'(LA 버튼·알림 탭; 응답 후 최종 상태의
+   * `currentBoardingLegKey`로 stamp)과 `/boarding-lock/sync` 승격(수동 목록 탭). 자동 resolver(register-time / cron leg-1·leg-2)는
+   * `hasBoardingResponseForCurrentLeg`가 true일 때만 lock을 붙인다 — infoMode(목록 탭이 켜는 의향)만으로는
+   * 프롬프트 응답 없이 lock이 생기지 않는다. device는 송신하지 않으며(`...incoming`이 새 세션에서 폐기),
+   * same-session 재등록은 existing 값을 carry한다. leg 변경 시 `currentBoardingLegKey`가 달라져
+   * 읽기 시점에 자동 무효(별도 reset 지점 불필요).
+   */
+  boardingResponse?: { legKey: string; at: number };
+  /**
    * boarding-prompt(#819) 발사 추적 — trip당 1회 + dismiss 5분 silence 게이트(#9).
    * 부재 = 미발사 상태. 사용자 응답으로 lock이 생기면 자연스럽게 게이트 #2가 차단한다.
    */

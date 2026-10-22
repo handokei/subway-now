@@ -54,6 +54,7 @@ interface TapResult {
   headBefore: string[];
   headAfter: string[];
   lock: string | undefined;
+  hasResponseMarker: boolean;
   eventsBeforeTap: number;
 }
 
@@ -139,6 +140,7 @@ async function runReplay(mode: 'observe' | 'tap-2011') {
             headBefore,
             headAfter: (after?.waypoints ?? []).map((w) => w.stationName),
             lock: after?.boardingLock?.trainCode,
+            hasResponseMarker: after?.boardingResponse !== undefined,
             eventsBeforeTap: events.length,
           };
         } finally {
@@ -228,6 +230,8 @@ describe('#3155 트립 171 replay — 앵커역(건대입구) 출발 열차 목�
   it('2011이 성수에 도착한 뒤 탭: lock 2011, waypoint는 그대로(head 뚝섬), 이후 건대입구·성수 늦은 시도 0건·첫 매역 시도는 뚝섬', async () => {
     const r = await runReplay('tap-2011');
     expect(r.tapped?.lock).toBe('2011');
+    // #3144 D3 — 앵커 관측(#3155) 승격 경로도 수동 목록 탭 = 사용자 행위라 응답 마커를 세운다(3경로 동급).
+    expect(r.tapped?.hasResponseMarker).toBe(true);
     expect(r.tapped?.headAfter).toEqual(r.tapped?.headBefore);
     // 이 시점 lockless cron이 이미 성수를 소비해 head는 목적지 뚝섬이다(실측 재생 결과).
     expect(r.tapped?.headAfter).toEqual(['뚝섬']);

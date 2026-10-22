@@ -126,6 +126,7 @@ import {
   sentryOptions,
 } from './sentry';
 import { recordTripEvent,
+  recordLockAttached,
   type LaTokenRegisterOutcome,
   type TripRegisterOutcome,
 } from './tripEventLog';
@@ -183,8 +184,10 @@ import {
   readBoardingPromptCounters,
 } from './boardingPromptCounterAccumulator';
 import {
+  currentBoardingLegKey,
   getDeviceTripIndex,
   getTrip,
+  hasBoardingResponseForCurrentLeg,
   isLegAnchorMatch,
   isRouteProgressRelation,
   putDeviceTripIndex,
@@ -365,6 +368,12 @@ async function resolveBoardingAnchorAtRegister(env: Env, trip: Trip): Promise<vo
       lastLaPushAt: undefined,
     };
     await putTrip(env.TRIPS, resolvedTrip);
+    await recordLockAttached(env.DB, {
+      token: trip.token,
+      lock: anchorLock,
+      path: 'register',
+      hasResponseMarker: hasBoardingResponseForCurrentLeg(resolvedTrip),
+    });
     console.log(
       JSON.stringify({
         msg: 'boarding-anchor: trainCode resolved at register (tap-time)',
@@ -1362,6 +1371,10 @@ app.post('/trips', async (c) => {
           // 유무만 봄)가 커버 못하는 "과거에 부착됐었다"는 사실이 소실된다. 명시 보존으로 방지.
           lockEverAttached: existing.lockEverAttached,
           boardingPromptResponded: existing.boardingPromptResponded,
+          // #3144 (v8 D3) — boardingResponse: 현재 leg 응답 마커. backend-only state라 device가 보내지 않아
+          // `...incoming`이 항상 undefined로 덮는다(위 lockEverAttached/legResolveStreak 계열과 같은 클래스).
+          // 소실되면 D3 resolver 게이트가 영구히 닫힌다.
+          boardingResponse: existing.boardingResponse,
         }
       : {
           ...incoming,
@@ -1507,8 +1520,34 @@ app.post('/trips', async (c) => {
   // 얹지 않고, 실패/예외는 전부 swallow — register 자체(위에서 이미 persist 완료)는 절대
   // 실패시키지 않는다. cron(`scheduled.ts`)은 retry로 그대로 유지 — 이 tap-time 시도가
   // 실패해도(dwell window를 못 잡았거나 ambiguous) 다음 cycle이 계속 재평가한다.
-  if (trip.infoModeEnabled === true && trip.boardingLock === undefined) {
+  //
+  // #3144 (v8 D3-A, ADR-043) — 위 설명의 "탭 직후" 전제는 거짓이었다(device는 GPS update마다
+  // 재등록, 173 D1 trip-register 10행+). infoModeEnabled(목록 탭이 켜는 의향)만으로 프롬프트 응답
+  // 없이 lock을 붙이던 경로를 닫는다 — 현재 leg에 대한 boarding-prompt 응답 마커(boarding-confirm
+  // 'boarded' 핸들러 stamp, same-session carry)가 있을 때만 "응답 후 trainCode 미해소 재시도"로
+  // 동작한다. register-time은 #2957 release 로직을 여전히 거치지 않는다(무변경 상속).
+  if (
+    trip.infoModeEnabled === true &&
+    trip.boardingLock === undefined &&
+    hasBoardingResponseForCurrentLeg(trip)
+  ) {
     scheduleTripEvent(c, resolveBoardingAnchorAtRegister(c.env, trip));
+  }
+
+  // #3144 — 구 빌드가 register body로 직접 보낸 boardingLock(b7, #2709 이후 미송신)도 부착 지점이므로
+  // 출처를 D1에 남긴다. 같은 열차의 재송신(existing 동일 trainCode)은 신규 부착이 아니라 제외.
+  const { boardingLock: incomingLock } = incoming;
+  const existingLockTrainCode = existingForRateLimit?.boardingLock?.trainCode;
+  if (incomingLock !== undefined && incomingLock.trainCode !== existingLockTrainCode) {
+    scheduleTripEvent(
+      c,
+      recordLockAttached(c.env.DB, {
+        token: trip.token,
+        lock: incomingLock,
+        path: 'register-incoming',
+        hasResponseMarker: hasBoardingResponseForCurrentLeg(trip),
+      }),
+    );
   }
 
   // #3003 — 성공 1건 적재. 이 이벤트가 **0건이면 등록 경로 자체가 끊긴 것**이고, 있으면
@@ -2697,6 +2736,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
     }
+    // #3144 (v8 D3-A, ADR-043) — 응답 마커 writer 1/2(다른 하나는 /boarding-lock/sync 승격 = 수동 목록 탭). lock 해소 성공 여부와 무관하게 "[탑승] 응답이
+    // 있었다"를 현재 leg(해소 후 최종 상태 기준, tapAdvance 반영)에 기록한다 — 해소 실패 시 이후
+    // register/cron resolver가 이 마커를 근거로 재시도한다(10/13형 15분 뒤 해소 보존).
+    working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
   } else if (payload.action === 'disembarked') {
     // #2920 — destinationConfirmPendingSince(#2900 증거 없는 목적지 유예) 중인 trip의 [하차함]
     // 응답은 "탑승 증거 없이 시작된 유예"의 사용자 확인 자체가 ground truth다. 남은
@@ -2752,6 +2795,16 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       c.env.TRIPS,
       extendTripExpiryOnActivity(markBoardingPromptResponded(working), now),
     );
+    // #3144 — 이 요청이 새 lock 객체를 붙였을 때(기존 lock 유지·release-only 제외) 부착 출처를 D1에 남긴다.
+    const { boardingLock: attachedLock } = working;
+    if (payload.action === 'boarded' && attachedLock !== undefined && attachedLock !== existing.boardingLock) {
+      await recordLockAttached(c.env.DB, {
+        token,
+        lock: attachedLock,
+        path: 'confirm',
+        hasResponseMarker: hasBoardingResponseForCurrentLeg(working),
+      });
+    }
   }
 
   // SonarCloud S5145 — token(URL param)/station/line/action은 전부 요청에서 유래한
@@ -3621,6 +3674,10 @@ app.post('/boarding-lock/sync', async (c) => {
   // (cron 자동 resolve streak) 중 하나라도 그 trainCode를 뒷받침할 때만 승격을 허용한다. 두 신호가
   // 모두 부재(한 번도 stamp된 적 없음)면 검증 불가 상태이므로 backward-safe로 기존대로 승격한다
   // (#2820 프롬프트 embed 열차 = candidateTrains 소속 → 항상 통과, 정당 반복열차도 후보에 있어 통과).
+  //
+  // #3144 (ADR-043) — 이 승격은 사용자 행위 3경로(LA 버튼 / 알림 프롬프트 탭 = boarding-confirm, 수동 목록
+  // 탭 = 이 sync) 중 하나다. 승격 성공 시 boarding-confirm과 같은 응답 마커를 세워 세 경로가 자동 resolver
+  // 게이트(D3)에서 동급이 되게 한다. corroboration 규칙 자체는 변경 없음(dev 그대로).
   if (
     working.boardingLock === undefined &&
     payload.trainCode !== undefined &&
@@ -3670,6 +3727,7 @@ app.post('/boarding-lock/sync', async (c) => {
           lastLaPushAt: undefined,
           consecutiveEtaMissing: 0,
         };
+        working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
         if (fastForward.skip > 0 || fastForward.blockedAt !== undefined) {
           if (fastForward.skip > 0) {
             await maybeMirrorLockSyncProgress(c.env.TRIPS, working, fastForward.skip);
@@ -3695,6 +3753,15 @@ app.post('/boarding-lock/sync', async (c) => {
             kind: 'sync-received',
             station: promoted.segmentStations[0],
             meta: { promotedLock: true, trainCode: promoted.trainCode, line: promoted.line },
+          }),
+        );
+        scheduleTripEvent(
+          c,
+          recordLockAttached(c.env.DB, {
+            token: working.token,
+            lock: promoted,
+            path: 'sync',
+            hasResponseMarker: hasBoardingResponseForCurrentLeg(working),
           }),
         );
       } else {

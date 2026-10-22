@@ -105,6 +105,28 @@ export function resolveTripDeviceToken(trip: Trip): string {
 }
 
 /**
+ * #3144 (v8 D3-A) — 현재 leg 식별 키. leg-2 이후는 `currentLegAnchor`(환승 승차역+노선), leg-1은
+ * 고정 'leg1'. 응답 마커(`Trip.boardingResponse.legKey`)와 대조해 "이 leg에 대한 응답인가"를 판정한다.
+ */
+export function currentBoardingLegKey(trip: Trip): string {
+  const { currentLegAnchor } = trip;
+  if (currentLegAnchor === undefined) return 'leg1';
+  const { line, boardingStation } = currentLegAnchor;
+  return `leg2:${line}|${boardingStation}`;
+}
+
+/**
+ * #3144 (v8 D3-A, ADR-043) — 자동 resolver가 lock을 붙여도 되는지의 단일 술어. 현재 leg에 대한
+ * boarding-prompt 응답 마커가 있거나, 응답 유래 PENDING 커밋(`boardingCommitted`)이면 true.
+ * infoModeEnabled(목록 탭 의향)는 여기에 포함되지 않는다.
+ */
+export function hasBoardingResponseForCurrentLeg(trip: Trip): boolean {
+  const { boardingResponse, boardingCommitted } = trip;
+  if (boardingCommitted === true) return true;
+  return boardingResponse !== undefined && boardingResponse.legKey === currentBoardingLegKey(trip);
+}
+
+/**
  * #2628 — KV trip 쓰기 단일 지점. `boardingLock`이 부착 상태로 저장될 때마다 `lockEverAttached`를
  * true로 자동 stamp한다(이미 true면 그대로 유지 — 재확인 불필요). 이렇게 하면 trip.boardingLock을
  * 구성하는 모든 호출부(`index.ts`의 register-time 승격 / boarding-confirm / boarding-lock/sync

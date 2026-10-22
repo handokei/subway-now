@@ -134,6 +134,7 @@ import {
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import {
   dedupeTripsByDeviceToken,
+  hasBoardingResponseForCurrentLeg,
   listTrips,
   putTrip,
   resolveTripDeviceToken,
@@ -186,6 +187,7 @@ import { readActiveTripsMarker, refreshActiveTripsMarker } from './activeTripsGa
 import { hasRescheduleFired, markRescheduleFired } from './rescheduleDedup';
 import {
   cleanupTripEvents,
+  recordLockAttached,
   recordTripEvent,
   type HopEndPromptOutcome,
   type IntermediateRouteBranch,
@@ -1846,22 +1848,33 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         // device가 trainCode를 자체 확정하지 못해 PENDING fallback lock으로 흐른 상태만
         // 가리킨다(`useBoardingPromptResponder.ts:827`) — 응답 자체가 없는 trip(9/21 실측
         // 3056)은 이 값이 false로 남아 confirm이 보류되고 pending을 유지한다(`evaluateLegBoardingTransition`).
-        const hasUserBoardingResponse = trip.boardingCommitted === true;
-        const anchorLock = await attemptBoardingAnchorResolution(
-          trip,
-          deps.seoul,
-          now,
-          isLeg2Candidate
-            ? { allowLegTransfer: true, legTransition: { pending: legPending, hasUserBoardingResponse } }
-            : { allowLegTransfer: true },
-          undefined,
-          undefined,
-          isLeg2Candidate
-            ? (c) => {
-                legTransition = c;
-              }
-            : undefined,
-        );
+        //
+        // #3144 (v8 D3-A, ADR-043) — 응답 증거는 `boardingCommitted`(PENDING 커밋)에 더해 boarding-confirm
+        // 'boarded' 핸들러가 stamp한 현재 leg 응답 마커도 인정한다(LA Swift 직결 응답처럼 PENDING lock을
+        // 안 거치는 응답이 leg-2 영구 lockless로 남던 갭을 같은 술어로 해소 — b1/b3/b2 단일 술어).
+        // 술어는 `hasBoardingResponseForCurrentLeg`(trips.ts) 하나.
+        const hasUserBoardingResponse = hasBoardingResponseForCurrentLeg(trip);
+        // leg-1은 응답이 없으면 resolver 자체를 돌리지 않는다 — infoMode(목록 탭 의향)만으로 프롬프트
+        // 응답 없이 lock을 붙이던 경로(171 leg-1 backend lock 유래 추정)를 닫는다. leg-2는 resolver가
+        // 관측(legResolveStreak pending)을 계속하되 confirm만 `hasUserBoardingResponse`가 게이트한다.
+        const mayAttachLock = isLeg2Candidate || hasUserBoardingResponse;
+        const anchorLock = mayAttachLock
+          ? await attemptBoardingAnchorResolution(
+              trip,
+              deps.seoul,
+              now,
+              isLeg2Candidate
+                ? { allowLegTransfer: true, legTransition: { pending: legPending, hasUserBoardingResponse } }
+                : { allowLegTransfer: true },
+              undefined,
+              undefined,
+              isLeg2Candidate
+                ? (c) => {
+                    legTransition = c;
+                  }
+                : undefined,
+            )
+          : null;
         if (anchorLock && isLeg2Candidate) {
           // legTransition.status==='confirmed'일 때만 anchorLock이 non-null이다(위 resolver
           // 계약) — ARRIVED/APPROACHING→DEPARTED 전이가 실제로 관측됐다는 뜻.
@@ -1872,6 +1885,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           trip.lastLaPushAt = undefined;
           trip.legResolveStreak = undefined;
           await putTrip(env.TRIPS, trip);
+          await recordLockAttached(env.DB, {
+            token: trip.token,
+            lock: anchorLock,
+            path: 'cron-leg2',
+            hasResponseMarker: hasUserBoardingResponse,
+          });
           stats.boardingAnchorResolved += 1;
           log('boarding-anchor: leg-2 trainCode departure-confirmed, lock promoted', {
             token: trip.token.slice(0, 8),
@@ -1894,6 +1913,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           trip.lastLaPushEpoch = undefined;
           trip.lastLaPushAt = undefined;
           await putTrip(env.TRIPS, trip);
+          await recordLockAttached(env.DB, {
+            token: trip.token,
+            lock: anchorLock,
+            path: 'cron-leg1',
+            hasResponseMarker: hasUserBoardingResponse,
+          });
           stats.boardingAnchorResolved += 1;
           log('boarding-anchor: trainCode resolved, lock promoted', {
             token: trip.token.slice(0, 8),
@@ -5137,6 +5162,13 @@ async function attemptVanishSwap(
     source: 'vanish-swap',
     from: activeLock.trainCode,
     to: swapped.trainCode,
+  });
+  // #3144 — 열차 번호 변경 교체도 lock 부착 지점. 응답 유래 lock의 파생이라 마커 대신 교체 사실로 라벨.
+  await recordLockAttached(env.DB, {
+    token: trip.token,
+    lock: newLock,
+    path: 'vanish-swap',
+    hasResponseMarker: hasBoardingResponseForCurrentLeg(trip),
   });
   return newLock;
 }

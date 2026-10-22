@@ -170,3 +170,21 @@ describe('v8 PR-T 트립 171 replay — 현행 코드 자체 검증 (D2-C red/gr
     expect(arrived.map((p) => [p.statnNm, p.trainSttus])).toContainEqual(['건대입구', '1']);
   });
 });
+
+// #3144 (3-path parity, ADR-043) — 실측 171 입력 그대로(불변). 수동 목록 탭 sync는 사용자 행위 3경로 중
+// 하나이므로 오선택 3013도 다시 lock으로 승격된다(171 root인 오선택 자체는 별도 처리 — 숨기지 않고 있는 그대로 단언).
+describe('3-path parity 트립 171 replay — 수동 목록 탭 sync는 3013을 lock하고 응답 마커를 세운다', () => {
+  it('06:36:36 sync 3013 승격은 lock-attached(path=sync, hasResponseMarker=true) 1건이며 거부 행은 없다', async () => {
+    const r = await replay171();
+    const attached = r.events.filter((e) => e.kind === 'lock-attached');
+    expect(attached.map((e) => e.meta)).toEqual([
+      { path: 'sync', trainCode: '3013', hasResponseMarker: true },
+    ]);
+    expect(r.events.filter((e) => e.kind === 'promotion-rejected-uncorroborated')).toEqual([]);
+  });
+
+  it('승격 외 경로(register/cron)로 붙은 lock은 없다 (lock-attached는 sync 1건뿐)', async () => {
+    const r = await replay171();
+    expect(r.events.filter((e) => e.kind === 'lock-attached' && e.meta.path !== 'sync')).toEqual([]);
+  });
+});

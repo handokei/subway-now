@@ -6316,6 +6316,15 @@ describe('POST /boarding-lock/sync (#901)', () => {
         ),
       );
       const env = makeKvEnv();
+      // #3144 (v8 D3-A) — register-time resolver는 현재 leg 응답 마커가 있을 때만 동작한다. 첫 등록 후
+      // boarding-confirm 'boarded' 핸들러가 남기는 마커를 심고(실제 writer는 그 핸들러 1곳)
+      // same-session 재등록으로 resolver를 구동한다.
+      await postWithCtx('/trips', anchorTripBody(), env, makeExecutionContext());
+      const first = JSON.parse((await env.TRIPS.get('trip:anchor-tok')) as string);
+      await env.TRIPS.put(
+        'trip:anchor-tok',
+        JSON.stringify({ ...first, boardingResponse: { legKey: 'leg1', at: Date.now() } }),
+      );
       const ctx = makeExecutionContext();
       const res = await postWithCtx('/trips', anchorTripBody(), env, ctx);
       expect(res.status).toBe(200);

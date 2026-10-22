@@ -22,7 +22,7 @@
  * 신규 유니온 추가 없음)로 관측 승격한다.
  */
 
-import { captureXEvent } from './sentry';
+import { captureXEvent, hashTripToken } from './sentry';
 
 /**
  * trip_events.kind 최소 집합. 데이터 주도 확장 시 이 유니온에 추가한다.
@@ -230,7 +230,24 @@ export type TripEventKind =
   //
   // 중복 적재 없음 — `isEndPromptDue`가 "하한 D 만족 && 하한 D+1tick 불만족"으로 due tick
   // 하나만 true가 되게 무상태 판정한다(마커를 KV에 쓰지 않기 위한 설계).
-  | 'end-prompt-due';
+  | 'end-prompt-due'
+  // #3144 (v8 D3, ADR-043) — backend가 trip.boardingLock을 **부착한 모든 지점** 1건. 171 leg-1 backend
+  // lock의 출처(sync/boarding-confirm/ register resolver / cron resolver)를 D1만으로 가릴 수 없었던
+  // 계측 공백을 메운다. `meta`={ path: LockAttachPath, trainCode, hasResponseMarker }, `station`=
+  // lock.segmentStations[0], `line`=lock.line. 목표(ADR-043): 사용자 행위 3경로(confirm/sync)와 그 파생(vanish-swap)
+  // 외의 attach 0 — register/cron-leg1/cron-leg2는 hasResponseMarker=true일 때만 나타나야 한다.
+  // 부착 시점 1회만 적재(tick 반복 아님) — KV write 추가 0.
+  | 'lock-attached';
+
+/** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
+export type LockAttachPath =
+  | 'register'
+  | 'cron-leg1'
+  | 'cron-leg2'
+  | 'confirm'
+  | 'sync'
+  | 'vanish-swap'
+  | 'register-incoming';
 
 /** #2977 — `POST /live-activity/register` 결과. */
 export type LaTokenRegisterOutcome = 'stored' | 'trip_not_found' | 'invalid_payload';
@@ -398,6 +415,30 @@ export async function recordTripEvent(
     // 없어 Sentry-only(d1ErrorLog.ts와 동일 패턴).
     captureXEvent('D1-write-failure', { table: 'trip_events', kind: input.kind, err: String(e) });
   }
+}
+
+/**
+ * #3144 — `lock-attached` 1건 append. 모든 lock 부착 지점(`LockAttachPath`)이 이 함수 하나로
+ * 같은 meta shape을 남긴다(사본 금지). `hasResponseMarker`는 caller가 `hasBoardingResponseForCurrentLeg`
+ * 결과를 넘긴다(trips.ts가 이 모듈을 import하므로 순환 방지로 여기서 계산하지 않는다).
+ */
+export async function recordLockAttached(
+  db: D1Database | undefined,
+  input: {
+    token: string;
+    lock: { trainCode: string; line: string; segmentStations: readonly string[] };
+    path: LockAttachPath;
+    hasResponseMarker: boolean;
+  },
+): Promise<void> {
+  const { token, lock, path, hasResponseMarker } = input;
+  await recordTripEvent(db, {
+    tokenHash: hashTripToken(token),
+    kind: 'lock-attached',
+    station: lock.segmentStations[0],
+    line: lock.line,
+    meta: { path, trainCode: lock.trainCode, hasResponseMarker },
+  });
 }
 
 /** 보존 기간(ms). 7일 초과분은 cron cleanup이 삭제한다. */
