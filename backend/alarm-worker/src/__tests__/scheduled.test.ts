@@ -14920,6 +14920,37 @@ describe('runScheduled — #2073 listTrips 병합 (Issue B)', () => {
     expect(stats.realtimePositionFetch + stats.selfPollCacheHit).toBeGreaterThan(0);
     expect(stats.stationPollFetch + stats.stationPollCacheHit).toBeGreaterThan(0);
   });
+
+  // #3166 — 읽는 곳 없는 역 도착정보 KV stamp(`selfPoll:station:`) 제거. 유일 reader는 stamp 자신의
+  // cache-hit 체크뿐이었고(이후 단계는 SeoulArrivalClient 15s in-memory 캐시 사용) 활성 trip당
+  // 1.5~2.5 KV write/min을 소모했다. 여러 tick에 걸쳐 어떤 `selfPoll:station:` 키도 put되면 안 된다.
+  it('#3166 활성 trip이 있는 여러 tick 동안 selfPoll:station: 키를 KV에 put하지 않는다', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        waypoints: [
+          { stationName: '역삼', line: '2', kind: 'intermediate' },
+          { stationName: '선릉', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+    const putSpy = vi.spyOn(kv, 'put');
+    for (let tick = 0; tick < 3; tick += 1) {
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoul([]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW + tick * 120_000,
+      });
+    }
+    const stationStampPuts = putSpy.mock.calls.filter((c) => String(c[0]).startsWith('selfPoll:station:'));
+    expect(stationStampPuts).toEqual([]);
+    const stampKeys = [...kv.store.keys()].filter((k) => k.startsWith('selfPoll:station:'));
+    expect(stampKeys).toEqual([]);
+  });
 });
 
 describe('runScheduled — #2073 진짜 idle skip 게이트 (Issue A)', () => {
