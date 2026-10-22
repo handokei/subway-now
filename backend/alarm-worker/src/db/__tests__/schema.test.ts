@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
-import { tripMetrics } from '../schema';
+import { latencyProbe, tripMetrics } from '../schema';
 
 /**
  * 프로덕션 `trip_metrics` DDL과 엔티티 정의 drift 감지 (#2783 요구사항 "introspect 결과 대조").
@@ -58,5 +58,21 @@ describe('tripMetrics 엔티티 — 프로덕션 스키마 drift 감지 (#2783)'
   it('id는 primary key다', () => {
     const columns = getTableColumns(tripMetrics);
     expect(columns.id.primary).toBe(true);
+  });
+});
+
+/** #3168 — 0008_latency_probe.sql 기대 DDL. */
+describe('latencyProbe 엔티티 — 마이그레이션 0008 drift 감지 (#3168)', () => {
+  it('엔티티 컬럼이 0008_latency_probe.sql과 정확히 일치한다', () => {
+    const names = Object.values(getTableColumns(latencyProbe)).map((c) => c.name);
+    expect(names.sort()).toEqual(
+      ['id', 'ts', 'source', 'colo', 'd1_read_ms', 'd1_write_ms', 'kv_get_ms'].sort(),
+    );
+  });
+  it('d1_write_ms는 nullable, 나머지 측정값은 NOT NULL', () => {
+    const c = getTableColumns(latencyProbe);
+    expect(c.d1WriteMs.notNull).toBe(false);
+    expect(c.d1ReadMs.notNull).toBe(true);
+    expect(c.kvGetMs.notNull).toBe(true);
   });
 });
