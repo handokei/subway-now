@@ -1,6 +1,10 @@
 import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 import { SleepAlarmOverlay } from '../SleepAlarmOverlay';
+import { lightColors, darkColors } from '../../../../shared/theme';
+import { getLineLabel } from '../../../../shared/ui/LineBadge';
+import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
 import type { LineNumber } from '../../../../shared/types/station';
 import type { ExitInfoProvider } from '../../../exit-info/providers/types';
@@ -26,6 +30,14 @@ jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: () => mockGetBoardingLock(),
   setBoardingLock: () => mockSetBoardingLock(),
   clearBoardingLock: () => mockClearBoardingLock(),
+}));
+
+const mockGlow = jest.fn();
+jest.mock('../../../../shared/ui/LineGlowBackground', () => ({
+  LineGlowBackground: (props: { line?: string | null }) => {
+    mockGlow(props);
+    return null;
+  },
 }));
 
 const mockDismiss = jest.fn();
@@ -183,6 +195,51 @@ describe('SleepAlarmOverlay', () => {
         expect(mockKillAllAlarms).not.toHaveBeenCalled();
         expect(mockDismiss).toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('#3174 Line Glass 테마', () => {
+    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
+
+    it('line 전달 시 노선 칩이 렌더되고 노선 라벨을 포함한다', () => {
+      const { getByTestId, getByText } = renderAlarm('destination', '강남', 'early', '2');
+      expect(getByTestId('alarm-overlay-line-chip')).toBeTruthy();
+      expect(getByText(getLineLabel('2'))).toBeTruthy();
+    });
+
+    it('line 미전달/null이면 칩도 exit-section도 렌더되지 않는다', () => {
+      const a = renderAlarm('destination', '강남');
+      expect(a.queryByTestId('alarm-overlay-line-chip')).toBeNull();
+      expect(a.queryByTestId('alarm-overlay-exit-section')).toBeNull();
+      const b = renderAlarm('destination', '강남', 'early', null);
+      expect(b.queryByTestId('alarm-overlay-line-chip')).toBeNull();
+    });
+
+    it('LineGlowBackground가 line prop을 받아 렌더된다', () => {
+      renderAlarm('destination', '강남', 'early', '2');
+      expect(mockGlow).toHaveBeenCalledWith({ line: '2' });
+    });
+
+    it('sleepMode=false면 글로우도 렌더하지 않는다 (거부 케이스)', () => {
+      renderAlarm('destination', '강남', 'early', '2', false);
+      expect(mockGlow).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['light', lightColors, 'light'],
+      ['dark', darkColors, 'dark'],
+    ] as const)('해제 버튼은 inkStrong 알약 + onInkStrong 텍스트 + 알람 점 (%s)', (_n, c, scheme) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RN = require('react-native');
+      const spy = jest.spyOn(RN, 'useColorScheme').mockReturnValue(scheme);
+      const { getByTestId, getByText, getByTestId: g } = renderWithTheme(
+        <SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} />,
+      );
+      expect(StyleSheet.flatten(getByTestId('alarm-dismiss-button').props.style).backgroundColor).toBe(c.inkStrong);
+      expect(StyleSheet.flatten(getByText('알람 끄기').props.style).color).toBe(c.onInkStrong);
+      expect(StyleSheet.flatten(g('alarm-dismiss-dot-ring').props.style).backgroundColor).toBe(c.alarmDotRing);
+      expect(StyleSheet.flatten(g('alarm-dismiss-dot').props.style).backgroundColor).toBe(c.alarmDot);
+      spy.mockRestore();
     });
   });
 });
