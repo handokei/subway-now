@@ -6,6 +6,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import type { AlarmEvent } from '../../../shared/types/alarm';
 import { clearAlarmNotification } from '../utils/stationNotification';
@@ -13,7 +14,9 @@ import { killAllAlarms } from '../utils/alarmKill';
 import { getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import stationsData from '../../../data/stations.json';
 import type { LineNumber, Station } from '../../../shared/types/station';
-import { useTheme, typography, spacing, radius } from '../../../shared/theme';
+import { useTheme, typography, spacing, radiusGlass, lineTint } from '../../../shared/theme';
+import { LineGlowBackground } from '../../../shared/ui/LineGlowBackground';
+import { getLineLabel } from '../../../shared/ui/LineBadge';
 import { StationExitCard } from '../../exit-info/components/StationExitCard';
 
 const allStations = stationsData as Station[];
@@ -33,8 +36,8 @@ interface SleepAlarmOverlayProps {
   event: AlarmEvent;
   onDismiss: () => void;
   /**
-   * 알람 대상역 노선 — StationExitCard 출구 안내에 사용 (#1289).
-   * 미전달 시 출구 안내를 표시하지 않는다 (graceful hide).
+   * 알람 대상역 노선 — StationExitCard 출구 안내 + Line Glass 칩/글로우에 사용 (#1289).
+   * 미전달 시 출구 안내·노선 칩을 표시하지 않고, 글로우는 현재 틴트 노선(store)을 따른다.
    */
   line?: LineNumber | null;
 }
@@ -43,7 +46,7 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
   // Rules of Hooks — sleepMode 분기와 무관하게 항상 동일한 순서로 호출해야 하므로
   // early return보다 먼저 hook을 모두 호출한다. 아래 #2258 방어선은 hook 호출 이후에 온다.
   const { t } = useTranslation();
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
 
   // #2258 방어선 — 비취침이면 아예 렌더하지 않는다. 위 JSDoc 참고.
   if (!sleepMode) {
@@ -55,6 +58,7 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
   const message = t(isTransfer ? 'alarmOverlay.transferMessage' : 'alarmOverlay.arrivalMessage', {
     station: getStationDisplayNameByName(event.stationName, allStations),
   });
+  const tint = line != null ? lineTint(line, isDark) : null;
 
   // #806: dismiss는 알람 UI/진동만 끄고 trip(BoardingLock)은 절대 release하지 않는다.
   //   한 정거장 전(early) destination 알람을 끄면 trip이 종료되던 회귀의 fix.
@@ -79,72 +83,126 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
 
   return (
     <Modal visible animationType="fade" testID="alarm-overlay" onRequestClose={handleDismiss}>
-      <ScrollView
-        contentContainerStyle={[styles.container, { backgroundColor: colors.bg }]}
-        style={{ backgroundColor: colors.bg }}
-        testID="alarm-overlay-scroll"
-        bounces={false}
-      >
-        <Text style={[styles.title, { color: colors.accent }]} testID="alarm-overlay-title">
-          {title}
-        </Text>
-        <Text style={[styles.station, { color: colors.ink }]} testID="alarm-overlay-message">
-          {message}
-        </Text>
-        {line != null && (
-          <View style={styles.exitSection} testID="alarm-overlay-exit-section">
-            <StationExitCard stationName={event.stationName} line={line} />
-          </View>
-        )}
-        <TouchableOpacity
-          style={[styles.button, { backgroundColor: colors.accent }]}
-          onPress={handleDismiss}
-          testID="alarm-dismiss-button"
-          activeOpacity={0.7}
-          accessibilityRole="button"
-          accessibilityLabel={t('alarmOverlay.dismiss')}
-          accessibilityHint={t('a11y.alarm.dismissHint')}
-        >
-          <Text style={[styles.buttonText, { color: colors.onAccent }]}>
-            {t('alarmOverlay.dismiss')}
-          </Text>
-        </TouchableOpacity>
-      </ScrollView>
+      <View style={[styles.root, { backgroundColor: colors.bg }]}>
+        {/* Line Glass — 대상역 노선색 글로우. line 미전달 시 현재 틴트 노선(store). */}
+        <LineGlowBackground line={line} />
+        <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+          <ScrollView
+            contentContainerStyle={styles.container}
+            testID="alarm-overlay-scroll"
+            bounces={false}
+          >
+            <View style={styles.center}>
+              {tint != null && line != null && (
+                <View
+                  style={[styles.chip, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]}
+                  testID="alarm-overlay-line-chip"
+                >
+                  <View style={[styles.chipDot, { backgroundColor: tint.base }]} />
+                  <Text style={[styles.chipText, { color: tint.text }]}>{getLineLabel(line)}</Text>
+                </View>
+              )}
+              <Text style={[styles.title, { color: colors.accent }]} testID="alarm-overlay-title">
+                {title}
+              </Text>
+              <Text style={[styles.station, { color: colors.ink }]} testID="alarm-overlay-message">
+                {message}
+              </Text>
+            </View>
+            {line != null && (
+              <View style={styles.exitSection} testID="alarm-overlay-exit-section">
+                <StationExitCard stationName={event.stationName} line={line} />
+              </View>
+            )}
+            <TouchableOpacity
+              style={[styles.button, { backgroundColor: colors.inkStrong }]}
+              onPress={handleDismiss}
+              testID="alarm-dismiss-button"
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={t('alarmOverlay.dismiss')}
+              accessibilityHint={t('a11y.alarm.dismissHint')}
+            >
+              <View
+                style={[styles.buttonDotRing, { backgroundColor: colors.alarmDotRing }]}
+                testID="alarm-dismiss-dot-ring"
+              >
+                <View
+                  style={[styles.buttonDot, { backgroundColor: colors.alarmDot }]}
+                  testID="alarm-dismiss-dot"
+                />
+              </View>
+              <Text style={[styles.buttonText, { color: colors.onInkStrong }]}>
+                {t('alarmOverlay.dismiss')}
+              </Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1 },
+  safe: { flex: 1 },
   container: {
+    flexGrow: 1,
+    paddingHorizontal: spacing.xxl,
+    paddingBottom: spacing.xxl,
+  },
+  center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: spacing.xxxl,
+    paddingVertical: spacing.xxxl,
   },
-  title: {
-    ...typography.title,
-    fontWeight: '700',
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: radiusGlass.pill,
+    borderWidth: 1,
     marginBottom: spacing.xxl,
-    letterSpacing: 2,
+  },
+  chipDot: { width: 8, height: 8, borderRadius: 4 },
+  chipText: { ...typography.bodySm, fontWeight: '700' },
+  title: {
+    ...typography.bodyBase,
+    fontWeight: '700',
+    marginBottom: spacing.md,
   },
   station: {
-    ...typography.hero,
-    fontWeight: '900',
-    textAlign: 'center',
-    lineHeight: 64,
-    marginBottom: 64,
-  },
-  button: {
-    paddingHorizontal: 64,
-    paddingVertical: spacing.xxl,
-    borderRadius: radius.pill,
-  },
-  buttonText: {
-    ...typography.title,
+    fontSize: 48,
     fontWeight: '800',
+    letterSpacing: -2,
+    lineHeight: 56,
+    textAlign: 'center',
   },
   exitSection: {
     width: '100%',
-    marginBottom: spacing.xxl,
+    marginBottom: spacing.xl,
+  },
+  button: {
+    height: 60,
+    borderRadius: radiusGlass.pill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  buttonDotRing: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buttonDot: { width: 8, height: 8, borderRadius: 4 },
+  buttonText: {
+    ...typography.bodyLg,
+    fontWeight: '700',
   },
 });

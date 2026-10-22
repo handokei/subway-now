@@ -41,6 +41,8 @@ export const lightColors = {
   blurTint:       'light' as 'light' | 'dark',
   inkStrong:      '#0E1512',                // Line Glass 포트 화면 주 CTA = 잉크 블랙 알약
   onInkStrong:    '#ffffff',
+  alarmDot:       '#FFD66B',                // 취침 알람 해제 버튼 점
+  alarmDotRing:   'rgba(255,214,107,0.3)',  // 점 외곽 링
 };
 
 // Line Glass · Night
@@ -71,6 +73,8 @@ export const darkColors: typeof lightColors = {
   blurTint:       'dark',
   inkStrong:      '#F2F5F3',                // 주 CTA = 화이트 알약
   onInkStrong:    '#07090A',
+  alarmDot:       '#FFD66B',
+  alarmDotRing:   'rgba(255,214,107,0.3)',
 };
 
 export type ThemeColors = typeof lightColors;
