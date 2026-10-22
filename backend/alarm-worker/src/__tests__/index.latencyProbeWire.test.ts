@@ -59,7 +59,15 @@ function makeCtx() {
 const controller = (t: number) =>
   ({ scheduledTime: t, cron: '*/1 * * * *', noRetry: () => {} }) as unknown as ScheduledController;
 
-const probeInserts = (sql: string[]) =>
+/** `randomUnit()`(crypto.getRandomValues 기반)이 unit(0~1)을 반환하도록 고정. */
+function mockRandom(unit: number): void {
+  vi.spyOn(crypto, 'getRandomValues').mockImplementation(((arr: Uint32Array) => {
+    arr[0] = Math.floor(unit * 2 ** 32);
+    return arr;
+  }) as typeof crypto.getRandomValues);
+}
+
+const probeInserts =(sql: string[]) =>
   sql.filter((s) => /INSERT INTO latency_probe/.test(s)).length;
 
 afterEach(() => {
@@ -132,7 +140,7 @@ describe('POST /position — HTTP 프로브 배선', () => {
   }
 
   it('당첨(random=0) — 응답 200 + waitUntil로 프로브 1행', async () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0);
+    mockRandom(0);
     const { db, sql } = makeProbeDb();
     const env = makeEnv(new InMemoryKV(), db);
     const { ctx, pending } = makeCtx();
@@ -143,7 +151,7 @@ describe('POST /position — HTTP 프로브 배선', () => {
   });
 
   it('미당첨(random=0.99) — 프로브 0행', async () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    mockRandom(0.99);
     const { db, sql } = makeProbeDb();
     const env = makeEnv(new InMemoryKV(), db);
     const { ctx, pending } = makeCtx();
@@ -153,7 +161,7 @@ describe('POST /position — HTTP 프로브 배선', () => {
   });
 
   it('cap 도달 — 프로브 0행', async () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0);
+    mockRandom(0);
     const { db, sql } = makeProbeDb({ count: 100 });
     const env = makeEnv(new InMemoryKV(), db);
     const { ctx, pending } = makeCtx();
@@ -163,7 +171,7 @@ describe('POST /position — HTTP 프로브 배선', () => {
   });
 
   it('D1 throw — 응답 200 불변', async () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0);
+    mockRandom(0);
     const { db } = makeProbeDb({ throwAll: true });
     const env = makeEnv(new InMemoryKV(), db);
     const { ctx, pending } = makeCtx();
@@ -174,7 +182,7 @@ describe('POST /position — HTTP 프로브 배선', () => {
 
   it('프로브가 KV put을 추가하지 않는다(당첨 vs 미당첨 put 횟수 동일)', async () => {
     const run = async (rand: number) => {
-      vi.spyOn(Math, 'random').mockReturnValue(rand);
+      mockRandom(rand);
       const kv = new InMemoryKV();
       const put = vi.spyOn(kv, 'put');
       const env = makeEnv(kv, makeProbeDb().db);

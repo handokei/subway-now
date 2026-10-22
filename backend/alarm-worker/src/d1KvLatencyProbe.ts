@@ -48,6 +48,12 @@ export interface ProbeEnv {
   TRIPS: KVNamespace;
 }
 
+/** [0, 1) 균등 난수 — Web Crypto(`crypto.getRandomValues`) 기반. */
+export function randomUnit(): number {
+  const [value] = crypto.getRandomValues(new Uint32Array(1));
+  return value / 2 ** 32;
+}
+
 export function isCronProbeTick(scheduledTime: number): boolean {
   return new Date(scheduledTime).getUTCMinutes() === PROBE_CRON_MINUTE_UTC;
 }

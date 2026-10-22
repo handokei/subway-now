@@ -201,7 +201,7 @@ import {
   deleteTripEndedStatus,
 } from './tripStatus';
 import { tryConsumeCooldownBypass } from './cooldownBypass';
-import { runHttpProbe, scheduleCronProbe } from './d1KvLatencyProbe';
+import { randomUnit, runHttpProbe, scheduleCronProbe } from './d1KvLatencyProbe';
 import { subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import type {
@@ -2155,7 +2155,7 @@ app.post('/position', async (c) => {
   const { colo } = (c.req.raw as { cf?: { colo?: string } }).cf ?? {};
   scheduleTripEvent(
     c,
-    runHttpProbe(c.env, colo ?? 'unknown', Date.now(), Math.random()),
+    runHttpProbe(c.env, colo ?? 'unknown', Date.now(), randomUnit()),
   );
   return c.json({
     ok: true,
