@@ -48,6 +48,13 @@ export interface TripProgress {
   lastLaPushAt?: number;
   /** Trip의 consecutiveEtaMissing 사본. */
   consecutiveEtaMissing?: number;
+  /**
+   * #3169 — 이 값을 쓸 때 KV TTL 산정에 쓴 `trip.expiresAt`. write-on-change 가드(`isProgressWriteRedundant`)가
+   * "값 동일 + 만료 미연장"일 때만 put을 생략하도록 하는 기준점이다. trip.expiresAt이 이 값보다
+   * 커지면(sliding 연장) progress 키가 trip보다 먼저 만료되지 않게 재기록한다. legacy 값(필드 없음)은
+   * 1회 재기록되어 필드를 얻는다.
+   */
+  ttlBasisExpiresAt?: number;
 }
 
 export function progressKey(token: string): string {
@@ -85,6 +92,34 @@ export async function getProgress(
   } catch {
     return null;
   }
+}
+
+/**
+ * #3169 — cron의 매 tick progress put 중복 생략 판정.
+ * 생략 조건(전부 충족): ① 기존 값 존재 ② 기존 값에 TTL basis 기록됨(legacy 아님)
+ * ③ basis 외 모든 필드 동일 ④ 새 만료가 기존 basis를 넘지 않음(연장 없음 → 기존 TTL로 충분).
+ *
+ * stale-read 안전성: 비교 대상 `existing`이 cacheTtl(30s) 때문에 최신이 아닐 수 있다. 이 가드는
+ * "cron이 계산한 값 == 읽은 값"일 때 **쓰지 않는** 방향으로만 작동하므로, stale 읽기가 만들 수 있는
+ * 최악은 (a) 실제 최신값이 읽은 값과 달라 cron 값이 최신과 다른데도 생략 — 이때 KV에 남는 것은
+ * HTTP 경로(sync/POST)가 더 늦게 쓴 값이며 기존 무조건-put은 오히려 그 최신값을 cron의 stale 파생값으로
+ * 덮어썼다(회귀 경로), (b) 불필요한 재기록 — 무해. 어느 쪽도 오래된 값을 새로 남기지 않는다.
+ */
+export function isProgressWriteRedundant(
+  existing: TripProgress | null,
+  next: TripProgress,
+): boolean {
+  if (existing === null) return false;
+  const { ttlBasisExpiresAt: prevBasis, ...prevRest } = existing;
+  const { ttlBasisExpiresAt: nextBasis, ...nextRest } = next;
+  if (prevBasis === undefined || nextBasis === undefined || nextBasis > prevBasis) return false;
+  const keys = new Set([...Object.keys(prevRest), ...Object.keys(nextRest)]);
+  for (const key of keys) {
+    if (prevRest[key as keyof typeof prevRest] !== nextRest[key as keyof typeof nextRest]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function putProgress(

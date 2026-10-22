@@ -4060,6 +4060,8 @@ async function maybeMirrorLockSyncProgress(
     // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
     lastLaPushAt: trip.lastLaPushAt,
     consecutiveEtaMissing: trip.consecutiveEtaMissing,
+    // #3169 — cron write-on-change 가드가 sync가 쓴 값을 basis 포함 동일값으로 인식하도록 stamp.
+    ttlBasisExpiresAt: trip.expiresAt,
   };
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
   await putProgress(kv, trip.token, next, ttlSec);

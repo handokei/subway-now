@@ -3,6 +3,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DISEMBARK_PROMPT_CATEGORY, resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { computeNextRetryAt, isRetryableApnsError } from '../apnsHost';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
+import { applyProgress } from '../index';
+import { getProgress, type TripProgress } from '../progress';
 import { appendPositionPoint, type WindowedMetrics } from '../positionSeries';
 import { findStationCoordsByNameAndLine } from '../stationsLookup';
 import {
@@ -6083,6 +6085,138 @@ describe('#705 scheduled.ts progress KV mirroring', () => {
     const progress = await readProgress(kv);
     expect(progress?.consecutiveEtaMissing).toBe(1);
     expect(progress?.shiftedCount).toBe(0);
+  });
+
+  // #3169 — 값/만료가 안 바뀌면 progress put 생략 (cron 매 tick 재기록 = KV 쓰기 낭비).
+  describe('progress write-on-change', () => {
+    const FAR_ARRIVAL_SEC = 600;
+    // LA push(ΔETA/heartbeat 90s)가 일어나지 않는 간격의 tick — push가 나면 lastLaPush*가 바뀌어 값 변화다.
+    const NO_PUSH_STEP_MS = 8_000;
+
+    function spyProgressPuts(kv: InMemoryKV) {
+      const spy = vi.spyOn(kv, 'put');
+      const progressCalls = () =>
+        spy.mock.calls.filter(([key]) => key === 'progress:la-tok') as unknown as [
+          string,
+          string,
+          { expirationTtl?: number },
+        ][];
+      return { progressCalls };
+    }
+
+    async function tick(kv: InMemoryKV, t: number, seoul = makeLockedSeoul(FAR_ARRIVAL_SEC)) {
+      await runLaScheduled(kv, { seoul, fetchImpl: makeOkFetch(), now: () => t });
+    }
+
+    it('변화 없는 locked trip을 여러 tick 돌려도 첫 tick 이후 progress put 0건', async () => {
+      const kv = new InMemoryKV(() => NOW);
+      await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip(progressTripOverrides()));
+      const { progressCalls } = spyProgressPuts(kv);
+      await tick(kv, NOW);
+      await tick(kv, NOW + NO_PUSH_STEP_MS);
+      await tick(kv, NOW + 2 * NO_PUSH_STEP_MS);
+      await tick(kv, NOW + 3 * NO_PUSH_STEP_MS);
+      expect(progressCalls()).toHaveLength(1);
+    });
+
+    it('값이 바뀌면(consecutiveEtaMissing 증가) 정확히 1건 추가 put', async () => {
+      const kv = new InMemoryKV(() => NOW);
+      await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip(progressTripOverrides()));
+      const { progressCalls } = spyProgressPuts(kv);
+      await tick(kv, NOW);
+      await tick(kv, NOW + NO_PUSH_STEP_MS);
+      expect(progressCalls()).toHaveLength(1);
+      // ETA 소실 tick — consecutiveEtaMissing 0 -> 1
+      const empty = new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), {
+            status: 200,
+          })) as unknown as typeof fetch,
+      });
+      await tick(kv, NOW + 2 * NO_PUSH_STEP_MS, empty);
+      expect(progressCalls()).toHaveLength(2);
+      const stored = await readProgress(kv);
+      expect(stored?.consecutiveEtaMissing).toBe(1);
+    });
+
+    it('waypoint advance(shift)는 값 변화이므로 put 1건 추가', async () => {
+      const kv = new InMemoryKV(() => NOW);
+      await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip(progressTripOverrides()));
+      const { progressCalls } = spyProgressPuts(kv);
+      await tick(kv, NOW);
+      await tick(kv, NOW + NO_PUSH_STEP_MS);
+      expect(progressCalls()).toHaveLength(1);
+      await runAdvanceScenario(kv);
+      expect(progressCalls().length).toBeGreaterThan(1);
+      expect((await readProgress(kv))?.shiftedCount).toBe(1);
+    });
+
+    it('trip.expiresAt 연장 시 새 TTL basis로 1회 재기록 — 원래 만료 이후에도 progress 생존 + 재등록 복원', async () => {
+      let clock = NOW;
+      const kv = new InMemoryKV(() => clock);
+      const originalExpiry = NOW + 10 * 60_000;
+      const extendedExpiry = originalExpiry + 60 * 60_000;
+      // mirrorProgress의 TTL 산정은 실 Date.now()를 쓰므로 시스템 시계를 시뮬레이션 시각에 맞춘다.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const setClock = (t: number) => {
+          clock = t;
+          vi.setSystemTime(t);
+        };
+        setClock(NOW);
+        await putTrip(
+          kv as unknown as KVNamespace,
+          makeLockedLaTrip(progressTripOverrides({ expiresAt: originalExpiry })),
+        );
+        const { progressCalls } = spyProgressPuts(kv);
+        // 중곡 도착 advance -> progress.shiftedCount=1 (basis=originalExpiry)
+        await runAdvanceScenario(kv);
+        expect((await readProgress(kv))?.shiftedCount).toBe(1);
+        // 안정화: 이후 변화 없는 tick은 put 0건
+        setClock(NOW + NO_PUSH_STEP_MS);
+        await tick(kv, clock);
+        const settled = progressCalls().length;
+        setClock(NOW + 2 * NO_PUSH_STEP_MS);
+        await tick(kv, clock);
+        expect(progressCalls()).toHaveLength(settled);
+        // index.ts의 sliding 연장 시뮬레이션: trip.expiresAt만 늘어남
+        const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
+        await putTrip(kv as unknown as KVNamespace, { ...stored, expiresAt: extendedExpiry });
+        setClock(NOW + 3 * NO_PUSH_STEP_MS);
+        await tick(kv, clock);
+        const rewrites = progressCalls().slice(settled);
+        expect(rewrites).toHaveLength(1);
+        const [[, rawValue, { expirationTtl }]] = rewrites;
+        expect((JSON.parse(rawValue) as TripProgress).ttlBasisExpiresAt).toBe(extendedExpiry);
+        expect(expirationTtl).toBe(Math.floor((extendedExpiry - clock) / 1000));
+        // 원래 만료 이후에도 progress 키가 살아 있고, POST /trips 재등록이 shift 진행분을 복원한다.
+        setClock(originalExpiry + 60_000);
+        const alive = await getProgress(kv as unknown as KVNamespace, 'la-tok');
+        expect(alive).not.toBeNull();
+        const incoming = makeLockedLaTrip(progressTripOverrides());
+        const restored = applyProgress(incoming, incoming, alive as TripProgress);
+        expect(restored.waypoints.map((w) => w.stationName)).toEqual(['강남']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('basis 필드가 없는 legacy 값은 1회 재기록 후 안정', async () => {
+      const kv = new InMemoryKV(() => NOW);
+      await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip(progressTripOverrides()));
+      await tick(kv, NOW);
+      // 현재 값에서 basis만 제거해 legacy 형태로 되돌림
+      const cur = JSON.parse((await kv.get('progress:la-tok')) as string) as Record<string, unknown>;
+      delete cur.ttlBasisExpiresAt;
+      await kv.put('progress:la-tok', JSON.stringify(cur));
+      const { progressCalls } = spyProgressPuts(kv);
+      await tick(kv, NOW + NO_PUSH_STEP_MS);
+      await tick(kv, NOW + 2 * NO_PUSH_STEP_MS);
+      expect(progressCalls()).toHaveLength(1);
+    });
   });
 
   it('cleanupTripWithLa removes progress entry alongside trip', async () => {
