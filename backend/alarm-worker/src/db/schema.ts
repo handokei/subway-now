@@ -63,3 +63,18 @@ export const tripMetrics = sqliteTable('trip_metrics', {
  * DEFAULT와 무관하게 매 INSERT가 모든 컬럼 값을 의도적으로 명시하도록 강제한다.
  */
 export type TripMetricsInsertRow = Required<Omit<typeof tripMetrics.$inferInsert, 'id'>>;
+
+/**
+ * `latency_probe` — D1 vs KV 지연 실측 프로브 sink (#3168, 관측 전용·임시).
+ * 쓰기 경로는 `d1KvLatencyProbe.ts`(지연 측정 때문에 prepare/bind를 직접 사용). drift는
+ * `db/__tests__/schema.test.ts`가 잡는다.
+ */
+export const latencyProbe = sqliteTable('latency_probe', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  ts: integer('ts').notNull(),
+  source: text('source').notNull(),
+  colo: text('colo').notNull(),
+  d1ReadMs: integer('d1_read_ms').notNull(),
+  d1WriteMs: integer('d1_write_ms'),
+  kvGetMs: integer('kv_get_ms').notNull(),
+});

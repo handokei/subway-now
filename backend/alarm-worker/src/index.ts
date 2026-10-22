@@ -201,6 +201,7 @@ import {
   deleteTripEndedStatus,
 } from './tripStatus';
 import { tryConsumeCooldownBypass } from './cooldownBypass';
+import { randomUnit, runHttpProbe, scheduleCronProbe } from './d1KvLatencyProbe';
 import { subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import type {
@@ -2151,6 +2152,13 @@ app.post('/position', async (c) => {
   const ssot = await readSsot(c.env.TRIPS, payload.token, {
     cacheTtl: CRON_READ_CACHE_TTL_SEC,
   });
+  // #3168 — D1/KV 지연 실측 샘플(1/20, 일 100건 cap, 관측 전용). 응답 이후 waitUntil, 실패 흡수.
+  // 약 3일 데이터 수집 후 제거.
+  const { colo } = (c.req.raw as { cf?: { colo?: string } }).cf ?? {};
+  scheduleTripEvent(
+    c,
+    runHttpProbe(c.env, colo ?? 'unknown', Date.now(), randomUnit()),
+  );
   return c.json({
     ok: true,
     // #3006 D — KV 쓰기가 실패했음을 device에 알린다. 정상 경로에서는 **필드 자체가 없다**
@@ -4826,8 +4834,11 @@ function scheduleMidCyclePass(
 // `handler.scheduled`를 직접 단위 테스트하려면 HOC를 우회할 진입점이 필요하다.
 export const handler = {
   fetch: app.fetch,
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     sentryInit(env);
+    // #3168 — D1/KV 지연 실측 프로브(시간당 1회, 관측 전용). runScheduled 앞에 스케줄만 하고
+    // 실제 측정은 waitUntil에서 돈다 — cron 본 흐름 불변. 약 3일 데이터 수집 후 제거.
+    scheduleCronProbe(env, ctx, controller.scheduledTime);
     // #2579 (Epic #2239 P0-a) — cron cycle 동안의 Seoul API raw 요청/응답을 fetchImpl
     // 레벨에서 캡처한다. 파싱 로직(seoul.ts)은 그대로, recorder는 순수 관찰자.
     const cycleStartMs = Date.now();
