@@ -20,6 +20,7 @@ import { isCandidateInBoardingScope } from '../utils/isBoardableCandidate';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { STATIC_SPEED_THRESHOLD_MPS } from '../../nearest-station/utils/movementGate';
+import { isReachable } from '../../../shared/utils/arrivalReachable';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { LineNumber, Station } from '../../../shared/types/station';
@@ -133,16 +134,6 @@ export interface UseBoardingLockControllerResult {
 function asLineNumber(raw: string): LineNumber | null {
   return isValidLineNumber(raw) ? raw : null;
 }
-
-/**
- * 도착 list 필터 술어 — #897 (Seam A). arrivalSeconds 음수(이미 지나간 열차)만 제외하고 임박(0초)은
- * 유지한다. 0초 행이 useArrivalCountdown tick으로 사라지면 사용자가 다음 차를 같은 차로 오인하는 회귀가
- * 있어 음수만 차단. 음수 train은 createLockFromTrain에서도 의미가 없어 #666 가드를 갈음한다.
- * directionalArrivals / boardingListArrivals 두 파생값이 같은 정책을 공유하는 SSOT.
- */
-const isReachable = (train: ArrivalInfo): boolean =>
-  // #3132 — 시간 모름(null, 코레일 barvlDt=0)은 "지나간 열차"가 아니므로 목록에 포함.
-  train.arrivalSeconds === null || train.arrivalSeconds >= 0;
 
 /**
  * #2407 — lock이 이미 확정된(pending 아닌) trainCode로 존재하면 lockSuggestion 채택을 skip.
