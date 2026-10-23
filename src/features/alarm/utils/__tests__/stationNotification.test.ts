@@ -112,16 +112,9 @@ jest.mock('../../../widget/api/widgetStorage', () => ({
   clearWidgetStation: () => mockClearWidgetStation(),
 }));
 
-// 좌/우 알람 본문 분기 테스트용 픽스처. 강남=상행 left/하행 right, 시청=상행 both만 등록.
-jest.mock('../../../../data/exitSide.json', () => ({
-  강남: { up: 'left', down: 'right' },
-  시청: { up: 'both' },
-}));
-
-// #1504 — direction-agnostic platform fallback SSOT.
-// 강남(2-022)·시청(1-033/2-001)은 빈 매핑이라 primary(`exitSide.json`) 단독 분기 테스트가 그대로 유지된다.
-// fallback 검증용으로 잠실(2-016)·왕십리(2-008)에만 명시 매핑을 등록한다. 두 역은 exitSide.json에 없어
-// fallback 경로를 단독 측정한다.
+// #3177 PR-7a — 하차문 좌/우는 event.stationId 기반(platformExitSide.json)으로만 판정한다.
+// 이 파일은 본문 조립 배선 검증용으로 잠실(2-016 right)·왕십리(2-008 left)에만 명시 매핑을 둔 mock을 쓴다.
+// 강남(2-022)·시청(1-033/2-001)은 빈 매핑. 실데이터 표 검증은 stationNotification.exitSideLine.test.ts.
 jest.mock('../../../../data/platformExitSide.json', () => ({
   '2-016': { side: 'right', grade: 'official-derived' },
   '2-008': { side: 'left', grade: 'official-derived' },
@@ -139,7 +132,9 @@ jest.mock('../../../../data/quickExit.json', () => ({
 const mockLogFiredLaFallbackNotification = jest.fn();
 const mockLogSuppressedLaFallbackContentDedup = jest.fn();
 const mockLogLiveActivityUpdated = jest.fn();
+const mockLogExitSideUnknownStationId = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logExitSideUnknownStationId: (...args: unknown[]) => mockLogExitSideUnknownStationId(...args),
   logFiredLaFallbackNotification: (...args: unknown[]) =>
     mockLogFiredLaFallbackNotification(...args),
   logSuppressedLaFallbackContentDedup: (...args: unknown[]) =>
@@ -872,18 +867,18 @@ describe('stationNotification', () => {
       );
     });
 
-    it('alarmEvent에 direction이 있으면 alarmBody에 좌/우 라인이 포함되고 alarmExitSide 필드가 채워진다', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', direction: 'up' });
+    it('alarmEvent에 stationId가 있으면 alarmBody에 좌/우 라인이 포함되고 alarmExitSide 필드가 채워진다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '잠실', stationId: '2-016', direction: 'up' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
-          alarmBody: '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요',
-          alarmExitSide: 'left',
+          alarmBody: '다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
+          alarmExitSide: 'right',
         })
       );
     });
 
-    it('alarmEvent에 direction이 있어도 데이터가 없으면 alarmExitSide가 빠진다', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '미등록역', direction: 'up' });
+    it('alarmEvent에 stationId가 없으면 이름이 같은 역이 있어도 alarmExitSide가 빠진다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '잠실', direction: 'up' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.not.objectContaining({ alarmExitSide: expect.anything() })
       );
@@ -1221,74 +1216,51 @@ describe('stationNotification', () => {
       });
     });
 
-    describe('좌/우 하차 라인 (exitSide)', () => {
-      it('event.direction이 없으면 본문에 좌/우 라인을 추가하지 않는다', () => {
+    describe('좌/우 하차 라인 (exitSide, stationId 기반 — #3177)', () => {
+      const jamsil = { phaseId: 'early', type: 'destination', stationName: '잠실', stationId: '2-016' } as const;
+
+      beforeEach(() => mockLogExitSideUnknownStationId.mockClear());
+
+      it('event.stationId가 없으면 이름이 같은 역이 있어도 좌/우 라인을 추가하지 않고 unknown 로그를 남긴다', () => {
         expect(buildAlarmContent(earlyDest).body).toBe('다음 역 강남에서 하차하세요!');
+        expect(mockLogExitSideUnknownStationId).toHaveBeenCalledWith('강남');
       });
 
-      it('event.direction이 있고 데이터가 매칭되면 좌측 라인이 추가된다', () => {
-        expect(buildAlarmContent({ ...earlyDest, direction: 'up' }).body).toBe(
-          '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요',
+      it('stationId가 있으면 direction이 없어도 platformExitSide 값으로 라인이 추가된다', () => {
+        // 잠실(2-016)='right' fixture. quickExit 힌트도 같이 등록돼 있어 함께 표시된다.
+        expect(buildAlarmContent(jamsil).body).toBe(
+          '다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
         );
       });
 
-      it('하행이면 오른쪽 라인이 추가된다', () => {
-        expect(buildAlarmContent({ ...earlyDest, direction: 'down' }).body).toBe(
-          '다음 역 강남에서 하차하세요!\n오른쪽 문으로 하차하세요',
-        );
+      it('direction이 있어도 방향별 항목이 없으면 platformExitSide 값을 쓴다 (왕십리 2-008 left)', () => {
+        expect(
+          buildAlarmContent({
+            phaseId: 'early',
+            type: 'transfer',
+            stationName: '왕십리(성동구청)',
+            stationId: '2-008',
+            direction: 'up',
+          }).body,
+        ).toBe('다음 역 왕십리(성동구청)에서 환승하세요!\n왼쪽 문으로 하차하세요\n환승이 빠른 위치에서 하차하세요');
       });
 
-      it('섬식(both)이면 양쪽 라인이 추가된다', () => {
-        expect(buildAlarmContent({ ...earlyTransfer, direction: 'up' }).body).toBe(
-          '다음 역 시청에서 환승하세요!\n양쪽 문이 열립니다',
+      it('stations.json에 없는 stationId는 라인을 생략하고 unknown 로그를 남긴다', () => {
+        expect(buildAlarmContent({ ...jamsil, stationId: 'nope-999', stationName: '없는역' }).body).toBe(
+          '다음 역 없는역에서 하차하세요!',
         );
+        expect(mockLogExitSideUnknownStationId).toHaveBeenCalledWith('없는역');
       });
 
-      it('데이터에 없는 방향이면 본문에 좌/우 라인을 추가하지 않는다', () => {
-        expect(buildAlarmContent({ ...earlyTransfer, direction: 'down' }).body).toBe(
-          '다음 역 시청에서 환승하세요!',
-        );
-      });
-
-      // #1504 — direction-agnostic platformExitSide.json fallback.
-      describe('platformExitSide fallback', () => {
-        it('direction이 없어도 platformExitSide에 등록된 역이면 fallback이 적용된다', () => {
-          // 잠실(2-016)='right' fixture. quickExit 힌트도 같이 등록돼 있어 함께 표시된다.
-          expect(
-            buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '잠실' }).body,
-          ).toBe('다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요');
-        });
-
-        it('primary가 매칭되면 fallback을 무시하고 primary 결과를 사용한다', () => {
-          // 강남: primary up='left' / platformExitSide fixture 미등록 — primary 단독.
-          expect(buildAlarmContent({ ...earlyDest, direction: 'up' }).body).toBe(
-            '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요',
-          );
-        });
-
-        it('primary가 unmatched여도 platformExitSide에 매핑이 있으면 fallback이 적용된다', () => {
-          // 왕십리(2-008): primary 미등록 / fallback='left'. direction이 있어도 primary null → fallback.
-          expect(
-            buildAlarmContent({
-              phaseId: 'early',
-              type: 'transfer',
-              stationName: '왕십리(성동구청)',
-              direction: 'up',
-            }).body,
-          ).toBe('다음 역 왕십리(성동구청)에서 환승하세요!\n왼쪽 문으로 하차하세요\n환승이 빠른 위치에서 하차하세요');
-        });
-
-        it('stations.json에 없는 역은 fallback도 발화하지 않는다', () => {
-          expect(
-            buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '없는역' }).body,
-          ).toBe('다음 역 없는역에서 하차하세요!');
-        });
+      it('유효한 stationId인데 데이터가 없는 역(강남 2-022)은 라인 없이 로그도 남기지 않는다', () => {
+        expect(buildAlarmContent({ ...earlyDest, stationId: '2-022' }).body).toBe('다음 역 강남에서 하차하세요!');
+        expect(mockLogExitSideUnknownStationId).not.toHaveBeenCalled();
       });
     });
 
     // 방향별 위키 확정값(platformExitSideByDirection.json, 실데이터)이 알림 본문까지 연결되는지.
     describe('방향별 위키 확정값 (platformExitSideByDirection)', () => {
-      const seongsu = { phaseId: 'early', type: 'destination', stationName: '성수' } as const;
+      const seongsu = { phaseId: 'early', type: 'destination', stationName: '성수', stationId: '2-011' } as const;
 
       it.each([
         ['up', '오른쪽 문으로 하차하세요'],
@@ -1304,7 +1276,7 @@ describe('stationNotification', () => {
         ['down', '왼쪽 문으로 하차하세요'],
       ] as const)('새절 %s는 %s', (direction, line) => {
         expect(
-          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '새절', direction }).body,
+          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '새절', stationId: '6-007', direction }).body,
         ).toBe(`다음 역 새절에서 하차하세요!\n${line}`);
       });
 
@@ -1336,7 +1308,7 @@ describe('stationNotification', () => {
       });
 
       it('다른 역(새절)은 종착 정보가 있어도 기존 값 그대로', () => {
-        const base = { phaseId: 'early', type: 'destination', stationName: '새절' } as const;
+        const base = { phaseId: 'early', type: 'destination', stationName: '새절', stationId: '6-007' } as const;
         expect(buildAlarmContent({ ...base, direction: 'down', trainTerminal: '신내' }).body).toBe(
           '다음 역 새절에서 하차하세요!\n왼쪽 문으로 하차하세요',
         );
@@ -1351,43 +1323,48 @@ describe('stationNotification', () => {
 
       it('문장 근거 없는 방화는 방향이 있어도 문 라인을 생략한다', () => {
         expect(
-          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '방화', direction: 'up' }).body,
+          buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '방화', stationId: '5-001', direction: 'up' }).body,
         ).toBe('다음 역 방화에서 하차하세요!');
       });
     });
 
     describe('빠른하차 힌트 (quickExit)', () => {
       // #1504 SonarCloud dedup — quickExit 분기 매트릭스를 it.each로 통합.
-      // 각 row: [phaseId, type, stationName, title, body].
+      // 각 row: [label, phaseId, type, stationName, title, body, stationId?]. 좌/우 줄은 stationId 기반, 힌트는 이름 기반(PR-7b 전).
       // 잠실/왕십리는 platformExitSide fallback fixture가 있어 좌/우 라인이 함께 붙는다.
       it.each([
         [
           '해당 역의 빠른하차 데이터가 없으면 본문에 힌트가 붙지 않는다',
           'early', 'destination', '시청',
           '하차 알림', '다음 역 시청에서 하차하세요!',
+          undefined,
         ],
         [
           'destination 알람이고 데이터가 있으면 "출구가 빠른 위치" 힌트가 붙는다',
           'early', 'destination', '잠실',
           '하차 알림', '다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
+          '2-016',
         ],
         [
           'transfer 알람이고 데이터가 있으면 "환승이 빠른 위치" 힌트가 붙는다',
           'early', 'transfer', '왕십리(성동구청)',
           '환승 알림', '다음 역 왕십리(성동구청)에서 환승하세요!\n왼쪽 문으로 하차하세요\n환승이 빠른 위치에서 하차하세요',
+          '2-008',
         ],
         [
           '알람 대상역이 stations.json에도 없으면 힌트 없이 본문만 표시한다',
           'early', 'destination', '없는역',
           '하차 알림', '다음 역 없는역에서 하차하세요!',
+          undefined,
         ],
         [
           '정규화 fallback — 괄호 부제가 붙은 이름이어도 매칭된다',
           'imminent', 'destination', '잠실',
           '도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
+          '2-016',
         ],
-      ] as const)('%s', (_label, phaseId, type, stationName, title, body) => {
-        expect(buildAlarmContent({ phaseId, type, stationName })).toEqual({ title, body });
+      ] as const)('%s', (_label, phaseId, type, stationName, title, body, stationId) => {
+        expect(buildAlarmContent({ phaseId, type, stationName, stationId })).toEqual({ title, body });
       });
     });
   });

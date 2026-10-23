@@ -1,5 +1,6 @@
 import {
   findLineByStationName,
+  findStationById,
   findStationByName,
   findStationByNameAndLine,
   resolveConsistentStationLine,
@@ -12,6 +13,18 @@ jest.mock('../../../data/stations.json', () => [
   // #1397: 정식 표기(괄호 부제 포함)역 — canonical fallback 검증용
   { id: '7-020', name: '자양(뚝섬한강공원)', line: '7', lineColor: '#747F00', lat: 37.531, lng: 127.066 },
 ]);
+
+describe('findStationById (#3177)', () => {
+  it('같은 이름의 환승역도 id로 노선별 역을 정확히 돌려준다', () => {
+    expect(findStationById('4-001')?.line).toBe('4');
+    expect(findStationById('1-001')?.line).toBe('1');
+  });
+
+  it('없는 id는 null — 이름으로 대체 조회하지 않는다', () => {
+    expect(findStationById('nope-999')).toBeNull();
+    expect(findStationById('서울역')).toBeNull();
+  });
+});
 
 describe('findLineByStationName', () => {
   it('returns the line of the first matching station', () => {
