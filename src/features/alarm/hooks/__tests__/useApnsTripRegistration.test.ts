@@ -2138,26 +2138,29 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister.mock.calls.length - baseline).toBe(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION);
     });
 
+    /**
+     * Tier 1 heal이 count를 올리고 억제 skip(`logRegisterSuppressed`)을 만나는 바로 그 지점 — 결과가
+     * Tier 1로 돌아오기 직전 — 에서 `interleave`를 동기 실행한다. 이 시점에는 이전 effect가
+     * cleanup(cancelled=true)되었거나 다른 세션이 healAttemptRef를 초기화한 상태가 된다.
+     */
+    const runTier1WithInterleaveAtSuppression = async (
+      trigger: () => void,
+      interleave: () => void,
+    ): Promise<void> => {
+      mockLogRegisterSuppressed.mockImplementationOnce(interleave);
+      trigger();
+      // act 밖에서 흘린다: 바깥 act 안이면 중첩 rerender의 effect cleanup이 act 종료까지 미뤄져
+      // interleave가 cleanup(cancelled=true)을 일으키지 못한다.
+      await flush();
+    };
+
     it('B6b [Tier1 cancelled] — POST가 억제되어 돌아오는 시점에 effect가 이미 cleanup돼도 heal 횟수가 되돌려진다', async () => {
       const { rerender } = await renderTier1With503();
 
-      // Tier 1 heal이 token 조회(AsyncStorage)에서 대기 중일 때 풀어주고, count 증가 직후·
-      // 결과 처리 직전에 같은 act 안에서 다음 전환을 흘려 cleanup(cancelled=true)을 먼저 일으킨다.
-      let releaseToken!: (v: string) => void;
-      const tokenGate = new Promise<string>((resolve) => {
-        releaseToken = resolve;
-      });
-      (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(() => tokenGate);
-      rerender({ cs: origin3 });
-      await act(async () => {
-        await flush();
-      });
-      await act(async () => {
-        releaseToken('token-abc');
-        await Promise.resolve();
-        rerender({ cs: onRoute2 });
-        await flush();
-      });
+      await runTier1WithInterleaveAtSuppression(
+        () => rerender({ cs: origin3 }),
+        () => rerender({ cs: onRoute2 }), // cleanup → cancelled=true
+      );
       expect(mockRegister).toHaveBeenCalledTimes(2);
 
       // 억제 종료 후 — 상한 3회가 모두 실제 POST로 쓰여야 한다(cancelled 경로가 1을 누수했다면 2회).
@@ -2165,6 +2168,49 @@ describe('useApnsTripRegistration', () => {
       mockRegister.mockResolvedValue({ ok: false, status: 500 });
       const baseline = mockRegister.mock.calls.length;
       await flipStations(rerender, [origin3, onRoute2, origin3, onRoute2, origin3]);
+      expect(mockRegister.mock.calls.length - baseline).toBe(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION);
+    });
+
+    it('B6c [Tier1 세션 교체] — 억제 결과가 돌아오기 전 다른 세션이 count를 초기화했으면 음수로 내리지 않는다', async () => {
+      const dest3b: Station = { ...dest3, id: '3-004', name: '마두' }; // destination.id가 달라 다른 세션
+      const { rerender } = renderHook(
+        ({ d, cs }: { d: Station; cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: d,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { d: dest3, cs: null as Station | null } },
+      );
+      mockRegister.mockResolvedValueOnce({ ok: true });
+      await act(async () => {
+        await flush();
+      });
+      mockRegister.mockResolvedValue(KV_503);
+      await act(async () => {
+        tokenListener()({ data: 'token-2' });
+        await flush();
+      });
+
+      await runTier1WithInterleaveAtSuppression(
+        () => rerender({ d: dest3, cs: origin3 }), // 세션 A heal
+        () => rerender({ d: dest3b, cs: onRoute2 }), // 세션 B 시작 → healAttemptRef={B,0}
+      );
+
+      // 세션 B의 상한(3)이 정확히 3이어야 한다(음수로 내려가 있으면 4회가 나간다). 세션 B의 main
+      // effect도 억제 skip으로 재시도를 걸어 두므로(heal은 재시도 대기 중 skip) 재시도 상한(3회)이
+      // 소진돼 타이머가 비워질 때까지 시간을 흘린다.
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      for (let t = 0; t < 14; t += 1) {
+        // eslint-disable-next-line no-await-in-loop -- 재시도 체인은 틱마다 순차 진행해야 한다.
+        await advance(20_000);
+      }
+      const baseline = mockRegister.mock.calls.length;
+      await flipStations(
+        (p) => rerender({ d: dest3b, cs: p.cs }),
+        [origin3, onRoute2, origin3, onRoute2, origin3],
+      );
       expect(mockRegister.mock.calls.length - baseline).toBe(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION);
     });
 
@@ -2386,15 +2432,22 @@ describe('useApnsTripRegistration', () => {
         resolveHeal(KV_503);
         await flush();
       });
-      mockRegister.mockResolvedValue({ ok: true });
+      mockRegister.mockResolvedValue({ ok: false, status: 500 }); // 억제 뒤 POST는 일반 실패
       await advance(REGISTER_RETRY_HEAL_BUSY_RECHECK_MS + 100); // recheck 발화 — 억제 중이라 POST 없음
       expect(mockRegister).toHaveBeenCalledTimes(3);
       await advance(30_000);
       expect(mockRegister).toHaveBeenCalledTimes(3);
       await advance(31_000); // 억제 종료 — 예약된 1개만 POST
       expect(mockRegister).toHaveBeenCalledTimes(4);
-      await advance(120_000); // 성공으로 재시도 정리 — 추가 POST 없음
-      expect(mockRegister).toHaveBeenCalledTimes(4);
+
+      // 억제 skip은 attempt 예산을 쓰지 않았다(main의 500 실패로 attempt=1만 소모). 그래서 일반
+      // backoff가 남은 [30s, 60s] 그대로 이어진다 — skip이 attempt를 먹었다면 30s 단계가 사라진다.
+      await advance(REGISTER_RETRY_BACKOFF_MS[1] + 500);
+      expect(mockRegister).toHaveBeenCalledTimes(5);
+      await advance(REGISTER_RETRY_BACKOFF_MS[2] + 500);
+      expect(mockRegister).toHaveBeenCalledTimes(6);
+      await advance(300_000); // 상한 소진 — 추가 POST 없음
+      expect(mockRegister).toHaveBeenCalledTimes(6);
     });
   });
 
