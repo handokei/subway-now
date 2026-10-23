@@ -38,6 +38,7 @@ import { useArchFlagRemote } from '../../../shared/config/useArchFlagRemote';
 import type { GpsActiveState } from '../../../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../../../shared/utils/formatTime';
 import { useFusedNearestStation } from '../../../features/nearest-station/hooks/useFusedNearestStation';
+import { readBgLastFix, type BgLastFix } from '../../../features/nearest-station/utils/bgLastFix';
 import { useArrivalInfo } from '../../../features/arrival/hooks/useArrivalInfo';
 import {
   useSilentPushDiagnostics,
@@ -489,7 +490,14 @@ function formatRawSignalLine(entry: RawSignalEntry): string {
   const hpa = entry.barometerHpa != null ? entry.barometerHpa.toFixed(1) : '-';
   const gpsFixAt =
     entry.gps?.fixAtMs != null ? formatTime(entry.gps.fixAtMs) : '-';
-  return `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt}`;
+  // #3191 PR-0 — watch 구독 상태 / RN AppState / 기압 ΔP 이벤트 시각. 마찬가지로 끝에 append.
+  const watch = entry.watch ?? '-';
+  const appState = entry.appState ?? '-';
+  const baroEvt = entry.baroEventAtMs != null ? formatTime(entry.baroEventAtMs) : '-';
+  const base = `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt} | watch=${watch} | app=${appState} | baroEvt=${baroEvt}`;
+  if (!entry.launch) return base;
+  const { coldStartAtMs, firstHpa, firstHpaAtMs } = entry.launch;
+  return `${base} | launch=cold@${formatTime(coldStartAtMs)} hpa0=${firstHpa.toFixed(1)}@${formatTime(firstHpaAtMs)}`;
 }
 
 /**
@@ -675,6 +683,8 @@ interface BuildDumpArgs {
    * null/미전달 시 dump는 `(no BG heartbeat)` 한 줄만 출력.
    */
   bgTaskLastHeartbeat?: BgTaskHeartbeatSnapshot | null;
+  /** #3191 PR-0 — BG task가 마지막으로 수용한 fix(acc/speed 포함). null/미전달 = 없음. */
+  bgLastFix?: BgLastFix | null;
   logs: AlarmLogEntry[];
   /**
    * #2861 (T2) — Boarding Prompt Acceptance "recent Nd" 시계열 소스. ring(alarmLog cap=200)
@@ -1557,6 +1567,23 @@ function buildBgHeartbeatSection(args: BuildDumpArgs): string[] {
   return [formatBgHeartbeatLine(snapshot, args.nowMs ?? Date.now())];
 }
 
+/**
+ * #3191 PR-0 — BG last fix 1줄. dump builder와 JSX가 이 함수 하나를 공유한다(heartbeat와 동일 정책).
+ * 평지 정지 판정 근거(acc/speed)를 덤프만으로 닫기 위한 관측 라인 — 판정에는 쓰이지 않는다.
+ */
+function formatBgLastFixLine(fix: BgLastFix, nowMs: number): string {
+  const ageSec = Math.max(0, Math.round((nowMs - fix.timestamp) / 1000));
+  const acc = fix.acc != null ? `${Math.round(fix.acc)}m` : '-';
+  const speed = fix.speed != null ? `${fix.speed.toFixed(1)}m/s` : '-';
+  return `BG last fix: ${ageSec}초 전 (acc=${acc} speed=${speed})`;
+}
+
+function buildBgLastFixSection(args: BuildDumpArgs): string[] {
+  const fix = args.bgLastFix;
+  if (!fix) return ['(no BG last fix)'];
+  return [formatBgLastFixLine(fix, args.nowMs ?? Date.now())];
+}
+
 function buildBoardingLockDriftLogSection(args: BuildDumpArgs): string[] {
   const entries = args.boardingLockDriftLog ?? [];
   if (entries.length === 0) return ['(empty)'];
@@ -2203,6 +2230,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   },
   // #2618 — BG task heartbeat 단일 스냅샷(생존 확인). alarmLog ring 적재 폐지 대체.
   { title: 'BG Heartbeat', build: buildBgHeartbeatSection },
+  // #3191 PR-0 — BG last fix(acc/speed). BG 주입 검증(PR-2 차단 항목)용 관측.
+  { title: 'BG Last Fix', build: buildBgLastFixSection },
   // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
   // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
   {
@@ -2484,6 +2513,22 @@ function DebugModalInner({
     const tick = () => {
       void readBgTaskLastHeartbeat().then((snapshot) => {
         if (!cancelled) setBgTaskLastHeartbeat(snapshot);
+      });
+    };
+    tick();
+    const id = setInterval(tick, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+  // #3191 PR-0 — BG last fix 폴링. heartbeat와 동일 5s cadence(새 타이머 종류 없이 같은 패턴).
+  const [bgLastFix, setBgLastFix] = useState<BgLastFix | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      void readBgLastFix().then((fix) => {
+        if (!cancelled) setBgLastFix(fix);
       });
     };
     tick();
@@ -2852,6 +2897,7 @@ function DebugModalInner({
       backendSsotMirror,
       // #2618 — BG task heartbeat 최신 스냅샷.
       bgTaskLastHeartbeat,
+      bgLastFix,
       logs,
       // #2861 (T2) — Boarding Prompt Acceptance 영속 daily counter를 share dump에 포함.
       boardingPromptDailyCounters,
@@ -2956,6 +3002,7 @@ function DebugModalInner({
     silentPush,
     backendSsotMirror,
     bgTaskLastHeartbeat,
+    bgLastFix,
     logs,
     // #2861 (T2) — boardingPromptDailyCounters 변경 시 share 텍스트 자동 갱신.
     boardingPromptDailyCounters,
@@ -3364,6 +3411,22 @@ function DebugModalInner({
                 testID="debug-bg-heartbeat-empty"
               >
                 (no BG heartbeat)
+              </Text>
+            )}
+          </Section>
+
+          {/* #3191 PR-0 — BG last fix 1줄(acc/speed 포함). buildBgLastFixSection과 동일 SSOT. */}
+          <Section title="BG Last Fix" colors={colors}>
+            {bgLastFix ? (
+              <Text style={[typography.mono, { color: colors.ink }]} testID="debug-bg-last-fix">
+                {formatBgLastFixLine(bgLastFix, Date.now())}
+              </Text>
+            ) : (
+              <Text
+                style={[typography.mono, { color: colors.muted }]}
+                testID="debug-bg-last-fix-empty"
+              >
+                (no BG last fix)
               </Text>
             )}
           </Section>
@@ -4482,6 +4545,8 @@ export const __test__ = {
   // #2618 — BG task heartbeat section builder + 공유 포맷터. 단위 테스트에서 직접 검증.
   buildBgHeartbeatSection,
   formatBgHeartbeatLine,
+  buildBgLastFixSection,
+  formatBgLastFixLine,
   formatLockLifecycleLine,
   buildLockLifecycleSection,
   formatTokenTail,

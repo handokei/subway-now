@@ -151,6 +151,9 @@ interface UseNearestStationReturn {
   // #852: 마지막 신뢰 fix epoch ms. BG 진입 후 새 fix가 없으면 이 시각은 정지.
   // null = 한 번도 fix 없음(cold start). 디버그 모달 표기용.
   lastFixAtMs: number | null;
+  // #3191 PR-0 — FG watch 구독이 지금 살아 있는지(관측 전용 getter, render 유발 없음). Raw signal이
+  // 기록 시점의 watch 상태를 남기기 위한 것 — 어떤 판정도 이 값을 읽지 않는다.
+  isWatchActive: () => boolean;
   // #2070 — fusion 결정 tier 품질 게이트(100m/15s) 저하 여부. 호출자(useFusedNearestStation)가
   // inferEnvironment의 추가 입력으로 사용 — 지하 진입 후보 신호이며, FG watch 폴링 프로파일도
   // 이 값으로 지하 프로파일 전환/원복된다.
@@ -482,6 +485,8 @@ export function useNearestStation(
     subscriptionRef.current?.remove();
     subscriptionRef.current = null;
   }, []);
+
+  const isWatchActive = useCallback(() => subscriptionRef.current !== null, []);
 
   const startWatch = useCallback(async () => {
     const generation = ++watchGenerationRef.current;
@@ -911,6 +916,7 @@ export function useNearestStation(
     locationUncertain,
     gpsActive,
     lastFixAtMs,
+    isWatchActive,
     gpsQualityDegraded,
     source: exposed.source,
     refresh,

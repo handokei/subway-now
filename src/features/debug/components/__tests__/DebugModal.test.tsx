@@ -58,6 +58,8 @@ const mockGetFiredAlarmLog = jest.fn().mockResolvedValue([]);
 const mockClearFiredAlarmLog = jest.fn().mockResolvedValue(undefined);
 // #2618 — BG task heartbeat 단일 키 read mock. 기본 null(미존재) — 개별 테스트가 override.
 const mockReadBgTaskLastHeartbeat = jest.fn().mockResolvedValue(null);
+// #3191 PR-0 — BG last fix(acc/speed 포함) read mock. 기본 null(BG task 미기동).
+const mockReadBgLastFix = jest.fn().mockResolvedValue(null);
 const mockUseBarometer = jest.fn();
 const mockUseLowPowerMode = jest.fn();
 // #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
@@ -102,6 +104,9 @@ jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
 const mockGetLatestAccelerometerSnapshot = jest.fn();
 jest.mock('../../../nearest-station/utils/accelerometerFingerprint', () => ({
   getLatestAccelerometerSnapshot: () => mockGetLatestAccelerometerSnapshot(),
+}));
+jest.mock('../../../nearest-station/utils/bgLastFix', () => ({
+  readBgLastFix: () => mockReadBgLastFix(),
 }));
 jest.mock('../../../alarm/utils/alarmLog', () => {
   const actual = jest.requireActual('../../../alarm/utils/alarmLog');
@@ -269,6 +274,7 @@ const setupHookDefaults = () => {
   mockReadBackendSsotMirror.mockResolvedValue(null);
   // #2618 — BG task heartbeat 기본 null (BG task 미기동). 개별 테스트가 명시 주입.
   mockReadBgTaskLastHeartbeat.mockResolvedValue(null);
+  mockReadBgLastFix.mockResolvedValue(null);
   // #1898 — accelerometer raw snapshot 기본 null (native 모듈 미포함 / jest 환경).
   mockGetLatestAccelerometerSnapshot.mockReturnValue(null);
   // #1982 (ADR-022 Phase 0) — Feature Flag remote 기본 unconfigured (테스트 env 에는 backend URL 없음).
@@ -3026,6 +3032,27 @@ describe('DebugModal — Backend SSoT 섹션 (#1568, T8b)', () => {
     });
   });
 
+  // #3191 PR-0 — BG last fix 1줄 (acc/speed 포함). 존재/미존재 두 분기.
+  it('UI: BG last fix 미존재 시 "(no BG last fix)" 노출', async () => {
+    mockReadBgLastFix.mockResolvedValue(null);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('debug-bg-last-fix-empty')).toBeTruthy();
+    });
+    expect(screen.getByText('(no BG last fix)')).toBeTruthy();
+  });
+
+  it('UI: BG last fix 존재 시 acc/speed가 포함된 1줄 노출', async () => {
+    mockReadBgLastFix.mockResolvedValue({
+      lat: 37.5, lng: 127, timestamp: Date.now() - 5_000, acc: 12, speed: 0.2,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('debug-bg-last-fix')).toBeTruthy();
+    });
+    expect(screen.getByTestId('debug-bg-last-fix').props.children).toContain('acc=12m');
+  });
+
   it('UI: mirror 존재 시 4 row 노출', async () => {
     mockReadBackendSsotMirror.mockResolvedValue(mirrorEntry);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
@@ -4778,6 +4805,39 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         entry: makeRawEntry({ barometerHpa: null, gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3, fixAtMs: null } }),
         contains: ['hpa=-', 'fix=-'],
       },
+      {
+        // #3191 PR-0 — watch / appState / ΔP 이벤트 시각 토큰 (dump 끝에 append).
+        name: 'watch/appState/baroEventAtMs 채워짐 → watch=active / app=active / baroEvt=<HH:mm:ss>',
+        entry: makeRawEntry({
+          watch: 'active',
+          appState: 'active',
+          baroEventAtMs: new Date('2026-06-19T08:00:07Z').getTime(),
+        }),
+        contains: [
+          'watch=active',
+          'app=active',
+          `baroEvt=${formatClockTimeWithSeconds(new Date('2026-06-19T08:00:07Z').getTime())}`,
+        ],
+      },
+      {
+        name: 'watch/appState/baroEventAtMs 미기록(구 entry) → watch=- / app=- / baroEvt=-',
+        entry: makeRawEntry(),
+        contains: ['watch=-', 'app=-', 'baroEvt=-'],
+      },
+      {
+        name: 'launch 표식 부착 entry → launch=cold@<시각> hpa0=<값>@<시각>',
+        entry: makeRawEntry({
+          launch: {
+            coldStartAtMs: new Date('2026-06-19T07:59:00Z').getTime(),
+            firstHpa: 1012.54,
+            firstHpaAtMs: new Date('2026-06-19T07:59:02Z').getTime(),
+          },
+        }),
+        contains: [
+          `cold@${formatClockTimeWithSeconds(new Date('2026-06-19T07:59:00Z').getTime())}`,
+          `hpa0=1012.5@${formatClockTimeWithSeconds(new Date('2026-06-19T07:59:02Z').getTime())}`,
+        ],
+      },
     ])('$name', ({ entry, contains }) => {
       const line = formatRawSignalLine(entry);
       for (const expected of contains) {
@@ -5483,6 +5543,34 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       );
       expect(dump).toContain('## BG Heartbeat');
       expect(dump).toContain('마지막 BG heartbeat:');
+    });
+
+    it('formatBgLastFixLine / buildBgLastFixSection (#3191 PR-0)', () => {
+      const { formatBgLastFixLine, buildBgLastFixSection } = __test__;
+      expect(
+        formatBgLastFixLine({ lat: 37.5, lng: 127, timestamp: 3_000, acc: 12.4, speed: 0.2 }, 10_000),
+      ).toBe('BG last fix: 7초 전 (acc=12m speed=0.2m/s)');
+      expect(
+        formatBgLastFixLine({ lat: 37.5, lng: 127, timestamp: 3_000, acc: null, speed: null }, 10_000),
+      ).toBe('BG last fix: 7초 전 (acc=- speed=-)');
+      expect(
+        formatBgLastFixLine({ lat: 37.5, lng: 127, timestamp: 20_000, acc: null, speed: null }, 10_000),
+      ).toBe('BG last fix: 0초 전 (acc=- speed=-)');
+
+      expect(buildBgLastFixSection(baselineDumpArgs)).toEqual(['(no BG last fix)']);
+      expect(
+        buildBgLastFixSection({
+          ...baselineDumpArgs,
+          nowMs: 10_000,
+          bgLastFix: { lat: 37.5, lng: 127, timestamp: 3_000, acc: 12.4, speed: 0.2 },
+        }),
+      ).toEqual(['BG last fix: 7초 전 (acc=12m speed=0.2m/s)']);
+
+      const dump = buildDumpText(
+        makeDumpArgs({ bgLastFix: { lat: 37.5, lng: 127, timestamp: 3_000, acc: 12.4, speed: 0.2 } }),
+      );
+      expect(dump).toContain('## BG Last Fix');
+      expect(dump).toContain('BG last fix:');
     });
 
     it('buildLockLifecycleSection: 빈/entries cover + share dump 포함 (#2152)', () => {

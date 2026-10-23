@@ -303,6 +303,19 @@ describe('useNearestStation', () => {
     expect(mockSubscription.remove).toHaveBeenCalled();
   });
 
+  it('#3191 PR-0: isWatchActive — 구독 전 false, 구독 중 true, background stop 후 false', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+    expect(result.current.isWatchActive()).toBe(false);
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    await waitFor(() => expect(result.current.isWatchActive()).toBe(true));
+
+    act(() => { appStateCallback?.('background'); });
+    expect(result.current.isWatchActive()).toBe(false);
+  });
+
   it('inactive 상태에서는 watch를 중지하지 않는다', async () => {
     mockGranted();
 

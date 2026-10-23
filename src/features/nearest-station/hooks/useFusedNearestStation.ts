@@ -7,6 +7,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
@@ -22,7 +23,7 @@ import {
 // #1896 (RC-8) — boarding-lock drift 별 buffer. stuck 시나리오에서 매 cycle push되는 entry가
 // fusionDebugBuffer를 점령하는 self-pollution 차단 (candidateRejectBuffer 패턴 동일).
 import { pushBoardingLockDriftEntry } from '../utils/boardingLockDriftBuffer';
-import { pushRawSignal, type MotionLabel } from '../../observability/utils/rawSignalBuffer';
+import { pushRawSignal, type MotionLabel, type RawSignalWatch } from '../../observability/utils/rawSignalBuffer';
 import { getCurrentCellularTech } from '../utils/cellularTech';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
@@ -37,7 +38,7 @@ import { useFusedStationDetection } from './useFusedStationDetection';
 import type { BarometerSignal } from '../../../shared/hooks/useBarometer';
 // #2241 (ADR-030 §Replay harness backbone P0-1) — 기압계 원시 hPa. ambient ring buffer module
 // (useBarometer가 push, 여기서는 read-only snapshot). subsurface(파생 boolean)와 별 채널.
-import { getBarometerReadings } from '../../../shared/utils/barometerState';
+import { getBarometerDeltaTracking, getBarometerReadings } from '../../../shared/utils/barometerState';
 import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
@@ -2655,6 +2656,18 @@ export function useFusedNearestStation(
       fusionArrival?.up[0]?.arrivalCode ?? fusionArrival?.down[0]?.arrivalCode ?? null;
     const arcProgressForDump = progress.progressM ?? null;
     const ts = Date.now();
+    // #3191 PR-0 — 관측 전용 필드(판정 입력 아님): FG watch 구독 상태 / RN AppState / 최근 ΔP 이벤트 시각.
+    // gps.isWatchActive는 테스트 mock 등 미제공 시 undefined → watch=null.
+    const watchActive = gps.isWatchActive?.();
+    let watchForDump: RawSignalWatch | null = null;
+    if (watchActive !== undefined) {
+      watchForDump = watchActive ? 'active' : 'inactive';
+    }
+    const instrumentationForDump = {
+      watch: watchForDump,
+      appState: AppState.currentState,
+      baroEventAtMs: getBarometerDeltaTracking().lastDeltaEventAtMs,
+    };
     // #1859 — CTRadioAccessTechnology 스냅샷. tech는 native 캐시에서 동기 읽기.
     // vote는 useCellularTech()가 이미 산출한 값을 그대로 사용(재분류 없음).
     const cellularForDump = { tech: getCurrentCellularTech(), vote: cellularEnvironmentVote };
@@ -2680,6 +2693,7 @@ export function useFusedNearestStation(
         source: null,
         confidence: null,
         pushReceipt: null,
+        ...instrumentationForDump,
       });
       pushRawSignal({
         ts,
@@ -2700,6 +2714,7 @@ export function useFusedNearestStation(
         source,
         confidence,
         pushReceipt: null,
+        ...instrumentationForDump,
       });
     }
     lastStationIdRef.current = nextStationId;
@@ -2722,6 +2737,7 @@ export function useFusedNearestStation(
       source,
       confidence,
       pushReceipt: null,
+      ...instrumentationForDump,
     });
   }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, accelerometerPattern, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM]);
 
