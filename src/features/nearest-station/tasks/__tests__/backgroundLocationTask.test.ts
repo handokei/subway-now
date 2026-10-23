@@ -44,7 +44,9 @@ jest.mock('../../../alarm/utils/notificationState', () => ({
 const mockLogSuppressedGate = jest.fn();
 // #2403 — BG task 발화 heartbeat 모킹.
 const mockLogBgTaskHeartbeat = jest.fn();
+const mockLogStoredRouteMigrationFailed = jest.fn();
 jest.mock('../../../alarm/utils/alarmLog', () => ({
+  logStoredRouteMigrationFailed: (...args: unknown[]) => mockLogStoredRouteMigrationFailed(...args),
   logSuppressedGate: (...args: unknown[]) => mockLogSuppressedGate(...args),
   logBgTaskHeartbeat: (...args: unknown[]) => mockLogBgTaskHeartbeat(...args),
 }));
@@ -148,6 +150,7 @@ import {
 } from '../../../../shared/constants/location';
 import { ALARM_EVENT_KEY } from '../../../../shared/constants/storageKeys';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 
 // ── 픽스처 ──
 
@@ -405,8 +408,61 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
+    // #3177 PR-2a — 저장 경로는 공용 파서(readStoredRoute)를 거쳐 destinationStationId가 채워진다.
     expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      storedRoute,
+      storedRoute: { ...storedRoute, destinationStationId: mockDestination.id },
+    }));
+  });
+
+  it('id 없는 구버전 환승 경로는 사당 2-026/4-025로 채워 processLocationUpdate에 전달한다 (#3177)', async () => {
+    const legacy = {
+      type: 'transfer',
+      transferName: canonicalStationName('사당', '2'),
+      fromLine: '2',
+      toLine: '4',
+      stopsToTransfer: 5,
+      stopsFromTransfer: 3,
+      secondsToTransfer: 600,
+      secondsFromTransfer: 400,
+    };
+    const sadangDest = { ...mockDestination, id: '4-025', name: canonicalStationName('사당', '4'), line: '4' };
+    mockStorageValues(JSON.stringify(sadangDest), null, JSON.stringify(legacy));
+
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      storedRoute: { ...legacy, transferStationId: '2-026', destinationStationId: '4-025' },
+    }));
+  });
+
+  it('마이그레이션 조회 실패 시 storedRoute null + route-migration-failed 로그 (#3177)', async () => {
+    const broken = {
+      type: 'transfer',
+      transferName: '없는역이름XYZ',
+      fromLine: '2',
+      toLine: '4',
+      stopsToTransfer: 5,
+      stopsFromTransfer: 3,
+      secondsToTransfer: 600,
+      secondsFromTransfer: 400,
+    };
+    mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(broken));
+
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockLogStoredRouteMigrationFailed).toHaveBeenCalledWith('없는역이름XYZ');
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      storedRoute: null,
     }));
   });
 
