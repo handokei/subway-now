@@ -198,12 +198,121 @@ describe('alarmBackend', () => {
         const jsonSpy = jest.fn(async () => ({ retryAfterSeconds: 99 }));
         (global.fetch as jest.Mock).mockResolvedValue({
           ok: false,
-          status: 503,
+          status: 500,
           json: jsonSpy,
         } as unknown as Response);
         const result = await registerActiveTrip(SAMPLE_PAYLOAD);
-        expect(result).toEqual({ ok: false, status: 503 });
+        expect(result).toEqual({ ok: false, status: 500 });
         expect(jsonSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    // #3006 PR-1 — 503 `kv_unavailable`(KV 쓰기 쿼터 소진). body `error` → errorCode,
+    // Retry-After 헤더 → retryAfterSeconds. 엣지가 내는 HTML 503은 errorCode가 비어 구분된다.
+    describe('503 kv_unavailable 파싱 (#3006)', () => {
+      const kvResponse = (retryAfter: string | null): Response =>
+        ({
+          ok: false,
+          status: 503,
+          headers: { get: (k: string) => (k.toLowerCase() === 'retry-after' ? retryAfter : null) },
+          json: async () => ({ error: 'kv_unavailable' }),
+        }) as unknown as Response;
+
+      beforeEach(() => {
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      });
+
+      it('1-A1: 503 kv + Retry-After 60 → errorCode와 retryAfterSeconds를 결과에 싣는다', async () => {
+        (global.fetch as jest.Mock).mockResolvedValue(kvResponse('60'));
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({
+          ok: false,
+          status: 503,
+          errorCode: 'kv_unavailable',
+          retryAfterSeconds: 60,
+        });
+      });
+
+      it.each([
+        { label: '헤더 없음', header: null },
+        { label: '비숫자', header: 'soon' },
+        { label: '0', header: '0' },
+        { label: '음수', header: '-5' },
+        { label: '소수/HTTP-date 형식', header: '1.5' },
+      ])('1-A2: Retry-After $label → errorCode만 싣고 retryAfterSeconds는 생략', async ({ header }) => {
+        (global.fetch as jest.Mock).mockResolvedValue(kvResponse(header));
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 503, errorCode: 'kv_unavailable' });
+      });
+
+      it('1-A2: HTML 503(엣지, JSON 파싱 실패)은 errorCode 없이 status만', async () => {
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 503,
+          json: async () => {
+            throw new Error('Unexpected token <');
+          },
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 503 });
+      });
+
+      it('1-A2: 다른 error 값의 503은 errorCode만 싣고 Retry-After는 읽지 않는다', async () => {
+        const headersGet = jest.fn(() => '60');
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 503,
+          headers: { get: headersGet },
+          json: async () => ({ error: 'other' }),
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 503, errorCode: 'other' });
+        expect(headersGet).not.toHaveBeenCalled();
+      });
+
+      it('1-A2: error 필드가 문자열이 아닌 503은 errorCode 생략', async () => {
+        (global.fetch as jest.Mock).mockResolvedValue({
+          ok: false,
+          status: 503,
+          json: async () => ({ error: 42 }),
+        } as unknown as Response);
+        const result = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(result).toEqual({ ok: false, status: 503 });
+      });
+
+      // dedup 교착 — 503 뒤에도 직전 성공 hash가 남아 있으면, 서버가 복구된 뒤 같은 payload를
+      // 보내도 네트워크 없이 skipped:true가 돌아와 회복을 영영 감지하지 못한다.
+      it('1-dedup: 200(H1) → 503 kv(H2) → 다시 H1 은 skip되지 않고 네트워크로 나간다', async () => {
+        const h1 = SAMPLE_PAYLOAD;
+        const h2 = { ...SAMPLE_PAYLOAD, subsurface: true };
+        (global.fetch as jest.Mock)
+          .mockResolvedValueOnce({ ok: true, status: 200 } as Response)
+          .mockResolvedValueOnce(kvResponse('60'))
+          .mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+
+        const first = await registerActiveTrip(h1);
+        expect(first.ok).toBe(true);
+        const second = await registerActiveTrip(h2);
+        expect(second.status).toBe(503);
+        const third = await registerActiveTrip(h1);
+
+        expect(global.fetch).toHaveBeenCalledTimes(3);
+        expect(third.skipped).toBeUndefined();
+        expect(third.ok).toBe(true);
+      });
+
+      it('1-dedup (거부): 503이 아닌 실패(500)는 직전 성공 hash를 유지한다', async () => {
+        const h2 = { ...SAMPLE_PAYLOAD, subsurface: true };
+        (global.fetch as jest.Mock)
+          .mockResolvedValueOnce({ ok: true, status: 200 } as Response)
+          .mockResolvedValueOnce({ ok: false, status: 500 } as Response);
+
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        await registerActiveTrip(h2);
+        const again = await registerActiveTrip(SAMPLE_PAYLOAD);
+
+        expect(again).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
       });
     });
 

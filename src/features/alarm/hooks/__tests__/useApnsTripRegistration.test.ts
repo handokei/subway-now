@@ -52,8 +52,11 @@ jest.mock('../../store/tripBoundCleanups', () => ({
 const mockLogCrossTripMirrorSkip = jest.fn();
 // #2699 — subsurface dwell 게이트 확정 전환 계측.
 const mockLogSubsurfaceRegisterTransition = jest.fn();
+// #3006 — 503 kv / 429 억제 skip 사유 계측.
+const mockLogRegisterSuppressed = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
+  logRegisterSuppressed: (...args: unknown[]) => mockLogRegisterSuppressed(...args),
   logSubsurfaceRegisterTransition: (...args: unknown[]) => mockLogSubsurfaceRegisterTransition(...args),
 }));
 
@@ -1904,6 +1907,382 @@ describe('useApnsTripRegistration', () => {
         await Promise.resolve();
       });
       expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // #3006 PR-1 — 503 `kv_unavailable`(CF KV 쓰기 쿼터 소진) 억제. backend가 Retry-After 동안
+  // 등록을 못 받는 것을 알려주면 device는 그 시간 동안 어떤 경로(main/token/Tier1/Tier2/retry)도
+  // POST하지 않고, 억제가 끝나는 시점에 재시도 1개만 건다(attempt/heal 횟수 보존).
+  describe('#3006 PR-1 — 503 kv_unavailable 억제 (횟수 보호 · ensureRetryArmed · Tier1 되돌림)', () => {
+    const KV_503 = {
+      ok: false,
+      status: 503,
+      errorCode: 'kv_unavailable',
+      retryAfterSeconds: 60,
+    };
+    const origin3: Station = {
+      id: '3-001',
+      name: '대화',
+      line: '3',
+      lat: 37.676087,
+      lng: 126.747569,
+      lineColor: '#EF7C1C',
+    };
+    const onRoute2: Station = { ...origin3, id: '3-002', name: '주엽' };
+    const dest3: Station = {
+      id: '3-003',
+      name: '정발산',
+      line: '3',
+      lat: 37.659477,
+      lng: 126.773359,
+      lineColor: '#EF7C1C',
+    };
+    const route3 = makeDirectRoute(2, '3');
+
+    /** 마이크로태스크 체인(AsyncStorage → callRegister → await)을 충분히 비운다. */
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i += 1) {
+        // eslint-disable-next-line no-await-in-loop -- 순차 마이크로태스크 flush가 본질.
+        await Promise.resolve();
+      }
+    };
+    const advance = async (ms: number): Promise<void> => {
+      await act(async () => {
+        jest.advanceTimersByTime(ms);
+        await flush();
+      });
+    };
+    const tokenListener = () =>
+      mockAddPushTokenListener.mock.calls[0][0] as (e: { data: string }) => void;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    /** B1/B2/B5 — subsurface로 main effect를 다시 돌릴 수 있는 렌더. */
+    const renderSub = () =>
+      renderHook(
+        ({ sub }: { sub: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            subsurface: sub,
+          }),
+        { initialProps: { sub: false } },
+      );
+
+    /** Tier 1 heal 시나리오 공통 — mount는 성공(context 결손), 이후 token listener가 503 kv를 받는다. */
+    const renderTier1With503 = async () => {
+      mockRegister.mockResolvedValueOnce({ ok: true });
+      const hook = renderHook(
+        ({ cs }: { cs: Station | null }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest3,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+          }),
+        { initialProps: { cs: null as Station | null } },
+      );
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      mockRegister.mockResolvedValue(KV_503);
+      await act(async () => {
+        tokenListener()({ data: 'token-2' });
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      return hook;
+    };
+
+    const flipStations = async (
+      rerender: (p: { cs: Station | null }) => void,
+      sequence: Station[],
+    ): Promise<void> => {
+      for (const cs of sequence) {
+        rerender({ cs });
+        // eslint-disable-next-line no-await-in-loop -- 전환 순서가 본질.
+        await act(async () => {
+          await flush();
+        });
+      }
+    };
+
+    it('B1 — 503 kv 직후 억제 구간(RA 60s)에 main effect가 다시 돌아도 POST하지 않고, 사유는 backend-degraded', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      const { rerender } = renderSub();
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      await advance(21_000); // quarantine(20s) 밖 — 다음 전환은 즉시 확정되어 main effect 재실행.
+      rerender({ sub: true });
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      expect(mockLogRegisterSuppressed).toHaveBeenCalledWith('backend-degraded');
+      expect(mockLogRegisterSuppressed).not.toHaveBeenCalledWith('rate-limited');
+    });
+
+    it('B2 — 503 kv 뒤 기존 backoff(15s)에는 재시도하지 않는다(억제 구간이 우선)', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderSub();
+      await act(async () => {
+        await flush();
+      });
+      await advance(REGISTER_RETRY_BACKOFF_MS[0] + 500);
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('B2b — Retry-After가 없는 503 kv는 기본 60s 억제', async () => {
+      mockRegister.mockResolvedValue({ ok: false, status: 503, errorCode: 'kv_unavailable' });
+      renderSub();
+      await act(async () => {
+        await flush();
+      });
+      await advance(59_000);
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      await advance(2_000);
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('B3 [Tier1] — token listener가 503 kv를 받은 억제 구간에 currentStation 전환 heal은 POST하지 않고 사유를 남긴다', async () => {
+      const { rerender } = await renderTier1With503();
+      await flipStations(rerender, [origin3]);
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      expect(mockLogRegisterSuppressed).toHaveBeenCalledWith('backend-degraded');
+    });
+
+    it('B4 [Tier2] — 503 kv 억제 구간에 도래한 Tier 2 타이머도 POST하지 않는다', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: true });
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: route3,
+          destination: dest3,
+          nextStationEtaSeconds: 120,
+          currentStation: null,
+          subsurface: true,
+          routeOriginStation: origin3,
+        }),
+      );
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      await advance(5_000);
+      mockRegister.mockResolvedValue(KV_503);
+      await act(async () => {
+        tokenListener()({ data: 'token-2' });
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2); // 503 수신 → 억제 시작(+60s = t65)
+
+      await advance(CONTEXT_HEAL_TIER2_DELAY_MS - 5_000); // t60 — Tier 2 타이머 도래, 억제 중
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      expect(mockLogRegisterSuppressed).toHaveBeenCalledWith('backend-degraded');
+    });
+
+    it('B5 — 반복 flip(t21,t42)에도 attempt가 소모되지 않아 재시도는 t60/t120/t180에 정확히 1회씩', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      const { rerender } = renderSub();
+      await act(async () => {
+        await flush();
+      });
+      await advance(21_000); // t21
+      rerender({ sub: true });
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      await advance(21_000); // t42
+      rerender({ sub: false });
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+
+      await advance(19_000); // t61 — 첫 재시도(t60)
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      await advance(60_000); // t121
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+      await advance(60_000); // t181
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      await advance(19_000); // t200 — 상한(backoff 3회) 소진, 더 이상 없음
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+    });
+
+    it('B6a [Tier1 횟수] — 억제 skip은 heal 횟수를 소모하지 않아 억제가 끝난 뒤 heal 3회가 실제 POST로 쓰인다', async () => {
+      const { rerender } = await renderTier1With503();
+
+      // 억제 구간 안에서 상한(3)만큼 전환 — 전부 skip(네트워크 0).
+      const inside = [origin3, onRoute2, origin3];
+      expect(inside).toHaveLength(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION);
+      await flipStations(rerender, inside);
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+
+      // 억제 종료 후 전환 3회 — 각각 실제 POST(500 실패라 세션 잠금 없음).
+      await advance(61_000);
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      const baseline = mockRegister.mock.calls.length;
+      await flipStations(rerender, [onRoute2, origin3, onRoute2, origin3]);
+      expect(mockRegister.mock.calls.length - baseline).toBe(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION);
+    });
+
+    it('B6b [Tier1 cancelled] — POST가 억제되어 돌아오는 시점에 effect가 이미 cleanup돼도 heal 횟수가 되돌려진다', async () => {
+      const { rerender } = await renderTier1With503();
+
+      // Tier 1 heal이 token 조회(AsyncStorage)에서 대기 중일 때 풀어주고, count 증가 직후·
+      // 결과 처리 직전에 같은 act 안에서 다음 전환을 흘려 cleanup(cancelled=true)을 먼저 일으킨다.
+      let releaseToken!: (v: string) => void;
+      const tokenGate = new Promise<string>((resolve) => {
+        releaseToken = resolve;
+      });
+      (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(() => tokenGate);
+      rerender({ cs: origin3 });
+      await act(async () => {
+        await flush();
+      });
+      await act(async () => {
+        releaseToken('token-abc');
+        await Promise.resolve();
+        rerender({ cs: onRoute2 });
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+
+      // 억제 종료 후 — 상한 3회가 모두 실제 POST로 쓰여야 한다(cancelled 경로가 1을 누수했다면 2회).
+      await advance(61_000);
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      const baseline = mockRegister.mock.calls.length;
+      await flipStations(rerender, [origin3, onRoute2, origin3, onRoute2, origin3]);
+      expect(mockRegister.mock.calls.length - baseline).toBe(CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION);
+    });
+
+    it('B7 — 429는 기존과 같이 억제하되 사유는 rate-limited', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 429, retryAfterSeconds: 30 });
+      mockRegister.mockResolvedValue({ ok: true });
+      const { rerender } = renderHook(
+        ({ d }: { d: Station }) =>
+          useApnsTripRegistration({ route: directRoute, destination: d, nextStationEtaSeconds: 120 }),
+        { initialProps: { d: station } },
+      );
+      await act(async () => {
+        await flush();
+      });
+      rerender({ d: { ...station, id: '2-023', name: '역삼' } });
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      expect(mockLogRegisterSuppressed).toHaveBeenCalledWith('rate-limited');
+      expect(mockLogRegisterSuppressed).not.toHaveBeenCalledWith('backend-degraded');
+    });
+
+    it.each([
+      { label: 'HTML 503(엣지, errorCode 없음)', result: { ok: false, status: 503 } },
+      { label: '다른 errorCode의 503', result: { ok: false, status: 503, errorCode: 'other' } },
+      { label: '500', result: { ok: false, status: 500 } },
+      { label: '네트워크 오류({ok:false})', result: { ok: false } },
+    ])('B8 (거부) — $label 은 억제하지 않고 기존 15s 재시도', async ({ result }) => {
+      mockRegister.mockResolvedValueOnce(result);
+      mockRegister.mockResolvedValue({ ok: true });
+      renderSub();
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      await advance(REGISTER_RETRY_BACKOFF_MS[0] + 500);
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      expect(mockLogRegisterSuppressed).not.toHaveBeenCalled();
+    });
+
+    it('B9 — main register effect의 deps 배열은 PR-1이 바꾸지 않는다(정적 고정)', () => {
+      const source = readFileSync(join(__dirname, '..', 'useApnsTripRegistration.ts'), 'utf-8');
+      const match = source.match(
+        /\}, \[\n((?:\s+[A-Za-z?.]+,\n)+)\s+\]\);\n\n\s+\/\/ ── #2130 \(B-1 Tier 1\)/,
+      );
+      expect(match).not.toBeNull();
+      const deps = (match as RegExpMatchArray)[1]
+        .split('\n')
+        .map((l) => l.trim().replace(/,$/, ''))
+        .filter(Boolean);
+      expect(deps).toEqual([
+        'routeSig',
+        'destination?.id',
+        'boardingLockSig',
+        'confirmedSubsurface',
+        'etaWithinPollingWindow',
+        'infoModeEnabled',
+        'promptOptIn',
+        'trackingOptIn',
+        'promptOptInHydrated',
+        'launchReconciliationSettled',
+        'boardingCommitted',
+        'sleepMode',
+      ]);
+    });
+
+    it('B10 [:1071 수렴] — heal-busy 재확인이 억제 구간에 걸리면 ensureRetryArmed 타이머 1개, 억제 종료 시 POST 정확히 1회', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: true }); // cold-start(context 결손)
+      let resolveHeal!: (v: unknown) => void;
+      const healDeferred = new Promise((resolve) => {
+        resolveHeal = resolve;
+      });
+      const { rerender } = renderHook(
+        ({ cs, ime }: { cs: Station | null; ime: boolean }) =>
+          useApnsTripRegistration({
+            route: route3,
+            destination: dest3,
+            nextStationEtaSeconds: 120,
+            currentStation: cs,
+            infoModeEnabled: ime,
+          }),
+        { initialProps: { cs: null as Station | null, ime: false } },
+      );
+      await act(async () => {
+        await flush();
+      });
+      mockRegister.mockImplementationOnce(() => healDeferred); // Tier 1 heal — in-flight
+      rerender({ cs: origin3, ime: false });
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+
+      mockRegister.mockResolvedValueOnce({ ok: false, status: 500 }); // main 재실행 실패 → 15s 재시도 예약
+      rerender({ cs: origin3, ime: true });
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+
+      await advance(REGISTER_RETRY_BACKOFF_MS[0]); // 재시도 도래 — heal in-flight라 recheck(2s)로 전환
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+
+      // heal이 503 kv로 끝난다 → 억제(+60s) 시작.
+      await act(async () => {
+        resolveHeal(KV_503);
+        await flush();
+      });
+      mockRegister.mockResolvedValue({ ok: true });
+      await advance(REGISTER_RETRY_HEAL_BUSY_RECHECK_MS + 100); // recheck 발화 — 억제 중이라 POST 없음
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+      await advance(30_000);
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+      await advance(31_000); // 억제 종료 — 예약된 1개만 POST
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      await advance(120_000); // 성공으로 재시도 정리 — 추가 POST 없음
+      expect(mockRegister).toHaveBeenCalledTimes(4);
     });
   });
 
