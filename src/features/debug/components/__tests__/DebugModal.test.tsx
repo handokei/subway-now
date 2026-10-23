@@ -4825,6 +4825,22 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         contains: ['watch=-', 'app=-', 'baroEvt=-'],
       },
       {
+        // #3191 PR-1 — 정지 fix 유지 술어 판정 결과(관측 전용).
+        name: 'holdEligible true/false/미기록 → hold=1 / hold=0 / hold=-',
+        entry: makeRawEntry({ holdEligible: true }),
+        contains: ['hold=1'],
+      },
+      {
+        name: 'holdEligible=false → hold=0',
+        entry: makeRawEntry({ holdEligible: false }),
+        contains: ['hold=0'],
+      },
+      {
+        name: 'holdEligible 미기록(구 entry) → hold=-',
+        entry: makeRawEntry(),
+        contains: ['hold=-'],
+      },
+      {
         name: 'launch 표식 부착 entry → launch=cold@<시각> hpa0=<값>@<시각>',
         entry: makeRawEntry({
           launch: {
