@@ -18,6 +18,7 @@ import {
   createEmptyScheduledStats,
   fireSyncConsumedPrecedingAlarms,
   runScheduled,
+  sleepAlarmFireKey,
   type ScheduledDeps,
   type SyncSkippedFireDeps,
 } from '../scheduled';
@@ -321,7 +322,11 @@ describe('#3100 선행 시나리오 3 — 승격 fast-forward로 1역 전 역이
   const NAMES = ['중곡', '군자', '어린이대공원', '건대입구'];
   const TARGET = '건대입구';
 
-  async function tapPromote(position: { stationName: string; trainSttus: number }, sleep = true) {
+  async function tapPromote(
+    position: { stationName: string; trainSttus: number },
+    sleep = true,
+    seed?: (kv: InMemoryKV) => Promise<void>,
+  ) {
     const f = captureFetch();
     vi.stubGlobal('fetch', f.fetchImpl);
     const kv = new InMemoryKV();
@@ -338,6 +343,7 @@ describe('#3100 선행 시나리오 3 — 승격 fast-forward로 1역 전 역이
       sleepModeEnabled: sleep,
     };
     await kv.put('trip:ff-alarm-tok', JSON.stringify(trip));
+    await seed?.(kv);
     await kv.put(
       'realtime-position:7',
       JSON.stringify({
@@ -378,5 +384,24 @@ describe('#3100 선행 시나리오 3 — 승격 fast-forward로 1역 전 역이
     const { stored, alarms } = await tapPromote({ stationName: '어린이대공원', trainSttus: 2 });
     expect(stored.waypoints.map((w) => w.stationName)).toEqual(['건대입구']); // fast-forward 전제(현행 동작)
     expect(alarms).toEqual([sleepAlarmCollapseId('ff-alarm-tok', TARGET)]);
+  });
+
+  // #3100 — 거부 케이스: 승격 fast-forward catch-up은 sync catch-up(#3157)과 같은 규칙을 따른다.
+  it('거부 — 같은 (token, 타깃) 알람이 이미 발사됐으면 catch-up 0 (dedup 키 그대로, 중복 0)', async () => {
+    const { alarms } = await tapPromote({ stationName: '어린이대공원', trainSttus: 2 }, true, async (kv) => {
+      await kv.put(sleepAlarmFireKey('ff-alarm-tok', TARGET), '1');
+    });
+    expect(alarms).toEqual([]);
+  });
+
+  it('거부 — 열차가 타깃(건대입구)까지 지났으면 fast-forward 자체가 blockedAt으로 skip 0, 알람 0 (타깃 소비 쌍 대상 아님)', async () => {
+    const { stored, alarms } = await tapPromote({ stationName: TARGET, trainSttus: 2 });
+    expect(stored.waypoints.map((w) => w.stationName)).toEqual(NAMES);
+    expect(alarms).toEqual([]);
+  });
+
+  it('취침모드 OFF — sync catch-up과 같은 규칙으로 준비 알람 1회 (취침 알람은 0)', async () => {
+    const { alarms } = await tapPromote({ stationName: '어린이대공원', trainSttus: 2 }, false);
+    expect(alarms).toEqual([prepareAlarmCollapseId('ff-alarm-tok', TARGET)]);
   });
 });
