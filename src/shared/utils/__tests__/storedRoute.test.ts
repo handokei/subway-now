@@ -128,10 +128,10 @@ describe('readStoredRoute (#3177 PR-2a)', () => {
     ['목적지 깨진 JSON', 'not-json{{'],
     ['목적지에 id 없음', JSON.stringify({ name: '사당' })],
     ['목적지 JSON null', 'null'],
-  ])('destinationStationId를 채울 수 없으면(%s) null + 로그', (_label, destRaw) => {
+  ])('목적지 id를 못 구해도(%s) 경로는 폐기하지 않고 destinationStationId만 비운다 (놓침 방지)', (_label, destRaw) => {
     const legacy = { type: 'direct', stops: 3, line: '4', travelSeconds: 300 };
-    expect(readStoredRoute(JSON.stringify(legacy), destRaw)).toBeNull();
-    expect(mockLogMigrationFailed).toHaveBeenCalledTimes(1);
+    expect(readStoredRoute(JSON.stringify(legacy), destRaw)).toEqual(legacy);
+    expect(mockLogMigrationFailed).not.toHaveBeenCalled();
   });
 
   it('목적지 id가 이미 경로에 있으면 목적지 raw가 없어도 통과한다', () => {

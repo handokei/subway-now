@@ -78,6 +78,7 @@ import {
   type FusionTierLogEntry,
   logCrossTripMirrorSkip,
   logBackendSsotRouteRegressionReject,
+  logStoredRouteMigrationFailed,
   logLiveActivityAuthorityState,
   logLiveActivityTokenRegister,
   logLiveActivityLifecycle,
@@ -1226,6 +1227,24 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.reason === 'backend-ssot-route-regression');
       expect(matching).toHaveLength(2);
+    });
+
+    it('#3177 logStoredRouteMigrationFailed: source/outcome/reason/stationName 적재 + 같은 역명 burst dedup', async () => {
+      _resetBurstSuppressWindowForTests();
+      logStoredRouteMigrationFailed('사당');
+      logStoredRouteMigrationFailed('사당');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'route-migration-failed');
+      expect(matching).toHaveLength(1);
+      expect(matching[0]).toMatchObject({
+        source: 'stored-route-migration',
+        outcome: 'suppressed',
+        reason: 'route-migration-failed',
+        stationName: '사당',
+      });
     });
 
     it('#2686 logLiveActivityUpdated: source=live-activity-updated / outcome=fired 적재', async () => {
