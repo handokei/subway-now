@@ -76,8 +76,8 @@ async function postPosition(
   );
 }
 
-function putsTo(spy: ReturnType<typeof vi.spyOn>, prefix: string): unknown[][] {
-  return (spy.mock.calls as unknown[][]).filter(([key]) => String(key).startsWith(prefix));
+function putsTo(spy: { mock: { calls: readonly (readonly unknown[])[] } }, prefix: string): unknown[][] {
+  return spy.mock.calls.filter(([key]) => String(key).startsWith(prefix)).map((c) => [...c]);
 }
 
 describe('#3006 PR-1 — /position SSOT write TTL', () => {

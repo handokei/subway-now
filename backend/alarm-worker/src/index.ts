@@ -2130,29 +2130,37 @@ app.post('/position', async (c) => {
       stampDeviceContact(c.env.TRIPS, hashTripToken(payload.token), Date.now()),
     );
   }
-  // #2153 (리뷰 P1) — boarding-prompt 신선도 게이트 anchor(`originProximityAt`)의 실시간 입력.
-  // `trip.promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips 재등록 시에만 갱신되는
-  // 정적 스냅샷이라(useApnsTripRegistration.ts는 currentStation을 register effect deps에서 제외),
-  // 재등록 트리거가 안 오면 anchor stamp 기회가 영영 안 올 수 있다(#2153 RCA). 이 10초 주기
-  // /position 채널은 재등록과 무관하게 매 cycle 신선한 GPS 기준 근접 신호를 흘려 stamp 기회를
-  // 보강한다 — position series/point 저장과는 독립된 side-effect(series에는 적재하지 않음).
-  const { originDistanceM, originAccuracyM } = parseOriginProximityFields(body);
-  await degradeOnKvFailure('stampOriginProximity', () =>
-    stampOriginProximityIfNeeded(
-      c.env.TRIPS,
-      payload.token,
+  // #3006 PR-1 — trip을 **한 번만** 읽어(캐시 30s) 아래 세 write(근접 stamp / TTL 연장 /
+  // SSOT motion)가 같은 객체를 기준으로 판단한다. 종전엔 각자 trip을 따로 읽고 SSOT는 trip
+  // 존재를 확인하지 않은 채 TTL 없이 써서, trip 키가 소멸한 뒤에도 /position이 TTL 없는 ssot
+  // 키를 되살렸다. trip이 없으면(null) 또는 읽기 실패('unknown', 이미 degraded)면 세 write를
+  // 모두 건너뛴다 — W1(pos 시리즈)은 trip과 무관하게 위에서 이미 썼다.
+  let trip: Trip | null | 'unknown' = 'unknown';
+  try {
+    trip = await getTrip(c.env.TRIPS, payload.token, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
+  } catch (err) {
+    degraded = true;
+    void captureBackendException(c.env, err, { path: 'position', stage: 'getTrip' });
+  }
+  let tripAfter: Trip | null = null;
+  if (trip !== 'unknown' && trip !== null) {
+    // #2153 (리뷰 P1) — boarding-prompt 신선도 게이트 anchor(`originProximityAt`)의 실시간 입력.
+    // `trip.promptGeoContext.originDistanceM/originAccuracyM`는 POST /trips 재등록 시에만 갱신되는
+    // 정적 스냅샷이라 재등록 트리거가 안 오면 anchor stamp 기회가 영영 안 올 수 있다(#2153 RCA).
+    // 이 10초 주기 /position 채널은 매 cycle 신선한 GPS 기준 근접 신호를 흘려 stamp 기회를 보강한다.
+    // #3047 — BG-only 라이드의 유일한 채널이라 잔여 TTL<임계일 때 TTL도 연장한다.
+    const { originDistanceM, originAccuracyM } = parseOriginProximityFields(body);
+    const updated = applyPositionTripUpdates(
+      trip,
       originDistanceM,
       originAccuracyM,
       Date.now(),
-    ),
-  );
-  // #3047 — BG-only 라이드(화면 꺼짐)의 유일한 device→backend 채널이 이 경로다. 위
-  // `stampOriginProximityIfNeeded`는 origin 근접 관측시에만 조건적으로 putTrip하므로
-  // BG-only 구간(대부분 근접 관측 없음)에는 피기백 기회가 거의 없다 — 그래서 독립된 조건부
-  // write로 분리한다. 자세한 쿼터 산술·#2450과의 관계는 `extendTripExpiryViaPosition` 주석.
-  await degradeOnKvFailure('extendTripExpiryViaPosition', () =>
-    extendTripExpiryViaPosition(c.env.TRIPS, payload.token, Date.now()),
-  );
+    );
+    tripAfter = updated;
+    if (updated !== trip) {
+      await degradeOnKvFailure('putTripViaPosition', () => putTrip(c.env.TRIPS, updated));
+    }
+  }
   // #823 Phase 3 E1 — 가속도 옵션 필드. 부재 또는 invalid 시 skip (positionSeries는 이미 적재됨).
   if (payload.accelSummary) {
     const accelSummary = payload.accelSummary;
@@ -2162,18 +2170,21 @@ app.post('/position', async (c) => {
   }
   // #1556 (T3) — SSOT.motionState 갱신. SSOT 부재(trip 미등록) 시 graceful no-op.
   // T2 advanceTripPosition 게이트 #2가 본 motionState='stationary'를 차단 입력으로 사용한다.
-  await degradeOnKvFailure('updateSsotMotion', () =>
-    updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now(), {
-    onTransition: (from, to) => {
-      // P0-1 (#1577) — Site 5 of 6: motion-transition 적재.
-      writeMetric(c.env, {
-        eventType: 'motion-transition',
-        tripToken: payload.token,
-        reason: `${from}->${to}`,
-      });
-    },
-    }),
-  );
+  if (tripAfter !== null) {
+    const tripForSsot = tripAfter;
+    await degradeOnKvFailure('updateSsotMotion', () =>
+      updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now(), tripForSsot, {
+        onTransition: (from, to) => {
+          // P0-1 (#1577) — Site 5 of 6: motion-transition 적재.
+          writeMetric(c.env, {
+            eventType: 'motion-transition',
+            tripToken: payload.token,
+            reason: `${from}->${to}`,
+          });
+        },
+      }),
+    );
+  }
   // P0-1 (#1577) — Site 6 of 6: position-upload 적재 (V8a /position rate 검증).
   writeMetric(c.env, {
     eventType: 'position-upload',
@@ -2244,75 +2255,34 @@ export function parseOriginProximityFields(input: unknown): {
 }
 
 /**
- * #2153 (리뷰 P1) — `trip.originProximityAt`(신선도 게이트 anchor)를 `/position` 채널에서도
- * stamp할 수 있게 하는 진입점. cron(`scheduled.ts`)의 stamp 로직과 같은 `isNearOrigin` 판정을
- * 공유하되, 이 경로는 근접이 아니면(멀거나 값 부재) trip을 아예 읽지 않는다 — 매 10초 호출되는
- * 채널이므로 KV read/write 낭비를 근접 관측이 실제로 발생하는 순간으로 최소화한다.
+ * #2153/#2358/#3047/#3006 PR-1 — `/position` 채널이 이미 읽은 trip에 적용하는 두 조건부 변경.
  *
- * **KV write 최소화**: 이미 stamp된 trip은 `shouldStampOriginProximity`
- * (`ORIGIN_PROXIMITY_RENEWAL_MS`, 5분) 주기 미달이면 재관측해도 write하지 않는다 —
- * 매 10초 호출마다 쓰지 않고 스로틀링 (CF KV free tier quota 보호, #2073 lesson).
- * trip 미존재(register 전/만료)는 graceful no-op.
+ * 1. **근접 anchor stamp**(#2153, #2358): `originProximityAt`(boarding-prompt 신선도 게이트
+ *    anchor). 근접 관측(`isNearOrigin`)이고 `shouldStampOriginProximity`(5분 스로틀)일 때만.
+ * 2. **sliding TTL 연장**(#3047): BG-only 라이드(화면 꺼짐)의 유일한 device→backend 채널이라
+ *    잔여 TTL이 `TRIP_ACTIVITY_MIN_REMAINING_MS` 미달일 때만 `extendTripExpiryOnActivity`.
  *
- * #2358 (RCA) — 최초 1회만 stamp하고 영구 고정하면(#2153 원안) 출발역에서 계속 대기 중인 실
- * 시나리오가 신선도 창(15분)을 넘기는 순간 근접이 실시간으로 계속 확인되는 중에도 영구히
- * boarding-prompt가 막힌다. 근접이 관측되는 동안 anchor를 주기적으로 재stamp해 이 채널
- * (10초 주기)이 신선도 게이트를 계속 갱신하는 실질적 주 경로가 되게 한다.
+ * 두 조건은 **같은 trip 객체에 합성**돼 호출자가 `putTrip` 1회로 쓴다(종전엔 각자 getTrip +
+ * putTrip → 겹치면 2회). 변경이 없으면 입력 trip을 그대로 반환한다(참조 동일 = write 불필요).
+ *
+ * **쿼터 산술**(#2450/#3006/#2073): 연장 1회당 최소 1.5h 간격(`EXTENSION - MIN_REMAINING`)이라
+ * 10초 주기 증폭이 없다. #2450이 금지한 건 **마커류** 무조건 stamp이고 이건 **수명** 연장이라
+ * 조건부(잔여 TTL<임계)다 — `docs/agents/invariants.md` backend 섹션 참고.
  */
-export async function stampOriginProximityIfNeeded(
-  kv: KVNamespace,
-  token: string,
+export function applyPositionTripUpdates(
+  trip: Trip,
   originDistanceM: number | undefined,
   originAccuracyM: number | undefined,
   now: number,
-): Promise<void> {
-  if (!isNearOrigin(originDistanceM, originAccuracyM)) return;
-  const trip = await getTrip(kv, token);
-  if (!trip) return;
-  if (!shouldStampOriginProximity(trip.originProximityAt, now)) return;
-  await putTrip(kv, { ...trip, originProximityAt: now });
-}
-
-/**
- * #3047 — `extendTripExpiryOnActivity`를 `POST /position`에서 호출하는 전용 진입점.
- *
- * 10/18 편측 감사 D1: sliding TTL 연장이 적용된 5곳(index.ts:1369 재등록 / 그 외 4곳 sync·
- * boarding-prompt 응답 등 putTrip 핸들러, `extendTripExpiryOnActivity` 정의부 참고)이 전부
- * **FG 훅 또는 사용자 탭 트리거**다. BG-only 라이드(화면 꺼짐)에서 device→backend 유일 호출은
- * `backgroundLocationTask.ts` → `POST /position`이고, 그 경로는 #3023 설계 당시 "쓰기 증폭
- * 위험이 가장 크다"는 이유로 의도적으로 연장 대상에서 제외됐다 — 그 선언이 "그래서 BG-only
- * 라이드는 중간 만료에 노출된다"는 결과를 적지 않았다.
- *
- * 바로 위 `stampOriginProximityIfNeeded`와의 차이 — 그 함수는 **근접 관측시에만** 조건부로
- * putTrip한다. BG-only 구간은 origin에서 멀어진(또는 `originDistanceM`/`originAccuracyM`
- * 자체가 안 오는) 경우가 대부분이라 그 write에 얹을(piggyback) 기회가 거의 없다 — 그래서
- * 이 함수는 독립적으로 `getTrip`을 한 번 더 읽고, 잔여 TTL이 `TRIP_ACTIVITY_MIN_REMAINING_MS`
- * 미달일 때만 **별도 조건부 putTrip 1회**를 한다(무조건 write가 아니다).
- *
- * **쿼터 산술**(#2450/#3006/#2073 불변식과 정합): `extendTripExpiryOnActivity`가 연장할 때
- * `now + TRIP_ACTIVITY_EXTENSION_MS`(2h)로 세팅하고, 다음 연장이 필요해지는 시점은 잔여 TTL이
- * 다시 `TRIP_ACTIVITY_MIN_REMAINING_MS`(30m) 미달로 떨어질 때다 — 즉 연장 1회당 최소
- * `TRIP_ACTIVITY_EXTENSION_MS - TRIP_ACTIVITY_MIN_REMAINING_MS` = 1.5h 간격. `/position`은
- * 10초 주기로 호출되지만 이 함수가 실제로 putTrip하는 건 그 1.5h마다 1회뿐이다 — 10초 주기
- * 증폭은 발생하지 않는다. lifecycle 9h force-end 상한(`tripLifecyclePhase`) 기준 trip 생애
- * 전체 최대 ~6회(9h / 1.5h) write.
- *
- * **#2450과의 관계(마커 vs 수명)**: #2450은 **마커류**(근접/활성 trip 목록 마커 등 관측 신호)를
- * `/position`에서 무조건 stamp하는 패턴을 금지한 것이다(`markTripRegistered` 주석 참고). 이
- * 함수는 **TTL(수명) 연장**이라 다른 축이다 — 관측 신호를 적재하는 게 아니라 cron이 trip을
- * force-expire하지 않도록 생존을 보장하는 것이며, 조건(잔여 TTL<임계)이 있어 #2450이 막던
- * "무조건 write" 패턴이 아니다. `docs/agents/invariants.md` backend 섹션에 이 구분을 반영.
- */
-export async function extendTripExpiryViaPosition(
-  kv: KVNamespace,
-  token: string,
-  now: number,
-): Promise<void> {
-  const trip = await getTrip(kv, token);
-  if (!trip) return;
-  const extended = extendTripExpiryOnActivity(trip, now);
-  if (extended === trip) return;
-  await putTrip(kv, extended);
+): Trip {
+  let next = trip;
+  if (
+    isNearOrigin(originDistanceM, originAccuracyM) &&
+    shouldStampOriginProximity(next.originProximityAt, now)
+  ) {
+    next = { ...next, originProximityAt: now };
+  }
+  return extendTripExpiryOnActivity(next, now);
 }
 
 interface PositionUploadPayload {

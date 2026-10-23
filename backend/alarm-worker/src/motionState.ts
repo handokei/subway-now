@@ -41,7 +41,8 @@ import {
 import { haversineKm } from './positionSeries';
 // #3007 — due-tick 마진으로 cron 명목 주기를 재사용한다(새 상수 금지).
 import { CRON_INTERVAL_MS } from './cronConstants';
-import type { PositionPoint } from './types';
+import { CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
+import type { PositionPoint, Trip } from './types';
 
 /** GPS displacement 평가 윈도우 (ms). 5분. */
 export const MOTION_WINDOW_MS = 5 * 60_000;
@@ -246,6 +247,9 @@ export function emitMotionTransitionBreadcrumb(
 /**
  * POST /position handler가 호출하는 SSOT motion 업데이트 진입점.
  *
+ * 호출자(/position)는 trip이 존재할 때만 호출하며 **연장 이후** trip을 넘긴다(#3006 PR-1) —
+ * SSOT TTL이 trip.expiresAt에 정렬된다.
+ *
  * 1. SSOT read (없으면 no-op — trip 미등록 device의 /position은 series만 누적, T3 입력 없음)
  * 2. device-position evidence push (ring buffer, T1 helper)
  * 3. computeMotionState로 새 state 판정
@@ -259,9 +263,10 @@ export async function updateSsotMotion(
   token: string,
   position: PositionPoint,
   now: number,
+  trip: Trip,
   options?: { onTransition?: (from: MotionState, to: MotionState) => void },
 ): Promise<TripPositionSSoT | null> {
-  const ssot = await readSsot(kv, token);
+  const ssot = await readSsot(kv, token, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
   if (!ssot) return null;
 
   // #KV quota — 최근 device-position evidence가 SSOT_MOTION_WRITE_MIN_INTERVAL_MS 미만
@@ -297,6 +302,7 @@ export async function updateSsotMotion(
     ssot.motionState = next;
   }
 
-  await writeSsot(kv, ssot);
+  // #3006 PR-1 — trip 수명에 정렬(연장 이후 trip). TTL 없이 쓰면 trip이 사라져도 키가 영구 잔존한다.
+  await writeSsot(kv, ssot, { expiresAt: trip.expiresAt });
   return ssot;
 }
