@@ -23,6 +23,10 @@
     "changeDowngradedBody": "\"Always\" was changed to \"While Using the App\", so background alarms may be missed. Please set access back to \"Always\" in Settings."
   },
   "home": {
+    "backendDegraded": {
+      "title": "We're having a temporary server issue",
+      "body": "Arrival and transfer alerts and Lock Screen updates may not arrive right now. We'll reconnect automatically once it's fixed."
+    },
     "arrived": "Arrived!",
     "originManual": "Origin (manual)",
     "originCurrent": "Current station",
