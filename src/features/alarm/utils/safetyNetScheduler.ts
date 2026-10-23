@@ -103,6 +103,8 @@ export const SAFETY_NET_BUFFER_MS = 180_000;
 
 export interface SafetyNetWaypoint {
   stationName: string;
+  /** 실제 하차 승강장 id. 경로에 id가 없으면 undefined (#3177 PR-4). */
+  stationId?: string;
   kind: AlarmLocalKind;
   /** 이 waypoint까지 남은 정거장 수. */
   stops: number;
@@ -158,6 +160,7 @@ export function deriveSafetyNetWaypoints(
     const legMs = legSeconds * 1000;
     return {
       stationName: t.name,
+      stationId: t.stationId,
       kind: t.alarmType,
       stops: t.stops,
       legMs: Number.isFinite(legMs) && legMs > 0 ? legMs : HOP_TIME_MS,
@@ -197,14 +200,15 @@ async function scheduleOne(params: {
   identifier: string;
   tripToken: string;
   stationName: string;
+  stationId?: string;
   kind: AlarmLocalKind;
   occurrenceIdx: number;
   fireMs: number;
 }): Promise<void> {
-  const { identifier, tripToken, stationName, kind, occurrenceIdx, fireMs } = params;
+  const { identifier, tripToken, stationName, stationId, kind, occurrenceIdx, fireMs } = params;
   // "1역 전" 문구는 early phase 메시지와 의미가 같다 — content 생성만 재사용, phase 개념 자체는
   // 본 모듈에 없다(단일 fire).
-  const event: AlarmEvent = { phaseId: 'early', type: kind, stationName };
+  const event: AlarmEvent = { phaseId: 'early', type: kind, stationName, stationId };
   const { title, body } = buildAlarmContent(event);
   const data: SafetyNetNotificationData = {
     channel: 'safety-net',
@@ -305,6 +309,7 @@ export async function registerSafetyNetAlarms(
       identifier,
       tripToken,
       stationName: wp.stationName,
+      stationId: wp.stationId,
       kind: wp.kind,
       occurrenceIdx: wp.occurrenceIdx,
       fireMs,
@@ -522,6 +527,7 @@ export async function rescheduleSafetyNetAlarm(
     identifier,
     tripToken,
     stationName: target.stationName,
+    stationId: target.stationId,
     kind: target.kind,
     occurrenceIdx,
     fireMs,

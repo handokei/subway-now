@@ -19,6 +19,9 @@ export interface AlarmEvent {
   phaseId: AlarmPhaseId;
   type: AlarmType;
   stationName: string;
+  // 실제로 내리는 승강장의 역 id (경로 계산 함수가 채운 값). 환승역=목적지여도 fromLine 쪽 id다.
+  // 경로에 id가 없으면 undefined — 이름으로 대체 조회하지 않는다(#3177 PR-4, 필수화는 PR-6z).
+  stationId?: string;
   // 알람 대상역에 진입하는 진행방향(상행/하행). 좌/우 하차 방향을 결정하는 데 쓰인다.
   // 노선/탑승역/목적역 중 하나라도 불명이면 undefined — 알람 본문에서 좌/우 라인을 생략한다.
   direction?: TravelDirection;

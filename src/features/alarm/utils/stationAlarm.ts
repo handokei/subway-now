@@ -59,6 +59,8 @@ export function parseAlarmKey(
 
 export interface CurrentTarget {
   name: string;
+  // 실제 하차 승강장 id. 경로에 id가 없으면 undefined (#3177 PR-4, 필수화는 PR-3z 이후).
+  stationId?: string;
   stops: number;
   alarmType: AlarmType;
   // 이 웨이포인트를 향해 사용자가 타고 가는 구간의 노선(approach line).
@@ -77,16 +79,16 @@ export function resolveAllTargets(
   destinationName: string,
 ): CurrentTarget[] {
   if (route.type === 'direct') {
-    return [{ name: destinationName, stops: route.stops, alarmType: 'destination', approachLine: route.line }];
+    return [{ name: destinationName, stationId: route.destinationStationId, stops: route.stops, alarmType: 'destination', approachLine: route.line }];
   }
 
   if (route.type === 'transfer') {
     if (isSameStationName(route.transferName, destinationName)) {
-      return [{ name: destinationName, stops: route.stopsToTransfer, alarmType: 'destination', approachLine: route.fromLine }];
+      return [{ name: destinationName, stationId: route.transferStationId, stops: route.stopsToTransfer, alarmType: 'destination', approachLine: route.fromLine }];
     }
     return [
-      { name: route.transferName, stops: route.stopsToTransfer, alarmType: 'transfer', approachLine: route.fromLine },
-      { name: destinationName, stops: route.stopsFromTransfer, alarmType: 'destination', approachLine: route.toLine },
+      { name: route.transferName, stationId: route.transferStationId, stops: route.stopsToTransfer, alarmType: 'transfer', approachLine: route.fromLine },
+      { name: destinationName, stationId: route.destinationStationId, stops: route.stopsFromTransfer, alarmType: 'destination', approachLine: route.toLine },
     ];
   }
 
@@ -94,6 +96,7 @@ export function resolveAllTargets(
     const isDestination = isSameStationName(t.transferName, destinationName);
     return {
       name: isDestination ? destinationName : t.transferName,
+      stationId: t.transferStationId,
       stops: t.stopsToTransfer,
       alarmType: isDestination ? ('destination' as const) : ('transfer' as const),
       approachLine: t.fromLine,
@@ -106,6 +109,7 @@ export function resolveAllTargets(
   if (!lastTransferIsDestination) {
     targets.push({
       name: destinationName,
+      stationId: route.destinationStationId,
       stops: route.stopsAfterLastTransfer,
       alarmType: 'destination',
       approachLine: lastTransfer.toLine,
@@ -195,7 +199,7 @@ export function evaluateAlarmPhase(
         // dedup hit. phase 조건도 만족했을 때만 suppressed로 적재 — "조건 미충족이지만 dedup된"
         // 케이스(예: imminent eta>10s)는 노이즈라 기록하지 않는다.
         if (suppressedOut && phase.evaluate(context)) {
-          suppressedOut.push({ phaseId: phase.id, type: target.alarmType, stationName: target.name });
+          suppressedOut.push({ phaseId: phase.id, type: target.alarmType, stationName: target.name, stationId: target.stationId });
         }
         continue;
       }
@@ -204,7 +208,7 @@ export function evaluateAlarmPhase(
         // 발사됐을 조건) 'gate-not-departed'로 관찰 가능하게 적재. 다른 사유(remainingStops>1 등)로
         // 미충족인 경우는 노이즈라 기록하지 않는다.
         if (heldOut && context.departed === false && phase.evaluate({ ...context, departed: true })) {
-          heldOut.push({ phaseId: phase.id, type: target.alarmType, stationName: target.name });
+          heldOut.push({ phaseId: phase.id, type: target.alarmType, stationName: target.name, stationId: target.stationId });
         }
         continue;
       }
@@ -215,7 +219,7 @@ export function evaluateAlarmPhase(
       if (source.degradedConfidence === true) {
         if (phase.id === 'early' || target.alarmType === 'transfer') continue;
       }
-      return { phaseId: phase.id, type: target.alarmType, stationName: target.name };
+      return { phaseId: phase.id, type: target.alarmType, stationName: target.name, stationId: target.stationId };
     }
     // 매칭된 leg는 현재 사용자가 탑승 중인 구간 — 발사 조건 미달이면 다음 leg를 평가하지 않는다.
     // 다음 leg는 user가 그 leg의 approachLine으로 이동한 다음 tick에 평가된다.

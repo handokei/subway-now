@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import {
+  SAFETY_NET_ALARM_PREFIX,
   deriveSafetyNetWaypoints,
   registerSafetyNetAlarms,
   rescheduleSafetyNetAlarm,
@@ -75,6 +76,15 @@ describe('safety net — stationId (#3177 PR-4)', () => {
 
   it('rescheduleSafetyNetAlarm: 재예약 이벤트에도 stationId', async () => {
     const route = findRoute('2-022', '4-025')!;
+    // 기존 armed 예약이 있어야 재예약한다 (cancel-only 가드).
+    mockedGetAll.mockResolvedValueOnce([
+      {
+        identifier: `${SAFETY_NET_ALARM_PREFIX}T-${SADANG}-destination`,
+        content: {
+          data: { channel: 'safety-net', station: SADANG, tripToken: 'T', kind: 'destination', occurrenceIdx: 0 },
+        },
+      } as unknown as Notifications.NotificationRequest,
+    ]);
     const result = await rescheduleSafetyNetAlarm({
       tripToken: 'T',
       route,
