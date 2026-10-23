@@ -164,7 +164,9 @@ describe('POST /position — position-kv-sample 배선', () => {
     expect(rows).toHaveLength(1);
     const { meta } = rows[0];
     expect(meta.stages).toEqual(putSpy.mock.calls.map(([key]) => prefixOf(key)));
-    expect(meta.stages).toEqual(expect.arrayContaining(['pos', 'deviceContact']));
+    expect(meta.stages).toEqual(expect.arrayContaining(['pos']));
+    // #3006 PR-3 — W2 제거: fg여도 /position은 deviceContact를 쓰지 않는다.
+    expect(meta.stages).not.toContain('deviceContact');
     expect(meta.attempted).toBe(meta.stages.length);
     expect(meta).toMatchObject({
       lockState: 'no-trip',

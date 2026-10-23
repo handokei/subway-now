@@ -2126,27 +2126,35 @@ describe('POST /position (#819)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('#2617 — appState="fg" payload → deviceContact stamp를 KV에 남긴다(fallback implicit ACK 입력)', async () => {
+  it('#2617 철회 — /position은 stamp하지 않는다 (appState="fg" 6회 호출해도 deviceContact put 0, #3006 PR-3)', async () => {
     const env = makeKvEnv();
-    await post(
-      '/position',
-      {
-        token: 'tok-pos-contact',
-        appState: 'fg',
-        lat: 1,
-        lng: 2,
-        accuracy: 5,
-        ts: 1234,
-        motion: 'walking',
-      },
-      env,
-    );
+    const putSpy = vi.spyOn(env.TRIPS, 'put');
+    for (let i = 0; i < 6; i += 1) {
+      await post(
+        '/position',
+        {
+          token: 'tok-pos-contact',
+          appState: 'fg',
+          lat: 1,
+          lng: 2,
+          accuracy: 5,
+          ts: 1234 + i,
+          motion: 'walking',
+        },
+        env,
+      );
+    }
     // scheduleTripEvent가 executionCtx 미제공 시 fire-and-forget으로 degrade — 마이크로태스크
-    // 완료를 기다린다 (기존 #2283 테스트 관례, index.test.ts:4180 참고).
+    // 완료를 기다린다 (기존 #2283 테스트 관례).
     await new Promise((r) => setTimeout(r, 0));
     const tokenHash = sentryModule.hashTripToken('tok-pos-contact');
-    const stamped = await env.TRIPS.get(`deviceContact:${tokenHash}`);
-    expect(stamped).not.toBeNull();
+    expect(await env.TRIPS.get(`deviceContact:${tokenHash}`)).toBeNull();
+    const contactPuts = putSpy.mock.calls.filter(([key]) =>
+      String(key).startsWith('deviceContact:'),
+    );
+    expect(contactPuts).toHaveLength(0);
+    // 거부 케이스: /position 자체(W1 pos 시리즈)는 여전히 쓴다 — 다른 이유로 0이 된 게 아님.
+    expect(await env.TRIPS.get('pos:tok-pos-contact')).not.toBeNull();
   });
 
   it('#2617 (코드리뷰 반영) — appState="bg" payload → deviceContact stamp 없음(BG 접촉을 FG로 오인하지 않음, 안전망 보존)', async () => {
