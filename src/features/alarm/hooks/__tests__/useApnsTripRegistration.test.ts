@@ -2206,6 +2206,118 @@ describe('useApnsTripRegistration', () => {
       expect(mockLogRegisterSuppressed).not.toHaveBeenCalled();
     });
 
+    it('B11 — 세션이 바뀌어 억제 skip이 나면 옛 세션 재시도 타이머를 지우고 새 세션 재시도 1회만 남긴다', async () => {
+      const setSpy = jest.spyOn(global, 'setTimeout');
+      const clearSpy = jest.spyOn(global, 'clearTimeout');
+      try {
+        mockRegister.mockResolvedValue(KV_503);
+        const { rerender } = renderHook(
+          ({ d }: { d: Station }) =>
+            useApnsTripRegistration({ route: directRoute, destination: d, nextStationEtaSeconds: 120 }),
+          { initialProps: { d: station } },
+        );
+        await act(async () => {
+          await flush();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1); // 옛 세션: 503 → 억제 + 재시도 타이머(t60)
+        const retryIdx = setSpy.mock.calls.findIndex(([, ms]) => ms === 60_000);
+        expect(retryIdx).toBeGreaterThanOrEqual(0);
+        const oldHandle = setSpy.mock.results[retryIdx].value;
+
+        rerender({ d: { ...station, id: '2-023', name: '역삼' } }); // 새 세션 — 억제 skip
+        await act(async () => {
+          await flush();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+        expect(clearSpy).toHaveBeenCalledWith(oldHandle); // 옛 세션 타이머 해제
+
+        await advance(61_000); // 억제 종료 — 새 세션 재시도 1회
+        expect(mockRegister).toHaveBeenCalledTimes(2);
+      } finally {
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
+      }
+    });
+
+    it('B13 — 재시도가 한 번도 걸린 적 없는 세션(token listener의 503)도 억제 skip 시 종료 시점 재시도 1개를 건다', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: true }); // mount 성공 — 재시도 상태 없음
+      const { rerender } = renderHook(
+        ({ ime }: { ime: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            infoModeEnabled: ime,
+          }),
+        { initialProps: { ime: false } },
+      );
+      await act(async () => {
+        await flush();
+      });
+      mockRegister.mockResolvedValue(KV_503);
+      await act(async () => {
+        tokenListener()({ data: 'token-2' });
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2); // 503 → 억제(+60s), 재시도는 걸리지 않음
+
+      rerender({ ime: true }); // main effect 재실행 — 억제 skip
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+
+      mockRegister.mockResolvedValue({ ok: true });
+      await advance(61_000); // 억제 종료 시점에 재시도 1회
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+    });
+
+    it('B12 — 이미 더 길게 걸린 억제(RA 120)를 늦게 도착한 짧은 503(RA 10)이 줄이지 않는다', async () => {
+      mockRegister.mockResolvedValueOnce({ ok: true }); // mount
+      const { rerender } = renderHook(
+        ({ ime }: { ime: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            infoModeEnabled: ime,
+          }),
+        { initialProps: { ime: false } },
+      );
+      await act(async () => {
+        await flush();
+      });
+
+      // 느린 POST(RA 10)가 in-flight인 동안 다른 경로의 POST(RA 120)가 먼저 끝난다.
+      let resolveSlow!: (v: unknown) => void;
+      mockRegister.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSlow = resolve;
+          }),
+      );
+      rerender({ ime: true });
+      await act(async () => {
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      mockRegister.mockResolvedValueOnce({ ...KV_503, retryAfterSeconds: 120 });
+      await act(async () => {
+        tokenListener()({ data: 'token-2' });
+        await flush();
+      });
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+      await act(async () => {
+        resolveSlow({ ...KV_503, retryAfterSeconds: 10 });
+        await flush();
+      });
+
+      await advance(30_000); // RA 10이었다면 이미 풀렸을 시점 — 재시도(타이머)도 120s 뒤
+      expect(mockRegister).toHaveBeenCalledTimes(3);
+      await advance(95_000);
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+    });
+
     it('B9 — main register effect의 deps 배열은 PR-1이 바꾸지 않는다(정적 고정)', () => {
       const source = readFileSync(join(__dirname, '..', 'useApnsTripRegistration.ts'), 'utf-8');
       const match = source.match(

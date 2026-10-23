@@ -13,6 +13,7 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import { type ApnsEnv, setConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import { createLogger } from '../../../shared/utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
+import { REGISTER_KV_UNAVAILABLE_ERROR } from '../../../shared/constants/registerContract';
 import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
 
 const log = createLogger('alarmBackend');
@@ -231,6 +232,12 @@ export interface AlarmBackendResult {
    * 억제해 storm을 스스로 키우지 않는다. 구 backend/parse 실패 시 undefined (graceful).
    */
   retryAfterSeconds?: number;
+  /**
+   * #3006 PR-1 — 503 응답 body의 `error` 값. 우리 워커가 낸 503(`kv_unavailable`)만 값이 채워지고,
+   * Cloudflare 엣지가 내는 HTML 503은 JSON 파싱이 실패해 비어 있다 — device는 이 값으로
+   * "재시도하면 복구되는 쓰기 쿼터 장애"를 결정론적으로 식별한다. 503 외 status에서는 파싱하지 않는다.
+   */
+  errorCode?: string;
 }
 
 /** 기본 트립 TTL — 2시간. 백엔드 KV expiration과 정렬. */
@@ -483,6 +490,7 @@ async function performRegisterFetch(
       log.warn(`register failed status=${res.status}`);
       // #2197 — 429(rate_limited)는 body에 `retryAfterSeconds`를 담아 내려온다(index.ts:584).
       // 다른 status는 body 형태가 다르므로 429일 때만 파싱 — parse 실패는 graceful undefined.
+      if (res.status === 503) return await buildUnavailableResult(res);
       const retryAfterSeconds =
         res.status === 429 ? await extractRetryAfterSeconds(res) : undefined;
       return {
@@ -537,6 +545,39 @@ async function extractRetryAfterSeconds(res: Response): Promise<number | undefin
     // graceful — 구 backend 응답 또는 parse 실패
   }
   return undefined;
+}
+
+/**
+ * #3006 PR-1 — 503 register 응답 해석. body `error`를 `errorCode`로 싣고, `kv_unavailable`이면
+ * `Retry-After` 헤더(양의 정수 초)를 `retryAfterSeconds`로 싣는다.
+ *
+ * `kv_unavailable`이면 `lastRegisteredHash`를 무효화한다 — 503 뒤에도 직전 성공 hash가 남아 있으면
+ * 서버가 복구된 뒤 같은 payload를 다시 보내도 네트워크 없이 `skipped:true`가 돌아와 회복을 영영
+ * 감지하지 못한다(dedup 교착). body가 JSON이 아니면(엣지 HTML 503) 둘 다 비어 일반 실패와 같다.
+ */
+async function buildUnavailableResult(res: Response): Promise<AlarmBackendResult> {
+  let errorCode: string | undefined;
+  try {
+    const body = (await res.json()) as { error?: unknown };
+    if (typeof body.error === 'string') errorCode = body.error;
+  } catch {
+    // graceful — 엣지 HTML 503 등 JSON이 아닌 본문
+  }
+  const result: AlarmBackendResult = { ok: false, status: res.status };
+  if (errorCode === undefined) return result;
+  result.errorCode = errorCode;
+  if (errorCode !== REGISTER_KV_UNAVAILABLE_ERROR) return result;
+  lastRegisteredHash = null;
+  const retryAfterSeconds = parseRetryAfterHeader(res.headers.get('Retry-After'));
+  if (retryAfterSeconds !== undefined) result.retryAfterSeconds = retryAfterSeconds;
+  return result;
+}
+
+/** `Retry-After` 헤더 값 → 양의 정수 초. 그 외(부재/0/음수/소수/날짜 형식)는 undefined. */
+function parseRetryAfterHeader(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/.test(value)) return undefined;
+  const seconds = Number(value);
+  return seconds > 0 ? seconds : undefined;
 }
 
 /**

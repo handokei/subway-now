@@ -77,6 +77,7 @@ import {
   FUSION_TIER_LOG_BUFFER_SIZE,
   type FusionTierLogEntry,
   logCrossTripMirrorSkip,
+  logRegisterSuppressed,
   logBackendSsotRouteRegressionReject,
   logLiveActivityAuthorityState,
   logLiveActivityTokenRegister,
@@ -1186,6 +1187,32 @@ describe('alarmLog', () => {
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       const matching = saved.filter((e) => e.reason === 'cross-trip-mirror-skip');
       expect(matching).toHaveLength(3);
+    });
+
+    it.each(['rate-limited', 'backend-degraded'] as const)(
+      '#3006 logRegisterSuppressed(%s): source=register-suppressed, outcome=suppressed, reason 적재',
+      async (reason) => {
+        _resetBurstSuppressWindowForTests();
+        logRegisterSuppressed(reason);
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved[0]).toMatchObject({ source: 'register-suppressed', outcome: 'suppressed', reason });
+      },
+    );
+
+    it('#3006 logRegisterSuppressed: 같은 사유는 burst dedup, 다른 사유는 독립', async () => {
+      _resetBurstSuppressWindowForTests();
+      logRegisterSuppressed('backend-degraded');
+      logRegisterSuppressed('backend-degraded');
+      logRegisterSuppressed('rate-limited');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.source === 'register-suppressed');
+      expect(matching.map((e) => e.reason)).toEqual(['backend-degraded', 'rate-limited']);
     });
 
     it('#2686 logBackendSsotRouteRegressionReject: source/outcome/reason/stationName 적재', async () => {
