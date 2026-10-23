@@ -205,11 +205,58 @@ describe('useLiveActivityIntentBridge', () => {
     expect(mockClearPendingBoardingIntent).not.toHaveBeenCalled();
   });
 
-  it('malformed pending → handleResponse/clear 호출 안 함', async () => {
+  it('malformed pending(JSON 아님) → handleResponse/clear 호출 안 함', async () => {
     mockReadPendingBoardingIntent.mockReturnValue('not-json{');
     renderHook(() => useLiveActivityIntentBridge(baseDeps));
     await Promise.resolve();
     await Promise.resolve();
+    expect(mockHandleResponse).not.toHaveBeenCalled();
+    expect(mockClearPendingBoardingIntent).not.toHaveBeenCalled();
+  });
+
+  // #3048 B1 — origin=null 버튼은 Swift가 빈 역명으로 intent를 write한다 → 파서 거부.
+  // id는 유효하므로 clear해야 App Group에 영구 잔류하지 않는다.
+  it('파싱 실패(originStation 빈 문자열) + id 있음 → handleResponse 없이 해당 id로 clear', async () => {
+    mockReadPendingBoardingIntent.mockReturnValue(
+      JSON.stringify({
+        id: 'intent-empty-origin',
+        tripToken: 'tok',
+        action: 'BOARDING_BOARDED',
+        originStation: '',
+        line: '2호선',
+        atMs: Date.now(),
+      }),
+    );
+    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockHandleResponse).not.toHaveBeenCalled();
+    expect(mockClearPendingBoardingIntent).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('intent-empty-origin');
+  });
+
+  it('파싱 실패 + id 있음 + clear 던짐 → throw 없이 흡수', async () => {
+    mockClearPendingBoardingIntent.mockImplementation(() => {
+      throw new Error('native clear error');
+    });
+    mockReadPendingBoardingIntent.mockReturnValue(
+      JSON.stringify({ id: 'intent-x', originStation: '' }),
+    );
+    renderHook(() => useLiveActivityIntentBridge(baseDeps));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('intent-x');
+    expect(mockHandleResponse).not.toHaveBeenCalled();
+  });
+
+  it('파싱 실패 + id 추출 불가(JSON 아님/id 비문자열/빈 id/배열) → clear 호출 안 함(native가 id 일치만 제거)', async () => {
+    const unextractable = ['not-json{', JSON.stringify({ id: 5 }), JSON.stringify({ id: '' }), JSON.stringify(null), '"str"'];
+    for (const raw of unextractable) {
+      mockReadPendingBoardingIntent.mockReturnValue(raw);
+      renderHook(() => useLiveActivityIntentBridge(baseDeps));
+      await Promise.resolve();
+      await Promise.resolve();
+    }
     expect(mockHandleResponse).not.toHaveBeenCalled();
     expect(mockClearPendingBoardingIntent).not.toHaveBeenCalled();
   });
