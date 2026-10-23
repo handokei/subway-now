@@ -18,7 +18,10 @@ import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore
 import { RecentDestinationList } from '../features/route/components/RecentDestinationList';
 import { FavoriteQuickChips } from '../features/favorites/components/FavoriteQuickChips';
 import { useSettingsStore } from '../features/settings/store/useSettingsStore';
-import { useDestinationStore } from '../features/route/store/useDestinationStore';
+import {
+  useDestinationStore,
+  persistRouteAfterTransition,
+} from '../features/route/store/useDestinationStore';
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
 import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockStore';
 import { useUserIntentStore } from '../features/alarm/store/useUserIntentStore';
@@ -720,7 +723,7 @@ export default function HomeScreen() {
       if (preferred) {
         setSelectedKey(preferred.category.key);
         lastComputedRouteSessionRef.current = sessionKey;
-        AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(preferred.candidate.route)).catch(() => {});
+        persistRouteAfterTransition(preferred.candidate.route);
       } else {
         AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
       }

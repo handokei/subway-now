@@ -15,6 +15,7 @@ import {
   TRIP_ORIGIN_KEY,
   ROUTE_PREFERENCE_KEY,
   RECENT_DESTINATIONS_KEY,
+  ROUTE_KEY,
 } from '../../../shared/constants/storageKeys';
 import { RECENT_ROUTES_LIMIT } from '../../../shared/constants/recentDestinations';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
@@ -62,6 +63,18 @@ function persistCustomOrigin(station: Station | null): void {
  * 옛 알람이 이미 정리돼 있고 이후 어떤 cleanup도 새 알람을 쓸어가지 않는다.
  */
 let tripTransitionQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * #3086 — HomeScreen이 계산한 route를 ROUTE_KEY에 저장한다. destination-switch cleanup의
+ * removeItem(ROUTE_KEY)은 recall 등 async 선행 단계 뒤에 돌아, 그 사이 fire-and-forget으로 쓴
+ * setItem을 뒤늦게 지우고 재기록 경로가 없어 지도 경로가 소실됐다. cleanup과 같은
+ * tripTransitionQueue에 enqueue해 항상 진행 중인 transition의 cleanup 뒤에 쓰이게 한다.
+ */
+export function persistRouteAfterTransition(route: unknown): void {
+  tripTransitionQueue = tripTransitionQueue
+    .then(() => AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(route)))
+    .catch(noop);
+}
 
 /**
  * Destination/route 상태 store — ADR 후속 Step 6 (#892).

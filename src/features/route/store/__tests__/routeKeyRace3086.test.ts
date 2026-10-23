@@ -3,7 +3,7 @@
  * HomeScreen의 route setItem이 destination-switch cleanup의 늦은 removeItem에 지워지는지 검증.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useDestinationStore } from '../useDestinationStore';
+import { useDestinationStore, persistRouteAfterTransition } from '../useDestinationStore';
 import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -49,9 +49,9 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 200; i++) await Promise.resolve();
 }
 
-// 현 HomeScreen(~723)의 동작: InteractionManager 후 fire-and-forget setItem.
+// HomeScreen(~723)이 InteractionManager 후 호출하는 경로.
 function homeScreenPersistRoute(): void {
-  AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(routeToB)).catch(() => {});
+  persistRouteAfterTransition(routeToB);
 }
 
 describe('#3086 ROUTE_KEY race (destination-switch cleanup vs HomeScreen setItem)', () => {
@@ -66,7 +66,6 @@ describe('#3086 ROUTE_KEY race (destination-switch cleanup vs HomeScreen setItem
     // 사용자 화면: 새 목적지 route 계산 완료 → 저장 (cleanup은 recall 대기 중이라 아직 removeItem 전)
     homeScreenPersistRoute();
     await flush();
-    expect(await AsyncStorage.getItem(ROUTE_KEY)).not.toBeNull();
 
     releaseRecall(); // recall 끝 → cleanup(destination-switch) 진행
     await flush();
