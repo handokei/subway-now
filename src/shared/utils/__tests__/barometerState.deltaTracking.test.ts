@@ -54,9 +54,10 @@ describe('barometerState 델타 계측 (#3191 PR-0)', () => {
     expect(getBarometerDeltaTracking().lastDeltaEventAtMs).toBeNull();
   });
 
-  it('창(30초)을 벗어난 과거 reading과의 차이는 이벤트가 아니다', () => {
+  // PR-1: 창 밖이어도 공백 건넌 |ΔP|>=0.3 은 이벤트(barometerState.gapDelta.test.ts). 임계 미만이면 아니다.
+  it('창(30초)을 벗어난 과거 reading과의 차이가 임계 미만이면 이벤트가 아니다', () => {
     appendBarometerReading({ t: T0, pressureHpa: 1013.0 });
-    appendBarometerReading({ t: T0 + 40_000, pressureHpa: 1013.9 });
+    appendBarometerReading({ t: T0 + 40_000, pressureHpa: 1013.1 });
     expect(getBarometerDeltaTracking().lastDeltaEventAtMs).toBeNull();
   });
 

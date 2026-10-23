@@ -150,6 +150,11 @@ export interface RawSignalEntry {
   watch?: RawSignalWatch | null;
   appState?: string | null;
   baroEventAtMs?: number | null;
+  /**
+   * #3191 PR-1 — shouldHoldStationaryFix 판정 결과(관측 전용, 동작 무관). null = fix 시각을 몰라
+   * 판단 불가. PR-2 배선 전 replay/덤프에서 유지 vs 현행 비율을 보기 위한 기록.
+   */
+  holdEligible?: boolean | null;
   /** #3191 PR-0 — 프로세스당 1회, 첫 hPa 기준선이 생긴 뒤 첫 push entry에만 부착. */
   launch?: RawSignalLaunch;
 }

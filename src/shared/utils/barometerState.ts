@@ -88,6 +88,7 @@ export function appendBarometerReading(reading: BarometerReading): void {
 
 /**
  * #3191 PR-0 — 기압 ΔP 이벤트 시각 / 첫 hPa 기준선 계측 (관측 전용, 판정 입력 아님).
+ * #3191 PR-1 — 이벤트에 "공백 건넌 ΔP"(직전 reading이 30s 창 밖)도 포함한다.
  *
  * ring buffer(`readings`, 60s TTL)와 별개로 세션 동안 남는다 — Raw entry가 cycle 시점에 ring을
  * 읽으면 이미 prune된 이벤트를 놓치기 때문. `resetBarometerState()`가 건드리지 않는다
@@ -108,13 +109,22 @@ const EMPTY_DELTA_TRACKING: BarometerDeltaTracking = {
 };
 
 let deltaTracking: BarometerDeltaTracking = EMPTY_DELTA_TRACKING;
+// #3191 PR-1 — 직전 reading(세션 유지). ring(60s TTL)이 이미 비운 공백 뒤 첫 reading과 비교하기 위해.
+let lastReading: BarometerReading | null = null;
 
 function recordDeltaTracking(prior: readonly BarometerReading[], reading: BarometerReading): void {
-  const isEvent = prior.some(
+  const isWindowEvent = prior.some(
     (r) =>
       reading.t - r.t <= BAROMETER_DPDT_WINDOW_MS &&
       Math.abs(reading.pressureHpa - r.pressureHpa) >= BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
   );
+  // 공백 건넌 ΔP — 직전 reading이 30s 창 밖(BG 정지 후 복귀 등)이어도 큰 변화는 수직 이동 증거.
+  const isGapEvent =
+    lastReading !== null &&
+    reading.t - lastReading.t > BAROMETER_DPDT_WINDOW_MS &&
+    Math.abs(reading.pressureHpa - lastReading.pressureHpa) >= BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA;
+  const isEvent = isWindowEvent || isGapEvent;
+  lastReading = reading;
   deltaTracking = {
     firstHpa: deltaTracking.firstHpa ?? reading.pressureHpa,
     firstHpaAtMs: deltaTracking.firstHpaAtMs ?? reading.t,
@@ -248,6 +258,7 @@ export function getBarometerInstrumentation(): Readonly<BarometerInstrumentation
  */
 export function resetBarometerInstrumentationForTest(): void {
   deltaTracking = EMPTY_DELTA_TRACKING;
+  lastReading = null;
   instrumentation = {
     listenerRegisteredCount: 0,
     listenerRegistrationFailedCount: 0,

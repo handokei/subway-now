@@ -17,17 +17,15 @@ import {
 
 const L_AT = 1_700_000_000_000;
 
-function input(extra: Partial<StationaryHoldInput> & { ageMs?: number } = {}): StationaryHoldInput {
-  const { ageMs = 16_000, ...rest } = extra;
+function input(extra: Partial<StationaryHoldInput> = {}): StationaryHoldInput {
   return {
     fix: { accuracyMeters: 8, speedMps: null, atMs: L_AT },
-    nowMs: L_AT + ageMs,
     hasNewerFix: false,
     subsurface: false,
     baroEventAtMs: null,
     barometerAvailable: true,
     lockActive: false,
-    ...rest,
+    ...extra,
   };
 }
 
@@ -40,13 +38,14 @@ describe('shouldHoldStationaryFix (#3191 PR-1)', () => {
 
   describe('10/21 실측 긍정 행 — 유지=true', () => {
     it.each([
-      ['T 행1 21:25:41 (age 16s)', { accuracyMeters: 8, speedMps: null }, 16_000],
-      ['T 행2 21:25:49 (age 24s)', { accuracyMeters: 8, speedMps: null }, 24_000],
-      ['T 행3 21:25:53 (age 28s)', { accuracyMeters: 8, speedMps: null }, 28_000],
-      ['T 행4 21:27:44 (age 139s)', { accuracyMeters: 8, speedMps: null }, 139_000],
-      ['T 행5 21:30:30 (L 21:30:15 acc 5, age 15s)', { accuracyMeters: 5, speedMps: null }, 15_000],
-    ])('%s', (_label, fix, ageMs) => {
-      expect(shouldHoldStationaryFix(input({ fix: { ...fix, atMs: L_AT }, ageMs }))).toBe(true);
+      ['T 행1 21:25:41 (age 16s)', { accuracyMeters: 8, speedMps: null }],
+      ['T 행2 21:25:49 (age 24s)', { accuracyMeters: 8, speedMps: null }],
+      ['T 행3 21:25:53 (age 28s)', { accuracyMeters: 8, speedMps: null }],
+      ['T 행4 21:27:44 (age 139s)', { accuracyMeters: 8, speedMps: null }],
+      ['T 행5 21:30:30 (L 21:30:15 acc 5, age 15s)', { accuracyMeters: 5, speedMps: null }],
+    ])('%s', (_label, fix) => {
+      // 나이(age)는 술어 입력이 아니다 — 라벨의 age가 어떻든 이동 증거가 없으면 유지.
+      expect(shouldHoldStationaryFix(input({ fix: { ...fix, atMs: L_AT } }))).toBe(true);
     });
   });
 
