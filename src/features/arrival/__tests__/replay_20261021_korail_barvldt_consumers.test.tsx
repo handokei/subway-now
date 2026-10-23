@@ -91,7 +91,7 @@ describe('arrivalInfoToArrivalTrain (홈 EditorialArrivalRow 입력)', () => {
     expect(train.subtext).toBeUndefined();
   });
 
-  it('known(서울교통공사/진입·도착 0) 행은 기존 그대로: arrivalAtMs=now+초, subtext=원문, positionLabel 없음', () => {
+  it('known(서울교통공사 일반 행) 은 기존 그대로: arrivalAtMs=now+초, subtext=원문, positionLabel 없음', () => {
     const [train] = arrivalInfoToArrivalTrain([SEC_240], '왕십리', 'bundang');
     expect(train.arrivalAtMs).toBe(1_700_000_000_000 + 240_000);
     expect(train.subtext).toBe('4분 후');
@@ -102,7 +102,7 @@ describe('arrivalInfoToArrivalTrain (홈 EditorialArrivalRow 입력)', () => {
     const trains = arrivalInfoToArrivalTrain([FAR_9, FAR_3, SEC_240, PREV_1, ARRIVED], '왕십리', 'bundang');
     expect(trains).toHaveLength(5);
     expect(trains.map((t) => t.positionLabel?.primary ?? 'known')).toEqual([
-      'known', // 도착 0
+      '도착', // 도착 0 — 상태 라벨 (#3132 잔여), 정렬 위치는 known 그대로
       'known', // 240
       '전역 도착',
       '3번째 전역',
