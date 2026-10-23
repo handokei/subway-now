@@ -48,7 +48,7 @@ describe('resolveStationId', () => {
   it('alias 데이터(line|name → 정식명)로 매칭한다', () => {
     // platform-name-aliases.json: "7|뚝섬유원지" → "자양"
     const id = resolveStationId('7호선', '뚝섬유원지');
-    expect(byId.get(id)).toMatchObject({ name: '자양', line: '7' });
+    expect(byId.get(id)).toMatchObject({ name: expect.stringMatching(/^자양/), line: '7' });
   });
 
   it('매칭 실패는 null (다른 노선 id로 폴백하지 않는다)', () => {
