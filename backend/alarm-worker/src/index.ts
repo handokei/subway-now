@@ -204,6 +204,8 @@ import {
   deleteTripEndedStatus,
 } from './tripStatus';
 import { tryConsumeCooldownBypass } from './cooldownBypass';
+import { KvWriteUnavailableError } from './kvWriteUnavailable';
+import { REGISTER_KV_UNAVAILABLE_ERROR } from '../../../src/shared/constants/registerContract';
 import { randomUnit, runHttpProbe, scheduleCronProbe } from './d1KvLatencyProbe';
 import { subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
@@ -293,21 +295,22 @@ export const app = new Hono<{ Bindings: Env }>();
 const REGISTER_RETRY_AFTER_SEC = 60;
 
 /**
- * #3006 D — KV 쓰기 장애를 "재시도 가능한 실패"로 분류하는 전용 에러.
- *
- * 직렬화 콜백(`withTripRegisterLock`) 안에서는 HTTP 응답을 반환할 수 없어, 쓰기 실패를 이
- * 타입으로 승격해 호출부가 503으로 매핑한다. `instanceof`로 좁히므로 **로직 버그는 그대로
- * 전파돼 500을 유지한다** — 모든 에러를 503으로 가리면 진짜 버그가 "일시 장애"로 숨는다.
+ * #3006 — `POST /trips`의 KV 쓰기 장애를 적재하고 503 + Retry-After 응답으로 바꾼다.
+ * 직렬화 락 안/밖 두 호출부가 같은 응답 계약(`REGISTER_KV_UNAVAILABLE_ERROR`)을 쓰도록 단일화.
  */
-class KvWriteUnavailableError extends Error {
-  constructor(
-    readonly stage: string,
-    readonly cause: unknown,
-  ) {
-    super(`KV write unavailable at ${stage}`);
-    this.name = 'KvWriteUnavailableError';
-  }
+function registerKvUnavailableResponse(
+  c: Context<{ Bindings: Env }>,
+  err: KvWriteUnavailableError,
+): Response {
+  void captureBackendException(c.env, err.cause, {
+    path: 'trips',
+    stage: err.stage,
+  });
+  return c.json({ error: REGISTER_KV_UNAVAILABLE_ERROR }, 503, {
+    'Retry-After': String(REGISTER_RETRY_AFTER_SEC),
+  });
 }
+
 
 app.onError((err, c) => {
   void captureBackendException(c.env, err, { path: c.req.path });
@@ -1099,10 +1102,15 @@ app.post('/trips', async (c) => {
       // user-delete로 끝난 trip은 `writeTripEndedStatus`가 애초에 호출되지 않아(cleanupTripWithLa의
       // HTTP DELETE 호출부, options.reason 미지정) 이 tripStatus 마커 자체가 존재하지 않는다 —
       // 이 분기에 도달조차 하지 않는다.
-      const { allowed, count: bypassCount } = await tryConsumeCooldownBypass(
-        c.env.TRIPS,
-        incoming.token,
-      );
+      // #3006 PR-0a — 카운터 put 실패는 fail-open 금지(1h 3회 상한 보호, #2912 ⓓ) -> 503.
+      let bypass: { allowed: boolean; count: number };
+      try {
+        bypass = await tryConsumeCooldownBypass(c.env.TRIPS, incoming.token);
+      } catch (err) {
+        if (!(err instanceof KvWriteUnavailableError)) throw err;
+        return registerKvUnavailableResponse(c, err);
+      }
+      const { allowed, count: bypassCount } = bypass;
       if (allowed) {
         console.log(
           JSON.stringify({
@@ -1258,7 +1266,12 @@ app.post('/trips', async (c) => {
         progress.trainCode === incoming.boardingLock.trainCode) ||
         (progress.lockless === true && incoming.infoModeEnabled === true));
     if (progress !== null && !progressApplies) {
-      await deleteProgress(c.env.TRIPS, incoming.token);
+      // #3006 PR-0a — lock 콜백 안이라 응답을 못 낸다. 전용 에러로 승격하면 바깥 catch가 503으로 바꾼다.
+      try {
+        await deleteProgress(c.env.TRIPS, incoming.token);
+      } catch (err) {
+        throw new KvWriteUnavailableError('deleteProgress', err);
+      }
     }
     // #2554 (ADR-038 Phase 0) — same-session 재등록 시 보존할 boardingLock 산출(auto/manual 무관).
     // incoming이 있으면 그대로 채택(swap/재송신). 없으면 existing lock을 현재 waypoints와 정합할
@@ -1439,7 +1452,19 @@ app.post('/trips', async (c) => {
       // refresh로 deviceToken 자체가 바뀌는 드문 이벤트를 GET/DELETE 핸들러가 복구할 수 있도록
       // 역인덱스는 그대로 존치·갱신한다. deviceToken이 없는(손상 payload) 경우는 기록하지 않는다.
       if (trip.deviceToken !== undefined) {
-        await putDeviceTripIndex(c.env.TRIPS, trip.deviceToken, trip.token, trip.expiresAt);
+        // #3006 PR-0a — trip은 이미 저장된 뒤라 역인덱스 실패로 등록을 실패시키지 않는다(로그만).
+        // 역인덱스는 APNs token refresh 복구용 보조 경로다.
+        try {
+          await putDeviceTripIndex(c.env.TRIPS, trip.deviceToken, trip.token, trip.expiresAt);
+        } catch (e) {
+          console.log(
+            JSON.stringify({
+              msg: 'device-trip index put on register failed (#3006)',
+              tokenPrefix: tokenPrefix(trip.token),
+              error: String(e),
+            }),
+          );
+        }
       }
 
       return { trip, isSameSession };
@@ -1449,13 +1474,7 @@ app.post('/trips', async (c) => {
     // #3006 D — KV 쓰기 장애만 503으로 매핑한다. 그 외 에러는 재전파 → `app.onError`가 적재하고
     // 기존과 동일한 500을 낸다(로직 버그를 재시도 가능한 실패로 가리지 않는다).
     if (!(err instanceof KvWriteUnavailableError)) throw err;
-    void captureBackendException(c.env, err.cause, {
-      path: 'trips',
-      stage: err.stage,
-    });
-    return c.json({ error: 'kv_unavailable' }, 503, {
-      'Retry-After': String(REGISTER_RETRY_AFTER_SEC),
-    });
+    return registerKvUnavailableResponse(c, err);
   }
   const { trip, isSameSession } = lockResult;
 

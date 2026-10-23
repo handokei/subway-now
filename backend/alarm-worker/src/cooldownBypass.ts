@@ -21,6 +21,8 @@
  * 쓰지 않는다.
  */
 
+import { KvWriteUnavailableError } from './kvWriteUnavailable';
+
 const COOLDOWN_BYPASS_PREFIX = 'cooldownBypass:';
 
 /** 같은 token에 대해 rolling window 안에서 허용하는 최대 우회 횟수. */
@@ -82,8 +84,14 @@ export async function tryConsumeCooldownBypass(
   }
 
   const next: CooldownBypassRecord = { count: current.count + 1, windowStartedAt: current.windowStartedAt };
-  await kv.put(cooldownBypassKey(token), JSON.stringify(next), {
-    expirationTtl: COOLDOWN_BYPASS_TTL_SEC,
-  });
+  // #3006 PR-0a — put 실패는 fail-open(우회 허용)하지 않는다. 카운터 없이 우회를 허용하면
+  // 1시간 3회 상한(#2912 ⓓ 쿼터 보호)이 무력화된다. 전용 에러로 승격해 호출부가 503으로 매핑한다.
+  try {
+    await kv.put(cooldownBypassKey(token), JSON.stringify(next), {
+      expirationTtl: COOLDOWN_BYPASS_TTL_SEC,
+    });
+  } catch (err) {
+    throw new KvWriteUnavailableError('cooldownBypass', err);
+  }
   return { allowed: true, count: next.count };
 }
