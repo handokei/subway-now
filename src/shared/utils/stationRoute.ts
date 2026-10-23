@@ -128,11 +128,17 @@ export interface DirectRoute {
   line: LineNumber;
   /** #655: 실측 운행 시간(초). findRoutes/updateRouteFromPosition가 lookup으로 채운다. */
   travelSeconds: number;
+  /** #3177: 실제 하차 승강장 역 id(stations.json). 하차문 조회는 이름이 아닌 id로 한다. */
+  destinationStationId?: string;
 }
 
 export interface TransferRoute {
   type: 'transfer';
   transferName: string;
+  /** #3177: 환승역에서 실제로 내리는 fromLine 승강장의 역 id. */
+  transferStationId?: string;
+  /** #3177: 최종 목적지 승강장 역 id. */
+  destinationStationId?: string;
   fromLine: LineNumber;
   toLine: LineNumber;
   stopsToTransfer: number;
@@ -145,6 +151,8 @@ export interface TransferRoute {
 
 export interface TransferSegment {
   transferName: string;
+  /** #3177: 이 환승에서 실제로 내리는 fromLine 승강장의 역 id. */
+  transferStationId?: string;
   fromLine: LineNumber;
   toLine: LineNumber;
   stopsToTransfer: number;
@@ -158,6 +166,8 @@ export interface MultiTransferRoute {
   stopsAfterLastTransfer: number;
   /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
   secondsAfterLastTransfer: number;
+  /** #3177: 최종 목적지 승강장 역 id. */
+  destinationStationId?: string;
 }
 
 export type Route = DirectRoute | TransferRoute | MultiTransferRoute | null;
@@ -329,6 +339,7 @@ export function updateRouteFromPosition(
       stops: remaining,
       line: dest.line,
       travelSeconds: computeSegmentSeconds(dest.line, nIdx, dIdx, lineStations),
+      destinationStationId: dest.id,
     };
   }
 
@@ -674,6 +685,7 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
       stops: path.length - 1,
       line: current.line,
       travelSeconds: computeSegmentSeconds(current.line, cIdx, dIdx, lineStations),
+      destinationStationId: destination.id,
     };
     const duration = performance.now() - start;
     logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
@@ -706,6 +718,8 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
       bestSingle = {
         type: 'transfer',
         transferName: candidate.name,
+        transferStationId: candidate.id,
+        destinationStationId: destination.id,
         fromLine: current.line,
         toLine: destination.line,
         stopsToTransfer,
@@ -828,6 +842,7 @@ function findMultiTransferRoute(
             transfers: [
               {
                 transferName: t1Name,
+                transferStationId: currentLineStations[t1CurrentIdx].id,
                 fromLine,
                 toLine: midLine,
                 stopsToTransfer: stopsToFirst,
@@ -835,6 +850,7 @@ function findMultiTransferRoute(
               },
               {
                 transferName: t2Name,
+                transferStationId: midLineStations[t2MidIdx].id,
                 fromLine: midLine,
                 toLine,
                 stopsToTransfer: stopsToSecond,
@@ -842,6 +858,7 @@ function findMultiTransferRoute(
               },
             ],
             stopsAfterLastTransfer: stopsAfter,
+            destinationStationId: destination.id,
             secondsAfterLastTransfer: computeSegmentSeconds(toLine, t2DestIdx, destIdx, destLineStations),
           };
         }
