@@ -2317,7 +2317,12 @@ export function applyPositionTripUpdates(
   now: number,
 ): Trip {
   let next = trip;
+  // #3006 PR-5 — LOCK 활성 또는 leg-2(currentLegAnchor) trip은 anchor stamp를 건너뛴다. 유일한
+  // reader(`maybeFireOriginBoardingPromptGpsFree`)가 leg-2는 `currentLegAnchor` 가드, lock은
+  // `boardingLock !== undefined` 가드로 anchor를 읽기 전에 return하므로 쓰이지 않는 write다.
+  const skipOriginStamp = isBoardingLockActive(trip, now) || trip.currentLegAnchor !== undefined;
   if (
+    !skipOriginStamp &&
     isNearOrigin(originDistanceM, originAccuracyM) &&
     shouldStampOriginProximity(next.originProximityAt, now)
   ) {
