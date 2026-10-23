@@ -16,6 +16,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../index';
 import { putTrip } from '../trips';
+import { putProgress } from '../progress';
+import { writeTripEndedStatus } from '../tripStatus';
 import { seedSsot } from '../tripPositionSsot';
 import type { Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -78,6 +80,43 @@ function positionBody(): Record<string, unknown> {
     motion: 'unknown',
     appState: 'fg',
   };
+}
+
+/** 키 접두사·연산별로 선택 실패하는 KV — 특정 write 지점만 터뜨려 분기별 매핑을 가른다. */
+class SelectiveFailingKV extends InMemoryKV {
+  constructor(
+    private readonly failPutPrefix: string | null,
+    private readonly failDelete: boolean = false,
+  ) {
+    super();
+  }
+
+  override async put(key: string, value: string, options?: never): Promise<void> {
+    if (this.failPutPrefix !== null && key.startsWith(this.failPutPrefix)) {
+      throw new Error('KV PUT failed: 429 Too Many Requests');
+    }
+    return super.put(key, value, options);
+  }
+
+  override async delete(key: string): Promise<void> {
+    if (this.failDelete) throw new Error('KV DELETE failed: 429 Too Many Requests');
+    return super.delete(key);
+  }
+}
+
+/** backend_errors + trip_events INSERT bind 인자를 각각 캡처하는 D1 stub. */
+function captureAll(): { db: Env['DB']; errorInserts: unknown[][]; eventInserts: unknown[][] } {
+  const errorInserts: unknown[][] = [];
+  const eventInserts: unknown[][] = [];
+  const run = vi.fn().mockResolvedValue({ success: true });
+  const prepare = vi.fn().mockImplementation((sql: string) => ({
+    bind: (...args: unknown[]) => {
+      if (sql.includes('backend_errors')) errorInserts.push(args);
+      if (sql.includes('trip_events')) eventInserts.push(args);
+      return { run };
+    },
+  }));
+  return { db: { prepare } as unknown as Env['DB'], errorInserts, eventInserts };
 }
 
 async function post(path: string, body: unknown, env: Env): Promise<Response> {
@@ -196,5 +235,79 @@ describe('#3006 D — KV 쓰기 실패 시 graceful degrade + 관측', () => {
       expect(res.status).toBe(500);
       expect(inserts.length).toBeGreaterThanOrEqual(1);
     });
+  });
+});
+
+describe('#3006 PR-0a — register 경로 KV 실패 503 매핑', () => {
+  beforeEach(() => {
+    vi.useFakeTimers().setSystemTime(NOW);
+  });
+
+  /** destination 종료 직후(쿨다운 안) 재등록 — #2912 destination-recovery 우회 경로 진입 조건. */
+  async function seedDestinationEnded(kv: InMemoryKV): Promise<void> {
+    await writeTripEndedStatus(kv as unknown as KVNamespace, TOKEN, 'destination-arrived', NOW - 1_000);
+  }
+
+  it('[0a-1] 우회 카운터 put 실패 -> 503 + Retry-After + backend_errors stage cooldownBypass', async () => {
+    const kv = new SelectiveFailingKV('cooldownBypass:');
+    await seedDestinationEnded(kv);
+    const { db, errorInserts } = captureAll();
+
+    const res = await post('/trips', tripBody(), makeEnv(kv, db));
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBeTruthy();
+    expect(await res.json()).toEqual({ error: 'kv_unavailable' });
+    expect(JSON.stringify(errorInserts)).toContain('cooldownBypass');
+  });
+
+  it('[0a-2 거부] 카운터 put 실패 시 fail-open 하지 않는다 (#2912 ⓓ): 카운터 키/trip/우회 이벤트 없음', async () => {
+    const kv = new SelectiveFailingKV('cooldownBypass:');
+    await seedDestinationEnded(kv);
+    const { db, eventInserts } = captureAll();
+
+    await post('/trips', tripBody(), makeEnv(kv, db));
+
+    expect([...kv.store.keys()].some((k) => k.startsWith('cooldownBypass:'))).toBe(false);
+    expect([...kv.store.keys()].some((k) => k.startsWith('trip:'))).toBe(false);
+    expect(eventInserts.some((args) => args[2] === 'cooldown-bypass')).toBe(false);
+  });
+
+  it('[0a-3] 맞지 않는 progress 삭제 실패 -> 503 (500 아님) + stage deleteProgress', async () => {
+    const kv = new SelectiveFailingKV(null, true);
+    await putTrip(kv as unknown as KVNamespace, tripBody() as unknown as Trip);
+    await putProgress(kv as unknown as KVNamespace, TOKEN, { trainCode: 'OTHER', shiftedCount: 1 }, 3600);
+    const { db, errorInserts } = captureAll();
+
+    const res = await post('/trips', tripBody(), makeEnv(kv, db));
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBeTruthy();
+    expect(JSON.stringify(errorInserts)).toContain('deleteProgress');
+  });
+
+  it('[0a-4] deviceTripIndex put만 실패 -> 200 (trip은 이미 저장됨)', async () => {
+    const kv = new SelectiveFailingKV('device-trips:');
+    const { db } = captureAll();
+
+    const res = await post('/trips', tripBody(), makeEnv(kv, db));
+
+    expect(res.status).toBe(200);
+    expect([...kv.store.keys()].some((k) => k.startsWith('trip:'))).toBe(true);
+  });
+
+  it('[0a-5 거부] KV 쓰기 실패가 아닌 throw는 500 유지 (로직 버그를 503으로 가리지 않는다)', async () => {
+    const kv = new SelectiveFailingKV(null);
+    await seedDestinationEnded(kv);
+    const origGet = kv.get.bind(kv);
+    vi.spyOn(kv, 'get').mockImplementation(async (key: string, opts?: { cacheTtl?: number }) => {
+      if (key.startsWith('cooldownBypass:')) throw new Error('boom-read');
+      return origGet(key, opts);
+    });
+    const { db } = captureAll();
+
+    const res = await post('/trips', tripBody(), makeEnv(kv, db));
+
+    expect(res.status).toBe(500);
   });
 });
