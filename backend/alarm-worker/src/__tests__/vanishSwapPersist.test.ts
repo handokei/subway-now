@@ -513,3 +513,101 @@ describe('#2869 E — vanish estimate-null / swap-fail D1 전이 계측 (중복 
     expect(vanishSwapRowsAfterTick2.length).toBe(2);
   });
 });
+
+describe('#3141 — vanish-swap 후 옛 번호로 이미 알린 역은 새 번호로 재발사하지 않는다', () => {
+  let kv: InMemoryKV;
+  const fetchOk = (async () => new Response('', { status: 200 })) as unknown as typeof fetch;
+
+  beforeEach(async () => {
+    kv = new InMemoryKV();
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '상왕십리', { expiresAt: NOW + 60 * 60_000 });
+    await seedSelfPoll(kv, NOW);
+  });
+
+  async function tick1(): Promise<void> {
+    const trip = makeSindangTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await runTrainCodeTracking(
+      trip,
+      trip.waypoints[0],
+      trip.boardingLock!,
+      makeEnv(kv),
+      makeDeps(makeSindangSeoul(), fetchOk),
+      createEmptyScheduledStats(NOW),
+      NOW,
+      () => {},
+      () => 'pid-3141-t1',
+      await readSsot(kv as unknown as KVNamespace, TOKEN),
+    );
+  }
+
+  /** 3203이 신당에 도착(ARRIVED)한 60초 뒤 tick — red 3과 동일 관측. */
+  async function tick2(): Promise<void> {
+    const trip = await getTrip(kv as unknown as KVNamespace, TOKEN);
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW + 60_000,
+      fetchImpl: (async (url: string) => {
+        if (url.includes('/realtimePosition/')) {
+          return new Response(
+            JSON.stringify({
+              realtimePositionList: [
+                { trainNo: '3203', statnNm: '신당', trainSttus: 1, updnLine: '1', lastRecptnDt: '' },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              { btrainNo: '3203', updnLine: '외선', arvlCd: 1, barvlDt: '0', subwayNm: '지하철2호선' },
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    });
+    await runTrainCodeTracking(
+      trip!,
+      trip!.waypoints[0],
+      trip!.boardingLock!,
+      makeEnv(kv),
+      makeDeps(seoul, fetchOk),
+      createEmptyScheduledStats(NOW + 60_000),
+      NOW + 60_000,
+      () => {},
+      () => 'pid-3141-t2',
+      await readSsot(kv as unknown as KVNamespace, TOKEN),
+    );
+  }
+
+  it('swap 시 옛 코드(3174)가 KV trip.lockCodeHistory에 append 된다', async () => {
+    await tick1();
+    const stored = await getTrip(kv as unknown as KVNamespace, TOKEN);
+    expect(stored?.boardingLock?.trainCode).toBe('3203');
+    expect(stored?.lockCodeHistory).toEqual(['3174']);
+  });
+
+  it('옛 번호(3174)로 신당을 이미 알렸으면 새 번호(3203)로 신당을 재발사하지 않는다', async () => {
+    await tick1();
+    await kv.put(stationPassedFiredKey(TOKEN, '3174', '신당'), '1');
+    await tick2();
+    expect(await kv.get(stationPassedFiredKey(TOKEN, '3203', '신당'))).toBeNull();
+  });
+
+  it('거부: 이력에 없는 코드(9999)로 알린 흔적은 dedup 하지 않는다 -> 신당 정상 발사', async () => {
+    await tick1();
+    await kv.put(stationPassedFiredKey(TOKEN, '9999', '신당'), '1');
+    await tick2();
+    expect(await kv.get(stationPassedFiredKey(TOKEN, '3203', '신당'))).not.toBeNull();
+  });
+
+  it('거부: 이력은 있지만 다른 역(동대문역사문화공원)만 알렸으면 신당은 정상 발사', async () => {
+    await tick1();
+    await kv.put(stationPassedFiredKey(TOKEN, '3174', '동대문역사문화공원'), '1');
+    await tick2();
+    expect(await kv.get(stationPassedFiredKey(TOKEN, '3203', '신당'))).not.toBeNull();
+  });
+});
