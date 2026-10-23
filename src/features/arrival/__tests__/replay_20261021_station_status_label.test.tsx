@@ -152,7 +152,8 @@ describe('replay 20261021 arvlCd 0/1/2 상태 라벨 (#3132)', () => {
   });
 
   it('거부: cd 99 + barvlDt 90 은 "01:30" 유지', () => {
-    const { train, getByText } = renderRow(syntheticRow({ arrivalSeconds: 90 }));
+    jest.useFakeTimers().setSystemTime(1_000_000);
+    const { train, getByText } = renderRow(syntheticRow({ arrivalSeconds: 90, receivedAtMs: 1_000_000 }));
     expect(train.positionLabel).toBeUndefined();
     expect(getByText('01:30')).toBeTruthy();
   });
@@ -183,16 +184,16 @@ describe('replay 20261021 arvlCd 0/1/2 상태 라벨 (#3132)', () => {
 });
 
 describe('arrival 상태 라벨 i18n 4개 언어', () => {
-  const KEYS = ['statusEntering', 'statusArrived', 'statusDeparted'];
+  const KEYS = ['arrival.statusEntering', 'arrival.statusArrived', 'arrival.statusDeparted'] as const;
   const LANGS = ['ko', 'en', 'ja', 'zh'];
   afterEach(async () => {
     await i18next.changeLanguage('ko');
   });
 
-  it.each(LANGS.flatMap((l) => KEYS.map((k) => [l, k])))('%s arrival.%s 가 비어있지 않다', async (lang, key) => {
+  it.each(LANGS.flatMap((l) => KEYS.map((k) => [l, k])))('%s %s 가 비어있지 않다', async (lang, key) => {
     await i18next.changeLanguage(lang);
-    const v = i18next.t(`arrival.${key}`);
-    expect(v).not.toBe(`arrival.${key}`);
+    const v = i18next.t(key as (typeof KEYS)[number]);
+    expect(v).not.toBe(key);
     expect(v.length).toBeGreaterThan(0);
   });
 

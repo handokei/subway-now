@@ -237,7 +237,10 @@
     "stopsAway_one": "{{count}} stop away",
     "stopsAway_other": "{{count}} stops away",
     "rowLabel": "{{line}} {{direction}} arriving in {{mm}} min {{ss}} sec",
-    "rowLabelPosition": "{{line}} {{direction}} {{position}}"
+    "rowLabelPosition": "{{line}} {{direction}} {{position}}",
+    "statusEntering": "Entering",
+    "statusArrived": "Arrived",
+    "statusDeparted": "Departed"
   },
   "notifications": {
     "channelStation": "Current station",

@@ -102,8 +102,8 @@ describe('arrivalInfoToArrivalTrain (홈 EditorialArrivalRow 입력)', () => {
     const trains = arrivalInfoToArrivalTrain([FAR_9, FAR_3, SEC_240, PREV_1, ARRIVED], '왕십리', 'bundang');
     expect(trains).toHaveLength(5);
     expect(trains.map((t) => t.positionLabel?.primary ?? 'known')).toEqual([
-      '도착', // 도착 0 — 상태 라벨 (#3132 잔여), 정렬 위치는 known 그대로
-      'known', // 240
+      'known', // 240 (입력 순서 유지)
+      '도착', // 도착 0 — 상태 라벨 (#3132 잔여), known 그룹 안 위치는 그대로
       '전역 도착',
       '3번째 전역',
       '9번째 전역',
