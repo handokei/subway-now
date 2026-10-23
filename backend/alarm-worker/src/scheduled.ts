@@ -40,6 +40,7 @@ import {
   canFireForTrainCode,
   decideBoardingPromptFire,
   evaluateBoardingPromptRepeatGate,
+  isPromptSilencedForTrain,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
   isExactDuplicateFire,
@@ -8759,6 +8760,15 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
     shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
       const firedTrainCodes = trip.boardingPromptState?.firedTrainCodes;
+      // #3200 — 무음은 응답한 열차에만(다른 열차 도착 확정은 통과). 열차 불명 무음은 상단 게이트가 처리.
+      if (isPromptSilencedForTrain(trip.boardingPromptState, selectedTrainCode, now)) {
+        stats.originGpsFreeBoardingPromptBlocked += 1;
+        log('origin-boarding-prompt-gps-free: skipped train silenced', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+        });
+        return false;
+      }
       if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.originGpsFreeBoardingPromptBlocked += 1;
         log('origin-boarding-prompt-gps-free: skipped train duplicate', {
@@ -9151,6 +9161,15 @@ export async function maybeFireLegBoardingPrompt(
     // 보수적 차단 — 과소차단 방지, 함수 doc 참고).
     shouldProceedToSend: (_pool, decision, selectedTrainCode) => {
       const firedTrainCodes = trip.legBoardingPromptState?.firedTrainCodes;
+      // #3200 — 무음은 응답한 열차에만(다른 열차 도착 확정은 통과). 열차 불명 무음은 상단 게이트가 처리.
+      if (isPromptSilencedForTrain(trip.legBoardingPromptState, selectedTrainCode, now)) {
+        stats.legBoardingPromptBlocked += 1;
+        log('leg-boarding-prompt: skipped train silenced', {
+          token: trip.token.slice(0, 8),
+          trainCode: selectedTrainCode,
+        });
+        return false;
+      }
       if (isExactDuplicateFire(firedTrainCodes, selectedTrainCode, decision)) {
         stats.legBoardingPromptBlocked += 1;
         log('leg-boarding-prompt: skipped train duplicate', {
