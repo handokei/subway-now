@@ -4,8 +4,10 @@ import {
   nearestResultToNearest,
 } from '../journeyAdapter';
 import type { Stop, StopArrivalContext } from '../journeyAdapter';
+import { findRoute, buildJourneyDisplay } from '../../../../shared/utils/stationRoute';
 import type { JourneyDisplay } from '../../../../shared/utils/stationRoute';
-import type { LineNumber } from '../../../../shared/types/station';
+import type { LineNumber, Station } from '../../../../shared/types/station';
+import stationsData from '../../../../data/stations.json';
 import { MOCK_JOURNEYS, makeNearestResult, makeArrivalInfo } from '../../../../testUtils/fixtures';
 
 // Stop 기대값 빌더 — 중복 리터럴을 줄이고 의도(transfer/dest + arrivalContext)를 한 줄로 표현한다.
@@ -111,7 +113,8 @@ describe('journeyDisplayToStops', () => {
     // arrivalContext는 직전 segment(7호선 건대입구→군자) — 사용자가 실제로 그 노선으로 내림.
     // transferTarget은 흡수 시에도 보존된다 — UI가 mark==='transfer'에만 적용하므로 무해.
     expect(stops[2]).toEqual(
-      expectedStop('dest', '군자', '5', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자'), '5'),
+      // #3086 — 흡수 dest 배지 line = 실제 탑승 노선(7). to-line(5)은 타지 않았다.
+      expectedStop('dest', '군자', '7', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자'), '5'),
     );
   });
 
@@ -129,7 +132,19 @@ describe('journeyDisplayToStops', () => {
     expect(stops[2].connectorLine).toBe('5');
   });
 
-  it('#3073 환승역 종착 흡수 dest: connectorLine=탑승 노선(6), 배지 line(5)은 불변', () => {
+  it('#3086 실제 findRoute: 6호선 효창공원앞→공덕(5호선 entry) 흡수 dest 배지는 탑승 노선(6)', () => {
+    const all = stationsData as Station[];
+    const from = all.find((s) => s.name === '효창공원앞' && s.line === '6')!;
+    const dest = all.find((s) => s.name === '공덕' && s.line === '5')!;
+    const route = findRoute(from.id, dest.id);
+    const journey = buildJourneyDisplay(route, from, dest)!;
+    const stops = journeyDisplayToStops(journey);
+    const last = stops[stops.length - 1];
+    expect(last.mark).toBe('dest');
+    expect(last.line).toBe('6');
+  });
+
+  it('#3073 환승역 종착 흡수 dest: connectorLine=탑승 노선(6), 배지 line도 탑승 노선(6) (#3086)', () => {
     const journey: JourneyDisplay = {
       segments: [
         { line: '6', lineColor: '#CD7C2F', fromName: '효창공원앞', toName: '공덕', stops: 1 },
@@ -140,7 +155,7 @@ describe('journeyDisplayToStops', () => {
     const stops = journeyDisplayToStops(journey);
     expect(stops).toHaveLength(2);
     expect(stops[1].mark).toBe('dest');
-    expect(stops[1].line).toBe('5');
+    expect(stops[1].line).toBe('6');
     expect(stops[1].connectorLine).toBe('6');
   });
 
