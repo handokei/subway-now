@@ -53,6 +53,16 @@ const seongsu: Station = {
 const degradedFixAt = (station: Station | null) =>
   fixAt(station, { accuracy: 52.7 });
 
+// #2650 — getItem 호출 확인만으로는 hydrate(.then → setHydrated)가 끝났음을 보장하지 못한다.
+// hydrate 전 rerender는 평가 effect가 `!hydrated`로 skip돼 연속 카운트가 유실되므로(lock 불가),
+// 호출 확인 뒤 대기 중 microtask/timer를 act 안에서 flush해 hydrate 완료를 확정한다.
+const awaitHydrated = async () => {
+  await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+  await act(async () => {
+    await jest.runOnlyPendingTimersAsync();
+  });
+};
+
 const fixAt = (
   station: Station | null,
   opts: { accuracy?: number | null; speed?: number | null } = {},
@@ -82,7 +92,8 @@ describe('useStickyStation (#876)', () => {
     const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
     const { result, rerender } = renderSticky({ fix: fixAt(seoul) });
     // hydrate effect 대기
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalledWith(STICKY_STATION_KEY));
+    await awaitHydrated();
+    expect(AsyncStorage.getItem).toHaveBeenCalledWith(STICKY_STATION_KEY);
     expect(result.current.locked).toBeNull();
     rerender({ fix: fixAt(seoul) });
     expect(result.current.locked).toBeNull();
@@ -96,7 +107,7 @@ describe('useStickyStation (#876)', () => {
 
   it('나쁜 fix(accuracy > 50m)는 카운트 안 함', async () => {
     const { result, rerender } = renderSticky({ fix: fixAt(seoul, { accuracy: 80 }) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul, { accuracy: 80 }) });
     rerender({ fix: fixAt(seoul, { accuracy: 80 }) });
     rerender({ fix: fixAt(seoul, { accuracy: 80 }) });
@@ -105,7 +116,7 @@ describe('useStickyStation (#876)', () => {
 
   it('이동 중(speed ≥ 1) fix는 카운트 안 함', async () => {
     const { result, rerender } = renderSticky({ fix: fixAt(seoul, { speed: 5 }) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul, { speed: 5 }) });
     rerender({ fix: fixAt(seoul, { speed: 5 }) });
     expect(result.current.locked).toBeNull();
@@ -113,7 +124,7 @@ describe('useStickyStation (#876)', () => {
 
   it('다른 역으로 바뀌면 카운트 리셋', async () => {
     const { result, rerender } = renderSticky({ fix: fixAt(seoul) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul) });
     rerender({ fix: fixAt(seoulNearby) }); // 카운트 리셋
     rerender({ fix: fixAt(seoulNearby) });
@@ -125,7 +136,7 @@ describe('useStickyStation (#876)', () => {
   it('locked 상태에서 좋은 fix가 1km+ 떨어진 다른 역 → unlock-distance', async () => {
     const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
     const { result, rerender } = renderSticky({ fix: fixAt(seoul) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul) });
     rerender({ fix: fixAt(seoul) });
     await waitFor(() => expect(result.current.locked?.id).toBe(seoul.id));
@@ -142,7 +153,7 @@ describe('useStickyStation (#876)', () => {
   it('locked 상태에서 automotive motion → unlock-motion', async () => {
     const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
     const { result, rerender } = renderSticky({ fix: fixAt(seoul), motion: { automotive: false } });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul), motion: { automotive: false } });
     rerender({ fix: fixAt(seoul), motion: { automotive: false } });
     await waitFor(() => expect(result.current.locked?.id).toBe(seoul.id));
@@ -160,7 +171,7 @@ describe('useStickyStation (#876)', () => {
     const realNow = Date.now();
     jest.setSystemTime(realNow);
     const { result, rerender } = renderSticky({ fix: fixAt(seoul) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul) });
     rerender({ fix: fixAt(seoul) });
     await waitFor(() => expect(result.current.locked?.id).toBe(seoul.id));
@@ -178,7 +189,7 @@ describe('useStickyStation (#876)', () => {
   it('더 좋은 fix가 다른 역 3회 연속 → 즉시 갱신(unlock-better-fix + 새 lock)', async () => {
     const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
     const { result, rerender } = renderSticky({ fix: fixAt(seoul) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul) });
     rerender({ fix: fixAt(seoul) });
     await waitFor(() => expect(result.current.locked?.id).toBe(seoul.id));
@@ -214,14 +225,14 @@ describe('useStickyStation (#876)', () => {
       JSON.stringify({ station: seoul, lockedAt }),
     );
     const { result } = renderHook(() => useStickyStation(fixAt(null)));
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     expect(result.current.locked).toBeNull();
   });
 
   it('AsyncStorage hydrate — parse 실패 시 graceful null', async () => {
     await AsyncStorage.setItem(STICKY_STATION_KEY, '{not json');
     const { result } = renderHook(() => useStickyStation(fixAt(null)));
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     expect(result.current.locked).toBeNull();
   });
 
@@ -238,14 +249,14 @@ describe('useStickyStation (#876)', () => {
   ])('AsyncStorage hydrate — %s 형식 검증 실패 시 graceful null', async (_label, raw) => {
     await AsyncStorage.setItem(STICKY_STATION_KEY, raw);
     const { result } = renderHook(() => useStickyStation(fixAt(null)));
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     expect(result.current.locked).toBeNull();
   });
 
   it('writePersistedLock setItem 실패는 silent — 외부에서 throw 안 함', async () => {
     const setSpy = jest.spyOn(AsyncStorage, 'setItem').mockRejectedValueOnce(new Error('disk'));
     const { result, rerender } = renderSticky({ fix: fixAt(seoul) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul) });
     rerender({ fix: fixAt(seoul) });
     // setItem reject가 unhandled rejection으로 새지 않고 lock은 in-memory에 정상 반영.
@@ -261,7 +272,7 @@ describe('useStickyStation (#876)', () => {
     );
     jest.spyOn(AsyncStorage, 'removeItem').mockRejectedValueOnce(new Error('disk'));
     const { result } = renderHook(() => useStickyStation(fixAt(null)));
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     // 만료 lock은 removeItem 호출 시도 → reject 발생해도 hydrate 결과는 locked=null.
     expect(result.current.locked).toBeNull();
   });
@@ -279,7 +290,7 @@ describe('useStickyStation (#876)', () => {
   it('lock 시 AsyncStorage persist', async () => {
     const setSpy = jest.spyOn(AsyncStorage, 'setItem');
     const { rerender } = renderSticky({ fix: fixAt(seoul) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul) });
     rerender({ fix: fixAt(seoul) });
     await waitFor(() => expect(setSpy).toHaveBeenCalledWith(STICKY_STATION_KEY, expect.any(String)));
@@ -288,7 +299,7 @@ describe('useStickyStation (#876)', () => {
   it('unlock 시 AsyncStorage remove', async () => {
     const removeSpy = jest.spyOn(AsyncStorage, 'removeItem');
     const { result, rerender } = renderSticky({ fix: fixAt(seoul) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(seoul) });
     rerender({ fix: fixAt(seoul) });
     await waitFor(() => expect(result.current.locked?.id).toBe(seoul.id));
@@ -301,7 +312,7 @@ describe('useStickyStation (#876)', () => {
   describe('D6 (#1212) — trip 활성 + 지하 시 sticky 유지', () => {
     const lockSeoul = async (motion: StickyMotionInput) => {
       const hook = renderSticky({ fix: fixAt(seoul), motion });
-      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      await awaitHydrated();
       hook.rerender({ fix: fixAt(seoul), motion });
       hook.rerender({ fix: fixAt(seoul), motion });
       await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
@@ -342,7 +353,7 @@ describe('useStickyStation (#876)', () => {
     // 서울역에 lock된 상태를 만드는 헬퍼(좋은 fix 3회).
     const lockSeoul = async () => {
       const hook = renderSticky({ fix: fixAt(seoul) });
-      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      await awaitHydrated();
       hook.rerender({ fix: fixAt(seoul) });
       hook.rerender({ fix: fixAt(seoul) });
       await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
@@ -386,7 +397,7 @@ describe('useStickyStation (#876)', () => {
     it('지하 + trip 활성에서는 저품질 far fix가 누적돼도 moved-away 보류 (D6 hold)', async () => {
       const motion: StickyMotionInput = { subsurface: true, tripActive: true };
       const hook = renderSticky({ fix: fixAt(seoul), motion });
-      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      await awaitHydrated();
       hook.rerender({ fix: fixAt(seoul), motion });
       hook.rerender({ fix: fixAt(seoul), motion });
       await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
@@ -417,7 +428,7 @@ describe('useStickyStation (#876)', () => {
     it('releaseLock() — lock 없을 때 no-op (이벤트 emit 안 함)', async () => {
       const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
       const { result } = renderSticky({ fix: fixAt(null) });
-      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      await awaitHydrated();
       pushSpy.mockClear();
 
       act(() => { result.current.releaseLock(); });
@@ -430,7 +441,7 @@ describe('useStickyStation (#876)', () => {
 
   it('candidate=null 상태에서는 카운트 안 함', async () => {
     const { result, rerender } = renderSticky({ fix: fixAt(null) });
-    await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+    await awaitHydrated();
     rerender({ fix: fixAt(null) });
     rerender({ fix: fixAt(null) });
     expect(result.current.locked).toBeNull();
@@ -448,7 +459,7 @@ describe('useStickyStation (#876)', () => {
       pushSpy.mockClear();
       setSpy.mockClear();
       const hook = renderSticky({ fix: fixAt(seoul) });
-      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      await awaitHydrated();
       hook.rerender({ fix: fixAt(seoul) });
       hook.rerender({ fix: fixAt(seoul) });
       await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
@@ -588,7 +599,7 @@ describe('useStickyStation (#876)', () => {
   describe('#1524 — trip-ended unlock (자동 하차 후 stale lock 차단)', () => {
     const lockSeoul = async (initialMotion: StickyMotionInput) => {
       const hook = renderSticky({ fix: fixAt(seoul), motion: initialMotion });
-      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      await awaitHydrated();
       hook.rerender({ fix: fixAt(seoul), motion: initialMotion });
       hook.rerender({ fix: fixAt(seoul), motion: initialMotion });
       await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
@@ -623,7 +634,7 @@ describe('useStickyStation (#876)', () => {
         fix: fixAt(null),
         motion: { tripActive: true },
       });
-      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      await awaitHydrated();
       pushSpy.mockClear();
 
       rerender({ fix: fixAt(null), motion: { tripActive: false } });

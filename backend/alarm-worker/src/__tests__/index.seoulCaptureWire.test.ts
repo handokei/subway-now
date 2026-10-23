@@ -100,7 +100,13 @@ describe('handler.scheduled — #2579 seoul-capture R2 flush wiring', () => {
     flushSeoulCaptureMock.mockReset();
     flushSeoulCaptureMock.mockResolvedValue(undefined);
     vi.unstubAllGlobals();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"realtimeArrivalList":[]}')));
+    // #2650 — Response body는 1회용(consume 후 clone() 시 `Body has already been used`). 호출마다 새
+    // Response를 만든다: mockResolvedValue(new Response(..))는 stub 수명 동안 인스턴스 1개를 공유해, 같은
+    // stub의 fetch를 부르는 두 번째 소비자(이전 테스트의 잔여 비동기 등) 뒤에는 recorder의 clone()이 throw.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => new Response('{"realtimeArrivalList":[]}')),
+    );
   });
 
   it('scanned=0 (idle cycle) — flushSeoulCapture를 호출하지 않는다', async () => {
