@@ -11,7 +11,7 @@ import { Platform } from 'react-native';
 import i18next from 'i18next';
 import { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
-import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName, isSameStationName } from '../../../shared/utils/stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute, isSameStationName } from '../../../shared/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import * as LiveActivity from 'live-activity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -467,13 +467,11 @@ function resolveTerminusRelation({ trainTerminal, stationName }: AlarmEvent): Te
 
 // 알람 본문에 추상적 빠른하차 힌트를 붙일지 결정. 해당 역의 빠른하차 데이터가 있을 때만 표시한다.
 // 알람 타입에 따라 transfer/arrival 두 가지 카피로 분기.
-function resolveQuickHint(event: AlarmEvent): string | null {
-  const station =
-    allStations.find((s) => s.name === event.stationName) ??
-    allStations.find((s) => normalizeStationName(s.name) === normalizeStationName(event.stationName));
-  if (!station) return null;
-  if (!hasQuickExitData(station.id)) return null;
-  return event.type === 'transfer'
+// #3177: event.stationId로만 조회한다 — 이름 첫 매칭은 환승역에서 다른 노선 데이터를 집었다.
+// stationId가 없으면 이름으로 대체 조회하지 않고 힌트를 생략한다.
+function resolveQuickHint({ stationId, type }: AlarmEvent): string | null {
+  if (!stationId || !hasQuickExitData(stationId)) return null;
+  return type === 'transfer'
     ? i18next.t('alarms.quickHintTransfer')
     : i18next.t('alarms.quickHintArrival');
 }
