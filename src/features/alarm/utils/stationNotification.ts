@@ -28,15 +28,9 @@ import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
-import type { ExitSide } from '../../../shared/types/exitSide';
-import type { TerminusRelation } from '../../../shared/types/platformExitSide';
-import { lookupExitSide } from '../../route/utils/exitSide';
+import type { PlatformExitSide, TerminusRelation } from '../../../shared/types/platformExitSide';
 import { hasQuickExitData } from '../../route/utils/quickExit';
-import {
-  lookupDirectionalExitSide,
-  lookupPlatformExitSide,
-} from '../../../shared/utils/platformExitSideLookup';
-import { findStationByName } from '../../../shared/utils/stationLookup';
+import { resolveExitSideForStation } from '../../../shared/utils/resolveExitSideForStation';
 import {
   notificationSourceI18nKey,
   shouldDiscloseNotificationSource,
@@ -46,7 +40,7 @@ import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
 import { markDeviceGpsLiveActivityWrite } from './liveActivityGpsWriteArbitration';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
-import { logLiveActivityUpdated } from './alarmLog';
+import { logExitSideUnknownStationId, logLiveActivityUpdated } from './alarmLog';
 import {
   BOARDING_PROMPT_CATEGORY,
   DISEMBARK_PROMPT_CATEGORY,
@@ -441,38 +435,29 @@ export async function initStationNotification(): Promise<void> {
 
 // 좌/우 데이터는 모든 역에 존재하지 않을 수 있다(나무위키 수집 누락 등).
 // side가 주어지지 않으면 본문에 라인이 추가되지 않는다 — 잘못된 안내를 피한다.
-function exitSideText(side: ExitSide): string {
-  if (side === 'left') return i18next.t('alarms.exitSideLeft');
-  if (side === 'right') return i18next.t('alarms.exitSideRight');
-  return i18next.t('alarms.exitSideBoth');
+function exitSideText(side: PlatformExitSide): string {
+  return i18next.t(side === 'left' ? 'alarms.exitSideLeft' : 'alarms.exitSideRight');
 }
 
-function appendExitSide(body: string, side?: ExitSide | null): string {
+function appendExitSide(body: string, side?: PlatformExitSide | null): string {
   if (!side) return body;
   return `${body}\n${exitSideText(side)}`;
 }
 
-// 좌/우 하차 방향 해석 (#1504):
-//   1) Primary — `lookupExitSide(name, direction)` (사용자 검수형 direction-aware SSOT).
-//   2) 방향별 위키 확정값 — direction이 있으면 `lookupDirectionalExitSide(id, direction)`
-//      (인용 문장 근거가 있는 방향별 override, 구조 fallback보다 우선).
-//   3) Fallback — 위가 null이면 stations.json id로 `lookupPlatformExitSide(id)` 조회
-//      (승강장 구조 기반 static SSOT, direction 무관). #1482에서 추가된 265역 커버.
-//   4) 모두 null이면 기존처럼 좌/우 라인을 생략한다.
-//
-// fallback은 direction 부재(motion gate 미확정 등)나 사용자 검수 데이터 누락 케이스에서
-// 좌/우 안내를 살려준다. direction이 있는 경우에도 primary가 우선이라 정확도 회귀 없음.
-function resolveExitSide(event: AlarmEvent): ExitSide | null {
-  const direct = event.direction
-    ? lookupExitSide(event.stationName, event.direction)
+// 좌/우 하차 방향 해석 (#3177): event.stationId(역 id)로만 판정한다 — 이름 첫 매칭은 환승역에서
+// 다른 노선 값을 집었다. stationId가 없거나 stations.json에 없으면 이름으로 대체 조회하지 않고
+// 안내를 생략한다(오안내 제거 우선, ADR-010) + alarmLog `exit-side-unknown-station-id`.
+// 일반 notification(buildAlarmContent)·취침 알람·LA 본문(buildLiveActivityData)이 모두 이 함수를 탄다.
+function resolveExitSide(event: AlarmEvent): PlatformExitSide | null {
+  const { stationId, direction, stationName } = event;
+  const resolution = stationId
+    ? resolveExitSideForStation({ stationId, direction, terminus: resolveTerminusRelation(event) })
     : null;
-  if (direct) return direct;
-  const station = findStationByName(event.stationName);
-  if (!station) return null;
-  const directional = event.direction
-    ? lookupDirectionalExitSide(station.id, event.direction, resolveTerminusRelation(event))
-    : null;
-  return directional ? directional.side : lookupPlatformExitSide(station.id);
+  if (!resolution || resolution.reason === 'unknown-station-id') {
+    logExitSideUnknownStationId(stationName);
+    return null;
+  }
+  return resolution.side;
 }
 
 function resolveTerminusRelation({ trainTerminal, stationName }: AlarmEvent): TerminusRelation {

@@ -16,6 +16,14 @@ function canonicalKey(name: string): string {
 }
 
 /**
+ * 역 id(stations.json `id`, 예: '4-025')로 역을 조회한다. 노선이 id에 내재돼 있어 환승역도 모호하지 않다.
+ * 없으면 null — 이름으로 대체 조회하지 않는다(#3177).
+ */
+export function findStationById(id: string): Station | null {
+  return stations.find((s) => s.id === id) ?? null;
+}
+
+/**
  * 역명으로 첫 매칭되는 호선을 반환한다.
  * 환승역의 경우 stations.json 등록 순서상 첫 호선이 반환된다 — schedule fallback은
  * trip 전 화면에서만 의미가 있으므로 단일 호선 기준 표시로 충분하다.

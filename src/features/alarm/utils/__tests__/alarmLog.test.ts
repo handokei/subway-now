@@ -79,6 +79,7 @@ import {
   logCrossTripMirrorSkip,
   logBackendSsotRouteRegressionReject,
   logStoredRouteMigrationFailed,
+  logExitSideUnknownStationId,
   logLiveActivityAuthorityState,
   logLiveActivityTokenRegister,
   logLiveActivityLifecycle,
@@ -1243,6 +1244,24 @@ describe('alarmLog', () => {
         source: 'stored-route-migration',
         outcome: 'suppressed',
         reason: 'route-migration-failed',
+        stationName: '사당',
+      });
+    });
+
+    it('#3177 logExitSideUnknownStationId: source/outcome/reason/stationName 적재 + 같은 역명 burst dedup', async () => {
+      _resetBurstSuppressWindowForTests();
+      logExitSideUnknownStationId('사당');
+      logExitSideUnknownStationId('사당');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'exit-side-unknown-station-id');
+      expect(matching).toHaveLength(1);
+      expect(matching[0]).toMatchObject({
+        source: 'exit-side',
+        outcome: 'suppressed',
+        reason: 'exit-side-unknown-station-id',
         stationName: '사당',
       });
     });
