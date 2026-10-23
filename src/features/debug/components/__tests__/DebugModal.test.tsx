@@ -4825,9 +4825,8 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         contains: ['watch=-', 'app=-', 'baroEvt=-'],
       },
       {
-        name: 'launch 표식 → launch=cold@<시각> hpa0=<값>@<시각>',
+        name: 'launch 표식 부착 entry → launch=cold@<시각> hpa0=<값>@<시각>',
         entry: makeRawEntry({
-          kind: 'launch',
           launch: {
             coldStartAtMs: new Date('2026-06-19T07:59:00Z').getTime(),
             firstHpa: 1012.54,
@@ -4835,7 +4834,6 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
           },
         }),
         contains: [
-          'launch',
           `cold@${formatClockTimeWithSeconds(new Date('2026-06-19T07:59:00Z').getTime())}`,
           `hpa0=1012.5@${formatClockTimeWithSeconds(new Date('2026-06-19T07:59:02Z').getTime())}`,
         ],
