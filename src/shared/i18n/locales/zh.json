@@ -237,7 +237,10 @@
     "stopsAway_one": "还有{{count}}站",
     "stopsAway_other": "还有{{count}}站",
     "rowLabel": "{{line}} {{direction}} {{mm}}分{{ss}}秒后到达",
-    "rowLabelPosition": "{{line}} {{direction}} {{position}}"
+    "rowLabelPosition": "{{line}} {{direction}} {{position}}",
+    "statusEntering": "进站",
+    "statusArrived": "已到站",
+    "statusDeparted": "已出发"
   },
   "notifications": {
     "channelStation": "当前车站",

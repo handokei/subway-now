@@ -46,8 +46,6 @@ export interface ArrivalTrain {
   isLastTrain?: boolean;
   /** 열차 타입 — 'normal'은 배지 미표시. */
   trainType?: TrainType;
-  /** arvlCd — 0:진입, 1:도착, 2:출발 등. UI 진입/도착 배지용. */
-  arrivalCode?: number;
   /** 막차 시각 lookup 컨텍스트(#1035) — 출발역 이름. 없으면 시각 표기 생략. */
   stationName?: string;
   /** 막차 시각 lookup 컨텍스트(#1035) — 타입 강한 LineNumber. `line` 필드의 좁힌 형태. */

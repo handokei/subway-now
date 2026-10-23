@@ -44,7 +44,6 @@ export function EditorialArrivalRow({ train }: Props) {
         <ArrivalStatusBadge
           isLastTrain={train.isLastTrain}
           trainType={train.trainType}
-          arrivalCode={train.arrivalCode}
           stationName={train.stationName}
           line={train.lineNumber}
           direction={train.directionKey}

@@ -237,7 +237,10 @@
     "stopsAway_one": "{{count}}번째 전역",
     "stopsAway_other": "{{count}}번째 전역",
     "rowLabel": "{{line}} {{direction}} {{mm}}분 {{ss}}초 후 도착",
-    "rowLabelPosition": "{{line}} {{direction}} {{position}}"
+    "rowLabelPosition": "{{line}} {{direction}} {{position}}",
+    "statusEntering": "진입",
+    "statusArrived": "도착",
+    "statusDeparted": "출발"
   },
   "notifications": {
     "channelStation": "현재 역",

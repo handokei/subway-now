@@ -237,7 +237,10 @@
     "stopsAway_one": "{{count}}駅先",
     "stopsAway_other": "{{count}}駅先",
     "rowLabel": "{{line}} {{direction}} {{mm}}分{{ss}}秒後到着",
-    "rowLabelPosition": "{{line}} {{direction}} {{position}}"
+    "rowLabelPosition": "{{line}} {{direction}} {{position}}",
+    "statusEntering": "進入",
+    "statusArrived": "到着",
+    "statusDeparted": "発車"
   },
   "notifications": {
     "channelStation": "現在駅",

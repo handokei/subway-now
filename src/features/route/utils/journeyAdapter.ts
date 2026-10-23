@@ -8,7 +8,11 @@ import type { NearestStationResult, LineNumber, Station } from '../../../shared/
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import { parseTrainLineDirection } from './trainLineDirection';
 import { arrivalAt } from '../../../shared/utils/arrivalClock';
-import { formatArrivalEtaPosition, orderKnownEtaFirst } from '../../../shared/utils/arrivalEta';
+import {
+  formatArrivalEtaPosition,
+  formatArrivalStatusLabel,
+  orderKnownEtaFirst,
+} from '../../../shared/utils/arrivalEta';
 import stationsData from '../../../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -188,18 +192,19 @@ export function arrivalInfoToArrivalTrain(
   return filteredItems.map((item) => {
     const arrivalAtMs = arrivalAt(item);
     const etaUnknown = arrivalAtMs === null;
+    // 진입/도착/출발(arvlCd 0/1/2) — mm:ss 대신 상태 라벨. arrivalAtMs 는 그대로(정렬·지연 계산 불변).
+    const statusLabel = formatArrivalStatusLabel(item.arrivalCode);
     return {
       direction: item.destination
         ? parseTrainLineDirection(item.destination, allStations)
         : direction,
       line,
       arrivalAtMs,
-      // 시간 모름 행은 피드 문구를 positionLabel(큰 글씨+역명)로 보여주므로 subtext 중복 제거.
-      positionLabel: etaUnknown ? formatArrivalEtaPosition(item) : undefined,
-      subtext: etaUnknown ? undefined : item.statusMessage || undefined,
+      // 시간 모름·상태 라벨 행은 positionLabel 로 보여주므로 subtext 중복 제거.
+      positionLabel: etaUnknown ? formatArrivalEtaPosition(item) : (statusLabel ?? undefined),
+      subtext: etaUnknown || statusLabel ? undefined : item.statusMessage || undefined,
       isLastTrain: item.isLastTrain,
       trainType: item.trainType,
-      arrivalCode: item.arrivalCode,
       stationName: context?.stationName,
       lineNumber: line,
       directionKey: context?.directionKey,

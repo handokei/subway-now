@@ -107,6 +107,25 @@ export function formatArrivalEtaPosition(
   return secondary === undefined ? { primary } : { primary, secondary };
 }
 
+/** arvlCd 0/1/2 → 홈 카드 상태 라벨 i18n 키. 데이터 주도 — 코드 추가는 이 표만 고친다. */
+const ARRIVAL_STATUS_LABEL_KEY: Readonly<
+  Record<number, 'arrival.statusEntering' | 'arrival.statusArrived' | 'arrival.statusDeparted'>
+> = {
+  [ARRIVAL_CODE.ENTERING]: 'arrival.statusEntering',
+  [ARRIVAL_CODE.ARRIVED]: 'arrival.statusArrived',
+  [ARRIVAL_CODE.DEPARTED]: 'arrival.statusDeparted',
+};
+
+/**
+ * 진입/도착/출발(arvlCd 0/1/2) 행의 상태 라벨. barvlDt 는 보지 않는다 — 코레일은 0, 서울교통공사는
+ * 고정값(60/10/120)이라 카운트다운이 의미 없다. secondary(역명) 는 일부러 생략: 진입 행의 arvlMsg3 가
+ * 직전 역을 가리킬 수 있어 "진입 / 제기동"처럼 잘못 읽힌다.
+ */
+export function formatArrivalStatusLabel(arrivalCode: number): ArrivalEtaPosition | null {
+  const key = ARRIVAL_STATUS_LABEL_KEY[arrivalCode];
+  return key === undefined ? null : { primary: i18next.t(key) };
+}
+
 /** DebugModal 한 줄 표기 — known "120s", unknown "?s (3 stops)" / "?s". V/X: unknown 비율을 눈으로 확인. */
 export function formatDebugEta(row: Pick<ArrivalInfo, 'arrivalSeconds' | 'stopsAway'>): string {
   const { arrivalSeconds, stopsAway } = row;

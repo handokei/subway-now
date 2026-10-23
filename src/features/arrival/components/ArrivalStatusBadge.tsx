@@ -1,7 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useTheme, typography } from '../../../shared/theme';
-import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
 import {
   TRAIN_TYPE_LABEL,
   TRAIN_TYPE_VARIANT,
@@ -14,7 +13,6 @@ import { getLastTrainTime, type Direction } from '../utils/lastTrainTime';
 interface Props {
   isLastTrain?: boolean;
   trainType?: TrainType;
-  arrivalCode?: number;
   /** 막차 시각 lookup 컨텍스트. 셋 다 제공되면 "막차 HH:mm" 시각 동봉 표시. */
   stationName?: string;
   line?: LineNumber;
@@ -40,20 +38,19 @@ interface Badge {
 }
 
 /**
- * Arrival 메타데이터(막차/급행/진입 상태)를 작은 배지로 표시.
+ * Arrival 메타데이터(막차/급행)를 작은 배지로 표시.
  * 표시할 배지가 없으면 null 반환해 row 시각 무게 보존.
  */
 export function ArrivalStatusBadge({
   isLastTrain,
   trainType,
-  arrivalCode,
   stationName,
   line,
   direction,
 }: Props) {
   const { colors } = useTheme();
 
-  // 표시 우선순위: 급행 > 막차 > 도착/진입.
+  // 표시 우선순위: 급행 > 막차.
   // 급행은 잘못된 열차 탑승을 방지하는 안전성 직결 정보이므로 filled로 가장 두드러지게.
   const badges: Badge[] = [];
 
@@ -72,11 +69,6 @@ export function ArrivalStatusBadge({
       color: colors.danger,
       variant: 'outline',
     });
-  }
-  if (arrivalCode === ARRIVAL_CODE.ARRIVED) {
-    badges.push({ label: '도착', color: colors.accent, variant: 'outline' });
-  } else if (arrivalCode === ARRIVAL_CODE.ENTERING) {
-    badges.push({ label: '진입', color: colors.accent, variant: 'outline' });
   }
 
   if (badges.length === 0) return null;

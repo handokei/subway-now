@@ -3,7 +3,6 @@ import { StyleSheet } from 'react-native';
 import { screen } from '@testing-library/react-native';
 import { ArrivalStatusBadge } from '../ArrivalStatusBadge';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
-import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 
 describe('ArrivalStatusBadge', () => {
   it('표시할 배지가 없으면 null 반환', () => {
@@ -37,23 +36,6 @@ describe('ArrivalStatusBadge', () => {
     expect(screen.getByText('막차')).toBeTruthy();
   });
 
-  it('arrivalCode=ARRIVED → 도착 배지', () => {
-    renderWithTheme(<ArrivalStatusBadge arrivalCode={ARRIVAL_CODE.ARRIVED} />);
-    expect(screen.getByText('도착')).toBeTruthy();
-  });
-
-  it('arrivalCode=ENTERING → 진입 배지', () => {
-    renderWithTheme(<ArrivalStatusBadge arrivalCode={ARRIVAL_CODE.ENTERING} />);
-    expect(screen.getByText('진입')).toBeTruthy();
-  });
-
-  it('arrivalCode=DEPARTED 등 그외 코드는 도착/진입 배지 미표시', () => {
-    const { toJSON } = renderWithTheme(
-      <ArrivalStatusBadge arrivalCode={ARRIVAL_CODE.DEPARTED} />,
-    );
-    expect(toJSON()).toBeNull();
-  });
-
   it('trainType=express → 급행 배지', () => {
     renderWithTheme(<ArrivalStatusBadge trainType="express" />);
     expect(screen.getByText('급행')).toBeTruthy();
@@ -74,12 +56,10 @@ describe('ArrivalStatusBadge', () => {
     expect(toJSON()).toBeNull();
   });
 
-  it('막차 + 도착 + 급행 동시 표시', () => {
-    renderWithTheme(
-      <ArrivalStatusBadge isLastTrain arrivalCode={ARRIVAL_CODE.ARRIVED} trainType="express" />,
-    );
+  it('막차 + 급행 동시 표시 (도착/진입은 우측 상태 라벨로 이동, 배지 없음)', () => {
+    renderWithTheme(<ArrivalStatusBadge isLastTrain trainType="express" />);
     expect(screen.getByText('막차')).toBeTruthy();
-    expect(screen.getByText('도착')).toBeTruthy();
+    expect(screen.queryByText('도착')).toBeNull();
     expect(screen.getByText('급행')).toBeTruthy();
   });
 
@@ -123,11 +103,5 @@ describe('ArrivalStatusBadge', () => {
       expect(style.borderColor).toBeDefined();
     });
 
-    it('도착/진입 배지는 outline', () => {
-      renderWithTheme(<ArrivalStatusBadge arrivalCode={ARRIVAL_CODE.ENTERING} />);
-      const badge = screen.getByTestId('arrival-status-badge-진입');
-      const style = StyleSheet.flatten(badge.props.style);
-      expect(style.backgroundColor).toBeUndefined();
-    });
   });
 });
