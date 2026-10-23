@@ -426,9 +426,8 @@ export function isRouteProgressOnly(a: Trip, b: Trip): boolean {
  * 세션 유지/교체를 결정한다. Phase 1-3 인프라만 병존.
  *
  * Flag ON: existing 있고 route sig(`computeRouteSignature`) 다르면
- *   1. `cleanupPendingPushesForToken(incoming.token)` 호출 — rotation의 유일한 실질 가치를 그대로
- *      이관(구 route의 잔재 pending push 제거. incoming.token은 신원 불변 하에 항상 existing.token과
- *      동일하므로 어느 쪽을 써도 같은 값).
+ *   1. (#3006 PR-0b: 구 route pending push 정리는 dead 경로라 삭제 — TRIPS를 열거했으나 pending은
+ *      PENDING_PUSHES에만 존재.)
  *   2. `existing: null` 반환(`reset: true`) — downstream이 새 세션으로 취급해 trip-scoped dedup/
  *      notification state(SSoT mirror 포함)를 리셋한다. `trip:<incoming.token>` 레코드 자체는
  *      index.ts가 incoming 기준으로 그 자리에서 갱신(같은 key `putTrip`) — 새 key 생성/구 key 삭제
@@ -443,7 +442,7 @@ export function isRouteProgressOnly(a: Trip, b: Trip): boolean {
 export interface RouteResetResult {
   /** null이면 downstream이 새 세션(dedup/notification state 전면 리셋)으로 취급한다. */
   existing: Trip | null;
-  /** true면 route sig 변경으로 in-place reset(pending purge)이 수행됐다. */
+  /** true면 route sig 변경으로 in-place reset(새 세션 취급)이 수행됐다. */
   reset: boolean;
 }
 
@@ -490,8 +489,10 @@ export async function resetTripStateForNewRoute(
   if (selfProgress) {
     return { existing, reset: false };
   }
-  // 진짜 다른 route: 신원(token)은 그대로 유지, 구 route의 잔재 pending push만 제거.
-  await cleanupPendingPushesForToken(kv, incoming.token);
+  // 진짜 다른 route: 신원(token)은 그대로 유지. #3006 PR-0b — 여기서 하던 pending push 정리는
+  // 삭제했다: 프로덕션 pending은 `PENDING_PUSHES` namespace에만 쓰이는데 이 `kv`는 `TRIPS`라
+  // 영원히 0건을 지우면서 `list`만 소모했다(namespace를 고쳐도 PENDING_PUSHES에는 새 항목이
+  // 쓰이지 않아 지울 대상이 없다).
   return { existing: null, reset: true };
 }
 

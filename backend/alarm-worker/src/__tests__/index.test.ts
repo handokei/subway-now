@@ -8235,21 +8235,21 @@ describe('POST /trips — #2194 resetTripStateForNewRoute wire (ADR-025)', () =>
       expect(JSON.parse(stored as string).destination).toBe('성수-id');
     });
 
-    it('#2194 — 이전 trip pending push 잔재 존재 상태에서 새 route 등록: TOKEN 소유 cleanup 발동 (다른 device 소유는 보존)', async () => {
+    it('#3006 PR-0b — route 변경 등록은 TRIPS.list를 호출하지 않는다 (pending은 PENDING_PUSHES 소관, TRIPS에서 열거는 dead)', async () => {
+      // 프로덕션 pending push는 PENDING_PUSHES namespace에만 쓰인다. 이 경로의 TRIPS 대상
+      // cleanupPendingPushesForToken은 영원히 0건을 지우면서 list 호출만 소모했다(스펙 변경).
       const env = makeKvEnv();
       await env.TRIPS.put(ARCH_FLAG_KV_KEY, 'on');
       await seedExistingTrip(env, '용마산-id', '용마산');
-      await seedPending(env, 'p-old-1', TOKEN);
-      await seedPending(env, 'p-old-2', TOKEN);
-      await seedPending(env, 'p-other-device', 'tok-different');
+      const listSpy = vi.spyOn(env.TRIPS, 'list');
 
       const res = await post('/trips', tripBodyFor('성수-id', '성수'), env);
       expect(res.status).toBe(200);
 
-      // reset 발동 → TOKEN 소유 pending은 cleanup, 다른 device 소유는 보존.
-      expect(await env.TRIPS.get('pending:p-old-1')).toBeNull();
-      expect(await env.TRIPS.get('pending:p-old-2')).toBeNull();
-      expect(await env.TRIPS.get('pending:p-other-device')).not.toBeNull();
+      expect(listSpy).not.toHaveBeenCalled();
+      // reset:true(새 세션 처리)는 유지 — route는 새 destination으로 in-place 갱신된다.
+      const stored = await env.TRIPS.get(`trip:${TOKEN}`);
+      expect(JSON.parse(stored as string).destination).toBe('성수-id');
     });
 
     it('#2194 — archFlag off→on 전환과 무관하게 두 라운드 모두 같은 TOKEN으로 등록된다', async () => {
