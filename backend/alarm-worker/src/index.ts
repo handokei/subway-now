@@ -341,6 +341,42 @@ function scheduleTripEvent(c: Context<{ Bindings: Env }>, promise: Promise<void>
   }
 }
 
+/** sync 경로(진행 #3157 / 승격 fast-forward #3100)가 공유하는 소비 구간 직전역 알람 catch-up 스케줄러. */
+function scheduleSyncConsumedPrecedingAlarms(
+  c: Context<{ Bindings: Env }>,
+  trip: Trip,
+  shiftedCount: number,
+  now: number,
+): void {
+  const log = createJsonLogger();
+  scheduleTripEvent(
+    c,
+    getArchFlag(c.env.TRIPS)
+      .catch(() => ARCH_FLAG_DEFAULT)
+      .then((archFlag) =>
+        fireSyncConsumedPrecedingAlarms(
+          c.env,
+          trip,
+          shiftedCount,
+          {
+            apnsConfig: {
+              keyId: c.env.APNS_KEY_ID,
+              teamId: c.env.APNS_TEAM_ID,
+              privateKeyPem: c.env.APNS_PRIVATE_KEY,
+              bundleId: c.env.APNS_BUNDLE_ID,
+            },
+            apnsHosts: { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX },
+            archFlag,
+          },
+          now,
+          log,
+          () => crypto.randomUUID(),
+        ),
+      )
+      .catch((e) => log('boarding-lock/sync: preceding alarm failed', { error: String(e) })),
+  );
+}
+
 /**
  * 백엔드 realtimePosition trainCode resolver — tap-시점(register) 즉시 시도 (POST /trips 참고).
  * `scheduleTripEvent`로 waitUntil 스케줄되므로 응답 반환 이후 실행된다.
@@ -3634,33 +3670,7 @@ app.post('/boarding-lock/sync', async (c) => {
       // (cron 경로와 동일 단일 게이트). dedup은 기존 (token, target) 키.
       // 혼합 분기(transfer/destination 소비)는 타깃이 이미 도달한 쌍이라 대상이 없다.
       if (selectConsumedPrecedingAlarmPairs(existing.waypoints, advance.shiftedCount).length > 0) {
-        const log = createJsonLogger();
-        scheduleTripEvent(
-          c,
-          getArchFlag(c.env.TRIPS)
-            .catch(() => ARCH_FLAG_DEFAULT)
-            .then((archFlag) =>
-              fireSyncConsumedPrecedingAlarms(
-                c.env,
-                existing,
-                advance.shiftedCount,
-                {
-                  apnsConfig: {
-                    keyId: c.env.APNS_KEY_ID,
-                    teamId: c.env.APNS_TEAM_ID,
-                    privateKeyPem: c.env.APNS_PRIVATE_KEY,
-                    bundleId: c.env.APNS_BUNDLE_ID,
-                  },
-                  apnsHosts: { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX },
-                  archFlag,
-                },
-                now,
-                log,
-                () => crypto.randomUUID(),
-              ),
-            )
-            .catch((e) => log('boarding-lock/sync: preceding alarm failed', { error: String(e) })),
-        );
+        scheduleSyncConsumedPrecedingAlarms(c, existing, advance.shiftedCount, now);
       }
     }
 
@@ -3776,34 +3786,12 @@ app.post('/boarding-lock/sync', async (c) => {
           fastForward.skip > 0 &&
           selectConsumedPrecedingAlarmPairs(preSliceWaypoints, fastForward.skip).length > 0
         ) {
-          const log = createJsonLogger();
           // slice 이전 waypoints + 방금 부착한 lock 스냅샷 — `buildStationNotifContent` 남은 정거장 계산과 lock 게이트용.
-          const preSliceTrip: Trip = { ...working, waypoints: preSliceWaypoints };
-          scheduleTripEvent(
+          scheduleSyncConsumedPrecedingAlarms(
             c,
-            getArchFlag(c.env.TRIPS)
-              .catch(() => ARCH_FLAG_DEFAULT)
-              .then((archFlag) =>
-                fireSyncConsumedPrecedingAlarms(
-                  c.env,
-                  preSliceTrip,
-                  fastForward.skip,
-                  {
-                    apnsConfig: {
-                      keyId: c.env.APNS_KEY_ID,
-                      teamId: c.env.APNS_TEAM_ID,
-                      privateKeyPem: c.env.APNS_PRIVATE_KEY,
-                      bundleId: c.env.APNS_BUNDLE_ID,
-                    },
-                    apnsHosts: { production: c.env.APNS_HOST, sandbox: c.env.APNS_HOST_SANDBOX },
-                    archFlag,
-                  },
-                  now,
-                  log,
-                  () => crypto.randomUUID(),
-                ),
-              )
-              .catch((e) => log('boarding-lock/sync: promotion preceding alarm failed', { error: String(e) })),
+            { ...working, waypoints: preSliceWaypoints },
+            fastForward.skip,
+            now,
           );
         }
         scheduleTripEvent(
