@@ -763,6 +763,41 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expect(setItemCalls.some(([key]) => key === 'subway-now:bg-last-fix')).toBe(true);
   });
 
+  it('#3191 PR-0: BG_LAST_FIX_KEY 레코드에 acc/speed가 함께 기록된다 (jump gate 입력 lat/lng/timestamp 불변)', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028, { accuracy: 18, speed: 0.2 })] },
+      error: null,
+    });
+
+    const call = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+      ([key]) => key === 'subway-now:bg-last-fix',
+    );
+    expect(call).toBeDefined();
+    expect(JSON.parse(call![1])).toEqual({
+      lat: 37.498,
+      lng: 127.028,
+      timestamp: expect.any(Number),
+      acc: 18,
+      speed: 0.2,
+    });
+  });
+
+  it('#3191 PR-0: accuracy/speed가 없으면 acc/speed=null로 기록된다', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    const call = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+      ([key]) => key === 'subway-now:bg-last-fix',
+    );
+    expect(JSON.parse(call![1])).toEqual(expect.objectContaining({ acc: null, speed: null }));
+  });
+
   it('BG_LAST_FIX_KEY가 없으면(콜드스타트) jump 게이트를 통과한다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
     // mockStorageValues는 3개만 mockOnce → 4번째 호출(BG_LAST_FIX_KEY)은 default(null)
