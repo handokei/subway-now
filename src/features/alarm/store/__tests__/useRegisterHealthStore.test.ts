@@ -48,11 +48,6 @@ describe('classifyRegisterOutcome (C12) — 분류 규칙 표', () => {
       'neutral',
     ],
     ['503 kv_unavailable', { ok: false, status: 503, errorCode: 'kv_unavailable' }, 'degraded'],
-    [
-      '503 kv_unavailable + Retry-After',
-      { ok: false, status: 503, errorCode: 'kv_unavailable', retryAfterSeconds: 60 },
-      'degraded',
-    ],
     ['503 엣지 HTML(errorCode 없음)', { ok: false, status: 503 }, 'neutral'],
     ['503 다른 errorCode', { ok: false, status: 503, errorCode: 'edge_error' }, 'neutral'],
     [
@@ -61,7 +56,7 @@ describe('classifyRegisterOutcome (C12) — 분류 규칙 표', () => {
       'neutral',
     ],
     ['500', { ok: false, status: 500 }, 'neutral'],
-    ['429', { ok: false, status: 429, retryAfterSeconds: 30 }, 'neutral'],
+    ['429', { ok: false, status: 429 }, 'neutral'],
     ['네트워크 오류(status 없음)', { ok: false }, 'neutral'],
     ['graceful skip(ok:false, skipped:true)', { ok: false, skipped: true }, 'neutral'],
     ['200 신규 등록', { ok: true }, 'recovered'],

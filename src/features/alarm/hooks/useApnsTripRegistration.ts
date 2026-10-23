@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
@@ -27,6 +28,12 @@ import { registerActiveTrip } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
+import {
+  applyRegisterHealthOutcome,
+  classifyRegisterOutcome,
+  resetRegisterHealth,
+  useRegisterHealthStore,
+} from '../store/useRegisterHealthStore';
 import { acknowledgeTripRegistration } from '../utils/liveActivityPushChannel';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import {
@@ -54,6 +61,7 @@ import { SUBSURFACE_FLAP_QUARANTINE_MS } from '../../../shared/constants/baromet
 import { ETA_POLLING_WINDOW_SEC } from '../../../shared/constants/eta';
 import {
   REGISTER_KV_UNAVAILABLE_DEFAULT_RETRY_AFTER_SECONDS,
+  REGISTER_DEGRADED_RETRY_INTERVAL_MS,
   REGISTER_KV_UNAVAILABLE_ERROR,
 } from '../../../shared/constants/registerContract';
 import { createLogger } from '../../../shared/utils/logger';
@@ -892,6 +900,9 @@ export function useApnsTripRegistration({
       // #2959 — GPS 무관 origin fallback 후보(우선순위 순). resolveGpsFreeOrigin이 해석.
       gpsFreeOriginCandidates: [co, bls, tos],
     });
+    // #3006 PR-2 (쓰기 지점 1) — 실제 POST 결과로 degraded를 갱신. 억제 skip은 위에서 early return해
+    // 여기 오지 않는다(신호 아님). 분류 규칙은 `classifyRegisterOutcome`.
+    applyRegisterHealthOutcome(classifyRegisterOutcome(result));
     // #2197 — 429(rate_limited) 응답이면 서버가 지시한 시간까지 이후 register/heal 호출을
     // 억제한다. backend가 매 429 응답에 최신 window를 다시 계산해 내려주므로 항상 최신값으로
     // 덮어쓴다(연장/단축 모두 반영).
@@ -1206,6 +1217,57 @@ export function useApnsTripRegistration({
       }
     }
   };
+
+  // ── #3006 PR-2 (a) — degraded 동안 5분 interval + FG 복귀(AppState 'active') 재시도 ──
+  //
+  // 기존 backoff(15/30/60s × 3)는 억제 구간(503 RA 60s)과 겹쳐 몇 분 안에 소진된다. 쿼터 소진은 다음
+  // 00:00 UTC까지 갈 수 있으므로, degraded인 동안은 저빈도로 계속 문을 두드려 회복을 감지한다.
+  //
+  // tick은 **실행 시점**의 최신 입력으로 sessionKey를 계산한다(C10) — effect 생성 시점 값을 캡처하면
+  // degraded 도중 route만 바뀐 뒤 `attemptRegisterRetry`의 세션 일치 가드(`!== sessionKey` → return)에
+  // 조용히 막혀 영영 POST하지 못한다. deps는 [degraded, destination?.id]로 그대로 둔다.
+  const degraded = useRegisterHealthStore((s) => s.degraded);
+  useEffect(() => {
+    if (!degraded || !destination) return undefined;
+    const tick = async (): Promise<void> => {
+      const { route: r, destination: d } = latestInputsRef.current;
+      if (!r || !d) return; // 이번 tick만 건너뜀 — interval은 유지.
+      const sessionKey = `${routeSignature(r)}:${d.id}`;
+      // C9b — BG silent push로 trip이 끝나면 `TRIP_BOUND_CLEANUPS`가 DESTINATION_KEY를 지우지만 메모리
+      // destination은 FG 재수화 전까지 남는다. storage가 trip의 종료 여부 SSoT이므로, 키가 없으면 이미
+      // 끝난 trip을 되살리지 않도록 건너뛴다(launchReconciliationSettled로는 막을 수 없다 — 재수화
+      // 사이클 동안만 begin()되므로).
+      const persistedDestination = await AsyncStorage.getItem(DESTINATION_KEY).catch(() => null);
+      if (!persistedDestination) return;
+      if (isRegisterRetryBusy(sessionKey)) return;
+      if (registerSuppressedUntilRef.current > Date.now()) return;
+      void attemptRegisterRetry(sessionKey);
+    };
+    const interval = setInterval(() => {
+      void tick();
+    }, REGISTER_DEGRADED_RETRY_INTERVAL_MS);
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void tick();
+    });
+    return () => {
+      clearInterval(interval);
+      appStateSub.remove();
+    };
+    // 최신 입력/억제는 ref로 읽는다(위 main effect와 같은 정책) — deps는 의도적으로 고정.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [degraded, destination?.id]);
+
+  // ── #3006 PR-2 (b) — 목적지가 바뀌면(최초 mount 제외) 이전 trip의 degraded 신호를 버린다 ──
+  //
+  // "trip 없음" 분기(아래 hydration effect)는 쓰지 않는다: 저장소의 DESTINATION_KEY가 남아 있으면 그
+  // 분기가 일찍 반환한다. 메모리 `destination?.id`는 `loadDestination`이 null로 만들지 않으므로
+  // (FG 복귀 재수화가 거짓 리셋을 일으키지 않는다) 이 신호가 종료/전환의 정본이다.
+  const prevDestinationIdForHealthRef = useRef(destination?.id);
+  useEffect(() => {
+    if (prevDestinationIdForHealthRef.current === destination?.id) return;
+    prevDestinationIdForHealthRef.current = destination?.id;
+    resetRegisterHealth();
+  }, [destination?.id]);
 
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
   useEffect(() => {

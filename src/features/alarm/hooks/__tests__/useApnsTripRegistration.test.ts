@@ -2467,11 +2467,15 @@ describe('useApnsTripRegistration', () => {
         await Promise.resolve();
       }
     };
+    /** 연쇄 타이머(timer → await → 다음 timer)를 따라가도록 1초씩 전진하며 매번 flush. */
     const advance = async (ms: number): Promise<void> => {
-      await act(async () => {
-        jest.advanceTimersByTime(ms);
-        await flush();
-      });
+      for (let elapsed = 0; elapsed < ms; elapsed += 1_000) {
+        // eslint-disable-next-line no-await-in-loop -- 순차 전진이 본질.
+        await act(async () => {
+          jest.advanceTimersByTime(Math.min(1_000, ms - elapsed));
+          await flush();
+        });
+      }
     };
     const settle = async (): Promise<void> => {
       await act(async () => {
@@ -2522,7 +2526,9 @@ describe('useApnsTripRegistration', () => {
     afterEach(() => {
       addListenerSpy.mockRestore();
       jest.useRealTimers();
-      useRegisterHealthStore.setState({ degraded: false });
+      act(() => {
+        useRegisterHealthStore.setState({ degraded: false });
+      });
     });
 
     it('C1 — 503 kv_unavailable → degraded=true', async () => {
@@ -2684,6 +2690,9 @@ describe('useApnsTripRegistration', () => {
       });
       await settle();
       expect(mockRegister).toHaveBeenCalledTimes(before);
+      // 억제 skip으로 "억제 종료 시점" 재시도가 새로 걸리지도 않는다(tick이 건너뛰었으므로) — 다음 POST는 5분 interval.
+      await advance(55_000); // t245 — 억제 종료(t240) 직후, interval(t300) 전
+      expect(mockRegister).toHaveBeenCalledTimes(before);
     });
 
     it("C9 — degraded가 아니면 'active'도 POST 0(구독 자체가 없다)", async () => {
@@ -2761,20 +2770,20 @@ describe('useApnsTripRegistration', () => {
       expect(isDegraded()).toBe(true);
     });
 
-    it('재시도 타이머가 이미 대기 중(busy)이면 tick은 건너뛴다', async () => {
-      mockRegister.mockResolvedValue(KV_503);
+    it('재시도 타이머가 이미 대기 중(busy)이면 tick은 건너뛴다(억제 아님)', async () => {
+      useRegisterHealthStore.setState({ degraded: true });
+      mockRegister.mockResolvedValue({ ok: false, status: 500 }); // 억제 없는 실패 → 15s 재시도 대기
       renderTrip();
       await settle();
-      await advance(190_000); // 4 POST
-      // 5분 tick이 POST → 503 → scheduleRegisterRetry는 상한이라 타이머 없음. 억제만 60s.
-      await advance(115_000); // t305 POST #5
-      expect(mockRegister).toHaveBeenCalledTimes(5);
-      // t305 POST 직후 'active'는 억제 중(~t365) → 건너뜀
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      await advance(5_000);
       act(() => {
         appStateHandler?.('active');
       });
       await settle();
-      expect(mockRegister).toHaveBeenCalledTimes(5);
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      await advance(11_000); // 대기 중이던 15s 재시도는 정상 발화
+      expect(mockRegister).toHaveBeenCalledTimes(2);
     });
 
     it('언마운트 시 interval과 AppState 구독을 해제한다', async () => {
