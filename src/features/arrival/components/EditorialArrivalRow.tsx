@@ -12,10 +12,12 @@ interface Props {
 }
 
 export function EditorialArrivalRow({ train }: Props) {
-  const { mm, ss } = useCountdown(train.arrivalAtMs);
+  const { mm, ss, totalSec } = useCountdown(train.arrivalAtMs);
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const { positionLabel } = train;
+  // known 행(arrivalAtMs 있음)이 0초에 닿으면 "00:00" 대신 "곧 도착" (즐겨찾기 formatArrivalTime 과 같은 문구).
+  const isArrivingSoon = train.positionLabel == null && train.arrivalAtMs !== null && totalSec === 0;
+  const positionLabel = isArrivingSoon ? { primary: t('time.arrivingSoon') } : train.positionLabel;
   const rowLabel =
     positionLabel == null
       ? t('arrival.rowLabel', { line: getLineLabel(train.line), direction: train.direction, mm, ss })
