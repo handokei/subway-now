@@ -20,6 +20,7 @@ import {
 } from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
 import { isDuplicateBoardingLock } from '../../alarm/utils/duplicateBoardingLock';
+import { isReachable } from '../../../shared/utils/arrivalReachable';
 import { calculateRemainingLegETA } from '../../../shared/utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -57,7 +58,7 @@ export interface UseTransferTrainListResult {
  * - context는 findActiveTransferContext 결과 — 비활성 시 list 렌더 생략.
  * - useArrivalInfo는 Rules of Hooks 준수를 위해 context 유무와 무관하게 호출. 매개변수가 null이면
  *   useArrivalInfo 자체가 idle로 동작 — 추가 비용 없음.
- * - direction이 'up'/'down'이면 해당 방향만, null이면 양방향 합산.
+ * - direction이 'up'/'down'이면 해당 방향만, null이면 빈 목록(#3029).
  */
 export function useTransferTrainList({
   lock,
@@ -278,11 +279,10 @@ function filterByDirection(
   arrival: StationArrival | null,
   direction: 'up' | 'down' | null,
 ): ArrivalInfo[] {
-  if (!arrival) return [];
-  // #666 이미 지나간 열차(arrivalSeconds <= 0) 제외 — 환승 list에서도 동일 정책.
-  // #3132 — 시간 모름(null)은 지나간 열차가 아니므로 포함한다 (코레일 barvlDt=0).
-  const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds === null || t.arrivalSeconds > 0;
-  if (direction === 'up') return arrival.up.filter(reachable);
-  if (direction === 'down') return arrival.down.filter(reachable);
-  return [...arrival.up, ...arrival.down].filter(reachable);
+  // #3029 — 홈 목록(useBoardingLockController.boardingListArrivals)과 동일 규칙:
+  // direction 미해결(null)이면 양방향 합산 없이 빈 목록(반대방향 노출 차단), 확정되면 그 방향
+  // bucket만. 음수(지나간 열차)만 제외하고 승강장 0초 열차는 유지(shared isReachable SSOT).
+  if (!arrival || direction === null) return [];
+  const bucket = direction === 'up' ? arrival.up : arrival.down;
+  return bucket.filter(isReachable);
 }

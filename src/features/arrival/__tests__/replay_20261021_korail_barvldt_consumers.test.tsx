@@ -130,9 +130,9 @@ describe('EditorialArrivalRow', () => {
 });
 
 describe('filterArrivalsByDirection (환승 목록)', () => {
-  it('unknown 행은 제외하지 않는다. 진입/도착 0초 행의 기존 제외 정책은 그대로', () => {
-    const out = filterArrivalsByDirection({ up: [ARRIVED, FAR_3, SEC_240], down: [PREV_1] }, null);
-    expect(out.map((t) => t.trainCode)).toEqual(['6112', '7000', '6139']);
+  it('unknown 행은 제외하지 않는다. #3029 — known 0초(승강장) 행도 포함, 반대 방향 bucket은 섞이지 않는다', () => {
+    const out = filterArrivalsByDirection({ up: [ARRIVED, FAR_3, SEC_240], down: [PREV_1] }, 'up');
+    expect(out.map((t) => t.trainCode)).toEqual(['6546', '6112', '7000']);
   });
 });
 

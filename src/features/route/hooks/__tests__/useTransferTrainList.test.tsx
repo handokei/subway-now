@@ -959,17 +959,22 @@ describe('filterArrivalsByDirection', () => {
     expect(filterArrivalsByDirection(arr, 'down')).toEqual([down]);
   });
 
-  it('direction=null → up+down 합산', () => {
-    expect(filterArrivalsByDirection(arr, null)).toEqual([up, down]);
+  it('#3029 direction=null → 빈 배열 (양방향 합산 금지, 홈 목록 boardingListArrivals와 동일 규칙)', () => {
+    expect(filterArrivalsByDirection(arr, null)).toEqual([]);
   });
 
-  it('#666 arrivalSeconds <= 0 (지나간 열차) 제외', () => {
-    const past = makeTrain({ trainCode: 'PAST', arrivalSeconds: 0 });
+  it('#3029 direction 확정 시 반대 방향 bucket은 섞이지 않는다', () => {
+    expect(filterArrivalsByDirection(arr, 'up').map((t) => t.trainCode)).toEqual(['UP']);
+    expect(filterArrivalsByDirection(arr, 'down').map((t) => t.trainCode)).toEqual(['DN']);
+  });
+
+  it('#3029 승강장 0초 열차는 포함, 음수(지나간 열차)만 제외', () => {
+    const atPlatform = makeTrain({ trainCode: 'ZERO', arrivalSeconds: 0 });
     const negative = makeTrain({ trainCode: 'NEG', arrivalSeconds: -30 });
     const future = makeTrain({ trainCode: 'OK', arrivalSeconds: 120 });
-    const mixed: StationArrival = { up: [past, future], down: [negative] };
-    expect(filterArrivalsByDirection(mixed, 'up')).toEqual([future]);
+    const mixed: StationArrival = { up: [atPlatform, future], down: [negative] };
+    expect(filterArrivalsByDirection(mixed, 'up')).toEqual([atPlatform, future]);
     expect(filterArrivalsByDirection(mixed, 'down')).toEqual([]);
-    expect(filterArrivalsByDirection(mixed, null)).toEqual([future]);
+    expect(filterArrivalsByDirection(mixed, null)).toEqual([]);
   });
 });
