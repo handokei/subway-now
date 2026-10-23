@@ -374,7 +374,7 @@ describe('#3100 선행 시나리오 3 — 승격 fast-forward로 1역 전 역이
   });
 
   // #3100 선행 — 1역 전 결함: 승격 fast-forward가 열차가 이미 출발한 1역 전(어린이대공원)을 알람 없이 건너뛴다 -> head=타깃뿐이라 cron도 영구 미발사.
-  it.fails('열차가 1역 전(어린이대공원)을 이미 출발(sts=2)한 채 승격되면, 건너뛴 1역 전 대신 타깃(건대입구) 알람이 1회 발사된다', async () => {
+  it('열차가 1역 전(어린이대공원)을 이미 출발(sts=2)한 채 승격되면, 건너뛴 1역 전 대신 타깃(건대입구) 알람이 1회 발사된다', async () => {
     const { stored, alarms } = await tapPromote({ stationName: '어린이대공원', trainSttus: 2 });
     expect(stored.waypoints.map((w) => w.stationName)).toEqual(['건대입구']); // fast-forward 전제(현행 동작)
     expect(alarms).toEqual([sleepAlarmCollapseId('ff-alarm-tok', TARGET)]);
