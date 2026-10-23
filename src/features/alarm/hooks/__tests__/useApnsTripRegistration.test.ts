@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import React from 'react';
 import { renderHook, waitFor, act } from '@testing-library/react-native';
+import { AppState, type AppStateStatus } from 'react-native';
 
 const mockGetDevicePushTokenAsync = jest.fn();
 const mockAddPushTokenListener = jest.fn();
@@ -78,6 +79,7 @@ jest.mock('../../../../shared/utils/logger', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import { useApnsTripRegistration } from '../useApnsTripRegistration';
+import { useRegisterHealthStore } from '../../store/useRegisterHealthStore';
 import type { Station } from '../../../../shared/types/station';
 import type { Route } from '../../../../shared/utils/stationRoute';
 import {
@@ -2448,6 +2450,352 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).toHaveBeenCalledTimes(6);
       await advance(300_000); // 상한 소진 — 추가 POST 없음
       expect(mockRegister).toHaveBeenCalledTimes(6);
+    });
+  });
+
+  // #3006 PR-2 — degraded 신호(메모리 스토어) + 5분 재시도/FG 복귀 재시도(effect a) + 종료 정리(effect b).
+  describe('#3006 PR-2 — registerHealth 스토어 · 5분/FG 복귀 재시도 · 종료 정리', () => {
+    const KV_503 = {
+      ok: false,
+      status: 503,
+      errorCode: 'kv_unavailable',
+      retryAfterSeconds: 60,
+    };
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i += 1) {
+        // eslint-disable-next-line no-await-in-loop -- 순차 마이크로태스크 flush가 본질.
+        await Promise.resolve();
+      }
+    };
+    /** 연쇄 타이머(timer → await → 다음 timer)를 따라가도록 1초씩 전진하며 매번 flush. */
+    const advance = async (ms: number): Promise<void> => {
+      for (let elapsed = 0; elapsed < ms; elapsed += 1_000) {
+        // eslint-disable-next-line no-await-in-loop -- 순차 전진이 본질.
+        await act(async () => {
+          jest.advanceTimersByTime(Math.min(1_000, ms - elapsed));
+          await flush();
+        });
+      }
+    };
+    const settle = async (): Promise<void> => {
+      await act(async () => {
+        await flush();
+      });
+    };
+    const isDegraded = (): boolean => useRegisterHealthStore.getState().degraded;
+    /** DESTINATION_KEY 존재 여부(BG 종료 가드 C9b)를 제어하는 storage mock. */
+    const mockStorage = (destinationKeyPresent: boolean): void => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === DESTINATION_KEY && destinationKeyPresent) return '{"id":"2-022"}';
+        return null;
+      });
+    };
+    const route2 = makeDirectRoute(7, '2');
+    type Props = { route: Route | null; dest: Station | null; lrs?: boolean };
+    const renderTrip = (initial: Props = { route: directRoute, dest: station }) =>
+      renderHook(
+        ({ route, dest, lrs }: Props) =>
+          useApnsTripRegistration({
+            route,
+            destination: dest,
+            nextStationEtaSeconds: 120,
+            launchReconciliationSettled: lrs ?? true,
+          }),
+        { initialProps: initial },
+      );
+
+    let appStateHandler: ((s: AppStateStatus) => void) | null;
+    const removeAppStateSub = jest.fn();
+    let addListenerSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      useRegisterHealthStore.setState({ degraded: false });
+      mockStorage(true);
+      appStateHandler = null;
+      removeAppStateSub.mockClear();
+      addListenerSpy = jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+        event: string,
+        handler: (s: AppStateStatus) => void,
+      ) => {
+        if (event === 'change') appStateHandler = handler;
+        return { remove: removeAppStateSub };
+      }) as unknown as typeof AppState.addEventListener);
+    });
+    afterEach(() => {
+      addListenerSpy.mockRestore();
+      jest.useRealTimers();
+      act(() => {
+        useRegisterHealthStore.setState({ degraded: false });
+      });
+    });
+
+    it('C1 — 503 kv_unavailable → degraded=true', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      expect(isDegraded()).toBe(true);
+    });
+
+    it('C2 — degraded 뒤 200(dedup 아님)이 오면 false로 복구', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      expect(isDegraded()).toBe(true);
+      mockRegister.mockResolvedValue({ ok: true });
+      await advance(61_000); // 억제(RA 60s) 종료 시점의 재시도가 200을 받는다.
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      expect(isDegraded()).toBe(false);
+    });
+
+    it.each([
+      ['503 엣지 HTML', { ok: false, status: 503 }],
+      ['500', { ok: false, status: 500 }],
+      ['429', { ok: false, status: 429, retryAfterSeconds: 60 }],
+      ['네트워크 오류', { ok: false }],
+      ['200 dedup skip', { ok: true, skipped: true }],
+    ])('C3 — %s 결과는 degraded를 바꾸지 않는다(켜지지도 꺼지지도 않음)', async (_name, outcome) => {
+      mockRegister.mockResolvedValue(outcome);
+      const first = renderTrip();
+      await settle();
+      expect(isDegraded()).toBe(false);
+      first.unmount();
+
+      useRegisterHealthStore.setState({ degraded: true });
+      renderTrip();
+      await settle();
+      expect(isDegraded()).toBe(true);
+    });
+
+    it('C3b — 억제 skip(POST 없음)은 degraded를 바꾸지 않는다', async () => {
+      useRegisterHealthStore.setState({ degraded: true });
+      mockRegister.mockResolvedValue({ ok: false, status: 429, retryAfterSeconds: 60 });
+      const { rerender } = renderTrip();
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      rerender({ route: directRoute, dest: station }); // deps 불변 — 재실행 없음
+      await advance(1_000);
+      expect(isDegraded()).toBe(true);
+    });
+
+    it('C5 — destination이 null이 되면 degraded=false, 10분이 지나도 POST 0', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      const { rerender } = renderTrip();
+      await settle();
+      await advance(200_000); // 재시도 예산 소진(총 4 POST)
+      const before = mockRegister.mock.calls.length;
+      expect(isDegraded()).toBe(true);
+
+      rerender({ route: null, dest: null });
+      await settle();
+      expect(isDegraded()).toBe(false);
+      await advance(600_000);
+      expect(mockRegister).toHaveBeenCalledTimes(before);
+    });
+
+    it('C5b — 목적지가 다른 목적지로 바뀌면(최초 mount 제외) degraded가 초기화된다', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      const { rerender } = renderTrip();
+      await settle();
+      expect(isDegraded()).toBe(true);
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      rerender({ route: route2, dest: { ...station, id: '2-023', name: '역삼' } });
+      await settle();
+      expect(isDegraded()).toBe(false);
+    });
+
+    it('C5c — 최초 mount는 reset으로 취급하지 않는다(미리 켜진 degraded 유지)', async () => {
+      useRegisterHealthStore.setState({ degraded: true });
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      renderTrip();
+      await settle();
+      expect(isDegraded()).toBe(true);
+    });
+
+    it('C6 — 503 ×4로 재시도 상한 소진 뒤에도 +5분에 POST 1, +10분에 1 더', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      await advance(190_000); // t190 — backoff 소진(t0/60/120/180 = 4 POST)
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      await advance(100_000); // t290 — 아직 5분 전
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      await advance(15_000); // t305
+      expect(mockRegister).toHaveBeenCalledTimes(5);
+      await advance(300_000); // t605
+      expect(mockRegister).toHaveBeenCalledTimes(6);
+    });
+
+    it('C7(거부) — 500 ×4는 degraded가 아니라 5분 재시도가 없다(10분간 추가 POST 0)', async () => {
+      mockRegister.mockResolvedValue({ ok: false, status: 500 });
+      renderTrip();
+      await settle();
+      await advance(120_000); // t0/15/45/105 = 4 POST
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      await advance(600_000);
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      expect(isDegraded()).toBe(false);
+    });
+
+    it('C8 — 재시도에서 200을 받으면 이후 POST 0(interval 정지)', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      mockRegister.mockResolvedValue({ ok: true });
+      await advance(61_000);
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      await advance(1_200_000);
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+      expect(appStateHandler).not.toBeNull(); // 구독은 degraded 동안 있었다
+      expect(removeAppStateSub).toHaveBeenCalled(); // 복구와 함께 해제
+    });
+
+    it("C9 — AppState 'active': degraded + 억제 종료 → POST 1", async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      await advance(190_000); // 4 POST, 마지막 503(t180)의 억제는 t240까지
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      await advance(60_000); // t250 — 억제 종료, 5분 interval(t300) 전
+      act(() => {
+        appStateHandler?.('active');
+      });
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(5);
+    });
+
+    it("C9a — AppState 'active'가 아닌 전환(background)은 무시", async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      await advance(250_000);
+      const before = mockRegister.mock.calls.length;
+      act(() => {
+        appStateHandler?.('background');
+      });
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(before);
+    });
+
+    it("C9 — 억제 구간 안의 'active'는 POST 0", async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      await advance(190_000); // 마지막 503(t180) 억제는 t240까지
+      const before = mockRegister.mock.calls.length;
+      act(() => {
+        appStateHandler?.('active');
+      });
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(before);
+      // 억제 skip으로 "억제 종료 시점" 재시도가 새로 걸리지도 않는다(tick이 건너뛰었으므로) — 다음 POST는 5분 interval.
+      await advance(55_000); // t245 — 억제 종료(t240) 직후, interval(t300) 전
+      expect(mockRegister).toHaveBeenCalledTimes(before);
+    });
+
+    it("C9 — degraded가 아니면 'active'도 POST 0(구독 자체가 없다)", async () => {
+      mockRegister.mockResolvedValue({ ok: true });
+      renderTrip();
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      expect(appStateHandler).toBeNull();
+      await advance(600_000);
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it("C9 — launchReconciliationSettled=false면 degraded여도 'active'/interval POST 0", async () => {
+      useRegisterHealthStore.setState({ degraded: true });
+      renderTrip({ route: directRoute, dest: station, lrs: false });
+      await settle();
+      act(() => {
+        appStateHandler?.('active');
+      });
+      await advance(900_000);
+      expect(mockRegister).not.toHaveBeenCalled();
+    });
+
+    it('C9b — DESTINATION_KEY가 없으면(BG 종료) 메모리 destination이 남아 있어도 tick은 POST 0', async () => {
+      mockStorage(false);
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      await advance(190_000);
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+      await advance(500_000); // interval tick 300/600 통과
+      act(() => {
+        appStateHandler?.('active');
+      });
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+    });
+
+    it('C9b — DESTINATION_KEY 조회가 reject돼도 tick은 조용히 건너뛴다', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      renderTrip();
+      await settle();
+      await advance(190_000);
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === DESTINATION_KEY) throw new Error('storage down');
+        return key === APNS_TOKEN_KEY ? 'token-abc' : null;
+      });
+      await advance(200_000); // t390 — tick(t300) 통과
+      expect(mockRegister).toHaveBeenCalledTimes(4);
+    });
+
+    it('C10 — tick은 그 시점의 sessionKey를 쓴다: degraded 중 route만 바뀌어도 +5분 POST', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      const { rerender } = renderTrip();
+      await settle();
+      await advance(250_000); // 옛 세션 예산 소진 + 억제 종료(t240)
+      rerender({ route: route2, dest: station }); // 같은 목적지, routeSig만 변경 → 새 세션
+      await settle();
+      await advance(290_000); // 새 세션의 backoff 재시도까지 모두 소진
+      const before = mockRegister.mock.calls.length;
+      await advance(60_000); // 다음 5분 tick
+      expect(mockRegister.mock.calls.length).toBe(before + 1);
+    });
+
+    it('route가 null인 tick은 건너뛰고 interval은 유지된다', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      const { rerender } = renderTrip();
+      await settle();
+      await advance(190_000);
+      rerender({ route: null, dest: station }); // destination id 불변 — degraded 유지, effect a 유지
+      await settle();
+      const before = mockRegister.mock.calls.length;
+      await advance(400_000);
+      expect(mockRegister.mock.calls.length).toBe(before);
+      expect(isDegraded()).toBe(true);
+    });
+
+    it('재시도 타이머가 이미 대기 중(busy)이면 tick은 건너뛴다(억제 아님)', async () => {
+      useRegisterHealthStore.setState({ degraded: true });
+      mockRegister.mockResolvedValue({ ok: false, status: 500 }); // 억제 없는 실패 → 15s 재시도 대기
+      renderTrip();
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      await advance(5_000);
+      act(() => {
+        appStateHandler?.('active');
+      });
+      await settle();
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+      await advance(11_000); // 대기 중이던 15s 재시도는 정상 발화
+      expect(mockRegister).toHaveBeenCalledTimes(2);
+    });
+
+    it('언마운트 시 interval과 AppState 구독을 해제한다', async () => {
+      mockRegister.mockResolvedValue(KV_503);
+      const view = renderTrip();
+      await settle();
+      expect(addListenerSpy).toHaveBeenCalledWith('change', expect.any(Function));
+      const before = mockRegister.mock.calls.length;
+      view.unmount();
+      expect(removeAppStateSub).toHaveBeenCalled();
+      await advance(900_000);
+      expect(mockRegister).toHaveBeenCalledTimes(before);
     });
   });
 

@@ -11,3 +11,10 @@ export const REGISTER_KV_UNAVAILABLE_ERROR = 'kv_unavailable';
  * 억제 시간(초). backend(`index.ts`)가 내려주는 값(60)과 같다 — 헤더가 정상이면 그 값을 쓴다.
  */
 export const REGISTER_KV_UNAVAILABLE_DEFAULT_RETRY_AFTER_SECONDS = 60;
+
+/**
+ * #3006 PR-2 — register가 503 `kv_unavailable`(degraded)인 동안 device가 재시도하는 주기(ms).
+ * 기존 backoff(15/30/60s × 3)가 소진된 뒤에도 서버 복구(00:00 UTC 쿼터 리셋 등)를 감지하기 위한
+ * 저빈도 주기다 — 5분이면 KV 쓰기 쿼터를 의미 있게 쓰지 않는다.
+ */
+export const REGISTER_DEGRADED_RETRY_INTERVAL_MS = 300_000;
