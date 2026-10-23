@@ -1775,7 +1775,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     //
     // 같은 `stationarySsot` read를 재사용하므로 **추가 KV read 0**이고, 판정은 무상태라
     // **KV write 0**이다(#3006 쿼터 문제를 쿼터로 고치지 않기 위한 제약 — `isEndPromptDue` 주석).
-    if (stationarySsot !== null && isEndPromptDue(stationarySsot, now)) {
+    // #3006 PR-6 D-3 — LOCK trip은 evidence가 90s 저밀도라 이 판정이 무의미(실측 0행). 만료 lock은 lockless 취급.
+    if (
+      stationarySsot !== null &&
+      !isBoardingLockActive(trip, now) &&
+      isEndPromptDue(stationarySsot, now)
+    ) {
       const dueSamples = stationarySsot.motionEvidence.filter(
         (e) => e.source === 'device-position' && e.ts >= now - END_PROMPT_STATIONARY_MS,
       );
