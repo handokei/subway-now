@@ -45,7 +45,9 @@ const mockLogPushContractKindSkew = jest.fn();
 const mockLogPushContractValueSkew = jest.fn();
 // #2253 (ADR-029 Phase 5, G1) — 런타임 버전 스큐 관측 로거.
 const mockLogPushContractVersionSkew = jest.fn();
+const mockLogStoredRouteMigrationFailed = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
+  logStoredRouteMigrationFailed: (...args: unknown[]) => mockLogStoredRouteMigrationFailed(...args),
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
   logSilentPushRescheduleReceived: (...args: unknown[]) =>
     mockLogSilentPushRescheduleReceived(...args),
@@ -2575,6 +2577,26 @@ describe('silentPushTask', () => {
             transferStationId: '2-026',
             destinationStationId: '4-025',
           });
+        });
+
+        it('마이그레이션 조회 실패는 재예약 skip + route-migration-failed 로그 (#3177)', async () => {
+          setStorage({
+            route: {
+              type: 'transfer',
+              transferName: '없는역이름XYZ',
+              fromLine: '2',
+              toLine: '4',
+              stopsToTransfer: 5,
+              stopsFromTransfer: 3,
+              secondsToTransfer: 600,
+              secondsFromTransfer: 400,
+            },
+          });
+          await handleSilentPush(
+            reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
+          );
+          expect(mockLogStoredRouteMigrationFailed).toHaveBeenCalledWith('없는역이름XYZ');
+          expect(mockRescheduleSafetyNetAlarm).not.toHaveBeenCalled();
         });
 
         // #2089 리뷰 P1-1 — 일반 모드(sleepMode OFF)에서는 reschedule이 신규 안전망을

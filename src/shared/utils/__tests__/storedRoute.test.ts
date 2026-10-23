@@ -1,11 +1,6 @@
 import { readStoredRoute } from '../storedRoute';
 import { canonicalStationName } from '../../../testUtils/canonicalStationName';
 
-const mockLogMigrationFailed = jest.fn();
-jest.mock('../../../features/alarm/utils/alarmLog', () => ({
-  logStoredRouteMigrationFailed: (...args: unknown[]) => mockLogMigrationFailed(...args),
-}));
-
 const SADANG_2 = '2-026';
 const SADANG_4 = '4-025';
 
@@ -13,10 +8,6 @@ const DEST_SADANG_4 = JSON.stringify({
   id: SADANG_4,
   name: canonicalStationName('사당', '4'),
   line: '4',
-});
-
-beforeEach(() => {
-  mockLogMigrationFailed.mockReset();
 });
 
 describe('readStoredRoute (#3177 PR-2a)', () => {
@@ -31,14 +22,13 @@ describe('readStoredRoute (#3177 PR-2a)', () => {
       secondsToTransfer: 600,
       secondsFromTransfer: 400,
     };
-    const route = readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4);
+    const { route } = readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4);
     expect(route).toEqual({ ...legacy, transferStationId: SADANG_2, destinationStationId: SADANG_4 });
-    expect(mockLogMigrationFailed).not.toHaveBeenCalled();
   });
 
   it('id 없는 구버전 직행 경로는 destinationStationId만 채워진다', () => {
     const legacy = { type: 'direct', stops: 3, line: '4', travelSeconds: 300 };
-    const route = readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4);
+    const { route } = readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4);
     expect(route).toEqual({ ...legacy, destinationStationId: SADANG_4 });
   });
 
@@ -57,7 +47,7 @@ describe('readStoredRoute (#3177 PR-2a)', () => {
       stopsAfterLastTransfer: 3,
       secondsAfterLastTransfer: 400,
     };
-    const route = readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4);
+    const { route } = readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4);
     expect(route).toEqual({
       ...legacy,
       transfers: [{ ...legacy.transfers[0], transferStationId: SADANG_2 }],
@@ -78,20 +68,19 @@ describe('readStoredRoute (#3177 PR-2a)', () => {
       secondsToTransfer: 600,
       secondsFromTransfer: 400,
     };
-    expect(readStoredRoute(JSON.stringify(modern), DEST_SADANG_4)).toEqual(modern);
+    expect(readStoredRoute(JSON.stringify(modern), DEST_SADANG_4)).toEqual({ route: modern });
   });
 
   it('route raw가 null이면 null (로그 없음)', () => {
-    expect(readStoredRoute(null, DEST_SADANG_4)).toBeNull();
-    expect(mockLogMigrationFailed).not.toHaveBeenCalled();
+    expect(readStoredRoute(null, DEST_SADANG_4)).toEqual({ route: null });
   });
 
   it('JSON 문자열 "null"이면 null', () => {
-    expect(readStoredRoute('null', DEST_SADANG_4)).toBeNull();
+    expect(readStoredRoute('null', DEST_SADANG_4)).toEqual({ route: null });
   });
 
   it('깨진 route JSON은 null', () => {
-    expect(readStoredRoute('not-json{{', DEST_SADANG_4)).toBeNull();
+    expect(readStoredRoute('not-json{{', DEST_SADANG_4)).toEqual({ route: null });
   });
 
   it('환승역 조회 실패는 null + route-migration-failed 로그', () => {
@@ -105,9 +94,10 @@ describe('readStoredRoute (#3177 PR-2a)', () => {
       secondsToTransfer: 600,
       secondsFromTransfer: 400,
     };
-    expect(readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4)).toBeNull();
-    expect(mockLogMigrationFailed).toHaveBeenCalledTimes(1);
-    expect(mockLogMigrationFailed).toHaveBeenCalledWith('없는역이름XYZ');
+    expect(readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4)).toEqual({
+      route: null,
+      migrationFailedName: '없는역이름XYZ',
+    });
   });
 
   it('다중 환승 중 한 구간 조회 실패도 null + 로그', () => {
@@ -119,8 +109,10 @@ describe('readStoredRoute (#3177 PR-2a)', () => {
       stopsAfterLastTransfer: 3,
       secondsAfterLastTransfer: 400,
     };
-    expect(readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4)).toBeNull();
-    expect(mockLogMigrationFailed).toHaveBeenCalledWith('없는역이름XYZ');
+    expect(readStoredRoute(JSON.stringify(legacy), DEST_SADANG_4)).toEqual({
+      route: null,
+      migrationFailedName: '없는역이름XYZ',
+    });
   });
 
   it.each([
@@ -130,12 +122,11 @@ describe('readStoredRoute (#3177 PR-2a)', () => {
     ['목적지 JSON null', 'null'],
   ])('목적지 id를 못 구해도(%s) 경로는 폐기하지 않고 destinationStationId만 비운다 (놓침 방지)', (_label, destRaw) => {
     const legacy = { type: 'direct', stops: 3, line: '4', travelSeconds: 300 };
-    expect(readStoredRoute(JSON.stringify(legacy), destRaw)).toEqual(legacy);
-    expect(mockLogMigrationFailed).not.toHaveBeenCalled();
+    expect(readStoredRoute(JSON.stringify(legacy), destRaw)).toEqual({ route: legacy });
   });
 
   it('목적지 id가 이미 경로에 있으면 목적지 raw가 없어도 통과한다', () => {
     const modern = { type: 'direct', stops: 3, line: '4', travelSeconds: 300, destinationStationId: SADANG_4 };
-    expect(readStoredRoute(JSON.stringify(modern), null)).toEqual(modern);
+    expect(readStoredRoute(JSON.stringify(modern), null)).toEqual({ route: modern });
   });
 });

@@ -39,7 +39,7 @@ import { getTripStartedAt } from './tripStartStorage';
 import { alarmKey } from './stationAlarm';
 import { logSuppressedSafetyNetRevalidation, logSuppressedPrescheduledRevalidation } from './alarmLog';
 import { readBackendSsotMirror } from './backendSsotMirror';
-import { readStoredRoute } from '../../../shared/utils/storedRoute';
+import { readStoredRouteLogged } from './readStoredRouteLogged';
 import { getStationById, isSameStationName } from '../../../shared/utils/stationRoute';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -242,7 +242,7 @@ async function revalidateSafetyNetAlarm(
   }
 
   // #3177 — 구버전 JSON(stationId 없음)은 공용 파서가 마이그레이션해서 돌려준다.
-  const route: Route = readStoredRoute(routeRaw, destRaw);
+  const route: Route = readStoredRouteLogged(routeRaw, destRaw);
   const destMeta = parseDestinationMeta(destRaw);
   if (!route || !destMeta.name) {
     // #2089 리뷰 P3(2) — trip-token-mismatch(다른 trip)와 원인이 다른 실패이므로 별도 라벨로

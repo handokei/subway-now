@@ -1,9 +1,4 @@
-/* eslint-disable import/no-restricted-paths --
- * 마이그레이션 실패를 alarmLog(features/alarm)에 남기는 cross-feature 관측 연결.
- * useStateRehydration과 같은 방식의 옵트인이며, 파서 본체는 순수 함수다.
- */
 import type { LineNumber } from '../types/station';
-import { logStoredRouteMigrationFailed } from '../../features/alarm/utils/alarmLog';
 import { findStationByNameAndLine } from './stationLookup';
 import type { Route, TransferSegment } from './stationRoute';
 
@@ -16,52 +11,57 @@ import type { Route, TransferSegment } from './stationRoute';
  *
  * - `transferStationId` = `findStationByNameAndLine(transferName, fromLine).id`
  * - `destinationStationId` = 저장된 목적지(DESTINATION_KEY) `Station.id`
- * - 이미 있는 id는 덮어쓰지 않는다. 환승역 조회가 실패하면 null + alarmLog `route-migration-failed`.
+ * - 이미 있는 id는 덮어쓰지 않는다. 환승역 조회가 실패하면 route=null + `migrationFailedName`을 돌려주고,
+ *   로그(alarmLog `route-migration-failed`)는 features를 아는 호출부 헬퍼가 남긴다(shared는 features 비의존).
  *
  * 삭제 조건: id 없는 경로는 PR-1 이전 빌드의 트립 단위 데이터라 트립 종료/첫 화면 진입 시 사라진다.
  * PR-1이 포함된 릴리스의 다음 릴리스에서 이 마이그레이션 블록을 제거한다.
  */
-export function readStoredRoute(routeRaw: string | null, destinationRaw: string | null): Route {
-  if (!routeRaw) return null;
+export interface StoredRouteResult {
+  route: Route;
+  /** 환승역 id 조회에 실패한 transferName. 실패가 아니면 undefined. */
+  migrationFailedName?: string;
+}
+
+export function readStoredRoute(
+  routeRaw: string | null,
+  destinationRaw: string | null,
+): StoredRouteResult {
+  if (!routeRaw) return { route: null };
   let parsed: Route;
   try {
     parsed = JSON.parse(routeRaw) as Route;
   } catch {
-    return null;
+    return { route: null };
   }
-  if (!parsed) return null;
+  if (!parsed) return { route: null };
 
   // 목적지 id를 못 구해도 경로는 폐기하지 않는다(필드는 optional) — 알람 놓침(ADR-010)이 더 나쁘고,
   // 정상 트립의 목적지는 항상 id를 갖는다. 환승역 id 조회 실패만 null로 취급한다.
   const destinationStationId = parsed.destinationStationId ?? readDestinationId(destinationRaw);
   const destinationFields = destinationStationId ? { destinationStationId } : {};
 
-  if (parsed.type === 'direct') return { ...parsed, ...destinationFields };
+  if (parsed.type === 'direct') return { route: { ...parsed, ...destinationFields } };
 
   if (parsed.type === 'transfer') {
     const { transferName, fromLine, transferStationId } = parsed;
     const resolved = transferStationId ?? lookupStationId(transferName, fromLine);
-    if (!resolved) return null;
-    return { ...parsed, transferStationId: resolved, ...destinationFields };
+    if (!resolved) return { route: null, migrationFailedName: transferName };
+    return { route: { ...parsed, transferStationId: resolved, ...destinationFields } };
   }
 
   const transfers: TransferSegment[] = [];
   for (const segment of parsed.transfers) {
     const { transferName, fromLine, transferStationId } = segment;
     const resolved = transferStationId ?? lookupStationId(transferName, fromLine);
-    if (!resolved) return null;
+    if (!resolved) return { route: null, migrationFailedName: transferName };
     transfers.push({ ...segment, transferStationId: resolved });
   }
-  return { ...parsed, transfers, ...destinationFields };
+  return { route: { ...parsed, transfers, ...destinationFields } };
 }
 
 function lookupStationId(name: string, line: LineNumber): string | null {
-  const found = findStationByNameAndLine(name, line);
-  if (!found) {
-    logStoredRouteMigrationFailed(name);
-    return null;
-  }
-  return found.id;
+  return findStationByNameAndLine(name, line)?.id ?? null;
 }
 
 function readDestinationId(destinationRaw: string | null): string | null {
