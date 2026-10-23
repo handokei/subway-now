@@ -2149,16 +2149,9 @@ app.post('/position', async (c) => {
   await degradeOnKvFailure('appendPositionPoint', () =>
     appendPositionPoint(kv, payload.token, payload.point),
   );
-  // #2617 (코드리뷰 반영) — fallback implicit ACK 입력. `/position`은 FG 폴링과 BG location
-  // task가 같은 주기로 호출하는 공유 채널이라 "도달했다" 자체는 FG를 증명하지 않는다
-  // (deviceContact.ts RCA 참고) — `appState==='fg'`일 때만 stamp한다. BG 접촉을 implicit ACK로
-  // 오인하면 BG 사용자의 fallback 안전망이 꺼진다. 핫패스 응답 latency에 얹지 않도록
-  // waitUntil로 스케줄(#2283 관례, `scheduleTripEvent` 재사용).
-  let deviceContactStamp: Promise<void> = Promise.resolve();
-  if (payload.appState === 'fg') {
-    deviceContactStamp = stampDeviceContact(kv, hashTripToken(payload.token), Date.now());
-    scheduleTripEvent(c, deviceContactStamp);
-  }
+  // #3006 PR-3 — W2(`deviceContact:` stamp) 제거. 소비자(`fallback.ts` implicit ACK)는 putPending
+  // production 호출부 0(#3148)이라 도달 불가고, 남은 소비자는 만료 진단 meta뿐이다. stamp 원천은
+  // `/boarding-lock/sync`만 유지한다(`putPendingNoCallerGuard.test.ts`가 전제를 고정).
   // #3006 PR-1 — trip을 **한 번만** 읽어(캐시 30s) 아래 세 write(근접 stamp / TTL 연장 /
   // SSOT motion)가 같은 객체를 기준으로 판단한다. 종전엔 각자 trip을 따로 읽고 SSOT는 trip
   // 존재를 확인하지 않은 채 TTL 없이 써서, trip 키가 소멸한 뒤에도 /position이 TTL 없는 ssot
@@ -2238,13 +2231,12 @@ app.post('/position', async (c) => {
     c,
     runHttpProbe(c.env, colo ?? 'unknown', Date.now(), randomUnit()),
   );
-  // #3006 PR-0 — 응답 이후 샘플 행 적재. W2 stamp(waitUntil)의 put까지 끝난 뒤 stages를 읽는다.
+  // #3006 PR-0 — 응답 이후 샘플 행 적재.
   if (putRecorder) {
     const { point, appState, accelSummary } = payload;
     scheduleTripEvent(
       c,
       (async () => {
-        await deviceContactStamp;
         const now = Date.now();
         const meta = buildPositionKvSampleMeta({
           stages: putRecorder.stages(),
@@ -2343,7 +2335,8 @@ interface PositionUploadPayload {
    * (`backgroundLocationTask`) 판별 계약. `/position`은 두 채널이 같은 ~10초 주기로 호출하므로
    * 이 필드 없이는 "엔드포인트 도달" 자체가 FG를 증명하지 못한다 — fallback implicit ACK
    * (`stampDeviceContact`)는 `appState==='fg'`일 때만 채택한다. 구버전 클라(필드 미전송)는
-   * undefined로 파싱돼 BG로 보수 취급(stamp 생략) — fallback 안전망을 끄지 않는다.
+   * undefined로 파싱돼 BG로 보수 취급. #3006 PR-3 이후 /position은 stamp하지 않으며 이 필드는
+   * 계측(`position-kv-sample`)의 appState 라벨로만 쓰인다.
    */
   appState?: 'fg' | 'bg';
 }

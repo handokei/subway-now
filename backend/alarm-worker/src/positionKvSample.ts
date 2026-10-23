@@ -1,7 +1,7 @@
 /**
  * #3006 PR-0 — POST /position KV write 샘플 계측 (관측 전용, 동작 변경 0, **KV 접근 추가 0**).
  *
- * 목적: /position 한 호출이 어떤 KV put(W1 `pos` / W2 `deviceContact` / W3·W4 `trip` / W5 `accel` /
+ * 목적: /position 한 호출이 어떤 KV put(W1 `pos` / W2 `deviceContact`[PR-3에서 /position 제거] / W3·W4 `trip` / W5 `accel` /
  * W6 `ssot`)을 실제로 **시도**하는지를 lock 상태·appState별로 D1에서 직접 센다. 스로틀·skip 분기가
  * 많아 코드만 읽어서는 호출당 put 수를 확정할 수 없고(이슈 #3006 §2-0 "call 모델은 상한도 하한도
  * 아니다"), PR-3/5/6의 절감폭 측정 근거가 이 계측이다.
