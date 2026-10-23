@@ -2194,8 +2194,11 @@ app.post('/position', async (c) => {
   // T2 advanceTripPosition 게이트 #2가 본 motionState='stationary'를 차단 입력으로 사용한다.
   if (tripAfter !== null) {
     const tripForSsot = tripAfter;
+    const ssotNow = Date.now();
     await degradeOnKvFailure('updateSsotMotion', () =>
-      updateSsotMotion(kv, payload.token, payload.point, Date.now(), tripForSsot, {
+      updateSsotMotion(kv, payload.token, payload.point, ssotNow, tripForSsot, {
+        // #3006 PR-6 — LOCK이면 W6 90s 스로틀 (§1-0: cron lockMissing과 같은 판정)
+        lockActive: isBoardingLockActive(tripForSsot, ssotNow),
         onTransition: (from, to) => {
           // P0-1 (#1577) — Site 5 of 6: motion-transition 적재.
           writeMetric(c.env, {

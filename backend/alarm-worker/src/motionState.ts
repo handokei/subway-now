@@ -67,6 +67,15 @@ export const MOTION_MOVING_DISPLACEMENT_M = 50;
 export const SSOT_MOTION_WRITE_MIN_INTERVAL_MS = 25_000;
 
 /**
+ * #3006 PR-6 — LOCK(`isBoardingLockActive`) trip의 SSOT motion write 간격.
+ *
+ * LOCK trip은 motionState 소비자(lockless 정지 판정·end-prompt)를 모두 우회하고 lastDeviceSyncAt
+ * 신선도만 필요하다(5분 임계 대비 T=90 + G42 + C30 + P 여유 138s). 그래서 25s -> 90s.
+ * **LOCK trip의 motionEvidence는 저밀도(>=90s)다 — 새 reader를 붙일 때는 LOCK 우회가 필수.**
+ */
+export const SSOT_MOTION_WRITE_MIN_INTERVAL_LOCK_MS = 90_000;
+
+/**
  * #3007 — "종료할까요?" 제안까지의 정지 지속 시간. device `PAUSE_AUTO_END_MS`
  * (`src/shared/constants/realtime.ts`)와 **같은 값의 backend 미러**다 — backend는 device 상수를
  * import할 수 없다. 새 임계가 아니므로 **한쪽을 바꾸면 반드시 다른 쪽도 바꿔야 한다.**
@@ -264,7 +273,11 @@ export async function updateSsotMotion(
   position: PositionPoint,
   now: number,
   trip: Trip,
-  options?: { onTransition?: (from: MotionState, to: MotionState) => void },
+  options?: {
+    onTransition?: (from: MotionState, to: MotionState) => void;
+    /** #3006 PR-6 — `isBoardingLockActive(trip, now)` 결과. true면 write 간격 90s. 기본 false(25s). */
+    lockActive?: boolean;
+  },
 ): Promise<TripPositionSSoT | null> {
   const ssot = await readSsot(kv, token, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
   if (!ssot) return null;
@@ -274,7 +287,10 @@ export async function updateSsotMotion(
   // lastDeviceSyncAt은 write가 실제로 일어날 때만 갱신되지만, 그 write 자체가 최소
   // 이 간격으로는 돌기 때문에 DEVICE_SYNC_STALE_THRESHOLD_MS(5min) 안에서는 항상 신선하다.
   const lastEvidenceTs = newestDevicePositionEvidenceTs(ssot.motionEvidence);
-  if (lastEvidenceTs !== null && now - lastEvidenceTs < SSOT_MOTION_WRITE_MIN_INTERVAL_MS) {
+  const minIntervalMs = options?.lockActive
+    ? SSOT_MOTION_WRITE_MIN_INTERVAL_LOCK_MS
+    : SSOT_MOTION_WRITE_MIN_INTERVAL_MS;
+  if (lastEvidenceTs !== null && now - lastEvidenceTs < minIntervalMs) {
     return ssot;
   }
 

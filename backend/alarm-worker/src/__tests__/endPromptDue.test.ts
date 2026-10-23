@@ -132,9 +132,10 @@ function dueEvents(inserts: unknown[][]): Array<Record<string, unknown>> {
 
 async function setup(
   evidence: MotionEvidence[],
+  tripOverrides: Partial<Trip> = {},
 ): Promise<{ kv: InMemoryKV; db: Env['DB']; inserts: unknown[][] }> {
   const kv = new InMemoryKV();
-  const trip = makeTrip();
+  const trip = makeTrip(tripOverrides);
   await putTrip(kv as unknown as KVNamespace, trip);
   const ssot = await seedSsot(kv as unknown as KVNamespace, trip.token, '중곡', {
     expiresAt: trip.expiresAt,
@@ -190,5 +191,36 @@ describe('#3007 — cron이 정지 15분 종료 제안 시점을 D1에 적재', 
     await runOnce(kv, db);
 
     expect(dueEvents(inserts)).toHaveLength(0);
+  });
+
+  // #3006 PR-6 D-3 — LOCK trip은 evidence가 90s 간격 저밀도라 이 판정이 의미 없다(Q2: 0행).
+  const lockMeta = (expiresAt: number): Trip['boardingLock'] =>
+    ({
+      trainCode: '7246',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: NOW - 60_000,
+      segmentStations: ['중곡', '용마산'],
+      expiresAt,
+    }) as Trip['boardingLock'];
+
+  it('[D-3 거부] LOCK 활성 trip은 정지 15분이어도 0건', async () => {
+    const { kv, db, inserts } = await setup(stationaryEvidence(40, END_PROMPT_STATIONARY_MS), {
+      boardingLock: lockMeta(NOW + 60 * 60_000),
+    });
+
+    await runOnce(kv, db);
+
+    expect(dueEvents(inserts)).toHaveLength(0);
+  });
+
+  it('[D-3] 만료된 lock(isBoardingLockActive=false)은 lockless 취급 — 1건 (§1-0 차이 선언)', async () => {
+    const { kv, db, inserts } = await setup(stationaryEvidence(40, END_PROMPT_STATIONARY_MS), {
+      boardingLock: lockMeta(NOW - 1),
+    });
+
+    await runOnce(kv, db);
+
+    expect(dueEvents(inserts)).toHaveLength(1);
   });
 });
