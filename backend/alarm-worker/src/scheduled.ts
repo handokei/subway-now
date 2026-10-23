@@ -79,6 +79,7 @@ import {
   nextRenumberArm,
   resolveRenumberOrigin,
 } from './renumberSuccessor';
+import { appendLockCodeHistory } from './lockCodeHistory';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
@@ -1884,6 +1885,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           // legTransition.status==='confirmed'일 때만 anchorLock이 non-null이다(위 resolver
           // 계약) — ARRIVED/APPROACHING→DEPARTED 전이가 실제로 관측됐다는 뜻.
           trip.boardingLock = anchorLock;
+          trip.lockCodeHistory = undefined; // #3141 — 새 leg 승격: 이전 leg 이력 소거
           trip.consecutiveEtaMissing = 0;
           trip.lastTrackedArrivalEpoch = undefined;
           trip.lastLaPushEpoch = undefined;
@@ -1913,6 +1915,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         } else if (anchorLock) {
           // leg 1(promptDisplay) — 기존과 동일하게 1회 resolved로 즉시 승격.
           trip.boardingLock = anchorLock;
+          trip.lockCodeHistory = undefined; // #3141 — 새 lock 부착: 이력 소거
           trip.consecutiveEtaMissing = 0;
           trip.lastTrackedArrivalEpoch = undefined;
           trip.lastLaPushEpoch = undefined;
@@ -2647,6 +2650,24 @@ export function stationPassedFiredKey(
   stationName: string,
 ): string {
   return `${STATION_PASSED_FIRED_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
+}
+
+/**
+ * #3141 — 이 역이 이미 발사됐는가. 현재 lock 코드 OR `trip.lockCodeHistory`(같은 trip에서 교체되며 남은
+ * 옛 코드) 중 하나라도 마커가 있으면 true. 번호 변경(vanish-swap 등) 후 옛 번호로 알린 역의 재발사를 막는다.
+ * KV read만(Promise.all) — 이력이 없으면 기존과 동일한 1회 GET, 신규 write 0. stamp는 현재 코드 키 그대로.
+ */
+async function isStationPassedFired(
+  env: Env,
+  trip: Trip,
+  lock: BoardingLockMeta,
+  stationName: string,
+): Promise<boolean> {
+  const codes = [lock.trainCode, ...(trip.lockCodeHistory ?? [])];
+  const found = await Promise.all(
+    codes.map(async (code) => (await env.TRIPS.get(stationPassedFiredKey(trip.token, code, stationName))) !== null),
+  );
+  return found.some(Boolean);
 }
 
 /**
@@ -3937,7 +3958,7 @@ export async function fireArvlCdStationPush(
   // 트리거 무관하게 보장한다(진입이 먼저 발사되면 뒤이은 도착은 dedup). 공용 마커는 arvlCd/position/
   // vanish-fallback 3경로가 모두 공유 → 경로 간 이중발사도 차단.
   const stationFiredKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
-  if ((await env.TRIPS.get(stationFiredKey)) !== null) {
+  if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) {
     stats.arvlCdFireDedup += 1;
     log('arvlcd-fire: station-passed dedup skip (already fired this station)', {
       token: trip.token.slice(0, 8),
@@ -4277,7 +4298,7 @@ export async function runMidCycleFireOnly(
     // 발사 *전* 그 키 하나만 조회하는 것은 새 KV 소비 유형이 아니라 기존 write에 대응하는 read를
     // 앞으로 당긴 것뿐이다 — listTrips/readSsot 등 광역 재조회 금지(F2/F3/F4)와는 무관.
     try {
-      if ((await env.TRIPS.get(dedupKey)) !== null) continue;
+      if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) continue;
     } catch {
       // read 실패는 보수적으로 계속 진행(발사 시도) — swallow.
     }
@@ -4474,7 +4495,7 @@ export async function fireSyncSkippedStationPasses(
     const dedupKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
     let alreadyFired = false;
     try {
-      alreadyFired = (await env.TRIPS.get(dedupKey)) !== null;
+      alreadyFired = await isStationPassedFired(env, trip, lock, waypoint.stationName);
     } catch {
       // read 실패는 보수적으로 계속 진행(발사 시도) — runMidCycleFireOnly와 동일 정책.
     }
@@ -4906,7 +4927,7 @@ export async function fireVanishFallbackStationPush(
   // #2571 — 경로 무관 station-passed dedup. arvlCd/position 경로가 이미 이 역을 발사했으면 skip
   // (역당 1개, #2506 유지 + 경로 간 이중발사 차단).
   const stationFiredKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
-  if ((await env.TRIPS.get(stationFiredKey)) !== null) {
+  if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) {
     log('vanish-fallback-fire: station-passed dedup skip (already fired this station)', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -5153,6 +5174,7 @@ async function attemptVanishSwap(
     expiresAt: Math.max(activeLock.expiresAt, swapped.expiresAt),
   };
   trip.boardingLock = newLock;
+  trip.lockCodeHistory = appendLockCodeHistory(trip.lockCodeHistory, activeLock.trainCode);
   trip.consecutiveEtaMissing = 0;
   // #3158 — 번호 변경 열차(2호선 성수)였다면 시간표 후속이 나중에 관측될 때 정정할 수 있게 표식을 남긴다.
   // 호출자가 swap 직후 putTrip하므로 추가 KV write 0.
@@ -5238,6 +5260,7 @@ export async function attemptTimetableSuccessorReattach(
     expiresAt: Math.max(activeLock.expiresAt, now + SWAP_LOCK_TTL_MS),
   };
   trip.boardingLock = newLock;
+  trip.lockCodeHistory = appendLockCodeHistory(trip.lockCodeHistory, activeLock.trainCode);
   trip.consecutiveEtaMissing = 0;
   trip.renumberSuccessor = undefined;
   await recordLockReattach(env, trip, waypoint, now, {

@@ -770,6 +770,22 @@ describe('POST /trips — lastAutoPromptedAt 보존 (#916 follow-up B)', () => {
     expect(stored.lastAutoPromptedAt).toBeUndefined();
   });
 
+  it('#3141 same session 재등록 — existing.lockCodeHistory 보존(번호 변경 후 재발사 방지)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, { lockCodeHistory: ['3009'] });
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lockCodeHistory).toEqual(['3009']);
+  });
+
+  it('#3141 new session — lockCodeHistory 소거(undefined)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, { lockCodeHistory: ['3009'] });
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lockCodeHistory).toBeUndefined();
+  });
+
   it('new session + window 밖 — 보존하지 않음(undefined)', async () => {
     const env = makeKvEnv();
     // existing의 createdAt도 같이 옛 시각으로 시뮬레이션 (둘 다 옛 시각이라야 incoming 새 시각과 drift)
