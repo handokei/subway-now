@@ -184,6 +184,12 @@ export interface Trip {
    */
   renumberSuccessor?: { from: string; swappedTo: string; armedAt: number };
   /**
+   * #3141 — 같은 trip에서 lock trainCode가 교체되며(vanish-swap / 시간표 후속) 남은 옛 코드 이력(cap 5).
+   * 매역 station-passed dedup이 현재 코드 OR 이 이력을 함께 본다(번호 변경 후 재발사 차단). 새 leg/lock
+   * 승격 시 소거, same-session 재등록은 carry.
+   */
+  lockCodeHistory?: string[];
+  /**
    * #2900 (옵션 C, 재설계: 코디네이터 리뷰 2026-10-08) — lockless destination waypoint에서
    * arvlCd 도착 신호(ENTERING/ARRIVED)가 왔지만 탑승 증거(lock 활성 / lockEverAttached /
    * boardingCommitted / legResolveStreak)가 전혀 없을 때, **도착 알림은 그대로 즉시
