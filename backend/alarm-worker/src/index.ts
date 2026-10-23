@@ -207,6 +207,12 @@ import { tryConsumeCooldownBypass } from './cooldownBypass';
 import { KvWriteUnavailableError } from './kvWriteUnavailable';
 import { REGISTER_KV_UNAVAILABLE_ERROR } from '../../../src/shared/constants/registerContract';
 import { randomUnit, runHttpProbe, scheduleCronProbe } from './d1KvLatencyProbe';
+import {
+  buildPositionKvSampleMeta,
+  createPutRecorder,
+  recordPositionKvSample,
+  shouldSamplePositionKv,
+} from './positionKvSample';
 import { subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import type {
@@ -2110,6 +2116,11 @@ app.post('/position', async (c) => {
   const payload = validatePositionPayload(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
+  // #3006 PR-0 — KV put 샘플 계측. 당첨(1/20)일 때만 put key prefix 기록 래퍼를 씌운다(미당첨은 원본 KV).
+  // 래퍼는 get/delete/list를 건드리지 않고 put을 그대로 위임한다 — KV 접근 추가 0.
+  const putRecorder = shouldSamplePositionKv(randomUnit()) ? createPutRecorder(c.env.TRIPS) : null;
+  const kv = putRecorder?.kv ?? c.env.TRIPS;
+
   // #3006 D — KV 쓰기 실패가 트립을 죽이지 않게 한다.
   //
   // 이 핸들러의 쓰기는 모두 **보강 신호**다(series/accel/proximity/motion). 반면 응답에 실리는
@@ -2136,18 +2147,17 @@ app.post('/position', async (c) => {
   };
 
   await degradeOnKvFailure('appendPositionPoint', () =>
-    appendPositionPoint(c.env.TRIPS, payload.token, payload.point),
+    appendPositionPoint(kv, payload.token, payload.point),
   );
   // #2617 (코드리뷰 반영) — fallback implicit ACK 입력. `/position`은 FG 폴링과 BG location
   // task가 같은 주기로 호출하는 공유 채널이라 "도달했다" 자체는 FG를 증명하지 않는다
   // (deviceContact.ts RCA 참고) — `appState==='fg'`일 때만 stamp한다. BG 접촉을 implicit ACK로
   // 오인하면 BG 사용자의 fallback 안전망이 꺼진다. 핫패스 응답 latency에 얹지 않도록
   // waitUntil로 스케줄(#2283 관례, `scheduleTripEvent` 재사용).
+  let deviceContactStamp: Promise<void> = Promise.resolve();
   if (payload.appState === 'fg') {
-    scheduleTripEvent(
-      c,
-      stampDeviceContact(c.env.TRIPS, hashTripToken(payload.token), Date.now()),
-    );
+    deviceContactStamp = stampDeviceContact(kv, hashTripToken(payload.token), Date.now());
+    scheduleTripEvent(c, deviceContactStamp);
   }
   // #3006 PR-1 — trip을 **한 번만** 읽어(캐시 30s) 아래 세 write(근접 stamp / TTL 연장 /
   // SSOT motion)가 같은 객체를 기준으로 판단한다. 종전엔 각자 trip을 따로 읽고 SSOT는 trip
@@ -2156,7 +2166,7 @@ app.post('/position', async (c) => {
   // 모두 건너뛴다 — W1(pos 시리즈)은 trip과 무관하게 위에서 이미 썼다.
   let trip: Trip | null | 'unknown' = 'unknown';
   try {
-    trip = await getTrip(c.env.TRIPS, payload.token, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
+    trip = await getTrip(kv, payload.token, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
   } catch (err) {
     degraded = true;
     void captureBackendException(c.env, err, { path: 'position', stage: 'getTrip' });
@@ -2177,14 +2187,14 @@ app.post('/position', async (c) => {
     );
     tripAfter = updated;
     if (updated !== trip) {
-      await degradeOnKvFailure('putTripViaPosition', () => putTrip(c.env.TRIPS, updated));
+      await degradeOnKvFailure('putTripViaPosition', () => putTrip(kv, updated));
     }
   }
   // #823 Phase 3 E1 — 가속도 옵션 필드. 부재 또는 invalid 시 skip (positionSeries는 이미 적재됨).
   if (payload.accelSummary) {
     const accelSummary = payload.accelSummary;
     await degradeOnKvFailure('appendAccelSample', () =>
-      appendAccelSample(c.env.TRIPS, payload.token, accelSummary),
+      appendAccelSample(kv, payload.token, accelSummary),
     );
   }
   // #1556 (T3) — SSOT.motionState 갱신. SSOT 부재(trip 미등록) 시 graceful no-op.
@@ -2192,7 +2202,7 @@ app.post('/position', async (c) => {
   if (tripAfter !== null) {
     const tripForSsot = tripAfter;
     await degradeOnKvFailure('updateSsotMotion', () =>
-      updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now(), tripForSsot, {
+      updateSsotMotion(kv, payload.token, payload.point, Date.now(), tripForSsot, {
         onTransition: (from, to) => {
           // P0-1 (#1577) — Site 5 of 6: motion-transition 적재.
           writeMetric(c.env, {
@@ -2218,7 +2228,7 @@ app.post('/position', async (c) => {
   //
   // SSOT 부재 시(trip 미등록) lockSuggestion / originStationId 누락 — graceful, device는
   // 기존 9-AND gate fallback. SSOT cacheTtl 30s 명시(KV 최소 제약 + cron 사이클 정합).
-  const ssot = await readSsot(c.env.TRIPS, payload.token, {
+  const ssot = await readSsot(kv, payload.token, {
     cacheTtl: CRON_READ_CACHE_TTL_SEC,
   });
   // #3168 — D1/KV 지연 실측 샘플(1/20, 일 100건 cap, 관측 전용). 응답 이후 waitUntil, 실패 흡수.
@@ -2228,6 +2238,26 @@ app.post('/position', async (c) => {
     c,
     runHttpProbe(c.env, colo ?? 'unknown', Date.now(), randomUnit()),
   );
+  // #3006 PR-0 — 응답 이후 샘플 행 적재. W2 stamp(waitUntil)의 put까지 끝난 뒤 stages를 읽는다.
+  if (putRecorder) {
+    const { point, appState, accelSummary } = payload;
+    scheduleTripEvent(
+      c,
+      (async () => {
+        await deviceContactStamp;
+        const now = Date.now();
+        const meta = buildPositionKvSampleMeta({
+          stages: putRecorder.stages(),
+          trip,
+          appState,
+          hasAccel: accelSummary !== undefined,
+          pointTs: point.ts,
+          now,
+        });
+        await recordPositionKvSample(c.env.DB, hashTripToken(payload.token), meta, now);
+      })(),
+    );
+  }
   return c.json({
     ok: true,
     // #3006 D — KV 쓰기가 실패했음을 device에 알린다. 정상 경로에서는 **필드 자체가 없다**

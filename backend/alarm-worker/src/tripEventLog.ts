@@ -202,6 +202,9 @@ export type TripEventKind =
   // 분기에 실제로 들어갔을 때 no-op 사유(`no-token` / `state-not-live`) 계측을 별건으로
   // 추가한다 — 지금 넣으면 소비처 없는 export가 된다.
   | 'la-token-register'
+  // #3006 PR-0 — POST /position 1/20 샘플: 그 호출이 시도한 KV put prefix(`stages`)·lockState·appState 등.
+  // 관측 전용, KV 접근 추가 0, UTC 일 300행 상한(`positionKvSample.ts`).
+  | 'position-kv-sample'
   // #2985 — `trip_metrics` 행이 트립 전 구간을 덮지 못한 경우(window 절단) 1건. `started_at`과
   // `fired_count`/`suppressed_count`가 모두 `trip.createdAt`을 하한으로 쓰는데, 세션 교체
   // (`index.ts:1240` `{...incoming}`)가 그 값을 갈아치우면 앞 구간이 집계에서 통째로 빠진다.
