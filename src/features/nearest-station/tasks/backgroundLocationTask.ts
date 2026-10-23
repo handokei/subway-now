@@ -15,6 +15,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import { getFiredAlarms, setFiredAlarms } from '../../alarm/utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
+import { readBgLastFix } from '../utils/bgLastFix';
 import { logSuppressedGate, logBgTaskHeartbeat } from '../../alarm/utils/alarmLog';
 import { readStoredRouteLogged } from '../../alarm/utils/readStoredRouteLogged';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } from '../../../shared/constants/storageKeys';
@@ -103,26 +104,6 @@ async function readBgLastPositionUploadAt(): Promise<number | null> {
     if (!raw) return null;
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-async function readBgLastFix(): Promise<FixSample | null> {
-  try {
-    const raw = await AsyncStorage.getItem(BG_LAST_FIX_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      typeof (parsed as FixSample).lat === 'number' &&
-      typeof (parsed as FixSample).lng === 'number' &&
-      typeof (parsed as FixSample).timestamp === 'number'
-    ) {
-      return parsed as FixSample;
-    }
-    return null;
   } catch {
     return null;
   }
@@ -248,7 +229,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       logSuppressedGate('gate-jump', { lat, lng, accuracy, ageMs });
       return;
     }
-    await AsyncStorage.setItem(BG_LAST_FIX_KEY, JSON.stringify(currFix));
+    // #3191 PR-0 — acc/speed는 관측 전용(DebugModal). jump gate는 currFix(lat/lng/timestamp)만 쓴다.
+    await AsyncStorage.setItem(
+      BG_LAST_FIX_KEY,
+      JSON.stringify({ ...currFix, acc: accuracy ?? null, speed: speedMps }),
+    );
 
     // #819 — backend로 단일 좌표 + Motion sample 송신. backend가 KV에 60s ring buffer로 누적해
     // boarding-prompt 9단 게이트(ADR Section 2)에 사용. APNs token 부재 시 skip (서버측 series는

@@ -16,7 +16,9 @@
 
 import {
   BAROMETER_ABS_TOLERANCE_HPA,
+  BAROMETER_DPDT_WINDOW_MS,
   BAROMETER_ETA_TOLERANCE_SEC,
+  BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
   DEPTH_TO_PRESSURE_HPA_PER_M,
 } from '../constants/barometer';
 import stationAbsolutePressureData from '../../data/stationAbsolutePressure.json';
@@ -80,7 +82,49 @@ let readings: BarometerReading[] = [];
  * 호출자(useBarometer)가 센서 콜백마다 호출.
  */
 export function appendBarometerReading(reading: BarometerReading): void {
+  recordDeltaTracking(readings, reading);
   readings = pruneStaleReadings([...readings, reading], reading.t);
+}
+
+/**
+ * #3191 PR-0 — 기압 ΔP 이벤트 시각 / 첫 hPa 기준선 계측 (관측 전용, 판정 입력 아님).
+ *
+ * ring buffer(`readings`, 60s TTL)와 별개로 세션 동안 남는다 — Raw entry가 cycle 시점에 ring을
+ * 읽으면 이미 prune된 이벤트를 놓치기 때문. `resetBarometerState()`가 건드리지 않는다
+ * (instrumentation과 동일 정책).
+ */
+export interface BarometerDeltaTracking {
+  /** 세션 첫 reading의 hPa — 콜드 스타트 기준선(#3191 §14-5). */
+  firstHpa: number | null;
+  firstHpaAtMs: number | null;
+  /** 30초 창 안 |ΔP| >= 0.3 hPa 인 가장 최근 reading의 시각. 없으면 null. */
+  lastDeltaEventAtMs: number | null;
+}
+
+const EMPTY_DELTA_TRACKING: BarometerDeltaTracking = {
+  firstHpa: null,
+  firstHpaAtMs: null,
+  lastDeltaEventAtMs: null,
+};
+
+let deltaTracking: BarometerDeltaTracking = EMPTY_DELTA_TRACKING;
+
+function recordDeltaTracking(prior: readonly BarometerReading[], reading: BarometerReading): void {
+  const isEvent = prior.some(
+    (r) =>
+      reading.t - r.t <= BAROMETER_DPDT_WINDOW_MS &&
+      Math.abs(reading.pressureHpa - r.pressureHpa) >= BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
+  );
+  deltaTracking = {
+    firstHpa: deltaTracking.firstHpa ?? reading.pressureHpa,
+    firstHpaAtMs: deltaTracking.firstHpaAtMs ?? reading.t,
+    lastDeltaEventAtMs: isEvent ? reading.t : deltaTracking.lastDeltaEventAtMs,
+  };
+}
+
+/** 현재 델타 계측 스냅샷 (Raw signal 기록부가 pull). */
+export function getBarometerDeltaTracking(): Readonly<BarometerDeltaTracking> {
+  return deltaTracking;
 }
 
 /**
@@ -203,6 +247,7 @@ export function getBarometerInstrumentation(): Readonly<BarometerInstrumentation
  * 건드리지 않으므로(resetCount 자체가 측정 대상), 테스트 간 격리를 위해 별도 제공.
  */
 export function resetBarometerInstrumentationForTest(): void {
+  deltaTracking = EMPTY_DELTA_TRACKING;
   instrumentation = {
     listenerRegisteredCount: 0,
     listenerRegistrationFailedCount: 0,

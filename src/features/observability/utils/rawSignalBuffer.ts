@@ -15,6 +15,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RAW_SIGNAL_BUFFER_KEY } from '../../../shared/constants/storageKeys';
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
+import { getBarometerDeltaTracking } from '../../../shared/utils/barometerState';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import type { CellularEnvironmentVote } from '../../nearest-station/utils/cellularTech';
 
@@ -97,6 +98,23 @@ export interface PushReceiptDetail {
   source?: PushReceiptDisplaySource;
 }
 
+/**
+ * #3191 PR-0 — FG watch 구독 상태 라벨. 'active' = 구독 중, 'inactive' = 구독 없음.
+ * 구 entry / 훅이 상태를 제공하지 않은 경우는 null(또는 필드 부재).
+ */
+export type RawSignalWatch = 'active' | 'inactive';
+
+/**
+ * #3191 PR-0 — 앱 launch 표식 payload (프로세스당 1회, 첫 entry에만 부착).
+ * coldStartAtMs: 이 모듈 로드 시각(JS 프로세스 시작 근사). firstHpa/firstHpaAtMs: 세션 첫 기압
+ * reading — 콜드 스타트가 지하인지 판정하는 기준선(§14-5).
+ */
+export interface RawSignalLaunch {
+  coldStartAtMs: number;
+  firstHpa: number;
+  firstHpaAtMs: number;
+}
+
 export interface RawSignalEntry {
   ts: number;
   corrId: string | null;
@@ -125,12 +143,34 @@ export interface RawSignalEntry {
   confidence: FusionConfidence | null;
   /** #2541 — kind='push-receipt'일 때만 non-null. 그 외 kind(cycle/enter/exit)는 항상 null. */
   pushReceipt: PushReceiptDetail | null;
+  /**
+   * #3191 PR-0 — 기록 시점 FG watch 구독 상태 / RN AppState / 가장 최근 기압 ΔP(30s 창 |ΔP|>=0.3)
+   * 이벤트 시각. 관측 전용 — 판정 입력 아님. 구 entry에는 없다(optional).
+   */
+  watch?: RawSignalWatch | null;
+  appState?: string | null;
+  baroEventAtMs?: number | null;
+  /** #3191 PR-0 — 프로세스당 1회, 첫 hPa 기준선이 생긴 뒤 첫 push entry에만 부착. */
+  launch?: RawSignalLaunch;
 }
 
 const db = createDebugBuffer<RawSignalEntry>(RAW_SIGNAL_BUFFER_CAPACITY);
 
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 let hydrated = false;
+
+// #3191 PR-0 — launch 표식은 프로세스당 1회. 기준선(첫 hPa)이 생긴 뒤 첫 push entry에 부착한다.
+// 별도 kind의 entry를 만들면 corrId=null이라 trip 목록(unknown 버킷)에 유령 항목이 생기고 300 FIFO도 점유한다.
+const COLD_START_AT_MS = Date.now();
+let launchMarked = false;
+
+function withLaunchMarkOnce(entry: RawSignalEntry): RawSignalEntry {
+  if (launchMarked) return entry;
+  const { firstHpa, firstHpaAtMs } = getBarometerDeltaTracking();
+  if (firstHpa === null || firstHpaAtMs === null) return entry;
+  launchMarked = true;
+  return { ...entry, launch: { coldStartAtMs: COLD_START_AT_MS, firstHpa, firstHpaAtMs } };
+}
 
 function scheduleWrite(): void {
   if (writeTimer !== null) {
@@ -153,7 +193,7 @@ async function flushNow(): Promise<void> {
 
 /** entry push + throttled write. */
 export function pushRawSignal(entry: RawSignalEntry): void {
-  db.push(entry);
+  db.push(withLaunchMarkOnce(entry));
   scheduleWrite();
 }
 
@@ -210,4 +250,5 @@ export function __resetRawSignalForTests__(): void {
     writeTimer = null;
   }
   hydrated = false;
+  launchMarked = false;
 }
