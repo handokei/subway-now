@@ -112,12 +112,23 @@ describe('quickExit.json 정합성', () => {
     expect(bad).toEqual([]);
   });
 
-  it('원천에 있는 환승역은 각 노선 id 모두에 데이터가 있다 (도봉산 1/7, 사당 2/4)', () => {
-    for (const [name, lines] of [['도봉산', ['1', '7']], ['사당', ['2', '4']]]) {
-      for (const line of lines) {
-        const s = STATIONS.find((x) => x.name === name && x.line === line);
-        expect(QUICK_EXIT[s.id]).toBeDefined();
-      }
+  it('원천에 있고 stations.json에 매칭되는 모든 (노선, 역명)은 자기 노선 id에 데이터가 있다 (사당 2/4 등)', () => {
+    const missing = [];
+    for (const key of SOURCE_STATIONS) {
+      const [lineNm, name] = key.split('|');
+      const id = resolveStationId(lineNm, name);
+      if (id && !QUICK_EXIT[id]) missing.push(key);
     }
+    expect(missing).toEqual([]);
+    for (const line of ['2', '4']) {
+      const s = STATIONS.find((x) => x.name === '사당' && x.line === line);
+      expect(QUICK_EXIT[s.id]).toBeDefined();
+    }
+  });
+
+  it('원천에 없는 노선 id(1호선 도봉산은 원천에 7호선만 존재)에는 데이터를 붙이지 않는다', () => {
+    const dobong1 = STATIONS.find((x) => x.name === '도봉산' && x.line === '1');
+    expect(SOURCE_STATIONS).not.toContain('1호선|도봉산');
+    expect(QUICK_EXIT[dobong1.id]).toBeUndefined();
   });
 });
