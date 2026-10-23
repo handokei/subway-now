@@ -156,6 +156,18 @@ function clearStalePendingBoardingIntent(intentId: string): void {
   }
 }
 
+/** 파서가 거부한 raw에서 clear용 id만 best-effort로 추출. 추출 불가면 null. */
+function extractRawIntentId(raw: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const { id } = parsed as Record<string, unknown>;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 async function processPendingBoardingIntent(deps: BridgeDeps, nowMs: number): Promise<void> {
   let raw: string | null;
   try {
@@ -168,7 +180,14 @@ async function processPendingBoardingIntent(deps: BridgeDeps, nowMs: number): Pr
 
   const intent = parsePendingBoardingIntent(raw);
   if (!intent) {
-    log.warn('pending boarding intent 파싱 실패 — malformed payload');
+    // #3048 — 파싱 실패 intent를 남겨두면 매 폴링마다 재파싱 실패 + App Group에 영구 잔류한다.
+    // native clear는 저장된 id와 일치할 때만 제거하므로, 파서가 거부했어도 raw에서 id를 건질 수
+    // 있으면(예: origin=null 버튼이 빈 역명으로 write) 그 id로 폐기한다.
+    const rejectedId = extractRawIntentId(raw);
+    log.warn('pending boarding intent 파싱 실패 — malformed payload, clear 시도', {
+      clearable: rejectedId !== null,
+    });
+    if (rejectedId !== null) clearStalePendingBoardingIntent(rejectedId);
     return;
   }
 
