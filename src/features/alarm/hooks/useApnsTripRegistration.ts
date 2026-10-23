@@ -29,7 +29,11 @@ import { cancelAllSafetyNetAlarms } from '../utils/safetyNetScheduler';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { acknowledgeTripRegistration } from '../utils/liveActivityPushChannel';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
-import { logCrossTripMirrorSkip, logSubsurfaceRegisterTransition } from '../utils/alarmLog';
+import {
+  logCrossTripMirrorSkip,
+  logRegisterSuppressed,
+  logSubsurfaceRegisterTransition,
+} from '../utils/alarmLog';
 import {
   buildBoardingPromptContext,
   type BoardingPromptContext,
@@ -48,6 +52,10 @@ import {
 } from '../../../shared/constants/boardingLock';
 import { SUBSURFACE_FLAP_QUARANTINE_MS } from '../../../shared/constants/barometer';
 import { ETA_POLLING_WINDOW_SEC } from '../../../shared/constants/eta';
+import {
+  REGISTER_KV_UNAVAILABLE_DEFAULT_RETRY_AFTER_SECONDS,
+  REGISTER_KV_UNAVAILABLE_ERROR,
+} from '../../../shared/constants/registerContract';
 import { createLogger } from '../../../shared/utils/logger';
 import { getRegisteringApnsEnv, warmupConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
@@ -285,6 +293,12 @@ interface RegisterCallInputs {
 function lockSig(lock: BoardingLock | null): string | null {
   return lock ? `${lock.trainCode}|${lock.boardingLine}|${lock.boardedAt}` : null;
 }
+
+/**
+ * #3006 PR-1 — register 억제 사유. 'rate-limited'=서버 429 `retryAfterSeconds`, 'backend-degraded'=503
+ * `kv_unavailable`(KV 쓰기 쿼터 소진, `Retry-After`). 억제 skip은 흉내 낸 429 대신 이 사유를 싣는다.
+ */
+type RegisterSuppressedReason = 'rate-limited' | 'backend-degraded';
 
 /** 두 호출처(token refresh / main effect)의 register 페이로드 빌드를 단일화. */
 async function callRegister(
@@ -746,6 +760,8 @@ export function useApnsTripRegistration({
   // 유일한 register 진입점이므로 여기 한 곳에서만 체크/갱신하면 main effect / token-refresh /
   // Tier 1 / Tier 2 / register-retry 모든 경로가 일관되게 서버 힌트를 존중한다.
   const registerSuppressedUntilRef = useRef<number>(0);
+  // #3006 PR-1 — 위 억제 구간을 건 원인. 억제 skip이 사유(429 / 503 kv)를 로그·결과에 싣는다.
+  const registerSuppressedReasonRef = useRef<RegisterSuppressedReason>('rate-limited');
 
   /**
    * #2167 — context-heal(Tier 1/2)과 register-retry(#1960)는 같은 원인("register가 backend에
@@ -784,7 +800,9 @@ export function useApnsTripRegistration({
   const registerFromLatestInputs = async (
     token: string,
     options?: { promptContextOverride?: BoardingPromptContext | null },
-  ): Promise<Awaited<ReturnType<typeof callRegister>> | null> => {
+  ): Promise<
+    (Awaited<ReturnType<typeof callRegister>> & { suppressed?: RegisterSuppressedReason }) | null
+  > => {
     const {
       route: r,
       destination: d,
@@ -842,14 +860,14 @@ export function useApnsTripRegistration({
     // 실제 POST를 발사하므로, 여기 한 곳의 skip이 storm 자기유발 억제를 전체 경로에 적용한다.
     const suppressedRemainingMs = registerSuppressedUntilRef.current - Date.now();
     if (suppressedRemainingMs > 0) {
-      logger.info(`register: 429 retryAfter 억제 중 — ${Math.ceil(suppressedRemainingMs / 1000)}s 남음`);
-      return {
-        ok: false,
-        status: 429,
-        retryAfterSeconds: Math.ceil(suppressedRemainingMs / 1000),
-        hadPromptContext: false,
-        promptContext: null,
-      };
+      // #3006 PR-1 — 429를 흉내 낸 결과 대신 사유를 싣는다. 호출자는 `suppressed`로 "실제 실패"와
+      // "억제로 건너뜀"을 구분해 backoff 예산(attempt)·heal 횟수를 소모하지 않는다.
+      const suppressed = registerSuppressedReasonRef.current;
+      logger.info(
+        `register: ${suppressed} 억제 중 — ${Math.ceil(suppressedRemainingMs / 1000)}s 남음`,
+      );
+      logRegisterSuppressed(suppressed);
+      return { ok: false, hadPromptContext: false, promptContext: null, suppressed };
     }
 
     const result = await callRegister({
@@ -879,6 +897,20 @@ export function useApnsTripRegistration({
     // 덮어쓴다(연장/단축 모두 반영).
     if (result.status === 429 && typeof result.retryAfterSeconds === 'number') {
       registerSuppressedUntilRef.current = Date.now() + result.retryAfterSeconds * 1000;
+      registerSuppressedReasonRef.current = 'rate-limited';
+    }
+    // #3006 PR-1 — 503 `kv_unavailable`(KV 쓰기 쿼터 소진, 00:00 UTC 리셋)이면 Retry-After(없으면
+    // 기본값)까지 억제한다. 쿼터는 서버 전체 상태라 어떤 경로의 POST도 성공할 수 없고, 429와 달리
+    // 이미 걸린 더 긴 억제를 줄이지 않는다(max). 엣지 HTML 503 등 errorCode가 다른 503/500/네트워크
+    // 오류는 여기 해당하지 않아 기존 backoff 그대로다.
+    if (result.status === 503 && result.errorCode === REGISTER_KV_UNAVAILABLE_ERROR) {
+      const retryAfterSeconds =
+        result.retryAfterSeconds ?? REGISTER_KV_UNAVAILABLE_DEFAULT_RETRY_AFTER_SECONDS;
+      const until = Date.now() + retryAfterSeconds * 1000;
+      if (until > registerSuppressedUntilRef.current) {
+        registerSuppressedUntilRef.current = until;
+        registerSuppressedReasonRef.current = 'backend-degraded';
+      }
     }
     // #767 — 두 경로 모두 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도 유지.
     lastSentLockSigRef.current = lockSig(bl);
@@ -1038,6 +1070,31 @@ export function useApnsTripRegistration({
   };
 
   /**
+   * #3006 PR-1 — 억제 skip(`suppressed`)이 난 세션에 "억제가 끝나는 시점"의 재시도 1개를 보장한다.
+   *
+   * 억제 skip은 실제 register 실패가 아니라서 `scheduleRegisterRetry`(attempt 예산 소모)를 쓰면
+   * 안 된다 — 억제 중 deps가 흔들릴 때마다 attempt가 소모돼 정작 억제가 끝난 뒤 쓸 예산이
+   * 사라진다(B5). 그래서 attempt를 건드리지 않고 타이머만 건다.
+   *   - 세션이 바뀌었으면 `{sessionKey, attempt:0}`으로 초기화한다(옛 세션 타이머는 clear).
+   *   - 같은 세션에 타이머가 이미 있으면 아무것도 하지 않는다(타이머 ≤ 1개 유지).
+   */
+  const ensureRetryArmedAtSuppressionEnd = (sessionKey: string): void => {
+    if (registerRetryRef.current.sessionKey !== sessionKey) {
+      if (registerRetryRef.current.timer !== null) {
+        clearTimeout(registerRetryRef.current.timer);
+      }
+      registerRetryRef.current = { sessionKey, attempt: 0, timer: null };
+    } else if (registerRetryRef.current.timer !== null) {
+      return;
+    }
+    const delay = Math.max(0, registerSuppressedUntilRef.current - Date.now());
+    registerRetryRef.current.timer = setTimeout(() => {
+      registerRetryRef.current.timer = null;
+      void attemptRegisterRetry(sessionKey);
+    }, delay);
+  };
+
+  /**
    * #2167 (P2-1, PR #2169 리뷰) — register-retry가 같은 세션의 context-heal(Tier 1/2) POST와
    * in-flight로 겹쳐 이번 backoff를 건너뛸 때 전용 recheck 예약. `scheduleRegisterRetry`(실제
    * register 실패 전용, attempt 예산 소모)와 분리해 attempt를 소모하지 않는다 — heal-busy는
@@ -1137,6 +1194,9 @@ export function useApnsTripRegistration({
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
         // #3162 — trip register ack는 LA 토큰 불변식 복구의 "다음 기회"다(토큰이 trip보다 먼저 와 ambient 대기 창을 넘겼어도 여기서 붙는다).
         acknowledgeTripRegistration();
+      } else if (result?.suppressed) {
+        // #3006 PR-1 — 억제로 건너뛴 것은 실패가 아니다: attempt 예산을 쓰지 않고 억제 종료 시점에 재예약.
+        ensureRetryArmedAtSuppressionEnd(sessionKey);
       } else {
         scheduleRegisterRetry(sessionKey);
       }
@@ -1413,6 +1473,9 @@ export function useApnsTripRegistration({
         // trip"인지 정확히 알 수 있도록 실제 성공한 routeSig/destination.id만 기록한다.
         lastSuccessfulRouteSigRef.current = routeSig;
         lastSuccessfulDestinationIdRef.current = destination.id;
+      } else if (result?.suppressed) {
+        // #3006 PR-1 — 억제 skip: attempt 예산을 쓰지 않고 억제 종료 시점에 재시도 1개만 보장.
+        ensureRetryArmedAtSuppressionEnd(`${routeSig}:${destination.id}`);
       } else {
         // #1960 — register 실패({ok:false}) — deps 불변이면 재기회가 없으므로 활성 trip 한정 재시도.
         scheduleRegisterRetry(`${routeSig}:${destination.id}`);
@@ -1617,6 +1680,13 @@ export function useApnsTripRegistration({
       }
       healAttemptRef.current.count += 1;
       const result = await registerFromLatestInputs(token, { promptContextOverride: healContext });
+      // #3006 PR-1 — 억제로 건너뛴 시도는 POST 상한(`CONTEXT_HEAL_MAX_ATTEMPTS_PER_SESSION`)을 쓰지
+      // 않는다. 반드시 `cancelled` 가드보다 **먼저**: effect가 이미 cleanup된 뒤 돌아온 억제 결과도
+      // 되돌려야 횟수가 새지 않는다. 세션 일치 조건은 그 사이 다른 세션이 count를 0으로 초기화한
+      // 경우 음수로 내려가 상한이 부풀어 오르는 것을 막는다.
+      if (result?.suppressed && healAttemptRef.current.sessionKey === sessionKey) {
+        healAttemptRef.current.count = Math.max(0, healAttemptRef.current.count - 1);
+      }
       if (cancelled) return;
       healInFlightSessionKeyRef.current = null;
       // #2164 — heal이 실제로 성공(context build + POST 네트워크 모두 성공)했을 때만 세션 잠금.

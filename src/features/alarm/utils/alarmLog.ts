@@ -221,7 +221,11 @@ export type AlarmLogSource =
   // "대리 발사가 실제로 발생한 비율"을 독립적으로 집계할 수 있게 한다. fireFgAuxStationPassedNotification이
   // 내부 마커 재확인(#2902)으로 스킵(false 반환)한 케이스는 이 source로 적재되지 않는다
   // (스킵=미발사를 발사로 오집계하지 않기 위해).
-  | 'device-proxy-fired';
+  | 'device-proxy-fired'
+  // #3006 PR-1 — POST /trips를 보내지 않고 건너뛴 억제 skip 1건(reason='rate-limited' 429 /
+  // 'backend-degraded' 503 kv_unavailable). 억제 구간 동안 어떤 경로가 몇 번 막혔는지를 덤프에서
+  // 직접 센다(과거엔 429 응답을 흉내 낸 결과로만 표현돼 로그에 흔적이 없었다).
+  | 'register-suppressed';
   // #2403 — BG 지하 실시간성 계측으로 도입됐던 'bg-task-heartbeat'는 #2618에서 alarmLog ring
   // 적재를 폐지하고 AsyncStorage 단일 키(BG_TASK_LAST_HEARTBEAT_KEY)로 전환했다 — 매 tick(~2s
   // 간격) 62건/24분이 RCA 유효 이벤트를 밀어내는 회귀 발생. `logBgTaskHeartbeat` 참고.
@@ -254,6 +258,9 @@ export type AlarmLogReason =
   | 'la-adopt-token-state'
   //   la-token-recreate     : #3162 토큰을 얻을 수 없는 LA를 FG에서 끝내고 같은 trip으로 재생성(missingForMs)
   | 'la-token-recreate'
+  // #3006 PR-1 — source='register-suppressed' 행의 reason.
+  | 'rate-limited'
+  | 'backend-degraded'
   // PR-3a(#3126) — source='trip-end-notice' 행의 reason. 종료 사유는 stationName에 `reason=<값>`.
   | 'trip-end-notice'
   // #2398 — UNNotificationCategory 등록 실패(setNotificationCategoryAsync reject/throw) stamp.
@@ -2056,6 +2063,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'subsurface-register-confirmed': null,
   // #2927 — 유예 타이머 후 대리 발사는 silent push와 무관한 별도 채널(FG 로컬 알림).
   'device-proxy-fired': null,
+  // #3006 PR-1 — register 억제 skip 진단 stamp. silent push 집계와 무관.
+  'register-suppressed': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -2096,6 +2105,8 @@ export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'live-activity-lifecycle': false,
   // PR-3a — 종료 통지는 매역/도착 안내 같은 "알람 fire"가 아니다. KPI 분모 오염 금지.
   'trip-end-notice': false,
+  // #3006 PR-1 — register 억제 skip은 사용자 노출 알람이 아니라 진단 stamp다. KPI 분모 오염 금지.
+  'register-suppressed': false,
   fg: true,
   bg: true,
   'fg-evaluated': true,
@@ -3290,6 +3301,22 @@ export function logSubsurfaceRegisterTransition(next: boolean, hasActiveTrip: bo
     // stationName 슬롯에 확정된 값 + hasActiveTrip 함께 인코딩 — 기존 schema 확장 없이
     // DebugModal에서 가시화(logAccelPatternObserved와 동일 관례).
     stationName: `subsurface=${next}|activeTrip=${hasActiveTrip}`,
+  });
+}
+
+/**
+ * #3006 PR-1 — register(POST /trips) 억제 skip 1건 적재.
+ *
+ * 억제 구간 중 main effect/token listener/Tier 1/Tier 2/retry가 같은 사유로 연달아 막히므로
+ * 사유별 burst dedup(5s)을 적용해 alarmLog(200-cap)가 점령당하지 않게 한다.
+ */
+export function logRegisterSuppressed(reason: 'rate-limited' | 'backend-degraded'): void {
+  if (isBurstDuplicate('register-suppressed', reason)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'register-suppressed',
+    outcome: 'suppressed',
+    reason,
   });
 }
 
