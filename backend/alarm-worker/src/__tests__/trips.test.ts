@@ -775,7 +775,7 @@ describe('trips KV CRUD', () => {
         });
       });
 
-      it('다른 route: incoming.token 소유 pending push cleanup (다른 token 소유는 보존)', async () => {
+      it('#3006 PR-0b — 다른 route: reset:true를 돌려주되 kv.list를 호출하지 않고 pending을 건드리지 않는다', async () => {
         const existing = makeTrip({ token: 'tok-old', destination: 'D-1' });
         await putTrip(kv as unknown as KVNamespace, existing);
         await putPending(
@@ -792,15 +792,18 @@ describe('trips KV CRUD', () => {
         );
 
         const incoming = makeTrip({ token: 'tok-old', destination: 'D-2' });
-        await resetTripStateForNewRoute(
+        const listSpy = vi.spyOn(kv, 'list');
+        const result = await resetTripStateForNewRoute(
           kv as unknown as KVNamespace,
           incoming,
           existing,
           { simpleArchEnabled: true },
         );
 
-        expect(await kv.get(pendingKey('p-old-1'))).toBeNull();
-        expect(await kv.get(pendingKey('p-old-2'))).toBeNull();
+        expect(result).toEqual({ existing: null, reset: true });
+        expect(listSpy).not.toHaveBeenCalled();
+        expect(await kv.get(pendingKey('p-old-1'))).not.toBeNull();
+        expect(await kv.get(pendingKey('p-old-2'))).not.toBeNull();
         expect(await kv.get(pendingKey('p-other'))).not.toBeNull();
       });
 
