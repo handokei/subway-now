@@ -739,8 +739,7 @@ export function buildConsensusTickMeta(record: LegConsensusRecord): {
  * 이미 포함되어 있다 — apns.ts silent push payload가 ssot 전체를 forward할 때 함께 실려 device로
  * 전달된다(consumption은 #2155 범위, 본 함수는 supply만).
  *
- * trip 부재(getTrip null)면 expiresAt 힌트 없이 write — 이론상 SSoT는 있는데 trip이 사라진 경우는
- * 발생하지 않지만(trip 삭제 시 SSoT도 함께 삭제), defense-in-depth로 graceful 처리.
+ * trip 부재(getTrip null)면 write하지 않고 null — SSoT는 trip 수명에 종속이다(#3006 PR-1).
  */
 export async function applyLegConsensusTick(
   kv: KVNamespace,
@@ -775,8 +774,10 @@ export async function applyLegConsensusTick(
   const { record, events } = stepLegConsensus(seed, input.tick);
   const next: TripPositionSSoT = { ...ssot, legConsensus: record };
 
+  // #3006 PR-1 — trip이 없으면 SSOT도 쓰지 않는다(TTL 없는 영구 키 부활 방지).
   const trip = await getTrip(kv, token);
-  await writeSsot(kv, next, trip ? { expiresAt: trip.expiresAt } : undefined);
+  if (trip === null) return null;
+  await writeSsot(kv, next, { expiresAt: trip.expiresAt });
 
   if (db) {
     const tokenHash = hashTripToken(token);

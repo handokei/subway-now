@@ -20,7 +20,7 @@ import {
   type MotionEvidence,
   type TripPositionSSoT,
 } from '../tripPositionSsot';
-import type { PositionPoint } from '../types';
+import type { PositionPoint, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 /**
@@ -32,6 +32,9 @@ import { InMemoryKV } from './inMemoryKv';
  * - updateSsotMotion: SSOT 없으면 no-op, evidence push, breadcrumb emit, write back
  * - emitMotionTransitionBreadcrumb: from===to no-op + PII-free 출력
  */
+
+/** #3006 PR-1 — updateSsotMotion이 SSOT TTL을 정렬할 trip (만료 2h 후). */
+const TRIP = { expiresAt: Date.now() + 2 * 60 * 60 * 1000 } as Trip;
 
 function makeSsot(overrides?: Partial<TripPositionSSoT>): TripPositionSSoT {
   return {
@@ -363,6 +366,7 @@ describe('updateSsotMotion — POST /position 수신 path', () => {
       'unknown-token',
       pos,
       1_000_000,
+      TRIP,
     );
     expect(result).toBeNull();
     expect(logSpy).not.toHaveBeenCalled();
@@ -376,6 +380,7 @@ describe('updateSsotMotion — POST /position 수신 path', () => {
       'tok-1',
       pos,
       1_000_000,
+      TRIP,
     );
     expect(result?.motionState).toBe('moving');
     expect(result?.motionEvidence).toHaveLength(1);
@@ -399,6 +404,7 @@ describe('updateSsotMotion — POST /position 수신 path', () => {
       'tok-2',
       pos,
       1_000_000,
+      TRIP,
     );
     expect(result?.motionState).toBe('moving');
     expect(logSpy).not.toHaveBeenCalled();
@@ -423,6 +429,7 @@ describe('updateSsotMotion — POST /position 수신 path', () => {
       'tok-3',
       pos,
       now,
+      TRIP,
     );
     expect(result?.motionEvidence).toHaveLength(10);
     expect(result?.motionState).toBe('stationary');
@@ -460,6 +467,7 @@ describe('updateSsotMotion — write throttle (KV quota #2439-ish)', () => {
       'tok-order',
       makePosition({ ts: now }),
       now,
+      TRIP,
     );
     expect(result?.motionEvidence).toHaveLength(4);
   });
@@ -472,6 +480,7 @@ describe('updateSsotMotion — write throttle (KV quota #2439-ish)', () => {
       'tok-cold',
       pos,
       1_000_000,
+      TRIP,
     );
     expect(result?.motionEvidence).toHaveLength(1);
     const persisted = await readSsot(kv as unknown as KVNamespace, 'tok-cold');
@@ -485,12 +494,14 @@ describe('updateSsotMotion — write throttle (KV quota #2439-ish)', () => {
       'tok-skip',
       makePosition({ ts: 0 }),
       0,
+      TRIP,
     );
     const result = await updateSsotMotion(
       kv as unknown as KVNamespace,
       'tok-skip',
       makePosition({ ts: SSOT_MOTION_WRITE_MIN_INTERVAL_MS - 1 }),
       SSOT_MOTION_WRITE_MIN_INTERVAL_MS - 1,
+      TRIP,
     );
     // skip이므로 evidence는 여전히 1건, lastDeviceSyncAt도 첫 write 시점(0)에 머무름.
     expect(result?.motionEvidence).toHaveLength(1);
@@ -506,12 +517,14 @@ describe('updateSsotMotion — write throttle (KV quota #2439-ish)', () => {
       'tok-write',
       makePosition({ ts: 0 }),
       0,
+      TRIP,
     );
     const result = await updateSsotMotion(
       kv as unknown as KVNamespace,
       'tok-write',
       makePosition({ ts: SSOT_MOTION_WRITE_MIN_INTERVAL_MS }),
       SSOT_MOTION_WRITE_MIN_INTERVAL_MS,
+      TRIP,
     );
     expect(result?.motionEvidence).toHaveLength(2);
     expect(result?.lastDeviceSyncAt).toBe(SSOT_MOTION_WRITE_MIN_INTERVAL_MS);
@@ -541,7 +554,7 @@ describe('updateSsotMotion — write throttle (KV quota #2439-ish)', () => {
       for (let elapsed = 0; elapsed <= totalMs; elapsed += deviceCallIntervalMs) {
         const now = startNow + elapsed;
         const pos = makePosition({ motion: 'unknown', ts: now });
-        result = await updateSsotMotion(kv as unknown as KVNamespace, 'tok-density', pos, now);
+        result = await updateSsotMotion(kv as unknown as KVNamespace, 'tok-density', pos, now, TRIP);
       }
       expect(result).not.toBeNull();
       const deviceEvidence = result!.motionEvidence.filter(

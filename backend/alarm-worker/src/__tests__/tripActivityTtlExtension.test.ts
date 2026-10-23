@@ -177,7 +177,7 @@ describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
     expect(expiredTripEndEvents).toHaveLength(0);
   });
 
-  it('거부 ③(#3047로 대체) — POST /position은 근접 stamp + TTL 연장 각 1회, 그 외 추가 write는 없다', async () => {
+  it('거부 ③(#3047→#3006 PR-1) — POST /position은 근접 stamp + TTL 연장을 trip put 1회로 합쳐 쓴다, 추가 write는 없다', async () => {
     // 이 테스트는 원래(#3023) "POST /position은 활동성 연장 대상에서 제외"를 거부 케이스로
     // 검증했다. #3047(10/18 편측 감사 D1)이 그 제외가 BG-only 라이드를 미보호 상태로 남긴다는
     // 걸 발견해 /position 전용 조건부 연장 경로(`extendTripExpiryViaPosition`)를 추가했다 —
@@ -198,8 +198,7 @@ describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
     const putSpy = vi.spyOn(kv, 'put');
     putSpy.mockClear();
 
-    // 근접 신호 O → stampOriginProximityIfNeeded 1회 + extendTripExpiryViaPosition 1회
-    // (#3047, 잔여 TTL<임계) = 총 2회. 서로 다른 조건의 독립 조건부 write — 증폭 아님.
+    // 근접 신호 O + 잔여 TTL<임계(#3047) — #3006 PR-1: 같은 trip 객체에 두 변경을 합쳐 putTrip 1회.
     const res = await post(
       '/position',
       {
@@ -217,7 +216,7 @@ describe('#3023 요구 1 — 활동성 trip TTL sliding extension', () => {
     expect(res.status).toBe(200);
 
     const tripWrites = putSpy.mock.calls.filter(([key]) => key === 'trip:tok-ttl');
-    expect(tripWrites).toHaveLength(2);
+    expect(tripWrites).toHaveLength(1);
 
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-ttl')) as string);
     // #3047 fix — /position도 이제 TTL 연장 대상. 근접 stamp와 함께 expiresAt이 연장된다.

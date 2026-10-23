@@ -469,7 +469,8 @@ export async function readSsot(
 /**
  * SSOT write.
  *
- * `expiresAt` 옵션이 주어지면 그 시각까지(최소 SSOT_MIN_TTL_SEC) 보존. 미지정 시 KV 기본 TTL.
+ * `expiresAt` 옵션이 주어지면 그 시각까지(최소 SSOT_MIN_TTL_SEC) 보존. **미지정 시 TTL 없음(영구 키)** —
+ * KV 기본 TTL이 아니다. trip 수명에 종속인 caller(/position 등)는 반드시 지정한다(#3006 PR-1).
  * trip lifecycle과 정합 — `putTrip`과 동일 패턴 (`trips.ts:42`).
  */
 export async function writeSsot(
