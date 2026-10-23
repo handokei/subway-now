@@ -157,6 +157,8 @@ export type AlarmLogSource =
   // `isBackendSsotRouteRegression`(#2669 확장, backendSsotRegressionGuard.ts) 판정 결과를
   // 관측 채널로 적재 — 현재는 아무 계측도 없어 재발해도 추적 불가했다.
   | 'backend-ssot-route-regression'
+  // #3177 — 저장 경로(ROUTE_KEY) 구버전 JSON의 stationId 마이그레이션(readStoredRoute) 실패 1건.
+  | 'stored-route-migration'
   // #2686 — 실제 native `LiveActivity.updateLiveActivity()` 호출 1건. 사용자 체감("30번 이상
   // 반복 표시")과 push 수신 로그(9건)의 갭이 push가 아니라 LA 갱신 빈도일 가능성이 있다는
   // RCA 추정을 다음 라이드에서 확정하기 위한 순수 계측 — 정책 변경 없음.
@@ -536,6 +538,8 @@ export type AlarmLogReason =
   | 'gate-not-departed'
   // #2686 — backend SSoT mirror가 경로를 거스르는 표시(되감김)를 시도해 거부된 1건의 reason.
   | 'backend-ssot-route-regression'
+  // #3177 — 저장 경로 stationId 마이그레이션 실패(환승역/목적지 id 조회 불가) → 경로를 null로 취급.
+  | 'route-migration-failed'
   // #2709 — lock-sync-delivery(outcome='suppressed') 전용. 좋은 GPS fix도, lock의
   // boardingStationId station lookup도 실패해 backend에 보낼 observedStationName 앵커가
   // 전혀 없는 경우 — 시도 자체가 불가능해 attempt/success 어느 쪽도 적재되지 않는다.
@@ -1314,6 +1318,21 @@ export function logBackendSsotRouteRegressionReject(
 }
 
 /**
+ * #3177 — 저장 경로(ROUTE_KEY) stationId 마이그레이션 실패 1건 적재(`route-migration-failed`).
+ * 호출 지점(위치 task/재예약/재검증)이 폴링마다 반복하므로 역명 단위 burst dedup.
+ */
+export function logStoredRouteMigrationFailed(stationName: string): void {
+  if (isBurstDuplicate('route-migration-failed', stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'stored-route-migration',
+    outcome: 'suppressed',
+    reason: 'route-migration-failed',
+    stationName,
+  });
+}
+
+/**
  * #2686 — 실제 native `LiveActivity.updateLiveActivity()` 호출 1건 적재.
  *
  * 사용자 체감("같은 알림이 30번 이상")과 push 수신 로그(9건)의 갭이 push가 아니라 LA 갱신
@@ -2019,6 +2038,8 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'la-fallback-notification': null,
   // #2686 — backend SSoT 경로 회귀 거부/LA 갱신 계측은 silent push outcome과 무관.
   'backend-ssot-route-regression': null,
+  // #3177 — 저장 경로 마이그레이션 실패는 silent push와 무관한 진단 stamp.
+  'stored-route-migration': null,
   'live-activity-updated': null,
   // #2709 — lock 신원 전달 계측은 silent push와 무관한 별도 채널(POST /boarding-lock/sync).
   'lock-sync-delivery': null,
@@ -2117,6 +2138,8 @@ export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   // #2686 — 되감김 거부/LA 갱신은 station-passed/transfer/destination 알람이 아닌 표시 계층
   // 측정·진단 stamp. fire 분모(트립 miss ratio) 오염 방지 위해 제외.
   'backend-ssot-route-regression': false,
+  // #3177 — 마이그레이션 실패 진단 stamp는 fire 분모에서 제외.
+  'stored-route-migration': false,
   'live-activity-updated': false,
   // #2709 — lock 신원 전달 시도/성공/차단은 진단 계측이지 사용자에게 노출되는 알람이 아니다.
   'lock-sync-delivery': false,

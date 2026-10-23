@@ -47,7 +47,9 @@ jest.mock('../safetyNetScheduler', () => ({
 
 const mockLogSuppressedSafetyNetRevalidation = jest.fn();
 const mockLogSuppressedPrescheduledRevalidation = jest.fn();
+const mockLogStoredRouteMigrationFailed = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logStoredRouteMigrationFailed: (...args: unknown[]) => mockLogStoredRouteMigrationFailed(...args),
   logSuppressedSafetyNetRevalidation: (...args: unknown[]) =>
     mockLogSuppressedSafetyNetRevalidation(...args),
   logSuppressedPrescheduledRevalidation: (...args: unknown[]) =>
@@ -106,6 +108,7 @@ import {
   setLastFiredAlarmStationName,
 } from '../notificationState';
 import type { SafetyNetNotificationData } from '../safetyNetScheduler';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 
 const mockGetFiredAlarms = getFiredAlarms as jest.Mock;
 const mockSetFiredAlarms = setFiredAlarms as jest.Mock;
@@ -410,6 +413,56 @@ describe('reconcileScheduledAlarmDelivery', () => {
 
       await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
 
+      expect(mockLogSuppressedSafetyNetRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-route-missing' }),
+      );
+    });
+
+    // #3177 PR-2a — 안전망 발사 재검증은 id 없는 구버전 저장 경로도 마이그레이션해서 받는다.
+    it('id 없는 구버전 환승 경로는 사당 2-026/4-025로 채워진 route로 waypoint를 산출한다 (#3177)', async () => {
+      const legacy = {
+        type: 'transfer',
+        transferName: canonicalStationName('사당', '2'),
+        fromLine: '2',
+        toLine: '4',
+        stopsToTransfer: 5,
+        stopsFromTransfer: 3,
+        secondsToTransfer: 600,
+        secondsFromTransfer: 400,
+      };
+      setStorageMap({
+        'subway-now:destination': JSON.stringify({ id: '4-025', name: canonicalStationName('사당', '4') }),
+        'subway-now:route': JSON.stringify(legacy),
+        'subway-now:active-trip': TRIP_TOKEN,
+      });
+
+      await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
+
+      expect(mockDeriveSafetyNetWaypoints).toHaveBeenCalledWith(
+        { ...legacy, transferStationId: '2-026', destinationStationId: '4-025' },
+        canonicalStationName('사당', '4'),
+      );
+    });
+
+    it('마이그레이션 조회 실패는 revalidate-route-missing으로 suppress + route-migration-failed 로그 (#3177)', async () => {
+      setStorageMap({
+        'subway-now:destination': JSON.stringify({ id: '4-025', name: '사당' }),
+        'subway-now:route': JSON.stringify({
+          type: 'transfer',
+          transferName: '없는역이름XYZ',
+          fromLine: '2',
+          toLine: '4',
+          stopsToTransfer: 5,
+          stopsFromTransfer: 3,
+          secondsToTransfer: 600,
+          secondsFromTransfer: 400,
+        }),
+        'subway-now:active-trip': TRIP_TOKEN,
+      });
+
+      await reconcileScheduledAlarmDelivery(makeRequest('id-1', DEFAULT_PARSED));
+
+      expect(mockLogStoredRouteMigrationFailed).toHaveBeenCalledWith('없는역이름XYZ');
       expect(mockLogSuppressedSafetyNetRevalidation).toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'revalidate-route-missing' }),
       );

@@ -91,7 +91,7 @@ import {
   iosTimeSensitiveOption,
 } from '../utils/stationNotification';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { readStoredRouteLogged } from '../utils/readStoredRouteLogged';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { updateWidgetFromSilentPush } from '../../widget/utils/updateWidgetFromSilentPush';
 import { readWidgetRefreshContext } from '../utils/widgetRefreshContext';
@@ -1616,7 +1616,8 @@ async function applyReschedule(
       logger.info('reschedule skip: presched channel retired (#2202) — sleepMode OFF');
       return;
     }
-    const route = parseRoute(routeRaw);
+    // #3177 — 구버전 JSON(stationId 없음)은 공용 파서가 마이그레이션해서 돌려준다.
+    const route = readStoredRouteLogged(routeRaw, destRaw);
     const destinationName = parseDestinationName(destRaw);
     if (!route || !destinationName || !backendTripToken) {
       logger.info(
@@ -1636,15 +1637,6 @@ async function applyReschedule(
     });
   } catch (e) {
     logger.error('reschedule apply 실패:', e);
-  }
-}
-
-function parseRoute(raw: string | null): Route | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as Route;
-  } catch {
-    return null;
   }
 }
 

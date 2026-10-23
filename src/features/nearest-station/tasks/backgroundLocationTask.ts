@@ -16,6 +16,7 @@ import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE
 import { getFiredAlarms, setFiredAlarms } from '../../alarm/utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
 import { logSuppressedGate, logBgTaskHeartbeat } from '../../alarm/utils/alarmLog';
+import { readStoredRouteLogged } from '../../alarm/utils/readStoredRouteLogged';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } from '../../../shared/constants/storageKeys';
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { refreshLiveActivityOnMirrorAdvance } from '../../alarm/utils/refreshLiveActivityFromBackgroundContext';
@@ -363,7 +364,8 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
     // destinationId scoped — 이전 trip의 stale entry는 빈 set으로 반환된다(#462).
     const firedAlarms = await getFiredAlarms(destination.id);
-    const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
+    // #3177 — 구버전 JSON(stationId 없음)은 공용 파서가 마이그레이션해서 돌려준다.
+    const storedRoute: Route = readStoredRouteLogged(routeJson, destJson);
 
     // lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈을 통해
     // AsyncStorage에 직접 read/write 한다 (Foreground 훅과 단일 출처 공유).
