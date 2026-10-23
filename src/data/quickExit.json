@@ -60,66 +60,6 @@
         "doorNumber": "7-3",
         "direction": "up",
         "towardLabel": "시청"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "회현"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "down",
-        "towardLabel": "숙대입구"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "down",
-        "towardLabel": "숙대입구"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "회현"
-      },
-      {
-        "doorNumber": "10-1",
-        "direction": "down",
-        "towardLabel": "숙대입구"
-      },
-      {
-        "doorNumber": "8-2",
-        "direction": "down",
-        "towardLabel": "숙대입구"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "숙대입구"
-      },
-      {
-        "doorNumber": "2-1",
-        "direction": "down",
-        "towardLabel": "숙대입구"
-      },
-      {
-        "doorNumber": "1-4",
-        "direction": "up",
-        "towardLabel": "회현"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "회현"
-      },
-      {
-        "doorNumber": "8-1",
-        "direction": "up",
-        "towardLabel": "회현"
-      },
-      {
-        "doorNumber": "9-4",
-        "direction": "up",
-        "towardLabel": "회현"
       }
     ],
     "elevator": [
@@ -132,16 +72,6 @@
         "doorNumber": "5-1",
         "direction": "up",
         "towardLabel": "시청"
-      },
-      {
-        "doorNumber": "9-1",
-        "direction": "up",
-        "towardLabel": "회현"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "down",
-        "towardLabel": "숙대입구"
       }
     ]
   },
@@ -186,56 +116,6 @@
         "doorNumber": "9-3",
         "direction": "down",
         "towardLabel": "서울역"
-      },
-      {
-        "doorNumber": "9-3",
-        "direction": "down",
-        "towardLabel": "을지로입구"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "을지로입구"
-      },
-      {
-        "doorNumber": "7-4",
-        "direction": "down",
-        "towardLabel": "을지로입구"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "down",
-        "towardLabel": "을지로입구"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "을지로입구"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "up",
-        "towardLabel": "충정로"
-      },
-      {
-        "doorNumber": "3-1",
-        "direction": "up",
-        "towardLabel": "충정로"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "충정로"
-      },
-      {
-        "doorNumber": "6-4",
-        "direction": "up",
-        "towardLabel": "충정로"
-      },
-      {
-        "doorNumber": "9-3",
-        "direction": "up",
-        "towardLabel": "충정로"
       }
     ],
     "elevator": [
@@ -248,16 +128,6 @@
         "doorNumber": "8-3",
         "direction": "down",
         "towardLabel": "서울역"
-      },
-      {
-        "doorNumber": "5-3",
-        "direction": "down",
-        "towardLabel": "을지로입구"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "up",
-        "towardLabel": "충정로"
       }
     ]
   },
@@ -358,106 +228,6 @@
         "doorNumber": "9-3",
         "direction": "down",
         "towardLabel": "종각"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "up",
-        "towardLabel": "안국"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "up",
-        "towardLabel": "안국"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "down",
-        "towardLabel": "을지로3가"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로3가"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로3가"
-      },
-      {
-        "doorNumber": "9-1",
-        "direction": "up",
-        "towardLabel": "안국"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로4가"
       }
     ],
     "elevator": [
@@ -470,36 +240,6 @@
         "doorNumber": "6-4",
         "direction": "down",
         "towardLabel": "종각"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "을지로3가"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "up",
-        "towardLabel": "안국"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "광화문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "광화문"
       }
     ]
   },
@@ -570,86 +310,6 @@
         "doorNumber": "1-3",
         "direction": "down",
         "towardLabel": "종로5가"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "혜화"
-      },
-      {
-        "doorNumber": "7-4",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "8-2",
-        "direction": "up",
-        "towardLabel": "혜화"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "7-4",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "7-4",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "혜화"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "8-2",
-        "direction": "up",
-        "towardLabel": "혜화"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "혜화"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "up",
-        "towardLabel": "혜화"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "혜화"
-      },
-      {
-        "doorNumber": "8-1",
-        "direction": "up",
-        "towardLabel": "혜화"
       }
     ],
     "elevator": [
@@ -662,16 +322,6 @@
         "doorNumber": "2-1",
         "direction": "down",
         "towardLabel": "종로5가"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "혜화"
       }
     ]
   },
@@ -686,11 +336,6 @@
         "doorNumber": "2-1",
         "direction": "down",
         "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "용두"
       }
     ],
     "elevator": [
@@ -703,11 +348,6 @@
         "doorNumber": "8-1",
         "direction": "down",
         "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "신설동"
       }
     ]
   },
@@ -827,126 +467,6 @@
         "doorNumber": "5-3",
         "direction": "down",
         "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "창신"
       }
     ],
     "elevator": [
@@ -974,46 +494,72 @@
         "doorNumber": "7-3",
         "direction": "down",
         "towardLabel": "동대문"
-      },
+      }
+    ]
+  },
+  "2-001": {
+    "stairs": [
       {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "신당"
+        "doorNumber": "9-3",
+        "direction": "down",
+        "towardLabel": "을지로입구"
       },
       {
         "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "을지로입구"
+      },
+      {
+        "doorNumber": "7-4",
+        "direction": "down",
+        "towardLabel": "을지로입구"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "down",
+        "towardLabel": "을지로입구"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "을지로입구"
+      },
+      {
+        "doorNumber": "2-2",
         "direction": "up",
-        "towardLabel": "신당"
+        "towardLabel": "충정로"
+      },
+      {
+        "doorNumber": "3-1",
+        "direction": "up",
+        "towardLabel": "충정로"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "충정로"
+      },
+      {
+        "doorNumber": "6-4",
+        "direction": "up",
+        "towardLabel": "충정로"
+      },
+      {
+        "doorNumber": "9-3",
+        "direction": "up",
+        "towardLabel": "충정로"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-3",
+        "direction": "down",
+        "towardLabel": "을지로입구"
       },
       {
         "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "3-3",
         "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "창신"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "창신"
+        "towardLabel": "충정로"
       }
     ]
   },
@@ -1074,68 +620,6 @@
     ]
   },
   "2-003": {
-    "stairs": [
-      {
-        "doorNumber": "7-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "9-2",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "7-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "9-2",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      }
-    ],
     "elevator": [
       {
         "doorNumber": "8-3",
@@ -1146,16 +630,6 @@
         "doorNumber": "3-2",
         "direction": "down",
         "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "종로3가"
       }
     ]
   },
@@ -1190,66 +664,6 @@
         "doorNumber": "9-1",
         "direction": "down",
         "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "1-4",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "1-4",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "8-1",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "8-1",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "5-3",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "8-1",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "1-4",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
       }
     ],
     "elevator": [
@@ -1260,16 +674,6 @@
       },
       {
         "doorNumber": "8-3",
-        "direction": "down",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "up",
-        "towardLabel": "종로3가"
-      },
-      {
-        "doorNumber": "1-1",
         "direction": "down",
         "towardLabel": "동대문역사문화공원"
       }
@@ -1316,116 +720,6 @@
         "doorNumber": "9-2",
         "direction": "down",
         "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "9-1",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "3-2",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "9-1",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "8-3",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "3-1",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "3-1",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "9-2",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "청구"
       }
     ],
     "elevator": [
@@ -1438,26 +732,6 @@
         "doorNumber": "3-2",
         "direction": "down",
         "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "충무로"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "동대문"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "을지로4가"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "청구"
       }
     ]
   },
@@ -1502,166 +776,6 @@
         "doorNumber": "9-1",
         "direction": "down",
         "towardLabel": "상왕십리"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "동묘앞"
       }
     ],
     "elevator": [
@@ -1674,26 +788,6 @@
         "doorNumber": "7-4",
         "direction": "down",
         "towardLabel": "상왕십리"
-      },
-      {
-        "doorNumber": "5-3",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "down",
-        "towardLabel": "동묘앞"
-      },
-      {
-        "doorNumber": "5-3",
-        "direction": "up",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "down",
-        "towardLabel": "동묘앞"
       }
     ]
   },
@@ -1819,26 +913,6 @@
         "doorNumber": "8-4",
         "direction": "down",
         "towardLabel": "한양대"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "행당"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "up",
-        "towardLabel": "행당"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "마장"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "마장"
       }
     ],
     "elevator": [
@@ -1851,16 +925,6 @@
         "doorNumber": "3-4",
         "direction": "down",
         "towardLabel": "한양대"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "행당"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "마장"
       }
     ]
   },
@@ -1986,46 +1050,6 @@
         "doorNumber": "8-3",
         "direction": "down",
         "towardLabel": "구의"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "어린이대공원"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "up",
-        "towardLabel": "어린이대공원"
-      },
-      {
-        "doorNumber": "6-4",
-        "direction": "up",
-        "towardLabel": "어린이대공원"
-      },
-      {
-        "doorNumber": "2-1",
-        "direction": "down",
-        "towardLabel": "자양"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "down",
-        "towardLabel": "자양"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "자양"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "자양"
-      },
-      {
-        "doorNumber": "6-4",
-        "direction": "up",
-        "towardLabel": "어린이대공원"
       }
     ],
     "elevator": [
@@ -2033,16 +1057,6 @@
         "doorNumber": "5-4",
         "direction": "up",
         "towardLabel": "성수"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "up",
-        "towardLabel": "어린이대공원"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "down",
-        "towardLabel": "자양"
       }
     ]
   },
@@ -2600,56 +1614,6 @@
         "doorNumber": "8-1",
         "direction": "down",
         "towardLabel": "서초"
-      },
-      {
-        "doorNumber": "8-3",
-        "direction": "down",
-        "towardLabel": "남부터미널"
-      },
-      {
-        "doorNumber": "8-3",
-        "direction": "down",
-        "towardLabel": "남부터미널"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "고속터미널"
-      },
-      {
-        "doorNumber": "7-4",
-        "direction": "up",
-        "towardLabel": "고속터미널"
-      },
-      {
-        "doorNumber": "9-4",
-        "direction": "up",
-        "towardLabel": "고속터미널"
-      },
-      {
-        "doorNumber": "3-2",
-        "direction": "up",
-        "towardLabel": "고속터미널"
-      },
-      {
-        "doorNumber": "3-2",
-        "direction": "up",
-        "towardLabel": "고속터미널"
-      },
-      {
-        "doorNumber": "8-2",
-        "direction": "down",
-        "towardLabel": "남부터미널"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "down",
-        "towardLabel": "남부터미널"
-      },
-      {
-        "doorNumber": "2-1",
-        "direction": "down",
-        "towardLabel": "남부터미널"
       }
     ],
     "elevator": [
@@ -2662,16 +1626,6 @@
         "doorNumber": "3-1",
         "direction": "down",
         "towardLabel": "서초"
-      },
-      {
-        "doorNumber": "7-3",
-        "direction": "down",
-        "towardLabel": "남부터미널"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "up",
-        "towardLabel": "고속터미널"
       }
     ]
   },
@@ -2833,36 +1787,6 @@
         "doorNumber": "8-1",
         "direction": "down",
         "towardLabel": "낙성대"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "up",
-        "towardLabel": "총신대입구"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "남태령"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "남태령"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "남태령"
-      },
-      {
-        "doorNumber": "10-4",
-        "direction": "up",
-        "towardLabel": "총신대입구"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "총신대입구"
       }
     ],
     "elevator": [
@@ -2870,16 +1794,6 @@
         "doorNumber": "4-4",
         "direction": "up",
         "towardLabel": "방배"
-      },
-      {
-        "doorNumber": "9-2",
-        "direction": "up",
-        "towardLabel": "총신대입구"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "남태령"
       }
     ]
   },
@@ -3335,7 +2249,7 @@
       }
     ]
   },
-  "1-041": {
+  "2-034": {
     "stairs": [
       {
         "doorNumber": "4-1",
@@ -3513,51 +2427,6 @@
         "doorNumber": "9-3",
         "direction": "down",
         "towardLabel": "당산"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "up",
-        "towardLabel": "양평"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "양평"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "up",
-        "towardLabel": "양평"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "영등포시장"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "down",
-        "towardLabel": "영등포시장"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "영등포시장"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "up",
-        "towardLabel": "양평"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "up",
-        "towardLabel": "양평"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "영등포시장"
       }
     ],
     "elevator": [
@@ -3570,21 +2439,6 @@
         "doorNumber": "3-1",
         "direction": "down",
         "towardLabel": "당산"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "down",
-        "towardLabel": "영등포시장"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "양평"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "영등포시장"
       }
     ]
   },
@@ -3680,41 +2534,6 @@
         "doorNumber": "8-4",
         "direction": "down",
         "towardLabel": "홍대입구"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "망원"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "상수"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "상수"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "망원"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "up",
-        "towardLabel": "망원"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "down",
-        "towardLabel": "상수"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "상수"
       }
     ],
     "elevator": [
@@ -3727,16 +2546,6 @@
         "doorNumber": "4-1",
         "direction": "up",
         "towardLabel": "당산"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "up",
-        "towardLabel": "망원"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "down",
-        "towardLabel": "상수"
       }
     ]
   },
@@ -4005,26 +2814,6 @@
         "doorNumber": "9-1",
         "direction": "up",
         "towardLabel": "아현"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "애오개"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "애오개"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "down",
-        "towardLabel": "서대문"
-      },
-      {
-        "doorNumber": "3-4",
-        "direction": "down",
-        "towardLabel": "서대문"
       }
     ],
     "elevator": [
@@ -4037,16 +2826,22 @@
         "doorNumber": "2-1",
         "direction": "up",
         "towardLabel": "아현"
-      },
+      }
+    ]
+  },
+  "2-205": {
+    "stairs": [
       {
-        "doorNumber": "6-2",
+        "doorNumber": "1-1",
         "direction": "down",
-        "towardLabel": "서대문"
-      },
+        "towardLabel": "용두"
+      }
+    ],
+    "elevator": [
       {
-        "doorNumber": "3-3",
+        "doorNumber": "4-4",
         "direction": "up",
-        "towardLabel": "애오개"
+        "towardLabel": "신설동"
       }
     ]
   },
@@ -4173,21 +2968,6 @@
         "doorNumber": "9-3",
         "direction": "up",
         "towardLabel": "구파발"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "구산"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "구산"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "구산"
       }
     ],
     "elevator": [
@@ -4200,11 +2980,6 @@
         "doorNumber": "6-1",
         "direction": "up",
         "towardLabel": "구파발"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "구산"
       }
     ]
   },
@@ -4249,36 +3024,6 @@
         "doorNumber": "9-1",
         "direction": "down",
         "towardLabel": "녹번"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "독바위"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "독바위"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "독바위"
-      },
-      {
-        "doorNumber": "2-2",
-        "direction": "down",
-        "towardLabel": "독바위"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "독바위"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "독바위"
       }
     ],
     "elevator": [
@@ -4291,16 +3036,6 @@
         "doorNumber": "8-2",
         "direction": "down",
         "towardLabel": "녹번"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "독바위"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "down",
-        "towardLabel": "독바위"
       }
     ]
   },
@@ -4690,6 +3425,128 @@
       }
     ]
   },
+  "3-021": {
+    "stairs": [
+      {
+        "doorNumber": "10-4",
+        "direction": "up",
+        "towardLabel": "안국"
+      },
+      {
+        "doorNumber": "10-4",
+        "direction": "up",
+        "towardLabel": "안국"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "down",
+        "towardLabel": "을지로3가"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로3가"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로3가"
+      },
+      {
+        "doorNumber": "9-1",
+        "direction": "up",
+        "towardLabel": "안국"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "을지로3가"
+      },
+      {
+        "doorNumber": "4-3",
+        "direction": "up",
+        "towardLabel": "안국"
+      }
+    ]
+  },
+  "3-022": {
+    "stairs": [
+      {
+        "doorNumber": "7-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "9-2",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "7-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "4-3",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "9-2",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      }
+    ]
+  },
   "3-023": {
     "stairs": [
       {
@@ -4711,111 +3568,6 @@
         "doorNumber": "6-3",
         "direction": "up",
         "towardLabel": "을지로3가"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "6-3",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "1-4",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "9-1",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "명동"
-      },
-      {
-        "doorNumber": "9-4",
-        "direction": "down",
-        "towardLabel": "명동"
       }
     ],
     "elevator": [
@@ -4828,16 +3580,6 @@
         "doorNumber": "7-4",
         "direction": "up",
         "towardLabel": "을지로3가"
-      },
-      {
-        "doorNumber": "8-1",
-        "direction": "up",
-        "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "down",
-        "towardLabel": "명동"
       }
     ]
   },
@@ -4928,46 +3670,6 @@
         "doorNumber": "4-4",
         "direction": "down",
         "towardLabel": "금호"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "up",
-        "towardLabel": "버티고개"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "down",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "5-3",
-        "direction": "down",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "버티고개"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "up",
-        "towardLabel": "버티고개"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "down",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "5-3",
-        "direction": "down",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "버티고개"
       }
     ],
     "elevator": [
@@ -4980,36 +3682,6 @@
         "doorNumber": "8-4",
         "direction": "up",
         "towardLabel": "동대입구"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "up",
-        "towardLabel": "버티고개"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "down",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "버티고개"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "up",
-        "towardLabel": "버티고개"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "down",
-        "towardLabel": "청구"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "버티고개"
       }
     ]
   },
@@ -5414,76 +4086,6 @@
         "doorNumber": "9-2",
         "direction": "down",
         "towardLabel": "교대"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "반포"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "반포"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "up",
-        "towardLabel": "반포"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "내방"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "down",
-        "towardLabel": "내방"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "내방"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "up",
-        "towardLabel": "반포"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "up",
-        "towardLabel": "반포"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "내방"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "내방"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "반포"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "down",
-        "towardLabel": "내방"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "up",
-        "towardLabel": "반포"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "down",
-        "towardLabel": "내방"
       }
     ],
     "elevator": [
@@ -5496,16 +4098,72 @@
         "doorNumber": "3-3",
         "direction": "down",
         "towardLabel": "교대"
+      }
+    ]
+  },
+  "3-032": {
+    "stairs": [
+      {
+        "doorNumber": "8-3",
+        "direction": "down",
+        "towardLabel": "남부터미널"
+      },
+      {
+        "doorNumber": "8-3",
+        "direction": "down",
+        "towardLabel": "남부터미널"
       },
       {
         "doorNumber": "3-3",
         "direction": "up",
-        "towardLabel": "반포"
+        "towardLabel": "고속터미널"
       },
       {
-        "doorNumber": "6-2",
+        "doorNumber": "7-4",
+        "direction": "up",
+        "towardLabel": "고속터미널"
+      },
+      {
+        "doorNumber": "9-4",
+        "direction": "up",
+        "towardLabel": "고속터미널"
+      },
+      {
+        "doorNumber": "3-2",
+        "direction": "up",
+        "towardLabel": "고속터미널"
+      },
+      {
+        "doorNumber": "3-2",
+        "direction": "up",
+        "towardLabel": "고속터미널"
+      },
+      {
+        "doorNumber": "8-2",
         "direction": "down",
-        "towardLabel": "내방"
+        "towardLabel": "남부터미널"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "down",
+        "towardLabel": "남부터미널"
+      },
+      {
+        "doorNumber": "2-1",
+        "direction": "down",
+        "towardLabel": "남부터미널"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "7-3",
+        "direction": "down",
+        "towardLabel": "남부터미널"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "up",
+        "towardLabel": "고속터미널"
       }
     ]
   },
@@ -6184,56 +4842,6 @@
         "doorNumber": "9-3",
         "direction": "down",
         "towardLabel": "오금"
-      },
-      {
-        "doorNumber": "8-2",
-        "direction": "up",
-        "towardLabel": "방이"
-      },
-      {
-        "doorNumber": "1-3",
-        "direction": "down",
-        "towardLabel": "개롱"
-      },
-      {
-        "doorNumber": "1-3",
-        "direction": "down",
-        "towardLabel": "개롱"
-      },
-      {
-        "doorNumber": "8-2",
-        "direction": "up",
-        "towardLabel": "방이"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "방이"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "up",
-        "towardLabel": "방이"
-      },
-      {
-        "doorNumber": "8-2",
-        "direction": "up",
-        "towardLabel": "방이"
-      },
-      {
-        "doorNumber": "1-3",
-        "direction": "down",
-        "towardLabel": "개롱"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "down",
-        "towardLabel": "개롱"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "down",
-        "towardLabel": "개롱"
       }
     ],
     "elevator": [
@@ -6246,26 +4854,6 @@
         "doorNumber": "6-4",
         "direction": "down",
         "towardLabel": "오금"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "방이"
-      },
-      {
-        "doorNumber": "5-1",
-        "direction": "down",
-        "towardLabel": "개롱"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "방이"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "개롱"
       }
     ]
   },
@@ -6359,126 +4947,6 @@
         "doorNumber": "9-3",
         "direction": "down",
         "towardLabel": "창동"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "4-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "5-4",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "down",
-        "towardLabel": "중계"
       }
     ],
     "elevator": [
@@ -6486,30 +4954,10 @@
         "doorNumber": "8-4",
         "direction": "up",
         "towardLabel": "상계"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "마들"
-      },
-      {
-        "doorNumber": "4-3",
-        "direction": "down",
-        "towardLabel": "중계"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "마들"
       }
     ]
   },
-  "1-017": {
+  "4-004": {
     "stairs": [
       {
         "doorNumber": "NA-NA",
@@ -7028,6 +5476,339 @@
       }
     ]
   },
+  "4-013": {
+    "stairs": [
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "혜화"
+      },
+      {
+        "doorNumber": "7-4",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "8-2",
+        "direction": "up",
+        "towardLabel": "혜화"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "7-4",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "7-4",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "혜화"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "8-2",
+        "direction": "up",
+        "towardLabel": "혜화"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "혜화"
+      },
+      {
+        "doorNumber": "5-4",
+        "direction": "up",
+        "towardLabel": "혜화"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "혜화"
+      },
+      {
+        "doorNumber": "8-1",
+        "direction": "up",
+        "towardLabel": "혜화"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "혜화"
+      }
+    ]
+  },
+  "4-014": {
+    "stairs": [
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "9-1",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "3-2",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "9-1",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "10-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "8-3",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "3-1",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "3-1",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "동대문"
+      },
+      {
+        "doorNumber": "9-2",
+        "direction": "up",
+        "towardLabel": "동대문"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "충무로"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "동대문"
+      }
+    ]
+  },
+  "4-015": {
+    "stairs": [
+      {
+        "doorNumber": "4-2",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "1-4",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "9-1",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "명동"
+      },
+      {
+        "doorNumber": "9-4",
+        "direction": "down",
+        "towardLabel": "명동"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "8-1",
+        "direction": "up",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "down",
+        "towardLabel": "명동"
+      }
+    ]
+  },
   "4-016": {
     "stairs": [
       {
@@ -7200,6 +5981,82 @@
       }
     ]
   },
+  "4-018": {
+    "stairs": [
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "회현"
+      },
+      {
+        "doorNumber": "10-4",
+        "direction": "down",
+        "towardLabel": "숙대입구"
+      },
+      {
+        "doorNumber": "10-4",
+        "direction": "down",
+        "towardLabel": "숙대입구"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "회현"
+      },
+      {
+        "doorNumber": "10-1",
+        "direction": "down",
+        "towardLabel": "숙대입구"
+      },
+      {
+        "doorNumber": "8-2",
+        "direction": "down",
+        "towardLabel": "숙대입구"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "숙대입구"
+      },
+      {
+        "doorNumber": "2-1",
+        "direction": "down",
+        "towardLabel": "숙대입구"
+      },
+      {
+        "doorNumber": "1-4",
+        "direction": "up",
+        "towardLabel": "회현"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "회현"
+      },
+      {
+        "doorNumber": "8-1",
+        "direction": "up",
+        "towardLabel": "회현"
+      },
+      {
+        "doorNumber": "9-4",
+        "direction": "up",
+        "towardLabel": "회현"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "9-1",
+        "direction": "up",
+        "towardLabel": "회현"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "down",
+        "towardLabel": "숙대입구"
+      }
+    ]
+  },
   "4-019": {
     "stairs": [
       {
@@ -7277,26 +6134,6 @@
         "doorNumber": "9-3",
         "direction": "down",
         "towardLabel": "신용산"
-      },
-      {
-        "doorNumber": "8-1",
-        "direction": "down",
-        "towardLabel": "녹사평"
-      },
-      {
-        "doorNumber": "7-1",
-        "direction": "down",
-        "towardLabel": "녹사평"
-      },
-      {
-        "doorNumber": "1-4",
-        "direction": "up",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "2-4",
-        "direction": "up",
-        "towardLabel": "효창공원앞"
       }
     ],
     "elevator": [
@@ -7309,36 +6146,6 @@
         "doorNumber": "7-2",
         "direction": "down",
         "towardLabel": "신용산"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "녹사평"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "녹사평"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "down",
-        "towardLabel": "녹사평"
       }
     ]
   },
@@ -7459,6 +6266,52 @@
         "doorNumber": "8-3",
         "direction": "down",
         "towardLabel": "사당"
+      }
+    ]
+  },
+  "4-025": {
+    "stairs": [
+      {
+        "doorNumber": "10-4",
+        "direction": "up",
+        "towardLabel": "총신대입구"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "남태령"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "남태령"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "남태령"
+      },
+      {
+        "doorNumber": "10-4",
+        "direction": "up",
+        "towardLabel": "총신대입구"
+      },
+      {
+        "doorNumber": "6-3",
+        "direction": "up",
+        "towardLabel": "총신대입구"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "9-2",
+        "direction": "up",
+        "towardLabel": "총신대입구"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "남태령"
       }
     ]
   },
@@ -8032,6 +6885,72 @@
       }
     ]
   },
+  "5-014": {
+    "stairs": [
+      {
+        "doorNumber": "2-4",
+        "direction": "up",
+        "towardLabel": "양평"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "양평"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "up",
+        "towardLabel": "양평"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "영등포시장"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "down",
+        "towardLabel": "영등포시장"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "영등포시장"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "up",
+        "towardLabel": "양평"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "up",
+        "towardLabel": "양평"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "영등포시장"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-4",
+        "direction": "down",
+        "towardLabel": "영등포시장"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "양평"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "영등포시장"
+      }
+    ]
+  },
   "5-015": {
     "stairs": [
       {
@@ -8068,7 +6987,7 @@
       }
     ]
   },
-  "1-039": {
+  "5-016": {
     "stairs": [
       {
         "doorNumber": "7-3",
@@ -8328,56 +7247,6 @@
         "doorNumber": "4-3",
         "direction": "down",
         "towardLabel": "애오개"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "대흥"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "대흥"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "대흥"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "up",
-        "towardLabel": "대흥"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "대흥"
-      },
-      {
-        "doorNumber": "3-3",
-        "direction": "down",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "효창공원앞"
       }
     ],
     "elevator": [
@@ -8390,26 +7259,6 @@
         "doorNumber": "1-1",
         "direction": "up",
         "towardLabel": "마포"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "up",
-        "towardLabel": "대흥"
-      },
-      {
-        "doorNumber": "4-4",
-        "direction": "down",
-        "towardLabel": "효창공원앞"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "up",
-        "towardLabel": "대흥"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "down",
-        "towardLabel": "효창공원앞"
       }
     ]
   },
@@ -8446,6 +7295,42 @@
         "doorNumber": "5-1",
         "direction": "down",
         "towardLabel": "충정로"
+      }
+    ]
+  },
+  "5-022": {
+    "stairs": [
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "애오개"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "애오개"
+      },
+      {
+        "doorNumber": "5-4",
+        "direction": "down",
+        "towardLabel": "서대문"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "서대문"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "서대문"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "애오개"
       }
     ]
   },
@@ -8551,6 +7436,204 @@
       }
     ]
   },
+  "5-025": {
+    "stairs": [
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "광화문"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "광화문"
+      }
+    ]
+  },
+  "5-026": {
+    "stairs": [
+      {
+        "doorNumber": "1-4",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "1-4",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "8-1",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "8-1",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "5-3",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "8-1",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      },
+      {
+        "doorNumber": "1-4",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "10-4",
+        "direction": "up",
+        "towardLabel": "종로3가"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "동대문역사문화공원"
+      }
+    ]
+  },
+  "5-027": {
+    "stairs": [
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "청구"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "을지로4가"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "청구"
+      }
+    ]
+  },
   "5-028": {
     "stairs": [
       {
@@ -8572,26 +7655,6 @@
         "doorNumber": "4-4",
         "direction": "down",
         "towardLabel": "신금호"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "약수"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "up",
-        "towardLabel": "약수"
-      },
-      {
-        "doorNumber": "6-1",
-        "direction": "down",
-        "towardLabel": "신당"
       }
     ],
     "elevator": [
@@ -8604,26 +7667,6 @@
         "doorNumber": "4-1",
         "direction": "up",
         "towardLabel": "동대문역사문화공원"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "up",
-        "towardLabel": "약수"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "신당"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "up",
-        "towardLabel": "약수"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "신당"
       }
     ]
   },
@@ -8716,6 +7759,42 @@
         "doorNumber": "5-1",
         "direction": "down",
         "towardLabel": "왕십리"
+      }
+    ]
+  },
+  "5-031": {
+    "stairs": [
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "행당"
+      },
+      {
+        "doorNumber": "4-3",
+        "direction": "up",
+        "towardLabel": "행당"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "마장"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "마장"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "행당"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "마장"
       }
     ]
   },
@@ -8858,26 +7937,6 @@
         "doorNumber": "1-1",
         "direction": "down",
         "towardLabel": "아차산"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "up",
-        "towardLabel": "중곡"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "up",
-        "towardLabel": "중곡"
-      },
-      {
-        "doorNumber": "2-3",
-        "direction": "down",
-        "towardLabel": "어린이대공원"
-      },
-      {
-        "doorNumber": "7-2",
-        "direction": "down",
-        "towardLabel": "어린이대공원"
       }
     ],
     "elevator": [
@@ -9190,6 +8249,82 @@
       }
     ]
   },
+  "5-043": {
+    "stairs": [
+      {
+        "doorNumber": "8-2",
+        "direction": "up",
+        "towardLabel": "방이"
+      },
+      {
+        "doorNumber": "1-3",
+        "direction": "down",
+        "towardLabel": "개롱"
+      },
+      {
+        "doorNumber": "1-3",
+        "direction": "down",
+        "towardLabel": "개롱"
+      },
+      {
+        "doorNumber": "8-2",
+        "direction": "up",
+        "towardLabel": "방이"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "방이"
+      },
+      {
+        "doorNumber": "5-4",
+        "direction": "up",
+        "towardLabel": "방이"
+      },
+      {
+        "doorNumber": "8-2",
+        "direction": "up",
+        "towardLabel": "방이"
+      },
+      {
+        "doorNumber": "1-3",
+        "direction": "down",
+        "towardLabel": "개롱"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "down",
+        "towardLabel": "개롱"
+      },
+      {
+        "doorNumber": "5-4",
+        "direction": "down",
+        "towardLabel": "개롱"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "방이"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "down",
+        "towardLabel": "개롱"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "방이"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "개롱"
+      }
+    ]
+  },
   "5-044": {
     "stairs": [
       {
@@ -9368,6 +8503,52 @@
       }
     ]
   },
+  "6-003": {
+    "stairs": [
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "독바위"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "독바위"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "독바위"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "독바위"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "독바위"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "독바위"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "독바위"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "down",
+        "towardLabel": "독바위"
+      }
+    ]
+  },
   "6-004": {
     "stairs": [
       {
@@ -9391,6 +8572,32 @@
         "doorNumber": "3-2",
         "direction": "down",
         "towardLabel": "연신내"
+      }
+    ]
+  },
+  "6-005": {
+    "stairs": [
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "구산"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "구산"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "구산"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "구산"
       }
     ]
   },
@@ -9696,6 +8903,57 @@
       }
     ]
   },
+  "6-013": {
+    "stairs": [
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "망원"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "상수"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "상수"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "망원"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "up",
+        "towardLabel": "망원"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "down",
+        "towardLabel": "상수"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "상수"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "4-2",
+        "direction": "up",
+        "towardLabel": "망원"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "down",
+        "towardLabel": "상수"
+      }
+    ]
+  },
   "6-014": {
     "stairs": [
       {
@@ -9834,6 +9092,82 @@
       }
     ]
   },
+  "6-017": {
+    "stairs": [
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "대흥"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "대흥"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "대흥"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "대흥"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "대흥"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "down",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "효창공원앞"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "대흥"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "down",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "대흥"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "효창공원앞"
+      }
+    ]
+  },
   "6-018": {
     "stairs": [
       {
@@ -9887,6 +9221,62 @@
         "doorNumber": "4-2",
         "direction": "down",
         "towardLabel": "삼각지"
+      }
+    ]
+  },
+  "6-019": {
+    "stairs": [
+      {
+        "doorNumber": "8-1",
+        "direction": "down",
+        "towardLabel": "녹사평"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "녹사평"
+      },
+      {
+        "doorNumber": "1-4",
+        "direction": "up",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "up",
+        "towardLabel": "효창공원앞"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "녹사평"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "녹사평"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "효창공원앞"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "down",
+        "towardLabel": "녹사평"
       }
     ]
   },
@@ -10111,6 +9501,480 @@
         "doorNumber": "5-3",
         "direction": "down",
         "towardLabel": "약수"
+      }
+    ]
+  },
+  "6-024": {
+    "stairs": [
+      {
+        "doorNumber": "5-4",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "down",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "5-3",
+        "direction": "down",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      },
+      {
+        "doorNumber": "5-4",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "down",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "5-3",
+        "direction": "down",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-1",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "down",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "down",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "버티고개"
+      }
+    ]
+  },
+  "6-025": {
+    "stairs": [
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "약수"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "약수"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "down",
+        "towardLabel": "신당"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "6-2",
+        "direction": "up",
+        "towardLabel": "약수"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "up",
+        "towardLabel": "약수"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "신당"
+      }
+    ]
+  },
+  "6-026": {
+    "stairs": [
+      {
+        "doorNumber": "2-2",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "6-1",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "3-4",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-3",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      },
+      {
+        "doorNumber": "5-3",
+        "direction": "up",
+        "towardLabel": "청구"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "down",
+        "towardLabel": "동묘앞"
+      }
+    ]
+  },
+  "6-027": {
+    "stairs": [
+      {
+        "doorNumber": "4-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "4-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "7-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "2-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "신당"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "창신"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "창신"
       }
     ]
   },
@@ -10626,7 +10490,7 @@
       }
     ]
   },
-  "1-021": {
+  "6-035": {
     "stairs": [
       {
         "doorNumber": "1-1",
@@ -10752,7 +10616,7 @@
       }
     ]
   },
-  "7-009": {
+  "6-036": {
     "stairs": [
       {
         "doorNumber": "3-2",
@@ -10807,36 +10671,6 @@
       {
         "doorNumber": "3-2",
         "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "먹골"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "down",
-        "towardLabel": "먹골"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "먹골"
-      },
-      {
-        "doorNumber": "3-2",
-        "direction": "up",
         "towardLabel": "석계"
       },
       {
@@ -10883,36 +10717,6 @@
         "doorNumber": "1-1",
         "direction": "down",
         "towardLabel": "화랑대"
-      },
-      {
-        "doorNumber": "3-2",
-        "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "5-2",
-        "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "8-4",
-        "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "1-1",
-        "direction": "down",
-        "towardLabel": "먹골"
-      },
-      {
-        "doorNumber": "4-2",
-        "direction": "down",
-        "towardLabel": "먹골"
-      },
-      {
-        "doorNumber": "6-2",
-        "direction": "down",
-        "towardLabel": "먹골"
       }
     ],
     "elevator": [
@@ -10927,16 +10731,6 @@
         "towardLabel": "화랑대"
       },
       {
-        "doorNumber": "6-4",
-        "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "3-1",
-        "direction": "down",
-        "towardLabel": "먹골"
-      },
-      {
         "doorNumber": "5-3",
         "direction": "up",
         "towardLabel": "석계"
@@ -10945,16 +10739,6 @@
         "doorNumber": "3-4",
         "direction": "down",
         "towardLabel": "화랑대"
-      },
-      {
-        "doorNumber": "6-4",
-        "direction": "up",
-        "towardLabel": "공릉"
-      },
-      {
-        "doorNumber": "3-1",
-        "direction": "down",
-        "towardLabel": "먹골"
       }
     ]
   },
@@ -11140,7 +10924,7 @@
       }
     ]
   },
-  "1-014": {
+  "7-002": {
     "stairs": [
       {
         "doorNumber": "1-1",
@@ -11345,6 +11129,152 @@
         "doorNumber": "8-4",
         "direction": "up",
         "towardLabel": "수락산"
+      }
+    ]
+  },
+  "7-005": {
+    "stairs": [
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "5-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "5-4",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "3-3",
+        "direction": "down",
+        "towardLabel": "중계"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "4-3",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "마들"
+      },
+      {
+        "doorNumber": "4-3",
+        "direction": "down",
+        "towardLabel": "중계"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "마들"
       }
     ]
   },
@@ -11603,6 +11533,92 @@
         "doorNumber": "2-2",
         "direction": "down",
         "towardLabel": "태릉입구"
+      }
+    ]
+  },
+  "7-009": {
+    "stairs": [
+      {
+        "doorNumber": "3-2",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "먹골"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "down",
+        "towardLabel": "먹골"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "먹골"
+      },
+      {
+        "doorNumber": "3-2",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "5-2",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "8-4",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "먹골"
+      },
+      {
+        "doorNumber": "4-2",
+        "direction": "down",
+        "towardLabel": "먹골"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "먹골"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "6-4",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "3-1",
+        "direction": "down",
+        "towardLabel": "먹골"
+      },
+      {
+        "doorNumber": "6-4",
+        "direction": "up",
+        "towardLabel": "공릉"
+      },
+      {
+        "doorNumber": "3-1",
+        "direction": "down",
+        "towardLabel": "먹골"
       }
     ]
   },
@@ -11913,6 +11929,30 @@
       }
     ]
   },
+  "7-017": {
+    "stairs": [
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "중곡"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "up",
+        "towardLabel": "중곡"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "어린이대공원"
+      },
+      {
+        "doorNumber": "7-2",
+        "direction": "down",
+        "towardLabel": "어린이대공원"
+      }
+    ]
+  },
   "7-018": {
     "stairs": [
       {
@@ -11946,6 +11986,98 @@
         "doorNumber": "6-2",
         "direction": "down",
         "towardLabel": "건대입구"
+      }
+    ]
+  },
+  "7-019": {
+    "stairs": [
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "어린이대공원"
+      },
+      {
+        "doorNumber": "4-3",
+        "direction": "up",
+        "towardLabel": "어린이대공원"
+      },
+      {
+        "doorNumber": "6-4",
+        "direction": "up",
+        "towardLabel": "어린이대공원"
+      },
+      {
+        "doorNumber": "2-1",
+        "direction": "down",
+        "towardLabel": "자양"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "down",
+        "towardLabel": "자양"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "자양"
+      },
+      {
+        "doorNumber": "1-1",
+        "direction": "down",
+        "towardLabel": "자양"
+      },
+      {
+        "doorNumber": "6-4",
+        "direction": "up",
+        "towardLabel": "어린이대공원"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "5-4",
+        "direction": "up",
+        "towardLabel": "어린이대공원"
+      },
+      {
+        "doorNumber": "4-1",
+        "direction": "down",
+        "towardLabel": "자양"
+      }
+    ]
+  },
+  "7-020": {
+    "stairs": [
+      {
+        "doorNumber": "3-2",
+        "direction": "up",
+        "towardLabel": "건대입구"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "up",
+        "towardLabel": "건대입구"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "down",
+        "towardLabel": "청담"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "청담"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "1-4",
+        "direction": "up",
+        "towardLabel": "건대입구"
+      },
+      {
+        "doorNumber": "7-4",
+        "direction": "down",
+        "towardLabel": "청담"
       }
     ]
   },
@@ -12116,6 +12248,92 @@
         "doorNumber": "4-4",
         "direction": "down",
         "towardLabel": "고속터미널"
+      }
+    ]
+  },
+  "7-026": {
+    "stairs": [
+      {
+        "doorNumber": "2-3",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "2-3",
+        "direction": "down",
+        "towardLabel": "내방"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "down",
+        "towardLabel": "내방"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "내방"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "내방"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "down",
+        "towardLabel": "내방"
+      },
+      {
+        "doorNumber": "4-4",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "5-1",
+        "direction": "down",
+        "towardLabel": "내방"
+      },
+      {
+        "doorNumber": "7-1",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "2-4",
+        "direction": "down",
+        "towardLabel": "내방"
+      }
+    ],
+    "elevator": [
+      {
+        "doorNumber": "3-3",
+        "direction": "up",
+        "towardLabel": "반포"
+      },
+      {
+        "doorNumber": "6-2",
+        "direction": "down",
+        "towardLabel": "내방"
       }
     ]
   },
