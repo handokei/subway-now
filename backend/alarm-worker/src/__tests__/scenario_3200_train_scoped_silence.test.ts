@@ -13,7 +13,8 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../index';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { markPromptSilenced, isPromptSilencedForTrain } from '../boardingPrompt';
+import { markPromptFired, markPromptSilenced, isPromptSilencedForTrain } from '../boardingPrompt';
+import { selfPollKey } from '../selfPollPosition';
 import { runScheduled, type ScheduledDeps } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import { getTrip, putTrip } from '../trips';
@@ -317,5 +318,100 @@ describe('#3200 — writer 경로 전수 (HTTP): dismiss · boarding-confirm not
     );
     const stored = await getTrip(kv as unknown as KVNamespace, PATHS[0].token);
     expect(stored?.boardingPromptState?.silencedTrainCode).toBe('TR-A');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 리뷰 반영 — (1) 비용: 무음 창의 추가 KV read 금지 (2) D1 transition 'silenced-train' (3) 새 발사가 무음 해제
+// ---------------------------------------------------------------------------
+
+function captureEventInserts(): { db: Env['DB']; inserts: unknown[][] } {
+  const inserts: unknown[][] = [];
+  const run = vi.fn().mockResolvedValue({ success: true });
+  const prepare = vi.fn().mockImplementation((sql: string) => ({
+    bind: (...args: unknown[]) => {
+      if (sql.includes('trip_events')) inserts.push(args);
+      return { run };
+    },
+  }));
+  return { db: { prepare } as unknown as Env['DB'], inserts };
+}
+
+class CountingKV extends InMemoryKV {
+  gets: string[] = [];
+  override async get(key: string, ...rest: unknown[]): Promise<never> {
+    this.gets.push(key);
+    return (super.get as unknown as (k: string, ...r: unknown[]) => Promise<never>)(key, ...rest);
+  }
+}
+
+describe.each(PATHS)('#3200 리뷰 — $name: 비용·관측', (path) => {
+  const { token, stateKey } = path;
+
+  async function runCycle(kv: InMemoryKV, env: Env, at: number, trainCode: string): Promise<void> {
+    await runScheduled(env, {
+      seoul: makeSeoul('강남', [train(trainCode, 1)]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => at,
+      fetchImpl: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+      generatePushId: () => `push-${at}`,
+      archFlag: 'on',
+    });
+  }
+
+  it('같은 열차 재관측으로 무음 차단 시 D1 transition(outcome=silenced-train)을 남긴다', async () => {
+    const { db, inserts } = captureEventInserts();
+    const kv = new InMemoryKV();
+    const env = { ...makeEnv(kv), DB: db } as Env;
+    await putTrip(kv as unknown as KVNamespace, path.makeTrip());
+    await runCycle(kv, env, NOW, 'TR-A');
+    const trip = (await getTrip(kv as unknown as KVNamespace, token)) as Trip;
+    await putTrip(kv as unknown as KVNamespace, {
+      ...trip,
+      [stateKey]: markPromptSilenced(trip[stateKey], NOW + 30_000),
+    });
+    await runCycle(kv, env, NOW + 2 * MIN, 'TR-A');
+    await runCycle(kv, env, NOW + 3 * MIN, 'TR-A');
+    const outcomes = inserts
+      .filter((a) => a[2] === 'leg-boarding-prompt')
+      .map((a) => (JSON.parse(a[5] as string) as { outcome?: string }).outcome);
+    expect(outcomes).toContain('silenced-train');
+  });
+
+  it('열차 단위 무음 창에서는 prompt 경로가 self-poll position KV를 추가로 읽지 않는다', async () => {
+    async function readsDuringBlockedCycle(withSilence: boolean): Promise<number> {
+      const kv = new CountingKV();
+      const env = makeEnv(kv);
+      await putTrip(kv as unknown as KVNamespace, path.makeTrip());
+      await runCycle(kv, env, NOW, 'TR-A');
+      const trip = (await getTrip(kv as unknown as KVNamespace, token)) as Trip;
+      await putTrip(kv as unknown as KVNamespace, {
+        ...trip,
+        [stateKey]: withSilence ? markPromptSilenced(trip[stateKey], NOW + 30_000) : trip[stateKey],
+      });
+      kv.gets = [];
+      await runCycle(kv, env, NOW + 2 * MIN, 'TR-A'); // A는 소진 -> 두 경우 모두 발사 0
+      return kv.gets.filter((k) => k.startsWith(selfPollKey('2' as never).split('2')[0])).length;
+    }
+    const control = await readsDuringBlockedCycle(false);
+    const silenced = await readsDuringBlockedCycle(true);
+    expect(silenced).toBeLessThan(control);
+  });
+});
+
+describe('#3200 리뷰 — 새 발사는 이전 무음을 해제한다', () => {
+  it('markPromptFired는 silencedUntil/silencedTrainCode를 승계하지 않는다', () => {
+    const silenced: BoardingPromptState = {
+      fired: true,
+      fireCount: 1,
+      firedTrainCodes: ['A:imminent'],
+      silencedUntil: 99_999,
+      silencedTrainCode: 'A',
+    };
+    const next = markPromptFired(2000, silenced, 'B:imminent');
+    expect(next.silencedUntil).toBeUndefined();
+    expect(next.silencedTrainCode).toBeUndefined();
+    expect(next.firedTrainCodes).toEqual(['A:imminent', 'B:imminent']);
   });
 });
