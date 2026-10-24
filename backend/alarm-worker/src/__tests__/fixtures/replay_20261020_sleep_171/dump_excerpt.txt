@@ -1,0 +1,10 @@
+
+## BoardingLock Lifecycle (8) (buffer age since launch = 14110s)
+09:45:39 | lock-release:destination-change | 7090(7)
+09:38:54 | lock-create:boarding-prompt-response | 7090(7) station=7-019
+09:33:11 | lock-release:transfer | 2098(2)
+09:26:18 | lock-create:user-tap | 2098(2) station=2-010
+06:44:57 | lock-release:destination-change | 3013(2)
+06:36:30 | lock-create:user-tap | 3013(2) station=2-012
+06:35:48 | lock-release:transfer | 7035(7)
+06:27:54 | lock-create:user-tap | 7035(7) station=7-015

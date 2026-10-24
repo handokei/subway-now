@@ -1,0 +1,13 @@
+flowchart LR
+    User["🧑 사용자"] -->|"목적지 설정"| App["📱 subway-now"]
+
+    App --> F1["🛰️ 실시간 역 감지<br/>(GPS + 4 신호 fusion)"]
+    App --> F2["🚇 실시간 도착 정보<br/>(Seoul API + BFF cache)"]
+    App --> F3["🔔 자동 안내 알람<br/>(환승 / 하차)"]
+    App --> F4["📊 iOS 위젯 + LA<br/>(Dynamic Island)"]
+    App --> F5["🗺️ 경로 탐색<br/>(다국어 ko/en/ja/zh)"]
+    App --> F6["⭐ 즐겨찾기 · 취침모드"]
+
+    F1 --> Fusion["🌊 4 신호 합의 게이트<br/>(ADR-015)"]
+    F2 --> BFF["☁️ Cloudflare Workers BFF"]
+    F3 --> Push["🍎 APNs silent push"]

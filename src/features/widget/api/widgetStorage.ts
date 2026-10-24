@@ -1,0 +1,103 @@
+import { Platform } from 'react-native';
+import { requireOptionalNativeModule } from 'expo-modules-core';
+import * as LiveActivity from 'live-activity';
+import { Station } from '../../../shared/types/station';
+
+// #1781 — trip 맥락 write를 위한 native module 직접 참조.
+// live-activity/index.ts의 4-param saveWidgetStation 시그니처를 변경하지 않고
+// saveWidgetTripContext를 네이티브에 직접 호출한다 (backward compat 보존).
+const LiveActivityNative =
+  Platform.OS === 'ios'
+    ? (requireOptionalNativeModule('LiveActivity') as {
+        saveWidgetTripContext?: (
+          currentStationName: string | null,
+          destinationName: string | null,
+          nextTransferName: string | null,
+          tripActive: boolean,
+        ) => Promise<void>;
+      } | null)
+    : null;
+
+// 위젯 거리 표시는 50m 단위로 의미가 있다고 보고, 같은 역 + 같은 50m 버킷일 때만
+// WidgetCenter.reloadAllTimelines 호출을 dedupe 한다. 같은 역이라도 버킷이
+// 바뀌면(예: 500m → 450m) 위젯이 stale 상태로 남지 않도록 재전달한다.
+const DISTANCE_BUCKET_M = 50;
+
+// 같은 역+버킷에 머물러도 위젯의 savedAt이 stale로 표시되지 않도록 강제로 재전달하는
+// 최소 간격. 위젯 측 stale 임계(10분)보다 작아야 의미가 있다.
+const FRESHNESS_REFRESH_MS = 5 * 60 * 1000;
+
+let lastDedupeKey: string | null = null;
+let lastSavedAt: number | null = null;
+
+function distanceBucket(distanceKm: number): number {
+  const distanceM = Math.max(0, Math.round(distanceKm * 1000));
+  return Math.floor(distanceM / DISTANCE_BUCKET_M);
+}
+
+/**
+ * R9-a (#1612) — `options.force` 시 module-level dedupe 우회.
+ *
+ * 기본(미전달/false)은 기존 dedupe 동작 그대로 — GPS tick 폭주 흡수, 5분 freshness 윈도우.
+ * AppState 'active' 복귀 같이 위젯 FG stale 회복이 명시적으로 필요한 caller만 force=true를 지정한다.
+ * dedupe key/savedAt도 force 경로에서 갱신해 다음 정상 호출이 같은 bucket이어도 freshness가
+ * 일관되게 stamp되도록 한다.
+ */
+export interface SaveStationToWidgetOptions {
+  force?: boolean;
+}
+
+/**
+ * #1781 — trip 활성 시 위젯에 추가로 전달하는 맥락 정보.
+ * trip 비활성 시에는 생략하면 위젯이 기존 nearest station UI를 유지한다.
+ *
+ * - `currentStationName`: 현재 탑승 중인 역 이름 (nearest station과 별개 표시용).
+ * - `destinationName`: 목적지 역 이름.
+ * - `nextTransferName`: 다음 환승역 이름. 직통 경로면 undefined.
+ * - `tripActive`: trip 활성 여부 — Swift UI 분기 신호.
+ */
+export interface WidgetTripContext {
+  currentStationName: string;
+  destinationName: string;
+  nextTransferName?: string;
+  tripActive: boolean;
+}
+
+export async function saveStationToWidget(
+  station: Station,
+  distanceKm: number,
+  savedAt: number = Date.now(),
+  options?: SaveStationToWidgetOptions,
+  tripContext?: WidgetTripContext,
+): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  const key = `${station.id}:${distanceBucket(distanceKm)}`;
+  if (!options?.force) {
+    const isSameKey = key === lastDedupeKey;
+    const isFresh =
+      lastSavedAt !== null && savedAt - lastSavedAt < FRESHNESS_REFRESH_MS;
+    if (isSameKey && isFresh) return;
+  }
+  lastDedupeKey = key;
+  lastSavedAt = savedAt;
+  await LiveActivity.saveWidgetStation(
+    station.name,
+    station.lineColor,
+    Math.max(0, Math.round(distanceKm * 1000)),
+    savedAt,
+  );
+  // #1781 — trip 맥락 별도 write. saveWidgetStation 4-param 시그니처 보존.
+  await LiveActivityNative?.saveWidgetTripContext?.(
+    tripContext?.currentStationName ?? null,
+    tripContext?.destinationName ?? null,
+    tripContext?.nextTransferName ?? null,
+    tripContext?.tripActive ?? false,
+  );
+}
+
+export async function clearWidgetStation(): Promise<void> {
+  lastDedupeKey = null;
+  lastSavedAt = null;
+  if (Platform.OS !== 'ios') return;
+  await LiveActivity.clearWidgetStation();
+}

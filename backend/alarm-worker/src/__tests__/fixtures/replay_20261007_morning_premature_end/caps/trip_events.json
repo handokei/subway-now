@@ -1,0 +1,84 @@
+[
+  {
+    "results": [
+      {
+        "ts": 1791322980131,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "m": "{\"existingSig\":\"2-010::성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "ts": 1791323004451,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[99,99],\"candidateEtaSeconds\":[238,598],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "ts": 1791323004451,
+        "kind": "intermediate-route",
+        "station": "성수",
+        "m": "{\"branch\":\"lockless\"}"
+      },
+      {
+        "ts": 1791323065161,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[99,99],\"candidateEtaSeconds\":[205,565],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "ts": 1791323193642,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"fired\",\"candidateArvlCds\":[5,99],\"candidateEtaSeconds\":[86,446],\"gateDecision\":\"approaching\"}"
+      },
+      {
+        "ts": 1791323246097,
+        "kind": "leg-resolve-attempt",
+        "station": "건대입구",
+        "m": "{\"elapsedSinceAnchorMs\":21228,\"candidates\":[],\"streakCount\":0,\"outcome\":\"none\"}"
+      },
+      {
+        "ts": 1791323246097,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"silenced\"}"
+      },
+      {
+        "ts": 1791323308566,
+        "kind": "leg-resolve-attempt",
+        "station": "건대입구",
+        "m": "{\"elapsedSinceAnchorMs\":83697,\"candidates\":[{\"trainCode\":\"2015\",\"trainSttus\":1}],\"streakCount\":1,\"outcome\":\"pending\",\"selectedTrainCode\":\"2015\"}"
+      },
+      {
+        "ts": 1791323308566,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "m": "{\"outcome\":\"silenced\"}"
+      },
+      {
+        "ts": 1791323311876,
+        "kind": "trip-end",
+        "station": "2-010",
+        "m": "{\"reason\":\"destination-arrived\"}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "ICN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2333
+      },
+      "duration": 0.2333,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 163840,
+      "rows_read": 10,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
