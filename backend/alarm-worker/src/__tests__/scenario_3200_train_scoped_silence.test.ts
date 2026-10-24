@@ -383,7 +383,7 @@ describe.each(PATHS)('#3200 리뷰 — $name: 비용·관측', (path) => {
     expect(outcomes).toContain('silenced-train');
   });
 
-  it('열차 단위 무음 창에서는 prompt 경로가 self-poll position KV를 추가로 읽지 않는다', async () => {
+  it('열차 단위 무음 창에서도 position 확정 경로를 끄지 않는다 — KV read는 통상 cycle과 동일(증가 상한 0, miss 방지)', async () => {
     async function readsDuringBlockedCycle(withSilence: boolean): Promise<number> {
       const kv = new CountingKV();
       const env = makeEnv(kv);
@@ -400,7 +400,8 @@ describe.each(PATHS)('#3200 리뷰 — $name: 비용·관측', (path) => {
     }
     const control = await readsDuringBlockedCycle(false);
     const silenced = await readsDuringBlockedCycle(true);
-    expect(silenced).toBeLessThan(control);
+    // position 확정 경로를 끄면 다음 열차를 놓친다(miss = FP 동급, ADR-010). read는 무음 창에서도 통상과 동일.
+    expect(silenced).toBe(control);
   });
 });
 
