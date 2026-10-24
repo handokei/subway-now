@@ -33,18 +33,19 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 - **사용자 가치 → acceptance → 코드** 순서. "이미 머지된 sub-issue" 기준 acceptance 금지
 - 회귀 정의 점검:
   1. lock 활성 / lockless 둘 다 카테고리?
-  2. 사용자 명시 의향(C 토글 ON / boardingPrompt 응답 / 직접 탭) trip이 lock 활성과 동급으로 다뤄지는가?
+  2. 사용자 명시 의향(boardingPrompt 응답 / LA 탑승 버튼 / 목록 직접 탭)이 **lock 생성으로 이어지는가**? (lock 없는 trip은 알림 0이 정상 — 아래 절)
   3. ADR 첫 줄 원칙이 acceptance까지 적용되는가?
   4. 권한 매트릭스(WhileInUse/Always × FG/BG/취침) 모두 커버?
   5. 환경 매트릭스(지하/지상/환승) 모두 커버?
 - 출처: `memory/feedback_acceptance_drives_code.md`
 
-### 사용자 명시 의향 trip
-- **C 토글 ON / boardingPrompt 응답 / BoardingTrainList 직접 탭 = lock 활성과 동급 정확도 보장 의무**
-- "정보용 토글" 라벨은 UI 텍스트로만, acceptance/게이트는 동급
-- 다음 표현 금지: "사용자 선택 영역 → acceptance 위반 아님", "정보용이라 정확성 게이트 의무 없음", "best effort"
-- ADR-010 첫 줄: "두 실패 모드(false positive / miss)는 비대칭이 아니라 **동급**."
-- 출처: `memory/feedback_user_intent_equal_protection.md`, `docs/decisions/ADR-014-decision-process-rules.md`
+### 사용자 명시 의향 trip → lock (2026-10-24 개정)
+- **lock 없음 = 알림 없음.** 10/21 사용자 결정("lock없는건 알림 없어", 2026-10-24 재확인). lock 없는 trip(역 탭·목적지 설정만)은 매역·도착·취침 알림을 내지 않는 것이 정상이며, 이를 결함·acceptance 위반으로 보지 않는다.
+- **lock은 사용자 행동 3경로로만 생긴다**: 탑승 알림 응답 / LA 탑승 버튼 / BoardingTrainList 직접 탭. 자동 lock 없음.
+- **명시 의향의 보장 의무는 "응답·탭이 반드시 lock으로 이어지는 것"이다** — 응답·탭했는데 lock이 생기지 않으면 결함(miss)이다. 이 경로에는 "best effort" 표현 금지.
+- lock이 생긴 trip의 정확도는 ADR-010 첫 줄 그대로: "두 실패 모드(false positive / miss)는 비대칭이 아니라 **동급**."
+- lock 없는 trip의 **표시**(LA·홈 진행)는 정확성 보장 대상이 아니다 — 잘못된 전진(가짜 진행)보다 정체가 낫다(#3083).
+- 출처: `memory/decision_lock_only_alerts.md`, `memory/decision_list_tap_selection_only_lock_via_prompt.md`, `docs/decisions/ADR-014-decision-process-rules.md` (구 `feedback_user_intent_equal_protection.md`의 "C 토글=lock 동급"은 대체됨)
 
 ### 검증은 새 실기기 라이드에 의존하지 않는다 (필수, 2026-09-24 사용자 재지시)
 
