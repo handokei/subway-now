@@ -41,6 +41,7 @@ import {
   decideBoardingPromptFire,
   evaluateBoardingPromptRepeatGate,
   isPromptSilencedForTrain,
+  isTrainScopedSilenceActive,
   evaluateHopEndPromptGates,
   hasFreshOriginProximityCorroboration,
   isExactDuplicateFire,
@@ -8009,6 +8010,11 @@ async function fireBoardingPromptForAnchor(inputs: {
    * 다시 선택을 재계산(및 재계산 결과가 어긋날 위험)할 필요가 없다 — caller는 이 값으로
    * repeat-interval soft-block의 same-train bypass(스펙 ①④) 여부만 판정한다.
    */
+  /**
+   * #3200 — 열차 단위 무음 창에서는 position(self-poll) KV read를 생략한다(비용: 무음 5분 동안
+   * 추가 KV read 0). 이 창의 새 열차 판정은 arrival 피드(Seoul, 인메모리 15s 캐시·cycle당 1 client 공유)만 쓴다.
+   */
+  skipPositionRead?: boolean;
   shouldProceedToSend?: (
     pool: readonly ArrivalEntry[],
     decision: BoardingFireDecision['decision'],
@@ -8046,6 +8052,7 @@ async function fireBoardingPromptForAnchor(inputs: {
     onEmptyCandidates,
     onSuppressedNotImminent,
     onFireOnceSuppressed,
+    skipPositionRead = false,
     shouldProceedToSend,
     onFired,
   } = inputs;
@@ -8093,12 +8100,14 @@ async function fireBoardingPromptForAnchor(inputs: {
   // #3057 — 도착 확정 position 배선. cron이 매 cycle 활성 trip 노선을 self-poll(#1614)해 KV에
   // stamp하므로 신규 Seoul 호출 없이 재사용한다(API 호출 수 불변). arrival 피드가 비었거나
   // 전역출발(3) 등을 말해도, anchor 역 trainSttus 1/2(fresh)면 도착 확정 + 그 열차가 lock 대상.
-  const positionConfirmedTrains = await readPositionConfirmedTrains(env, line, {
-    station,
-    direction,
-    directionUnavailable,
-    now,
-  }, log);
+  const positionConfirmedTrains = skipPositionRead
+    ? []
+    : await readPositionConfirmedTrains(env, line, {
+        station,
+        direction,
+        directionUnavailable,
+        now,
+      }, log);
   pool = mergePositionConfirmedIntoPool(feedPool, positionConfirmedTrains, line);
   // 표시용 ETA는 merge된 pool에서 계산한다 — 이미 도착 확정된 열차(arrivalSeconds=0)에 arrival 피드의
   // 미래 ETA가 붙어 "곧 진입" 시각이 틀리게 나가는 것을 막는다.
@@ -8717,6 +8726,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     directionUnavailable,
     logPrefix: 'origin-boarding-prompt-gps-free',
     firedTrainCodes: trip.boardingPromptState?.firedTrainCodes,
+    skipPositionRead: isTrainScopedSilenceActive(trip.boardingPromptState, now),
     onEmptyCandidates: (reason) => {
       stats.originGpsFreeBoardingPromptBlocked += 1;
       // #2944 (H-6) — reason==='direction-unknown'이면 별도 카운터로도 집계(측정 plan).
@@ -8763,6 +8773,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       // #3200 — 무음은 응답한 열차에만(다른 열차 도착 확정은 통과). 열차 불명 무음은 상단 게이트가 처리.
       if (isPromptSilencedForTrain(trip.boardingPromptState, selectedTrainCode, now)) {
         stats.originGpsFreeBoardingPromptBlocked += 1;
+        promptOutcome = 'silenced-train';
         log('origin-boarding-prompt-gps-free: skipped train silenced', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,
@@ -9116,6 +9127,7 @@ export async function maybeFireLegBoardingPrompt(
     directionUnavailable,
     logPrefix: 'leg-boarding-prompt',
     firedTrainCodes: trip.legBoardingPromptState?.firedTrainCodes,
+    skipPositionRead: isTrainScopedSilenceActive(trip.legBoardingPromptState, now),
     onEmptyCandidates: (reason) => {
       stats.legBoardingPromptBlocked += 1;
       // #2944 (H-6) — reason==='direction-unknown'이면 별도 카운터로도 집계(측정 plan).
@@ -9164,6 +9176,7 @@ export async function maybeFireLegBoardingPrompt(
       // #3200 — 무음은 응답한 열차에만(다른 열차 도착 확정은 통과). 열차 불명 무음은 상단 게이트가 처리.
       if (isPromptSilencedForTrain(trip.legBoardingPromptState, selectedTrainCode, now)) {
         stats.legBoardingPromptBlocked += 1;
+        promptOutcome = 'silenced-train';
         log('leg-boarding-prompt: skipped train silenced', {
           token: trip.token.slice(0, 8),
           trainCode: selectedTrainCode,

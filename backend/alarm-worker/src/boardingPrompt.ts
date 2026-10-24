@@ -535,15 +535,28 @@ export function markPromptSilenced(
  * 도착 확정 열차는 무음과 무관하게 통과(열차당 1회·leg 상한 3은 다른 게이트가 유지).
  * 열차를 모르는 무음(silencedTrainCode 부재)은 `evaluateBoardingPromptRepeatGate`가 이미 leg 단위로 막는다.
  */
+/**
+ * #3200 — 열차 단위 무음이 지금 유효한가(응답한 열차를 아는 무음). caller가 무음 창에서는
+ * 추가 KV read(position)를 생략하는 근거로도 쓴다.
+ */
+export function isTrainScopedSilenceActive(
+  promptState: BoardingPromptState | undefined,
+  now: number,
+): boolean {
+  return (
+    promptState?.silencedUntil !== undefined &&
+    promptState.silencedUntil > now &&
+    promptState.silencedTrainCode !== undefined
+  );
+}
+
 export function isPromptSilencedForTrain(
   promptState: BoardingPromptState | undefined,
   selectedTrainCode: string | null,
   now: number,
 ): boolean {
-  if (promptState?.silencedUntil === undefined || promptState.silencedUntil <= now) return false;
-  const { silencedTrainCode } = promptState;
-  if (silencedTrainCode === undefined) return false;
-  return selectedTrainCode === null || selectedTrainCode === silencedTrainCode;
+  if (!isTrainScopedSilenceActive(promptState, now)) return false;
+  return selectedTrainCode === null || selectedTrainCode === promptState?.silencedTrainCode;
 }
 
 /**

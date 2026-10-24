@@ -18,6 +18,7 @@ import { selfPollKey } from '../selfPollPosition';
 import { runScheduled, type ScheduledDeps } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import { getTrip, putTrip } from '../trips';
+import { seedSsot } from '../tripPositionSsot';
 import type { BoardingPromptState, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -348,9 +349,9 @@ class CountingKV extends InMemoryKV {
 describe.each(PATHS)('#3200 리뷰 — $name: 비용·관측', (path) => {
   const { token, stateKey } = path;
 
-  async function runCycle(kv: InMemoryKV, env: Env, at: number, trainCode: string): Promise<void> {
+  async function runCycle(env: Env, at: number, ...trainCodes: string[]): Promise<void> {
     await runScheduled(env, {
-      seoul: makeSeoul('강남', [train(trainCode, 1)]),
+      seoul: makeSeoul('강남', trainCodes.map((code) => train(code, 1))),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       now: () => at,
@@ -360,19 +361,22 @@ describe.each(PATHS)('#3200 리뷰 — $name: 비용·관측', (path) => {
     });
   }
 
-  it('같은 열차 재관측으로 무음 차단 시 D1 transition(outcome=silenced-train)을 남긴다', async () => {
+  it('무음 창에서 도착 열차를 특정 못 하면(ambiguity) 차단하고 D1 transition(outcome=silenced-train)을 남긴다', async () => {
     const { db, inserts } = captureEventInserts();
     const kv = new InMemoryKV();
     const env = { ...makeEnv(kv), DB: db } as Env;
-    await putTrip(kv as unknown as KVNamespace, path.makeTrip());
-    await runCycle(kv, env, NOW, 'TR-A');
+    const seeded = path.makeTrip();
+    await putTrip(kv as unknown as KVNamespace, seeded);
+    // transition 기록은 SSoT 마커 비교 기반 — SSoT가 있어야 D1 append가 일어난다.
+    await seedSsot(kv as unknown as KVNamespace, token, '강남', { expiresAt: seeded.expiresAt });
+    await runCycle(env, NOW, 'TR-A');
     const trip = (await getTrip(kv as unknown as KVNamespace, token)) as Trip;
     await putTrip(kv as unknown as KVNamespace, {
       ...trip,
       [stateKey]: markPromptSilenced(trip[stateKey], NOW + 30_000),
     });
-    await runCycle(kv, env, NOW + 2 * MIN, 'TR-A');
-    await runCycle(kv, env, NOW + 3 * MIN, 'TR-A');
+    // 서로 다른 두 신규 열차가 동시에 도착 확정 -> pickAutoTrainCode ambiguity(null) -> 무음 창이므로 차단.
+    await runCycle(env, NOW + 2 * MIN, 'TR-B', 'TR-C');
     const outcomes = inserts
       .filter((a) => a[2] === 'leg-boarding-prompt')
       .map((a) => (JSON.parse(a[5] as string) as { outcome?: string }).outcome);
@@ -384,14 +388,14 @@ describe.each(PATHS)('#3200 리뷰 — $name: 비용·관측', (path) => {
       const kv = new CountingKV();
       const env = makeEnv(kv);
       await putTrip(kv as unknown as KVNamespace, path.makeTrip());
-      await runCycle(kv, env, NOW, 'TR-A');
+      await runCycle(env, NOW, 'TR-A');
       const trip = (await getTrip(kv as unknown as KVNamespace, token)) as Trip;
       await putTrip(kv as unknown as KVNamespace, {
         ...trip,
         [stateKey]: withSilence ? markPromptSilenced(trip[stateKey], NOW + 30_000) : trip[stateKey],
       });
       kv.gets = [];
-      await runCycle(kv, env, NOW + 2 * MIN, 'TR-A'); // A는 소진 -> 두 경우 모두 발사 0
+      await runCycle(env, NOW + 2 * MIN, 'TR-A'); // A는 소진 -> 두 경우 모두 발사 0
       return kv.gets.filter((k) => k.startsWith(selfPollKey('2' as never).split('2')[0])).length;
     }
     const control = await readsDuringBlockedCycle(false);
