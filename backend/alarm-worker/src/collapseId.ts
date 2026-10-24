@@ -14,6 +14,9 @@
  * 절단해도 collapse 유니크성(같은 trip·station 조합만 같은 id)은 유지된다.
  */
 
+import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../src/shared/constants/sleepAlarm';
+import { sleepAlarmSuffix } from '../../../src/shared/utils/sleepAlarmCells';
+
 /** APNs `apns-collapse-id` 헤더 한도 (#2086). */
 export const APNS_COLLAPSE_ID_MAX_BYTES = 64;
 
@@ -89,9 +92,20 @@ export function boardingPromptCollapseId(tripToken: string): string {
 /** #2066 (Phase 2-backend) — 취침 알람(sleep-alarm) apns-collapse-id prefix. */
 export const SLEEP_ALARM_COLLAPSE_ID_PREFIX = 'alarm-';
 
-/** #2066 — 취침 알람 apns-collapse-id 빌더. trip·station 조합 단위로 collapse. */
-export function sleepAlarmCollapseId(tripToken: string, targetStation: string): string {
-  return buildCollapseId(SLEEP_ALARM_COLLAPSE_ID_PREFIX, tripToken, targetStation);
+/**
+ * #2066 — 취침 알람 apns-collapse-id 빌더. trip·station 조합 단위로 collapse.
+ *
+ * #3100 — `remaining`(타깃까지 남은 정거장)이 기본 칸(1역 전)이 아니면 prefix에 `s{N}-`을 넣어 칸마다
+ * 다른 id로 만든다(3역 전 알람이 2역 전 알람에 덮여 사라지지 않게). 기본 칸은 id가 기존과 바이트 동일.
+ */
+export function sleepAlarmCollapseId(
+  tripToken: string,
+  targetStation: string,
+  remaining: number = SLEEP_ALARM_MIN_STOPS_BEFORE,
+): string {
+  const suffix = sleepAlarmSuffix(remaining);
+  const prefix = suffix === '' ? SLEEP_ALARM_COLLAPSE_ID_PREFIX : `${SLEEP_ALARM_COLLAPSE_ID_PREFIX}${suffix}-`;
+  return buildCollapseId(prefix, tripToken, targetStation);
 }
 
 /** #2510 — 준비 알람(prepare-alarm) apns-collapse-id prefix. */

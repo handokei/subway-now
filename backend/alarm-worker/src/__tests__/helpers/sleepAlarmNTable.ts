@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   SLEEP_ALARM_MAX_STOPS_BEFORE as MAX,
   SLEEP_ALARM_MIN_STOPS_BEFORE as MIN,
+  type SleepAlarmConfig,
 } from '../../../../../src/shared/constants/sleepAlarm';
 import { prepareAlarmCollapseId, sleepAlarmCollapseId } from '../../collapseId';
 import { fireSyncConsumedPrecedingAlarms, sleepAlarmFireKey, type SyncSkippedFireDeps } from '../../scheduled';
@@ -136,7 +137,7 @@ export function registerSleepAlarmNTable(): void {
   });
 
   describe(`#3100 N역 전 — lock 게이트 / 중복 / catch-up 상호 dedup (MAX=${MAX})`, () => {
-    const every = { mode: 'every', stops: [MAX] } as const;
+    const every: SleepAlarmConfig = { mode: 'every', stops: [MAX] };
     const chain = () => legWaypoints(MAX, 'destination'); // 중간역 MAX개 + 타깃
 
     /** 같은 leg를 cron처럼 한 칸씩 전진시키며 completeWaypointAdvance를 호출한다. */
@@ -188,6 +189,22 @@ export function registerSleepAlarmNTable(): void {
         () => 'p',
       );
       expect(sleepAlerts(f.calls)).toHaveLength(MAX);
+    });
+
+    it('전송 실패(5xx) 시 기본 칸과 비기본 칸 모두 같은 재시도 큐 항목을 만든다 (payload shape 현행 동일, 칸 필드 없음)', async () => {
+      const retryShape = async (waypoints: Waypoint[]) => {
+        const kv = new InMemoryKV(() => NOW);
+        const pending = new InMemoryKV(() => NOW);
+        await advance(makeTrip(waypoints, { sleepAlarm: every }), kv, captureFetch(500).fetchImpl, { pending });
+        const entries = [...pending.store.values()].map((e) => JSON.parse(e.value) as { payload: Record<string, unknown> });
+        return entries.map((e) => Object.keys(e.payload).sort());
+      };
+      const wps = chain();
+      const nonDefault = await retryShape(wps); // 비기본 칸(MAX)
+      const defaultSlot = await retryShape(wps.slice(-2)); // 기본 칸(MIN): [직전역, 타깃]
+      expect(nonDefault).toHaveLength(2); // alert + companion
+      expect(defaultSlot).toHaveLength(2);
+      expect(nonDefault).toEqual(defaultSlot);
     });
 
     it('주 채널 실패 시 그 칸의 dedup만 rollback (다른 칸 키는 유지)', async () => {

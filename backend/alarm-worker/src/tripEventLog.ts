@@ -188,6 +188,11 @@ export type TripEventKind =
   // reason?(skipped: sleep|dedup|not-preceding), targetStation?, targetKind?, pushId?, status? }.
   // 관측 전용 — 발사/advance 판정에는 관여하지 않는다.
   | 'prepare-alarm'
+  // #3100 — 취침 알람 비기본 칸(N역 전, N이 기본 1역 전이 아닌 것)의 발사 outcome. 기본 칸은 행을 만들지 않는다
+  // (D1 행 증가 0 — 기본 사용자는 관측 변화 없음). meta={ outcome: 'fired'|'rolled-back', remaining, targetStation,
+  // targetKind, pushId?, status? }. 비기본 설정 사용자의 칸당 최대 1~2행이라 D1 quota 영향 미미(KV write 0).
+  // 관측 전용 — 발사/advance 판정에는 관여하지 않는다.
+  | 'sleep-alarm'
   // #3146 — 프롬프트 소리 채널 결정. LA alert 성공 시 일반 알림을 무음으로 보내는 정책의 튜닝용:
   // meta={ laOk, notificationSilenced, guard('none'|'stale'|'not-live'), laPushAgeMs(null=heartbeat
   // 미기록), laBudgetExceeded, laMs }. 프롬프트 발사당 1행(D1 quota 영향 미미, KV write 0).

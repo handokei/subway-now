@@ -3,6 +3,12 @@
  * 두 방식으로 MAX=3, MAX=4를 모두 검증한다.
  */
 import {
+  LEG_START_INDEX,
+  ONE_STATION_STEP,
+  SLEEP_ALARM_MAX_STOPS_BEFORE,
+  SLEEP_ALARM_MIN_STOPS_BEFORE,
+} from '../../constants/sleepAlarm';
+import {
   crossingForSingleAdvance,
   expandSleepAlarmStops,
   normalizeSleepAlarmConfig,
@@ -10,6 +16,17 @@ import {
   sleepAlarmStopOptions,
   sleepAlarmSuffix,
 } from '../sleepAlarmCells';
+
+describe('sleepAlarm 상수 불변식', () => {
+  it('최소 칸은 한 정거장 이상, 최대치는 최소 칸 이상', () => {
+    expect(SLEEP_ALARM_MIN_STOPS_BEFORE).toBeGreaterThanOrEqual(ONE_STATION_STEP);
+    expect(SLEEP_ALARM_MAX_STOPS_BEFORE).toBeGreaterThanOrEqual(SLEEP_ALARM_MIN_STOPS_BEFORE);
+  });
+
+  it('leg 출발 위치는 waypoints 첫 원소(인덱스 0)보다 정확히 한 정거장 앞', () => {
+    expect(LEG_START_INDEX + ONE_STATION_STEP).toBe(0);
+  });
+});
 
 describe('normalizeSleepAlarmConfig — 정리·거부', () => {
   const MAX3 = 3;

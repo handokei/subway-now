@@ -16,6 +16,7 @@ import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 // #2655 — 역명 정규화(#1410/#2566 drift 흡수). scheduled.ts의 transfer anchor 비교와 동일 함수를
 // 써야 "sync가 stamp한 역명"과 "cron이 advance하는 waypoint 역명"이 조용히 어긋나지 않는다.
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
+import { normalizeSleepAlarmConfig } from '../../../src/shared/utils/sleepAlarmCells';
 import { isTrainSeenAtAnchor, loadAnchorDepartures, loadTrainPosition } from './anchorDeparturesQuery';
 import { planPromotionFastForward } from './anchorDepartures';
 import {
@@ -4708,11 +4709,14 @@ export function validateTrip(
       obj.locale === 'ko' || obj.locale === 'en' || obj.locale === 'ja' || obj.locale === 'zh'
         ? obj.locale
         : undefined,
-    // #2032 (Issue D): device 취침모드 상태 저장 — monitoring 전용 (ADR-023).
-    // backend push 발사 결정에 사용 금지 (types.ts sleepModeEnabled 주석 + ADR-023).
+    // #2032 (Issue D): device 취침모드 상태 저장. 매역 push 경로는 이 값으로 분기하지 않는다(ADR-023).
+    // 취침 알람(`maybeFireSleepAlarm`) 발사 게이트는 이 값을 읽는다(types.ts sleepModeEnabled 주석).
     // Legacy client (필드 미송신) 또는 비boolean은 undefined로 graceful — 기존 동작 완전 보존.
     sleepModeEnabled:
       typeof obj.sleepModeEnabled === 'boolean' ? obj.sleepModeEnabled : undefined,
+    // #3100 — 취침 알람 "N역 전부터" 설정. 범위 밖/잘못된 값/기본값과 같은 설정은 undefined(= 필드 없음 = 기본 동작).
+    // 같은 세션 재등록(`...incoming`)에서 incoming이 이긴다 — 기본값으로 되돌리면 필드가 사라진다.
+    sleepAlarm: normalizeSleepAlarmConfig(obj.sleepAlarm),
     // #2280 — trip 등록 시점 SSOT 출발역명. 비어있지 않은 string만 채택 — 그 외(구 client
     // 미송신 등)는 undefined로 graceful, d1TripMetrics가 기존 passedStations fallback을 사용한다.
     originStationName:

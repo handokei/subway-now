@@ -123,9 +123,11 @@ describe('층 2 — 대상 함수 본문에 1/2/3 리터럴이 없다', () => {
 const DEVICE_FILES: string[] = [];
 
 describe('층 3 — 기기 파일 전체 검사', () => {
-  it.each(DEVICE_FILES)('%s', (relPath) => {
-    expect(fileViolations(read(relPath))).toEqual([]);
-  });
+  for (const relPath of DEVICE_FILES) {
+    it(relPath, () => {
+      expect(fileViolations(read(relPath))).toEqual([]);
+    });
+  }
 
   it('PR-1은 기기 파일을 건드리지 않는다 (목록은 기기 PR이 채운다)', () => {
     expect(DEVICE_FILES).toEqual([]);
@@ -150,6 +152,11 @@ describe('가드 자체 — 위반 샘플을 잡고 정상 샘플은 통과시�
   it('정상 샘플(상수 참조, 0 비교)은 통과', () => {
     const ok = 'function f() { return remaining === SLEEP_ALARM_MIN_STOPS_BEFORE || remaining > 0; }';
     expect(violations(ok, FUNCTION_RES)).toEqual([]);
+  });
+
+  it('파일 전체 검사(층 3)도 위반을 잡고 주석 줄은 건너뛴다', () => {
+    expect(fileViolations('const APPROACH_STOPS = 1;')).toContain('RE1');
+    expect(fileViolations('// const APPROACH_STOPS = 1;\nconst ok = SLEEP_ALARM_MIN_STOPS_BEFORE;')).toEqual([]);
   });
 
   it('주석 속 리터럴은 제외', () => {

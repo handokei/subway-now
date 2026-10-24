@@ -10,6 +10,8 @@
  * 어긋나지 않는다.
  */
 
+import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../src/shared/constants/sleepAlarm';
+
 /** 지원 locale — 디바이스 SUPPORTED_LANGUAGES와 1:1 매핑. */
 export type SupportedLocale = 'ko' | 'en' | 'ja' | 'zh';
 
@@ -72,6 +74,9 @@ export interface StationNotifCounts {
   count?: number;
 }
 
+/** #3100 — 취침 알람 타깃 종류. intermediate는 알람 타깃이 될 수 없다. */
+export type SleepAlarmKind = Exclude<StationNotifKind, 'intermediate'>;
+
 interface I18nStrings {
   /**
    * #3007 S4-c — 정지 15분 "안내를 종료할까요?" LA 배너 title/body.
@@ -104,6 +109,12 @@ interface I18nStrings {
     stationName: string,
     counts?: StationNotifCounts,
   ) => string;
+  /**
+   * #3100 — 취침 알람 N역 전 title/body (`count` = 타깃까지 실제 남은 정거장, 기본 칸 1역 전 제외).
+   * 기본 칸은 `stationNotifTitle`/`stationNotifBody` 그대로 쓰므로(`sleepAlarmContent`) 여기 오지 않는다.
+   */
+  sleepAlarmTitle: (kind: SleepAlarmKind, count: number) => string;
+  sleepAlarmBody: (kind: SleepAlarmKind, stationName: string, count: number) => string;
   /**
    * #2157 — eta-missing lock detach 시 재확인 alert push title. trip을 강제 종료하는 대신
    * lock만 해제하고 사용자에게 재선택(boardingPrompt/직접 탭)을 유도한다.
@@ -163,6 +174,10 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
       return `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
     },
+    // #3100 — 취침 알람 N역 전(기본 칸 1역 전이 아닌 칸) 문구. 실제 남은 정거장 수를 담는다.
+    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `환승 ${count}정거장 전` : `도착 ${count}정거장 전`),
+    sleepAlarmBody: (kind, stationName, count) =>
+      `${stationName}까지 ${count}정거장 남았습니다. ${kind === 'transfer' ? '환승' : '하차'} 준비하세요!`,
     trainReconfirmTitle: '탑승 열차를 찾을 수 없어요',
     trainReconfirmBody: '다시 확인해주세요',
   },
@@ -207,6 +222,10 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `Arriving at ${stationName} — transfer soon!`;
       return `Arriving at ${stationName} — exit soon!`;
     },
+    // #3100 — sleep alarm N-stops-before wording (every slot except the default one-stop-before).
+    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `Transfer in ${count} stops` : `Arrival in ${count} stops`),
+    sleepAlarmBody: (kind, stationName, count) =>
+      `${count} stops to ${stationName} — get ready to ${kind === 'transfer' ? 'transfer' : 'exit'}!`,
     trainReconfirmTitle: "We couldn't find your train",
     trainReconfirmBody: 'Please check again',
   },
@@ -249,6 +268,10 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `まもなく${stationName}に到着します。乗換の準備をしてください!`;
       return `まもなく${stationName}に到着します。下車の準備をしてください!`;
     },
+    // #3100 — 就寝アラーム N駅前(既定の1駅前以外)の文言。
+    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `乗換まであと${count}駅` : `到着まであと${count}駅`),
+    sleepAlarmBody: (kind, stationName, count) =>
+      `${stationName}まであと${count}駅です。${kind === 'transfer' ? '乗換' : '下車'}の準備をしてください!`,
     trainReconfirmTitle: '乗車列車が見つかりません',
     trainReconfirmBody: 'もう一度ご確認ください',
   },
@@ -289,10 +312,31 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
       if (kind === 'transfer') return `即将到达${stationName}。请准备换乘!`;
       return `即将到达${stationName}。请准备下车!`;
     },
+    // #3100 — 睡眠闹钟 N 站前(默认的前 1 站以外)文案。
+    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `距换乘还有${count}站` : `距到达还有${count}站`),
+    sleepAlarmBody: (kind, stationName, count) =>
+      `距${stationName}还有${count}站。请准备${kind === 'transfer' ? '换乘' : '下车'}!`,
     trainReconfirmTitle: '未能找到您的乘车列车',
     trainReconfirmBody: '请重新确认',
   },
 };
+
+/**
+ * #3100 — 취침 알람 title/body. 기본 칸(1역 전)은 기존 매역 알림 문구(`stationNotif*`)를 그대로 반환해
+ * 기본값의 push 본문이 바이트 동일하고, 그 외 칸은 실제 남은 정거장 수를 담은 문구를 쓴다.
+ */
+export function sleepAlarmContent(
+  locale: SupportedLocale | undefined,
+  kind: SleepAlarmKind,
+  stationName: string,
+  remaining: number,
+): { title: string; body: string } {
+  const strings = t(locale);
+  if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) {
+    return { title: strings.stationNotifTitle(kind, stationName), body: strings.stationNotifBody(kind, stationName) };
+  }
+  return { title: strings.sleepAlarmTitle(kind, remaining), body: strings.sleepAlarmBody(kind, stationName, remaining) };
+}
 
 /**
  * 주어진 locale에 매핑된 string table 반환. 미지원/undefined는 DEFAULT_LOCALE.

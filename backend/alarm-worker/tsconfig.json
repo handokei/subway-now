@@ -37,6 +37,8 @@
     "../../src/shared/utils/buildRouteGraph.ts",
     "../../src/shared/constants/lineSpeeds.ts",
     "../../src/shared/constants/trainTypes.ts",
+    "../../src/shared/constants/sleepAlarm.ts",
+    "../../src/shared/utils/sleepAlarmCells.ts",
     "../../src/data/expressStops.ts"
   ],
   "exclude": ["node_modules"]

@@ -78,8 +78,8 @@ describe('crossingForConsumed — 환승 포함 [a, T1(환승), b, c, T2(하차)
     expect(crossingForConsumed(W, 3)).toEqual({ target: W[4], crossing: { fromRemaining: 3, toRemaining: 2 } });
   });
 
-  it('둘째 leg 마지막 직전(appliedCount 4) -> 1', () => {
-    expect(crossingForConsumed(W, 4)).toEqual({ target: W[4], crossing: { fromRemaining: 2, toRemaining: 1 } });
+  it('둘째 leg b·c 연속 소비(appliedCount 4) -> to 1, from은 환승역에서 끊김(3)', () => {
+    expect(crossingForConsumed(W, 4)).toEqual({ target: W[4], crossing: { fromRemaining: 3, toRemaining: 1 } });
   });
 });
 

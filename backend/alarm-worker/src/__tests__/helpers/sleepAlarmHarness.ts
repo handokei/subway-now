@@ -65,10 +65,11 @@ export function makeTrip(waypoints: Waypoint[], overrides: Partial<Trip> = {}): 
   };
 }
 
-export function makeEnv(kv: InMemoryKV, db?: unknown): Env {
+export function makeEnv(kv: InMemoryKV, db?: unknown, pending?: InMemoryKV): Env {
   return {
     TRIPS: kv as unknown as KVNamespace,
     ...(db !== undefined ? { DB: db as D1Database } : {}),
+    ...(pending !== undefined ? { PENDING_PUSHES: pending as unknown as KVNamespace } : {}),
     APNS_HOST: APNS_HOSTS.production,
     APNS_HOST_SANDBOX: APNS_HOSTS.sandbox,
     SEOUL_API_HOST: 'seoul.api',
@@ -196,7 +197,7 @@ export async function advance(
   trip: Trip,
   kv: InMemoryKV,
   fetchImpl: typeof fetch,
-  opts: { db?: unknown; now?: number } = {},
+  opts: { db?: unknown; now?: number; pending?: InMemoryKV } = {},
 ): Promise<void> {
   let n = 0;
   const now = opts.now ?? NOW;
@@ -204,7 +205,7 @@ export async function advance(
   await completeWaypointAdvance(
     trip,
     trip.waypoints[0],
-    makeEnv(kv, opts.db),
+    makeEnv(kv, opts.db, opts.pending),
     deps,
     createEmptyScheduledStats(now),
     now,
