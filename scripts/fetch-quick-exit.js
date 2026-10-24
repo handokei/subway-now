@@ -249,7 +249,7 @@ async function main() {
     }
   }
 
-  const sourceStations = [...new Set(allRows.map((r) => `${r.lineNm}|${r.stnNm}`))].sort();
+  const sourceStations = [...new Set(allRows.map((r) => `${r.lineNm}|${r.stnNm}`))].sort((a, b) => a.localeCompare(b));
   fs.writeFileSync(SOURCE_STATIONS_OUT, JSON.stringify(sourceStations, null, 2) + '\n');
   console.log(`[fetch-quick-exit] 역 매칭 실패 ${unmatched.size}건(행 기준):`);
   for (const [key, count] of unmatched) console.log(`  ${key} x${count}`);
