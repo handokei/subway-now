@@ -126,6 +126,7 @@ import { getTransferSeconds } from '../shared/utils/transferTimes';
 import { BoardingTrainList } from '../features/alarm/components/BoardingTrainList';
 import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHopCard';
 import { LocklessBadge } from '../features/alarm/components/LocklessBadge';
+import { BackendDegradedBanner } from '../features/alarm/components/BackendDegradedBanner';
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../features/route/utils/approachLine';
 import { resolveJourneyOriginStation } from '../features/route/utils/journeyOrigin';
@@ -1616,6 +1617,7 @@ export default function HomeScreen() {
         contentContainerStyle={{ paddingBottom: GLASS_SCREEN_BOTTOM_PADDING }}
         refreshControl={<RefreshControl refreshing={isManualRefreshing} onRefresh={handleRefresh} />}
       >
+        <BackendDegradedBanner tripActive={destination != null} />
         {effectiveOrigin ? (
           <>
             {/* #1066 follow-up — 운행 시간 외 안내 배너. 배너 자체가 in-service/unknown 분기에서

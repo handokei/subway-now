@@ -23,6 +23,10 @@
     "changeDowngradedBody": "\"始终允许\"已改为\"使用App时\"，后台闹钟可能会丢失。请在设置中重新设为\"始终允许\"。"
   },
   "home": {
+    "backendDegraded": {
+      "title": "服务器出现临时问题",
+      "body": "目前可能无法收到到站、换乘提醒和锁屏提示。恢复后将自动重新连接。"
+    },
     "arrived": "已到达!",
     "originManual": "出发站(手动)",
     "originCurrent": "当前站",
