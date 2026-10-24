@@ -338,6 +338,7 @@ describe('#3100 선행 — 트립 168 실측 replay: 1역 전 알람 (취침 알
 });
 
 // ── #3100 PR-1 — 실측 트립 위에 "N역 전부터" 설정 주입 (caps·D1 불변, 설정 필드만 seed) ─────────────
+const range = (from: number, to: number): number[] => Array.from({ length: Math.max(to - from + 1, 0) }, (_, i) => from + i);
 const EVERY_MAX: SleepAlarmConfig = { mode: 'every', stops: [SLEEP_ALARM_MAX_STOPS_BEFORE] };
 
 /** `alarm-[s{N}-]<token>-<역>` 취침 알람의 (시각, 남은 정거장). 접미사 없음 = 기본 칸. */
@@ -375,11 +376,15 @@ describe('#3100 PR-1 — 트립 173 실측 replay + 설정 {매 역, MAX} 주입
     // 기본 칸(1역 전)은 기본값(준비 알람)이 발사하던 바로 그 cron tick
     const oneBefore = fired.find((f) => f.remaining === SLEEP_ALARM_MIN_STOPS_BEFORE);
     expect(oneBefore?.at).toBe(defaultFiredAt[0]);
-    // 설정이 먹었다: 기본 칸 말고도 최소 1칸 더 (2역 전 이상)
-    expect(fired.length).toBeGreaterThan(1);
+    // fixture에서 도출한 정확한 기대: 시드 경로의 환승역 앞 중간역 수 m -> 남은 [min(m, MAX) .. MIN] 전부 1회
+    const m = transferIdx;
+    const expectedRemainings = range(SLEEP_ALARM_MIN_STOPS_BEFORE, Math.min(m, SLEEP_ALARM_MAX_STOPS_BEFORE)).reverse();
+    expect(fired.map((f) => f.remaining)).toEqual(expectedRemainings);
   });
 });
 
+// transitional — PR-2에서 변경: sync catch-up(`fireSyncConsumedPrecedingAlarms`)이 아직 기본 crossing만 쓰므로 비기본 설정에서도
+// 기본 칸 1회다. PR-2가 sync를 N으로 일반화하면 이 단언은 설정 기대 집합으로 바뀌어야 한다.
 describe('#3100 PR-1 — 트립 171 실측 replay + 설정 {매 역, MAX} 주입: sync 경로는 기본값과 동일 (PR-2 전)', () => {
   it('하차역(뚝섬) 취침 알람이 정확히 1회, 기본 칸(칸 구분 필드 없음) — 설정 주입이 sync catch-up을 흔들지 않는다', async () => {
     const r = await replay171({ sleepAlarm: EVERY_MAX });

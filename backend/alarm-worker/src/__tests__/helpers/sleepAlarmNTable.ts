@@ -148,6 +148,20 @@ export function registerSleepAlarmNTable(): void {
       }
     }
 
+    it('환승을 낀 다중 leg를 끝까지 걷는다: 칸은 타깃이 속한 leg 안에서만 센다 (leg 경계에서 끊김)', async () => {
+      const names = (prefix: string) => range(MIN, MAX).map((n) => wp(`${prefix}${n}`, 'intermediate'));
+      const wps = [...names('a'), wp('T1', 'transfer'), ...names('b'), wp('T2', 'destination', '2')];
+      const kv = new InMemoryKV(() => NOW);
+      const f = captureFetch();
+      for (let j = 0; j < wps.length; j++) {
+        if (wps[j].kind !== 'intermediate') continue; // 타깃 자신은 전진 대상 아님
+        await advance(makeTrip(wps.slice(j), { sleepAlarm: every }), kv, f.fetchImpl, { now: NOW + j });
+      }
+      const perLeg = range(MIN, MAX).reverse();
+      const expected = ['T1', 'T2'].flatMap((target) => perLeg.map((r) => sleepAlarmCollapseId(TOKEN, target, r)));
+      expect(sleepAlerts(f.calls).map((c) => c.collapseId)).toEqual(expected);
+    });
+
     it('lock 없음 / lock 만료: 어떤 칸도 안 울린다 (#3140)', async () => {
       for (const boardingLock of [undefined, { ...makeLock(chain().map((w) => w.stationName)), expiresAt: NOW - 1 }]) {
         const kv = new InMemoryKV(() => NOW);

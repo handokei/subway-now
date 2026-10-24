@@ -110,6 +110,13 @@ describe('층 2 — 대상 함수 본문에 1/2/3 리터럴이 없다', () => {
     });
   }
 
+  it('crossingForConsumed( … ) 호출 인자에 숫자 리터럴이 없다 (ONE_STATION_STEP 등 상수만)', () => {
+    const source = stripComments(read('backend/alarm-worker/src/scheduled.ts'));
+    const calls = extractCallExpressions(source, 'crossingForConsumed');
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of calls) expect(call).not.toMatch(/\b[1-9]\b/);
+  });
+
   it('maybeFireSleepAlarm({ … }) 호출 표현식은 waypoints[<숫자>]를 직접 참조하지 않는다', () => {
     const source = stripComments(read('backend/alarm-worker/src/scheduled.ts'));
     const calls = extractCallExpressions(source, 'maybeFireSleepAlarm');

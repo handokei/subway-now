@@ -2996,7 +2996,6 @@ export type SleepAlarmSkipReason = 'not-sleep' | 'not-preceding';
  *   4. (#3100) `crossing`이 설정한 칸(`readSleepAlarmStops`)에 걸린다 — 기본값 `[1역 전]`이면 "waypoint가
  *      정확히 타깃의 직전역"일 때만(= 이전의 인접 쌍 규칙과 동일). `crossing` 생략 = 인접 쌍 1칸 전진.
  *
-
  * "1역차 금지"(이슈 #2066 스펙 "그 직전 역 ≠ 해당 구간의 출발역")는 별도 게이트가 필요 없다 —
  * `trip.waypoints`는 leg의 출발역(방금 탑승/환승한 역) 자체를 포함하지 않으므로, 환승/도착이
  * 출발역과 직접 인접한 1-hop leg에서는 currently-active waypoint가 이미 transfer/destination
