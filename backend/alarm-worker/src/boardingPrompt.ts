@@ -536,10 +536,9 @@ export function markPromptSilenced(
  * 열차를 모르는 무음(silencedTrainCode 부재)은 `evaluateBoardingPromptRepeatGate`가 이미 leg 단위로 막는다.
  */
 /**
- * #3200 — 열차 단위 무음이 지금 유효한가(응답한 열차를 아는 무음). caller가 무음 창에서는
- * 추가 KV read(position)를 생략하는 근거로도 쓴다.
+ * #3200 — 열차 단위 무음이 지금 유효한가(응답한 열차를 아는 무음).
  */
-export function isTrainScopedSilenceActive(
+function isTrainScopedSilenceActive(
   promptState: BoardingPromptState | undefined,
   now: number,
 ): boolean {
