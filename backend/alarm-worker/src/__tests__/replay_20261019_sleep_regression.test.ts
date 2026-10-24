@@ -226,9 +226,9 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
     const alarms = r.cycles.flatMap((c) => c.pushes.filter(isDestinationSleepAlarm).map(() => c.simNowMs));
     expect(alarms.length).toBeGreaterThan(0);
     // 실측 기준: 목적지 직전 역에 추적 열차가 진입/도착한 최초 캡처 시각(1 cron 주기 여유).
-    for (const firedAt of alarms) {
-      expect(firedAt).toBeGreaterThanOrEqual(r.oneStopBeforeMs - 60_000);
-    }
+    // 알람은 1정거장 전 도착이 캡처된 이후 **첫 cron tick**에서 정확히 1회 발사된다(틱 그리드 기준 기대값).
+    const firstTickAtOrAfter = r.cycles.map((c) => c.simNowMs).find((t) => t >= r.oneStopBeforeMs) as number;
+    expect(alarms).toEqual([firstTickAtOrAfter]);
   });
 
   // #3140 — 사용자 결정: lock 없는 트립은 알림이 없다. #3083 PR-1 이전에는 환승 체류 중 lockless 가짜 전진이
@@ -238,7 +238,8 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
     const r = await replaySleepTrip();
     const alarmCycles = r.cycles.filter((c) => c.pushes.some(isDestinationSleepAlarm));
     expect(alarmCycles).toHaveLength(1);
-    expect(alarmCycles[0].simNowMs).toBeGreaterThanOrEqual(r.oneStopBeforeMs - 60_000);
+    const firstTickAtOrAfter = r.cycles.map((c) => c.simNowMs).find((t) => t >= r.oneStopBeforeMs) as number;
+    expect(alarmCycles[0].simNowMs).toBe(firstTickAtOrAfter);
     // #3083 PR-1: 체류 중 sync 가짜 전진(18:05:43 어린이대공원)은 hold된다 — 정당한 advance 2건(18:04:10 성수,
     // 18:04:29 건대입구 환승 waypoint)만 남는다. (cron lockless 가짜 전진은 PR-2 소관)
     expect(r.events.filter((e) => e.kind === 'advance')).toHaveLength(2);

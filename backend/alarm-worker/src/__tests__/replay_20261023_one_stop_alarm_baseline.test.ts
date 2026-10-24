@@ -327,6 +327,10 @@ describe('#3100 선행 — 트립 168 실측 replay: 1역 전 알람 (취침 알
     const destination = r.seedWaypoints[r.seedWaypoints.length - 1].stationName;
     const fired = cronAlarms(r.result.cycles, destination);
     expect(fired).toHaveLength(1);
-    expect(Math.abs(fired[0] - (r.oneStopMs as number))).toBeLessThanOrEqual(60_000);
+    // 틱 그리드 기준: 1역 전 도달이 캡처된 이후 첫 cron tick에서 발사된다(±60s 느슨한 창 대신 정확한 tick).
+    const firstTickAtOrAfter = r.result.cycles
+      .map((c) => c.simNowMs)
+      .find((t) => t >= (r.oneStopMs as number)) as number;
+    expect(fired[0]).toBe(firstTickAtOrAfter);
   });
 });

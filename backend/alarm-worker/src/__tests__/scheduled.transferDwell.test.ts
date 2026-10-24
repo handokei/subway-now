@@ -18,6 +18,7 @@ import {
   dwellFirstLegWaypointIndex,
   isTransferDwell,
   PENDING_TRAIN_CODE_SENTINEL,
+  SYNC_SKIPPED_STATION_FIRE_CAP,
 } from '../scheduled';
 import { getTrip, putTrip } from '../trips';
 import type { BoardingLockMeta, Env, Trip } from '../types';
@@ -25,7 +26,8 @@ import { InMemoryKV } from './inMemoryKv';
 import { makeTripEventSink } from './helpers/replay20261019';
 
 const NOW = 1_792_400_669_000;
-const TOKEN = 'dwell-3083-tok';
+let TOKEN = 'dwell-3083-tok';
+let tokenSeq = 0;
 /** 168 형태: 환승(건대입구 2→7) 소비 후 leg-2(7호선) 대기. */
 const ANCHOR = { boardingStation: '건대입구', line: '7' };
 const LEG2_WAYPOINTS: Trip['waypoints'] = [
@@ -179,6 +181,7 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
   });
 
   beforeEach(() => {
+    TOKEN = `dwell-3083-tok-${(tokenSeq += 1)}`;
     resetApnsJwtCache();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(NOW);
@@ -216,7 +219,7 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
       env,
     );
     await vi.advanceTimersByTimeAsync(0);
-    await new Promise((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
     return { status: res.status, body: (await res.json()) as { ok: boolean; advanced: boolean } };
   }
 
@@ -307,5 +310,53 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
     const held = events.filter((e) => e.kind === 'advance-held');
     expect(held).toHaveLength(1);
     expect(held[0].meta).toMatchObject({ requested: 3, cappedTo: 1 });
+  });
+
+  it('같은 (관측역, requested)의 반복 sync는 advance-held 행을 한 번만 남긴다 (isolate 메모리 dedup, KV 쓰기 0)', async () => {
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    await sync('군자');
+    await sync('군자');
+    await sync('군자');
+    expect(events.filter((e) => e.kind === 'advance-held')).toHaveLength(1);
+    // 다른 관측(requested 변경)은 새 행.
+    await sync('중곡');
+    const held = events.filter((e) => e.kind === 'advance-held');
+    expect(held).toHaveLength(2);
+    expect(held[1].meta).toMatchObject({ requested: 3, cappedTo: 0 });
+  });
+
+  it('창 중간 늦은 lock 부착 후 첫 sync가 여러 역을 소비해도 매역 push는 SYNC_SKIPPED_STATION_FIRE_CAP(1)건 이하다 (몰림 없음)', async () => {
+    const longWaypoints: Trip['waypoints'] = [
+      ...LEG2_WAYPOINTS.slice(0, 3),
+      { stationName: '용마산', line: '7', kind: 'intermediate' },
+      { stationName: '사가정', line: '7', kind: 'intermediate' },
+      { stationName: '면목', line: '7', kind: 'intermediate' },
+      { stationName: '상봉', line: '7', kind: 'destination' },
+    ];
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ waypoints: longWaypoints }));
+    // 체류 중 lockless sync 여러 번 -> 전부 hold
+    for (const station of ['어린이대공원', '군자', '중곡']) {
+      expect((await sync(station)).body.advanced).toBe(false);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // 창 중간 lock 부착(늦은 탭), 다음 sync는 건너뛴 역들을 한 번에 소비
+    const held = await getTrip(kv as unknown as KVNamespace, TOKEN);
+    await putTrip(kv as unknown as KVNamespace, {
+      ...(held as Trip),
+      boardingLock: makeLock({ segmentStations: longWaypoints.map((w) => w.stationName) }),
+    });
+    expect((await sync('면목')).body.advanced).toBe(true);
+    // 재현 시도 결과: 몰림 없음. 건너뛴 5역 중 newest-first(#2625 P1-2) 1건(사가정)만 발사되고 나머지는 skipped-by-shift.
+    const attempts = events.filter((e) => e.kind === 'cron-fire-attempt');
+    const sent = attempts.filter((e) => (e.meta as { outcome?: string }).outcome === 'sent');
+    expect(sent.map((e) => e.station)).toEqual(['사가정']);
+    expect(sent.length).toBeLessThanOrEqual(SYNC_SKIPPED_STATION_FIRE_CAP);
+    expect(attempts.filter((e) => (e.meta as { outcome?: string }).outcome === 'skipped-by-shift')).toHaveLength(4);
+    // 1역 전 알람 catch-up(#3157)은 그대로 정확히 1회 (면목 -> "곧 상봉").
+    const prepare = events.filter(
+      (e) => e.kind === 'prepare-alarm' && (e.meta as { outcome?: string }).outcome === 'fired',
+    );
+    expect(prepare).toHaveLength(1);
+    expect(prepare[0].meta).toMatchObject({ targetStation: '상봉' });
   });
 });
