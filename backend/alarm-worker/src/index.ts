@@ -342,6 +342,19 @@ function scheduleTripEvent(c: Context<{ Bindings: Env }>, promise: Promise<void>
   }
 }
 
+/** #3083 — `advance-held` D1 행 중복 억제용 isolate-local 마지막 서명(token 해시 -> `관측역|requested`). */
+const ADVANCE_HELD_SIGNATURE_CACHE_MAX = 500;
+const advanceHeldSignatures = new Map<string, string>();
+
+/** 직전과 같은 서명이면 false(기록 불필요), 새 서명이면 저장하고 true. */
+function markAdvanceHeldRecorded(tokenHash: string, observed: string, requested: number): boolean {
+  const signature = `${observed}|${requested}`;
+  if (advanceHeldSignatures.get(tokenHash) === signature) return false;
+  if (advanceHeldSignatures.size >= ADVANCE_HELD_SIGNATURE_CACHE_MAX) advanceHeldSignatures.clear();
+  advanceHeldSignatures.set(tokenHash, signature);
+  return true;
+}
+
 /** sync 경로(진행 #3157 / 승격 fast-forward #3100)가 공유하는 소비 구간 직전역 알람 catch-up 스케줄러. */
 function scheduleSyncConsumedPrecedingAlarms(
   c: Context<{ Bindings: Env }>,
@@ -3385,15 +3398,18 @@ app.post('/boarding-lock/sync', async (c) => {
       requested: requestedAdvance.shiftedCount,
       cappedTo: advance.shiftedCount,
     });
-    scheduleTripEvent(
-      c,
-      recordTripEvent(c.env.DB, {
-        tokenHash,
-        kind: 'advance-held',
-        station: payload.observedStationName,
-        meta: { requested: requestedAdvance.shiftedCount, cappedTo: advance.shiftedCount },
-      }),
-    );
+    // 같은 (관측역, requested) 재관측은 D1 행을 다시 쓰지 않는다 — isolate 메모리 dedup(KV 쓰기 0, best-effort).
+    if (markAdvanceHeldRecorded(tokenHash, payload.observedStationName, requestedAdvance.shiftedCount)) {
+      scheduleTripEvent(
+        c,
+        recordTripEvent(c.env.DB, {
+          tokenHash,
+          kind: 'advance-held',
+          station: payload.observedStationName,
+          meta: { requested: requestedAdvance.shiftedCount, cappedTo: advance.shiftedCount },
+        }),
+      );
+    }
   }
   // #2655 — 사용자가 환승역에 **도착한 시각**을 backend advance 타이밍과 분리해 기록한다.
   // device sync는 accuracy≤50m 게이트를 통과한 확정 관측이라(`useBoardingLockSync`) "지금 이 역에
