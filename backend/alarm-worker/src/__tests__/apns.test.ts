@@ -1730,6 +1730,31 @@ describe('sendSleepAlarmCompanionPush (#2066)', () => {
     expect(body.data.body).toBe('성수에서 2호선 뚝섬으로 환승');
   });
 
+  // #3100 — 칸 구분: 기본 칸(1역 전)은 wire 바이트 동일(필드 생략), 비기본 칸만 remainingStops.
+  it('remainingStops 지정 시 data에 forward, 미지정이면 키 자체가 없다 (기본값 wire 바이트 동일)', async () => {
+    const send = async (remainingStops?: number) => {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+      await sendSleepAlarmCompanionPush({
+        deviceToken: 'device-hex',
+        pushId: 'sta-1',
+        originStation: '성수',
+        targetKind: 'transfer',
+        nextLine: '2',
+        nextStation: '뚝섬',
+        tripToken: 'tok-sta',
+        sentAt: 0,
+        ...(remainingStops !== undefined ? { remainingStops } : {}),
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      return call[1].body as string;
+    };
+    expect(JSON.parse(await send(3)).data.remainingStops).toBe(3);
+    expect(await send()).not.toContain('remainingStops');
+  });
+
   it('title/body 미지정 시 data payload에 omit (구 device fallback trigger)', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
     await sendSleepAlarmCompanionPush({

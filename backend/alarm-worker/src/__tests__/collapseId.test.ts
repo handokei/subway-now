@@ -113,3 +113,23 @@ describe('sleepAlarmCollapseId / prepareAlarmCollapseId / fallbackAlertCollapseI
     expect(id).toBe(`${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}${HEX64_TOKEN.slice(0, 16)}-`);
   });
 });
+
+describe('sleepAlarmCollapseId — 남은 정거장 칸 구분 (#3100)', () => {
+  it('기본 칸(1역 전)은 인자 생략과 바이트 동일', () => {
+    expect(sleepAlarmCollapseId('tok-abc', '군자', 1)).toBe(sleepAlarmCollapseId('tok-abc', '군자'));
+    expect(sleepAlarmCollapseId('tok-abc', '군자', 1)).toBe(`${SLEEP_ALARM_COLLAPSE_ID_PREFIX}tok-abc-군자`);
+  });
+
+  it('비기본 칸은 prefix에 s{N}을 넣어 칸마다 다른 id (알림센터에서 서로 덮지 않음)', () => {
+    expect(sleepAlarmCollapseId('tok-abc', '군자', 2)).toBe('alarm-s2-tok-abc-군자');
+    expect(sleepAlarmCollapseId('tok-abc', '군자', 3)).toBe('alarm-s3-tok-abc-군자');
+    const ids = [1, 2, 3, 4].map((n) => sleepAlarmCollapseId('tok-abc', '군자', n));
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('비기본 칸도 긴 역명에서 64바이트 이하로 절단', () => {
+    expect(byteLength(sleepAlarmCollapseId(HEX64_TOKEN, LONG_STATION_NAME, 3))).toBeLessThanOrEqual(
+      APNS_COLLAPSE_ID_MAX_BYTES,
+    );
+  });
+});

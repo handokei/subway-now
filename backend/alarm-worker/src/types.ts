@@ -5,6 +5,7 @@
  * 앱과 백엔드는 별도 빌드이므로 import 대신 구조적 호환을 유지한다.
  */
 
+import type { SleepAlarmConfig } from '../../../src/shared/constants/sleepAlarm';
 import type { ControlPushKind, StationWaypointKind } from '../../../src/shared/types/pushContract';
 import type { LegConsensusRecord } from './transferLegConsensus';
 
@@ -532,22 +533,27 @@ export interface Trip {
    */
   locale?: 'ko' | 'en' | 'ja' | 'zh';
   /**
-   * #2032 (Issue D) — 등록 시점 device 취침모드 상태. **monitoring 전용 (ADR-023)**.
+   * #2032 (Issue D) — 등록 시점 device 취침모드 상태. 원래 monitoring 전용(ADR-023)이었으나
+   * 취침 알람 발사 게이트(`evaluateSleepAlarmTrigger`, scheduled.ts)가 `trip.sleepModeEnabled === true`를
+   * 읽는다(#2066 이후) — "발사 결정에 사용 금지"는 더 이상 사실이 아니다. 매역 push 경로
+   * (`fireArvlCdStationPush` 등)는 여전히 이 필드로 분기하지 않는다(ADR-023 첫 원칙).
    *
    * 저장 목적:
    *   1) skip 원인 자동 분류 — cron/silent push log에 취침 여부 dimension을 얹어 "정상 sleep skip"과
    *      "회귀 skip"을 backend 로그에서 즉시 구분 가능하게 한다.
    *   2) evidence 재구성 자동화 — 사용자 trip 사후 분석 시 device sleep 상태를 backend 관점에서 재구성.
-   *
-   * **backend push 발사 결정에 사용 금지** — ADR-023 첫 원칙("Backend는 arvlCd 신호 기반 silent push를
-   * 무조건 발사, 취침모드 무관"). Device의 `shouldSuppressBySleepRule.ts`가 단일 gate. 이 필드로
-   * `if (trip.sleepModeEnabled)` 분기를 추가하면 backend가 정책 state를 소유하게 되어 device 토글 ↔
-   * backend KV 동기화 race window가 정확성 리스크로 전환된다(ADR-023 §"Backend 안 보냄 대안 미채택").
+   *   3) 취침 알람(`maybeFireSleepAlarm`) 발사 게이트 + `sleepAlarm` 설정 적용 여부(#3100).
    *
    * 미송신/미지원(legacy client)은 `undefined`로 graceful 처리 — 기존 동작 완전 보존.
-   * `infoModeEnabled` / `subsurface` / `locale`과 동일 저장 전용 패턴.
+   * `infoModeEnabled` / `subsurface` / `locale`과 동일 저장 패턴.
    */
   sleepModeEnabled?: boolean;
+  /**
+   * #3100 — 취침 알람 "N역 전부터" 설정. **없으면 기본값**(선택한 역에서만 + 1역 전 = 현행 동작) —
+   * register parse(`normalizeSleepAlarmConfig`)가 기본값과 같은 설정은 필드를 저장하지 않는다.
+   * `sleepModeEnabled === true`일 때만 읽는다(`readSleepAlarmStops`). 역 수는 타깃이 속한 leg 안에서만 센다.
+   */
+  sleepAlarm?: SleepAlarmConfig;
   /**
    * #2120 — trip 인스턴스 식별자 (device `tripCorrId`, `${epoch ms}-${8 hex}` 형식).
    * tripToken(APNs device token)은 기기당 고정이라 backend가 보낸 옛 trip의 trip-ended push가
