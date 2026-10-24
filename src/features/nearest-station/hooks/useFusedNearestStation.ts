@@ -43,6 +43,7 @@ import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/co
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
+import { shouldHoldStationaryFix } from '../utils/stationaryFixHold';
 import { shouldDowngradeFusion, STATIC_SPEED_THRESHOLD_MPS } from '../utils/movementGate';
 import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStrength';
 import type { PositionStability } from '../utils/positionStaticDetector';
@@ -2663,10 +2664,26 @@ export function useFusedNearestStation(
     if (watchActive !== undefined) {
       watchForDump = watchActive ? 'active' : 'inactive';
     }
+    const baroEventAtMs = getBarometerDeltaTracking().lastDeltaEventAtMs;
+    // #3191 PR-1 — 정지 fix 유지 술어 판정을 기록만 한다(게이트 입력은 PR-2). L = 이 훅이 보는 마지막 fix
+    // 이므로 hasNewerFix=false. fix 시각을 모르면(테스트 mock 등) 판단 불가 = null.
+    const { lastFixAtMs, accuracyMeters, speedMps } = gps;
+    const holdEligible =
+      typeof lastFixAtMs === 'number'
+        ? shouldHoldStationaryFix({
+            fix: { accuracyMeters, speedMps, atMs: lastFixAtMs },
+            hasNewerFix: false,
+            subsurface: barometerSubsurface,
+            baroEventAtMs,
+            barometerAvailable: barometerSignal != null && barometerSignal.unavailableReason === undefined,
+            lockActive: boardingLock != null,
+          })
+        : null;
     const instrumentationForDump = {
       watch: watchForDump,
       appState: AppState.currentState,
-      baroEventAtMs: getBarometerDeltaTracking().lastDeltaEventAtMs,
+      baroEventAtMs,
+      holdEligible,
     };
     // #1859 — CTRadioAccessTechnology 스냅샷. tech는 native 캐시에서 동기 읽기.
     // vote는 useCellularTech()가 이미 산출한 값을 그대로 사용(재분류 없음).

@@ -494,7 +494,9 @@ function formatRawSignalLine(entry: RawSignalEntry): string {
   const watch = entry.watch ?? '-';
   const appState = entry.appState ?? '-';
   const baroEvt = entry.baroEventAtMs != null ? formatTime(entry.baroEventAtMs) : '-';
-  const base = `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt} | watch=${watch} | app=${appState} | baroEvt=${baroEvt}`;
+  // #3191 PR-1 — 정지 fix 유지 술어 판정(1=유지 가능 / 0=불가 / -=판단 불가·구 entry).
+  const hold = entry.holdEligible == null ? '-' : entry.holdEligible ? '1' : '0';
+  const base = `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt} | watch=${watch} | app=${appState} | baroEvt=${baroEvt} | hold=${hold}`;
   if (!entry.launch) return base;
   const { coldStartAtMs, firstHpa, firstHpaAtMs } = entry.launch;
   return `${base} | launch=cold@${formatTime(coldStartAtMs)} hpa0=${firstHpa.toFixed(1)}@${formatTime(firstHpaAtMs)}`;
