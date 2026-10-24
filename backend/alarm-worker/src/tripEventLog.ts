@@ -152,6 +152,9 @@ import { captureXEvent, hashTripToken } from './sentry';
 export type TripEventKind =
   | 'sync-received'
   | 'advance'
+  // #3083 — 환승 체류(anchor ∧ 활성 lock 없음 ∧ 창 안) 중 `/boarding-lock/sync` 관측 전진이 cap으로 막힌 시점 1행.
+  // station=관측역, meta={ requested, cappedTo }. sync 요청당 최대 1행(KV write 0). 관측 전용.
+  | 'advance-held'
   | 'hydrate-issued'
   | 'trip-end'
   | 'consensus-confirm'

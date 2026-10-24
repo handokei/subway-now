@@ -1340,6 +1340,53 @@ export function isBoardingLockActive(
 export const PENDING_TRAIN_CODE_SENTINEL = 'PENDING-TRAIN-CODE';
 
 /**
+ * #3083 — 환승 체류(transfer dwell) 대기 상한: `legBoardingEligibleAt`(환승 도착 + 환승별 도보시간, 이미 데이터
+ * 기반)에서 **열차를 기다리는 시간**만 더한다. 값 = `src/data/lineHeadways.json` 전체 배차 간격 최댓값
+ * (경의선 토요일 심야 1320초). 데이터가 최댓값을 올리면 `scheduled.transferDwell.test.ts`가 빨개진다.
+ */
+export const TRANSFER_DWELL_WAIT_MS = 1_320_000;
+
+/**
+ * #3083 — 환승 체류 중인가. `currentLegAnchor`(환승 waypoint를 소비해 leg-2 대기 시작) ∧ 활성·비PENDING lock 0개
+ * (노선 무관 — lock 생성 경로별 `segmentStations[0]` 계약에 의존하지 않는다) ∧
+ * `now < legBoardingEligibleAt + TRANSFER_DWELL_WAIT_MS`.
+ * 체류 중에는 lock 없는 관측(device sync)이 먼저 떠난 앞 열차를 따라가 leg-2 waypoint를 가짜로 소비한다(트립 168).
+ * 두 anchor 필드는 항상 함께 stamp되므로(types.ts) `legBoardingEligibleAt`이 없으면 체류가 아니다.
+ */
+export function isTransferDwell(trip: Trip, now: number): boolean {
+  const { currentLegAnchor, legBoardingEligibleAt, boardingLock } = trip;
+  if (!currentLegAnchor || legBoardingEligibleAt === undefined) return false;
+  if (now >= legBoardingEligibleAt + TRANSFER_DWELL_WAIT_MS) return false;
+  if (isBoardingLockActive(trip, now) && boardingLock?.trainCode !== PENDING_TRAIN_CODE_SENTINEL) return false;
+  return true;
+}
+
+/**
+ * #3083 — 체류 중 sync가 소비해도 되는 waypoint 수의 상한(= leg-2 첫 waypoint 인덱스). 환승 waypoint가 아직 남아
+ * 있으면 그 다음부터가 leg-2이고(환승까지는 소비 허용), 이미 소비됐으면 0이다. 체류가 아니면 null.
+ * 이름 기반 탐색이라 같은 이름 transfer가 두 번 나오는 순환 경로에서는 상한이 느슨해진다(under-hold, 수정 전 동작).
+ */
+export function dwellFirstLegWaypointIndex(trip: Trip, now: number): number | null {
+  const { currentLegAnchor } = trip;
+  if (!currentLegAnchor || !isTransferDwell(trip, now)) return null;
+  const anchorName = normalizeStationName(currentLegAnchor.boardingStation);
+  const transferIdx = trip.waypoints.findIndex(
+    (w) => w.kind === 'transfer' && normalizeStationName(w.stationName) === anchorName,
+  );
+  return transferIdx < 0 ? 0 : transferIdx + 1;
+}
+
+/** #3083 — `computeLockSyncAdvance` 결과에 체류 상한을 적용한다(`advance` 객체 자체를 cap — 소비자 전부가 같은 값을 본다). */
+export function capLockSyncAdvance(
+  advance: { shiftedCount: number },
+  trip: Trip,
+  now: number,
+): { shiftedCount: number } {
+  const limit = dwellFirstLegWaypointIndex(trip, now);
+  return limit === null ? advance : { shiftedCount: Math.min(advance.shiftedCount, limit) };
+}
+
+/**
  * #2939 — "해당 leg의 lock이 이미 실 trainCode를 가졌는가"(leg-scoped 판정).
  *
  * `isBoardingLockActive`(전역 lock 유무)와 다르다 — 전역 판정으로 쓰면 leg-1 lock이 leg-2

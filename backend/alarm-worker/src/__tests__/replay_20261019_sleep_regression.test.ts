@@ -220,26 +220,29 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
   });
 
   // ── 결함 2: 하차(취침 companion) 알람 조기 발사 (#3083) ─────────────────────────────────
-  it.fails('하차(취침 companion) 알람이 실제 1정거장 전(추적 열차가 목적지 직전 역에 진입/도착한 시점) 이후에 발사된다 — 현재: 수 분 일찍 [#3083]', async () => {
+  // #3083 PR-1: 체류 중 sync 가짜 전진이 사라져 lock 부착(18:10:22) 시점에 1역 전(중곡)이 아직 남아 있고, 알람이 실제 1정거장 전(18:15:46)에 발사된다 — `.fails` 제거.
+  it('하차(취침 companion) 알람이 실제 1정거장 전(추적 열차가 목적지 직전 역에 진입/도착한 시점) 이후에 발사된다 [#3083]', async () => {
     const r = await replaySleepTrip();
     const alarms = r.cycles.flatMap((c) => c.pushes.filter(isDestinationSleepAlarm).map(() => c.simNowMs));
     expect(alarms.length).toBeGreaterThan(0);
     // 실측 기준: 목적지 직전 역에 추적 열차가 진입/도착한 최초 캡처 시각(1 cron 주기 여유).
-    for (const firedAt of alarms) {
-      expect(firedAt).toBeGreaterThanOrEqual(r.oneStopBeforeMs - 60_000);
-    }
+    // 알람은 1정거장 전 도착이 캡처된 이후 **첫 cron tick**에서 정확히 1회 발사된다(틱 그리드 기준 기대값).
+    const firstTickAtOrAfter = r.cycles.map((c) => c.simNowMs).find((t) => t >= r.oneStopBeforeMs) as number;
+    expect(alarms).toEqual([firstTickAtOrAfter]);
   });
 
-  // #3140 — 사용자 결정: lock 없는 트립은 알림이 없다. 이 트립에서 취침 알람이 조기 발사된 건
-  // 환승 체류 중 lock 없이(lockless) 가짜 전진이 waypoint를 소비한 직후였다 — 이제 그 구간의
-  // 취침 알람은 lock 활성 게이트(maybeFireSleepAlarm)로 발사되지 않는다. 가짜 전진(advance)
-  // 자체는 여전히 일어난다(#3083 미해결) — 조기 알람만 사라졌다.
-  it('[#3140] 환승 체류 중 가짜 전진이 일어나도 lock 없는 구간의 취침 하차 알람은 발사되지 않는다', async () => {
+  // #3140 — 사용자 결정: lock 없는 트립은 알림이 없다. #3083 PR-1 이전에는 환승 체류 중 lockless 가짜 전진이
+  // 1역 전을 lock 부착 전에 소비해 알람이 영구 미발사였다(이 트립의 하차 알람 0건). 가짜 전진이 사라진 지금은
+  // lock 활성 구간에서 1정거장 전에 정확히 1회 발사되고, lock 없는 구간(18:10:22 이전)에서는 여전히 0건이다.
+  it('[#3140] 환승 체류 중 lock 없는 구간의 취침 하차 알람은 발사되지 않고, 알람은 1정거장 전 이후 정확히 1회다', async () => {
     const r = await replaySleepTrip();
     const alarmCycles = r.cycles.filter((c) => c.pushes.some(isDestinationSleepAlarm));
-    expect(alarmCycles).toEqual([]);
-    // 가짜 전진은 그대로: D1 `advance`가 환승역 이후 구간을 sync/lockless로 빠르게 소비한다.
-    expect(r.events.filter((e) => e.kind === 'advance').length).toBeGreaterThanOrEqual(3);
+    expect(alarmCycles).toHaveLength(1);
+    const firstTickAtOrAfter = r.cycles.map((c) => c.simNowMs).find((t) => t >= r.oneStopBeforeMs) as number;
+    expect(alarmCycles[0].simNowMs).toBe(firstTickAtOrAfter);
+    // #3083 PR-1: 체류 중 sync 가짜 전진(18:05:43 어린이대공원)은 hold된다 — 정당한 advance 2건(18:04:10 성수,
+    // 18:04:29 건대입구 환승 waypoint)만 남는다. (cron lockless 가짜 전진은 PR-2 소관)
+    expect(r.events.filter((e) => e.kind === 'advance')).toHaveLength(2);
   });
 
   // ── 결함 3: 실도착 전 destination-arrived 조기 종료 — 재생 불가 ─────────────────────────

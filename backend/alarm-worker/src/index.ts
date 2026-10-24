@@ -98,6 +98,7 @@ import {
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
   isLockActiveForLeg,
+  capLockSyncAdvance,
   maybeFireHopEndPrompt,
   runMidCycleFireOnly,
   runScheduled,
@@ -340,6 +341,19 @@ function scheduleTripEvent(c: Context<{ Bindings: Env }>, promise: Promise<void>
   } catch {
     void promise;
   }
+}
+
+/** #3083 — `advance-held` D1 행 중복 억제용 isolate-local 마지막 서명(token 해시 -> `관측역|requested`). */
+const ADVANCE_HELD_SIGNATURE_CACHE_MAX = 500;
+const advanceHeldSignatures = new Map<string, string>();
+
+/** 직전과 같은 서명이면 false(기록 불필요), 새 서명이면 저장하고 true. */
+function markAdvanceHeldRecorded(tokenHash: string, observed: string, requested: number): boolean {
+  const signature = `${observed}|${requested}`;
+  if (advanceHeldSignatures.get(tokenHash) === signature) return false;
+  if (advanceHeldSignatures.size >= ADVANCE_HELD_SIGNATURE_CACHE_MAX) advanceHeldSignatures.clear();
+  advanceHeldSignatures.set(tokenHash, signature);
+  return true;
 }
 
 /** sync 경로(진행 #3157 / 승격 fast-forward #3100)가 공유하는 소비 구간 직전역 알람 catch-up 스케줄러. */
@@ -3374,7 +3388,30 @@ app.post('/boarding-lock/sync', async (c) => {
       station: payload.observedStationName,
     }),
   );
-  const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
+  const requestedAdvance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
+  // #3083 — 환승 체류(anchor ∧ 활성 lock 없음 ∧ 창 안)에서는 leg-2 waypoint 소비를 막는다. `advance` 객체 자체를
+  // cap해 아래 소비자 전부(분기 진입/skipped 발사/slice/mirror/catch-up)가 같은 값을 본다.
+  const advance = capLockSyncAdvance(requestedAdvance, existing, now);
+  if (advance.shiftedCount < requestedAdvance.shiftedCount) {
+    createJsonLogger()('boarding-lock/sync: advance held (transfer-dwell)', {
+      token: existing.token.slice(0, 8),
+      observed: payload.observedStationName,
+      requested: requestedAdvance.shiftedCount,
+      cappedTo: advance.shiftedCount,
+    });
+    // 같은 (관측역, requested) 재관측은 D1 행을 다시 쓰지 않는다 — isolate 메모리 dedup(KV 쓰기 0, best-effort).
+    if (markAdvanceHeldRecorded(tokenHash, payload.observedStationName, requestedAdvance.shiftedCount)) {
+      scheduleTripEvent(
+        c,
+        recordTripEvent(c.env.DB, {
+          tokenHash,
+          kind: 'advance-held',
+          station: payload.observedStationName,
+          meta: { requested: requestedAdvance.shiftedCount, cappedTo: advance.shiftedCount },
+        }),
+      );
+    }
+  }
   // #2655 — 사용자가 환승역에 **도착한 시각**을 backend advance 타이밍과 분리해 기록한다.
   // device sync는 accuracy≤50m 게이트를 통과한 확정 관측이라(`useBoardingLockSync`) "지금 이 역에
   // 있다"의 ground truth로 다룬다(#2645가 하차 확정에 쓰는 것과 동일 근거). 아래 transfer stamp
