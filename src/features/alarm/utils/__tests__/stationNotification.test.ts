@@ -1330,7 +1330,7 @@ describe('stationNotification', () => {
 
     describe('빠른하차 힌트 (quickExit)', () => {
       // #1504 SonarCloud dedup — quickExit 분기 매트릭스를 it.each로 통합.
-      // 각 row: [label, phaseId, type, stationName, title, body, stationId?]. 좌/우 줄은 stationId 기반, 힌트는 이름 기반(PR-7b 전).
+      // 각 row: [label, phaseId, type, stationName, title, body, stationId?]. 좌/우 줄은 stationId 기반, 빠른하차 힌트도 stationId 기반(PR-7b).
       // 잠실/왕십리는 platformExitSide fallback fixture가 있어 좌/우 라인이 함께 붙는다.
       it.each([
         [
