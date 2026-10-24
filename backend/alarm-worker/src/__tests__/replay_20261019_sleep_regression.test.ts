@@ -238,8 +238,9 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
     const r = await replaySleepTrip();
     const alarmCycles = r.cycles.filter((c) => c.pushes.some(isDestinationSleepAlarm));
     expect(alarmCycles).toEqual([]);
-    // 가짜 전진은 그대로: D1 `advance`가 환승역 이후 구간을 sync/lockless로 빠르게 소비한다.
-    expect(r.events.filter((e) => e.kind === 'advance').length).toBeGreaterThanOrEqual(3);
+    // #3083 PR-1: 체류 중 sync 가짜 전진(18:05:43 어린이대공원)은 hold된다 — 정당한 advance 2건(18:04:10 성수,
+    // 18:04:29 건대입구 환승 waypoint)만 남는다. (cron lockless 가짜 전진은 PR-2 소관)
+    expect(r.events.filter((e) => e.kind === 'advance')).toHaveLength(2);
   });
 
   // ── 결함 3: 실도착 전 destination-arrived 조기 종료 — 재생 불가 ─────────────────────────
