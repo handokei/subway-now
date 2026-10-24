@@ -21,6 +21,35 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, 'src', 'data', 'quickExit.json');
 const STATIONS = require(path.join(ROOT, 'src', 'data', 'stations.json'));
+const ALIASES = require(path.join(__dirname, 'fixtures', 'platform-name-aliases.json'));
+const { buildNameIndex, lookupStationId } = require('./lib/stationNameIndex');
+const SOURCE_STATIONS_OUT = path.join(__dirname, 'fixtures', 'quick-exit-source-stations.json');
+
+// 원천 응답 lineNm → stations.json line. 원천은 서울교통공사 1~9호선만 제공한다(#3177).
+const LINE_NM_TO_LINE = {
+  '1호선': '1',
+  '2호선': '2',
+  '3호선': '3',
+  '4호선': '4',
+  '5호선': '5',
+  '6호선': '6',
+  '7호선': '7',
+  '8호선': '8',
+  '9호선': '9',
+};
+
+const NAME_INDEX = buildNameIndex(STATIONS);
+
+// (lineNm + 역명) → stations.json id. 노선 내 직접 매칭 → alias("line|원천명" → 정식명) 순.
+// 실패 시 null — 다른 노선 id로 폴백하지 않는다.
+function resolveStationId(lineNm, stationName) {
+  const line = LINE_NM_TO_LINE[lineNm];
+  if (!line) return null;
+  const direct = lookupStationId(NAME_INDEX, line, stationName);
+  if (direct) return direct;
+  const alias = ALIASES[`${line}|${stationName}`];
+  return alias ? lookupStationId(NAME_INDEX, line, alias) : null;
+}
 
 const API_KEY = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
 const SERVICE = process.env.SERVICE ?? 'getFstExit';
@@ -116,7 +145,7 @@ function stringOrNull(value) {
 // 한 행을 stations.json id 기준의 시설별 엔트리로 변환.
 // 매핑 실패 시 (역 매칭 불가, 시설 분류 불가, 문번호 누락) null 반환.
 // 응답 필드:
-//   - stnNm: 역명, lineNm: 호선명 (참고)
+//   - stnNm: 역명, lineNm: 호선명 (역명과 함께 stations.json id 결정)
 //   - plfmCmgFac: 승강장출입설비 (시설 분류 소스)
 //   - qckgffVhclDoorNo: 빠른하차차량출입문번호 (사용자 노출용 핵심)
 //   - upbdnbSe: 상하행구분 → TravelDirection
@@ -129,14 +158,14 @@ function mapRow(row) {
 
   if (!stationName || !doorNumber || !category) return null;
 
-  const station = STATIONS.find((s) => s.name === stationName);
-  if (!station) return null;
+  const stationId = resolveStationId(row.lineNm, stationName);
+  if (!stationId) return null;
 
   const direction = classifyDirection(row.upbdnbSe);
   const towardLabel = stringOrNull(row.drtnInfo);
 
   return {
-    stationId: station.id,
+    stationId,
     category,
     entry: {
       doorNumber,
@@ -193,6 +222,7 @@ async function main() {
     allRows.push(...(extractRows(page) ?? []));
   }
 
+  const unmatched = new Map();
   const map = {};
   let mapped = 0;
   let skipped = 0;
@@ -200,6 +230,11 @@ async function main() {
     const result = mapRow(row);
     if (!result) {
       skipped += 1;
+      const stnNm = stringOrNull(row.stnNm);
+      if (stnNm && !resolveStationId(row.lineNm, stnNm)) {
+        const key = `${row.lineNm}|${stnNm}`;
+        unmatched.set(key, (unmatched.get(key) ?? 0) + 1);
+      }
       continue;
     }
     mapped += 1;
@@ -214,6 +249,10 @@ async function main() {
     }
   }
 
+  const sourceStations = [...new Set(allRows.map((r) => `${r.lineNm}|${r.stnNm}`))].sort((a, b) => a.localeCompare(b));
+  fs.writeFileSync(SOURCE_STATIONS_OUT, JSON.stringify(sourceStations, null, 2) + '\n');
+  console.log(`[fetch-quick-exit] 역 매칭 실패 ${unmatched.size}건(행 기준):`);
+  for (const [key, count] of unmatched) console.log(`  ${key} x${count}`);
   fs.writeFileSync(OUT, JSON.stringify(map, null, 2) + '\n');
   console.log(`[fetch-quick-exit] mapped=${mapped} skipped=${skipped} stations=${Object.keys(map).length}`);
   console.log(`[fetch-quick-exit] wrote ${OUT}`);
@@ -226,4 +265,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { extractRows, extractTotal, classifyFacility, classifyDirection, mapRow };
+module.exports = {
+  extractRows,
+  extractTotal,
+  classifyFacility,
+  classifyDirection,
+  mapRow,
+  resolveStationId,
+  LINE_NM_TO_LINE,
+};
