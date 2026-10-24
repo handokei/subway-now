@@ -233,8 +233,9 @@ describe('#3155 트립 171 replay — 앵커역(건대입구) 출발 열차 목�
     // #3144 D3 — 앵커 관측(#3155) 승격 경로도 수동 목록 탭 = 사용자 행위라 응답 마커를 세운다(3경로 동급).
     expect(r.tapped?.hasResponseMarker).toBe(true);
     expect(r.tapped?.headAfter).toEqual(r.tapped?.headBefore);
-    // 이 시점 lockless cron이 이미 성수를 소비해 head는 목적지 뚝섬이다(실측 재생 결과).
-    expect(r.tapped?.headAfter).toEqual(['뚝섬']);
+    // #3083 PR-1: 탭 전(lockless, 환승 체류 창 안)에는 sync 관측(06:38:45 성수)이 leg-2 waypoint를 소비하지 못한다 —
+    // 이전에는 이 lockless sync 소비로 head가 목적지 뚝섬이었다(실측 재생 결과). 지금은 성수가 head로 남는다.
+    expect(r.tapped?.headAfter).toEqual(['성수', '뚝섬']);
     const station = r.events
       .slice(r.tapped?.eventsBeforeTap ?? 0)
       .filter((e) => e.kind === 'cron-fire-attempt' && e.station !== null)

@@ -97,6 +97,7 @@ import {
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
   isLockActiveForLeg,
+  capLockSyncAdvance,
   maybeFireHopEndPrompt,
   runMidCycleFireOnly,
   runScheduled,
@@ -3373,7 +3374,27 @@ app.post('/boarding-lock/sync', async (c) => {
       station: payload.observedStationName,
     }),
   );
-  const advance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
+  const requestedAdvance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
+  // #3083 — 환승 체류(anchor ∧ 활성 lock 없음 ∧ 창 안)에서는 leg-2 waypoint 소비를 막는다. `advance` 객체 자체를
+  // cap해 아래 소비자 전부(분기 진입/skipped 발사/slice/mirror/catch-up)가 같은 값을 본다.
+  const advance = capLockSyncAdvance(requestedAdvance, existing, now);
+  if (advance.shiftedCount < requestedAdvance.shiftedCount) {
+    createJsonLogger()('boarding-lock/sync: advance held (transfer-dwell)', {
+      token: existing.token.slice(0, 8),
+      observed: payload.observedStationName,
+      requested: requestedAdvance.shiftedCount,
+      cappedTo: advance.shiftedCount,
+    });
+    scheduleTripEvent(
+      c,
+      recordTripEvent(c.env.DB, {
+        tokenHash,
+        kind: 'advance-held',
+        station: payload.observedStationName,
+        meta: { requested: requestedAdvance.shiftedCount, cappedTo: advance.shiftedCount },
+      }),
+    );
+  }
   // #2655 — 사용자가 환승역에 **도착한 시각**을 backend advance 타이밍과 분리해 기록한다.
   // device sync는 accuracy≤50m 게이트를 통과한 확정 관측이라(`useBoardingLockSync`) "지금 이 역에
   // 있다"의 ground truth로 다룬다(#2645가 하차 확정에 쓰는 것과 동일 근거). 아래 transfer stamp

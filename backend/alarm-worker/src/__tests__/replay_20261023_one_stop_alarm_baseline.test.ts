@@ -297,14 +297,20 @@ describe('#3100 선행 — 트립 171 실측 replay: 1역 전 알람 (취침 알
 
 // ── 트립 168 (취침) ───────────────────────────────────────────────────────────────────────
 describe('#3100 선행 — 트립 168 실측 replay: 1역 전 알람 (취침 알람)', () => {
-  it('[원인 고정] lock(7268) 부착 시점에 waypoint는 이미 하차역 1개뿐 — lockless 가짜 전진이 1역 전(중곡)을 lock 이전에 소비했다', async () => {
+  // #3083 PR-1 — 가짜 전진 소멸의 직접 귀결로 갱신: 이전 단언(`head=하차역, left=1` + "lockless 구간에 1역 전이 head였던
+  // tick 존재")은 체류 중 sync 가짜 전진이 1역 전을 lock 이전에 소비했다는 결함 고정이었다.
+  it('[#3083] lock(7268) 부착 시점에 leg-2 waypoint가 하나도 소비되지 않았고, lockless 구간 어느 tick도 1역 전·하차역이 head가 아니다', async () => {
     const r = await replay168();
     const destination = r.seedWaypoints[r.seedWaypoints.length - 1].stationName;
     const oneBefore = r.seedWaypoints[r.seedWaypoints.length - 2].stationName;
     const firstLocked = r.heads.find((h) => h.lock !== undefined);
-    expect(firstLocked).toMatchObject({ head: destination, left: 1 });
-    // lock 이전에 1역 전이 head였던 tick이 있다 = 그 순간 lock이 없어 maybeFireSleepAlarm이 막혔다(#3140).
-    expect(r.heads.filter((h) => h.lock === undefined).some((h) => h.head === oneBefore)).toBe(true);
+    const leg2Start = r.seedWaypoints.findIndex((w) => w.kind === 'transfer') + 1;
+    expect(firstLocked).toMatchObject({
+      head: r.seedWaypoints[leg2Start].stationName,
+      left: r.seedWaypoints.length - leg2Start,
+    });
+    const lockless = r.heads.filter((h) => h.lock === undefined);
+    expect(lockless.some((h) => h.head === oneBefore || h.head === destination)).toBe(false);
   });
 
   it('1역 전 도달(18:14:47) 이전에는 하차 알람이 발사되지 않는다 (조기 발사 0, #3140)', async () => {
@@ -315,7 +321,8 @@ describe('#3100 선행 — 트립 168 실측 replay: 1역 전 알람 (취침 알
   });
 
   // #3100 선행 — 1역 전 결함: lockless 가짜 전진(#3083)이 lock 부착 전에 1역 전 waypoint를 소비 -> 이후 lock이 붙어도 하차 알람 영구 미발사.
-  it.fails('하차역 취침 알람이 추적 열차의 1역 전 도달(18:14:47) 전후 1 cron 주기 안에 정확히 1회 발사된다', async () => {
+  // #3083 PR-1로 sync 가짜 전진이 사라져 통과로 바뀜 — `.fails` 제거.
+  it('하차역 취침 알람이 추적 열차의 1역 전 도달(18:14:47) 전후 1 cron 주기 안에 정확히 1회 발사된다', async () => {
     const r = await replay168();
     const destination = r.seedWaypoints[r.seedWaypoints.length - 1].stationName;
     const fired = cronAlarms(r.result.cycles, destination);
