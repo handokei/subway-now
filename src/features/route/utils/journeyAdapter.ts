@@ -153,6 +153,8 @@ export function journeyDisplayToStops(
       if (seg.stops === 0 && prev?.mark === 'transfer' && prevSeg?.toName === seg.toName) {
         prev.mark = 'dest';
         prev.note = i18next.t('journey.transferArrivalNote');
+        // #3086 — 배지/dot 노선은 실제 탑승한 prevSeg 노선. 환승 stop의 line(=to-line)은 타지 않은 노선.
+        prev.line = prevSeg.line;
         // prev.arrivalContext는 이미 seg[i-1]의 값(사용자가 실제 탑승한 노선) — 덮어쓰지 않는다.
         // transferTarget은 그대로 둔다 — UI(EditorialTimeline)가 mark==='transfer'에만 적용하므로
         // 도착 stop으로 흡수된 후에는 자동으로 무시된다.
