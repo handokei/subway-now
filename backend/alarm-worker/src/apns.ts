@@ -1045,6 +1045,11 @@ export interface SendSleepAlarmCompanionPushOptions {
   tripToken: string;
   sentAt: number;
   /**
+   * #3100 — 타깃까지 남은 정거장(N역 전). **기본 칸(1역 전)은 생략**해 wire를 바이트 그대로 둔다. 기기가
+   * 칸별로 ledger·OS 예약 취소를 구분하는 데 쓴다(기기 소비는 후속 PR; 구 기기는 모르는 필드를 무시).
+   */
+  remainingStops?: number;
+  /**
    * 사용자 표시용 제목. 미지정 시 device fallback ('곧 환승역입니다').
    * i18n resolve는 backend caller가 담당 (locale 정보 전파 시).
    */
@@ -1077,6 +1082,7 @@ export async function sendSleepAlarmCompanionPush(
       tripToken: options.tripToken,
       pushId: options.pushId,
       sentAt: options.sentAt,
+      ...(options.remainingStops !== undefined ? { remainingStops: options.remainingStops } : {}),
       // title/body 는 정의된 경우만 wire (미지정 시 device fallback).
       ...(options.title !== undefined ? { title: options.title } : {}),
       ...(options.body !== undefined ? { body: options.body } : {}),

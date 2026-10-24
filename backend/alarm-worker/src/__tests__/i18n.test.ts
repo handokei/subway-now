@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeLocale, t, type SupportedLocale } from '../i18n';
+import { normalizeLocale, sleepAlarmContent, t, type SupportedLocale } from '../i18n';
 
 describe('normalizeLocale (#1895)', () => {
   const SUPPORTED: SupportedLocale[] = ['ko', 'en', 'ja', 'zh'];
@@ -212,5 +212,47 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
         destinationStation: '성수',
       }),
     ).toBe('2 · 시청');
+  });
+});
+
+describe('sleepAlarmContent (#3100) — 취침 알람 N역 전 문구', () => {
+  const STATION = '건대입구';
+  const LOCALES: SupportedLocale[] = ['ko', 'en', 'ja', 'zh'];
+
+  it.each(LOCALES.flatMap((lc) => (['transfer', 'destination'] as const).map((kind) => [lc, kind] as const)))(
+    'locale=%s kind=%s: 기본 칸(1역 전)은 기존 stationNotif 문구와 바이트 동일',
+    (lc, kind) => {
+      expect(sleepAlarmContent(lc, kind, STATION, 1)).toEqual({
+        title: t(lc).stationNotifTitle(kind, STATION),
+        body: t(lc).stationNotifBody(kind, STATION),
+      });
+    },
+  );
+
+  const EXPECTED: Record<SupportedLocale, Record<'transfer' | 'destination', (n: number) => { title: string; body: string }>> = {
+    ko: {
+      transfer: (n) => ({ title: `환승 ${n}정거장 전`, body: `${STATION}까지 ${n}정거장 남았습니다. 환승 준비하세요!` }),
+      destination: (n) => ({ title: `도착 ${n}정거장 전`, body: `${STATION}까지 ${n}정거장 남았습니다. 하차 준비하세요!` }),
+    },
+    en: {
+      transfer: (n) => ({ title: `Transfer in ${n} stops`, body: `${n} stops to ${STATION} — get ready to transfer!` }),
+      destination: (n) => ({ title: `Arrival in ${n} stops`, body: `${n} stops to ${STATION} — get ready to exit!` }),
+    },
+    ja: {
+      transfer: (n) => ({ title: `乗換まであと${n}駅`, body: `${STATION}まであと${n}駅です。乗換の準備をしてください!` }),
+      destination: (n) => ({ title: `到着まであと${n}駅`, body: `${STATION}まであと${n}駅です。下車の準備をしてください!` }),
+    },
+    zh: {
+      transfer: (n) => ({ title: `距换乘还有${n}站`, body: `距${STATION}还有${n}站。请准备换乘!` }),
+      destination: (n) => ({ title: `距到达还有${n}站`, body: `距${STATION}还有${n}站。请准备下车!` }),
+    },
+  };
+
+  it.each(
+    LOCALES.flatMap((lc) =>
+      (['transfer', 'destination'] as const).flatMap((kind) => [2, 3, 4].map((n) => [lc, kind, n] as const)),
+    ),
+  )('locale=%s kind=%s 남은 %i역: 실제 남은 수를 담은 문구', (lc, kind, n) => {
+    expect(sleepAlarmContent(lc, kind, STATION, n)).toEqual(EXPECTED[lc][kind](n));
   });
 });

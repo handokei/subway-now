@@ -18,6 +18,11 @@ import {
   routeSigOf,
   stubReplayFetch,
 } from './helpers/replay20261019';
+import {
+  SLEEP_ALARM_MAX_STOPS_BEFORE,
+  SLEEP_ALARM_MIN_STOPS_BEFORE,
+  type SleepAlarmConfig,
+} from '../../../../src/shared/constants/sleepAlarm';
 import { TRAIN_STATUS } from '../alarm';
 import { getTrip } from '../trips';
 import type { Env, PositionPoint, Waypoint } from '../types';
@@ -69,7 +74,14 @@ const promptPayload = (push: CapturedPush) => {
   return payload?.kind === 'boarding-prompt' ? payload : undefined;
 };
 
-async function replay173() {
+/** #3100 PR-1 — 설정 주입: 취침 ON + 설정만 seed한다(caps·D1은 불변 실측). */
+interface ReplayOpts {
+  sleepAlarm?: SleepAlarmConfig;
+}
+const sleepOverrides = (opts: ReplayOpts) =>
+  opts.sleepAlarm ? { sleepModeEnabled: true, sleepAlarm: opts.sleepAlarm } : {};
+
+async function replay173(opts: ReplayOpts = {}) {
   const dir = 'replay_20261021_trip173';
   const fixture = loadCapsFixture(dir);
   const d1 = loadD1Events(dir, 'events_173.json');
@@ -86,7 +98,7 @@ async function replay173() {
     waypoints: seedWaypoints,
     originStationName: metrics.origin_station as string,
     now: fixture.window.fromMs,
-    overrides: { infoModeEnabled: true, activityPushToken: 'ab'.repeat(32), activityState: 'live' },
+    overrides: { infoModeEnabled: true, activityPushToken: 'ab'.repeat(32), activityState: 'live', ...sleepOverrides(opts) },
   });
   const { db } = makeTripEventSink();
   const stub = stubReplayFetch(fixture);
@@ -119,7 +131,7 @@ async function replay173() {
 
 
 /** 트립 168 — 원본 replay_20261019_sleep_regression.test.ts 와 동일 재생(추정 입력 포함). */
-async function replay168() {
+async function replay168(opts: ReplayOpts = {}) {
   const dir = 'replay_20261019_sleep_regression';
   const token = 'replay-3100-168';
   const fixture = loadCapsFixture(dir);
@@ -135,7 +147,7 @@ async function replay168() {
     waypoints: seedWaypoints,
     originStationName: metrics.origin_station as string,
     now: fixture.window.fromMs,
-    overrides: { sleepModeEnabled: true, infoModeEnabled: true, activityPushToken: 'ab'.repeat(32), activityState: 'live' },
+    overrides: { sleepModeEnabled: true, infoModeEnabled: true, activityPushToken: 'ab'.repeat(32), activityState: 'live', ...opts },
   });
   const firstTransferSync = d1.find((e) => e.kind === 'sync-received' && e.station === transfer.stationName);
   const motionSeries: PositionPoint[] = [];
@@ -186,7 +198,7 @@ async function replay168() {
 }
 
 /** 트립 171 — 원본 replay_20261021_sync_skipped_station_alarm.test.ts 와 동일 재생(register 주입 포함). */
-async function replay171() {
+async function replay171(opts: ReplayOpts = {}) {
   const dir = 'replay_20261020_sleep_171';
   const token = 'replay-3100-171';
   const fixture = loadCapsFixture(dir);
@@ -200,7 +212,7 @@ async function replay171() {
     waypoints: seedWaypoints,
     originStationName: metrics.origin_station as string,
     now: fixture.window.fromMs,
-    overrides: { sleepModeEnabled: true, infoModeEnabled: true, activityPushToken: 'ab'.repeat(32), activityState: 'live' },
+    overrides: { sleepModeEnabled: true, infoModeEnabled: true, activityPushToken: 'ab'.repeat(32), activityState: 'live', ...opts },
   });
   const { db } = makeTripEventSink();
   const stub = stubReplayFetch(fixture);
@@ -220,6 +232,7 @@ async function replay171() {
         createdAt: seedTrip.createdAt,
         infoModeEnabled: true,
         sleepModeEnabled: true,
+        ...opts,
       },
     },
   });
@@ -321,5 +334,73 @@ describe('#3100 선행 — 트립 168 실측 replay: 1역 전 알람 (취침 알
     const fired = cronAlarms(r.result.cycles, destination);
     expect(fired).toHaveLength(1);
     expect(Math.abs(fired[0] - (r.oneStopMs as number))).toBeLessThanOrEqual(60_000);
+  });
+});
+
+// ── #3100 PR-1 — 실측 트립 위에 "N역 전부터" 설정 주입 (caps·D1 불변, 설정 필드만 seed) ─────────────
+const range = (from: number, to: number): number[] => Array.from({ length: Math.max(to - from + 1, 0) }, (_, i) => from + i);
+const EVERY_MAX: SleepAlarmConfig = { mode: 'every', stops: [SLEEP_ALARM_MAX_STOPS_BEFORE] };
+
+/** `alarm-[s{N}-]<token>-<역>` 취침 알람의 (시각, 남은 정거장). 접미사 없음 = 기본 칸. */
+function cronSleepAlarmRemainings(cycles: { simNowMs: number; pushes: CapturedPush[] }[], station: string) {
+  const out: { at: number; remaining: number }[] = [];
+  for (const c of cycles) {
+    for (const p of c.pushes) {
+      const id = alarmCollapseId(p.body, p.headers.collapseId);
+      const m = id?.match(/^alarm-(?:s(\d+)-)?/);
+      if (id?.endsWith(`-${station}`) && m) {
+        out.push({ at: c.simNowMs, remaining: m[1] === undefined ? SLEEP_ALARM_MIN_STOPS_BEFORE : Number(m[1]) });
+      }
+    }
+  }
+  return out;
+}
+
+describe('#3100 PR-1 — 트립 173 실측 replay + 설정 {매 역, MAX} 주입 (취침 ON)', () => {
+  it('leg-1 환승역(건대입구): 남은 칸이 각각 정확히 1회, 시간순으로 줄어들고, 기본 칸은 기본값 발사 시각과 같다', async () => {
+    const base = await replay173();
+    const transferIdx = base.seedWaypoints.findIndex((w) => w.kind === 'transfer');
+    const transfer = base.seedWaypoints[transferIdx].stationName;
+    const defaultFiredAt = cronAlarms(base.result.cycles, transfer);
+    expect(defaultFiredAt).toHaveLength(1);
+
+    const injected = await replay173({ sleepAlarm: EVERY_MAX });
+    const fired = cronSleepAlarmRemainings(injected.result.cycles, transfer);
+    // 각 남은 수는 정확히 1회 -> 중복 0
+    expect(new Set(fired.map((f) => f.remaining)).size).toBe(fired.length);
+    // 시간이 흐를수록 남은 수는 줄어든다
+    for (let i = 1; i < fired.length; i++) {
+      expect(fired[i].at).toBeGreaterThanOrEqual(fired[i - 1].at);
+      expect(fired[i].remaining).toBeLessThan(fired[i - 1].remaining);
+    }
+    // 기본 칸(1역 전)은 기본값(준비 알람)이 발사하던 바로 그 cron tick
+    const oneBefore = fired.find((f) => f.remaining === SLEEP_ALARM_MIN_STOPS_BEFORE);
+    expect(oneBefore?.at).toBe(defaultFiredAt[0]);
+    // fixture에서 도출한 정확한 기대: 시드 경로의 환승역 앞 중간역 수 m -> 남은 [min(m, MAX) .. MIN] 전부 1회
+    const m = transferIdx;
+    const expectedRemainings = range(SLEEP_ALARM_MIN_STOPS_BEFORE, Math.min(m, SLEEP_ALARM_MAX_STOPS_BEFORE)).reverse();
+    expect(fired.map((f) => f.remaining)).toEqual(expectedRemainings);
+  });
+});
+
+// transitional — PR-2에서 변경: sync catch-up(`fireSyncConsumedPrecedingAlarms`)이 아직 기본 crossing만 쓰므로 비기본 설정에서도
+// 기본 칸 1회다. PR-2가 sync를 N으로 일반화하면 이 단언은 설정 기대 집합으로 바뀌어야 한다.
+describe('#3100 PR-1 — 트립 171 실측 replay + 설정 {매 역, MAX} 주입: sync 경로는 기본값과 동일 (PR-2 전)', () => {
+  it('하차역(뚝섬) 취침 알람이 정확히 1회, 기본 칸(칸 구분 필드 없음) — 설정 주입이 sync catch-up을 흔들지 않는다', async () => {
+    const r = await replay171({ sleepAlarm: EVERY_MAX });
+    const httpAlarms = r.httpPushes.filter((p) => (p.aps as Body | undefined)?.sound === 'alarm.wav');
+    expect(httpAlarms).toHaveLength(1);
+    const companions = r.httpPushes.filter((p) => (p.data as Body | undefined)?.kind === 'sleep-alarm-companion');
+    expect(companions).toHaveLength(1);
+    expect(companions[0].data).not.toHaveProperty('remainingStops');
+  });
+});
+
+describe('#3100 PR-1 — 트립 168 실측 replay + 설정 {매 역, MAX} 주입: lockless 가짜 전진이 칸을 소비한 사례는 오발사 0', () => {
+  it('1역 전 도달 전에는 하차 알람이 발사되지 않는다 (조기 발사 0)', async () => {
+    const r = await replay168({ sleepAlarm: EVERY_MAX });
+    const destination = r.seedWaypoints[r.seedWaypoints.length - 1].stationName;
+    const early = cronAlarms(r.result.cycles, destination).filter((at) => at < (r.oneStopMs as number) - 60_000);
+    expect(early).toEqual([]);
   });
 });

@@ -279,6 +279,34 @@ describe('validateTrip', () => {
     expect(validateTrip(base())?.sleepModeEnabled).toBeUndefined();
   });
 
+  // #3100 — sleepAlarm("N역 전부터") parse. 기본값과 같은/잘못된 설정은 필드를 저장하지 않는다(= 기본값).
+  it('keeps a valid sleepAlarm config normalized (#3100)', () => {
+    expect(validateTrip({ ...base(), sleepAlarm: { mode: 'every', stops: [3] } })?.sleepAlarm).toEqual({
+      mode: 'every',
+      stops: [3],
+    });
+    expect(validateTrip({ ...base(), sleepAlarm: { mode: 'selected', stops: [1, 3] } })?.sleepAlarm).toEqual({
+      mode: 'selected',
+      stops: [3, 1],
+    });
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+    ['string', '3'],
+    ['non-array stops', { mode: 'selected', stops: '3' }],
+    ['stops [0]', { mode: 'selected', stops: [0] }],
+    ['stops [MAX+1]', { mode: 'selected', stops: [4] }],
+    ['unknown mode', { mode: 'all', stops: [3] }],
+    ['default-equivalent selected [1]', { mode: 'selected', stops: [1] }],
+    ['default-equivalent every 1', { mode: 'every', stops: [1] }],
+  ])('drops sleepAlarm -> undefined (default): %s (#3100)', (_name, sleepAlarm) => {
+    const trip = validateTrip({ ...base(), ...(sleepAlarm === undefined ? {} : { sleepAlarm }) });
+    expect(trip).not.toBeNull();
+    expect(trip?.sleepAlarm).toBeUndefined();
+  });
+
   // #2280 — originStationName 필드 (trip 등록 시점 SSOT 출발역명, d1TripMetrics.origin_station
   // null 회귀 fix의 device→backend wire 절반).
   it('preserves non-empty string originStationName (#2280)', () => {
@@ -1052,6 +1080,22 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     await post('/trips', { ...tripBody(), sleepModeEnabled: false }, env);
     const afterOff = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
     expect(afterOff.sleepModeEnabled).toBe(false);
+  });
+
+  // #3100 — sleepAlarm: 같은 세션 재등록에서 incoming이 이긴다. 기본값으로 되돌리면 필드가 사라진다.
+  it('persists sleepAlarm on register and drops it when the user resets to default (same session) (#3100)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...tripBody(), sleepModeEnabled: true, sleepAlarm: { mode: 'every', stops: [3] } }, env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(stored.sleepAlarm).toEqual({ mode: 'every', stops: [3] });
+
+    await post('/trips', { ...tripBody(), sleepModeEnabled: true, sleepAlarm: { mode: 'selected', stops: [3, 1] } }, env);
+    const changed = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(changed.sleepAlarm).toEqual({ mode: 'selected', stops: [3, 1] });
+
+    await post('/trips', { ...tripBody(), sleepModeEnabled: true }, env); // 기본값으로 복귀 = 필드 없음
+    const reset = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(reset).not.toHaveProperty('sleepAlarm');
   });
 
   it('legacy client (no sleepModeEnabled) 는 undefined 저장 (backward-compat 완전 보존)', async () => {

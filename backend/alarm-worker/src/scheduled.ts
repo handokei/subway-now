@@ -82,6 +82,14 @@ import {
 } from './renumberSuccessor';
 import { appendLockCodeHistory } from './lockCodeHistory';
 import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
+import { ONE_STATION_STEP, SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../src/shared/constants/sleepAlarm';
+import {
+  crossingForSingleAdvance,
+  selectSleepAlarmFire,
+  sleepAlarmSuffix,
+  type SleepAlarmCrossing,
+} from '../../../src/shared/utils/sleepAlarmCells';
+import { crossingForConsumed, readSleepAlarmStops } from './sleepAlarmCrossing';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
   advanceTripPosition,
@@ -168,7 +176,7 @@ import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 import { assertNever } from '../../../src/shared/types/pushContract';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
-import { t, type StationNotifCounts, type SupportedLocale } from './i18n';
+import { sleepAlarmContent, t, type StationNotifCounts, type SupportedLocale } from './i18n';
 import {
   checkArvlCdFireOnce,
   isSimpleArchEnabled,
@@ -2958,8 +2966,18 @@ function stationNotifSoundFields(
  */
 export const SLEEP_ALARM_FIRE_KEY_PREFIX = 'alarmFireKey:';
 
-export function sleepAlarmFireKey(tripToken: string, targetStation: string): string {
-  return `${SLEEP_ALARM_FIRE_KEY_PREFIX}${tripToken}:${targetStation}`;
+/**
+ * #3100 — `remaining`(타깃까지 남은 정거장)이 기본 칸(1역 전)이 아니면 `:s{N}` 접미사로 칸마다 별도 dedup한다.
+ * 기본 칸은 기존 키와 바이트 동일 — 기본 사용자의 이미 발사된 키(1h TTL)와도 그대로 호환된다.
+ */
+export function sleepAlarmFireKey(
+  tripToken: string,
+  targetStation: string,
+  remaining: number = SLEEP_ALARM_MIN_STOPS_BEFORE,
+): string {
+  const suffix = sleepAlarmSuffix(remaining);
+  const base = `${SLEEP_ALARM_FIRE_KEY_PREFIX}${tripToken}:${targetStation}`;
+  return suffix === '' ? base : `${base}:${suffix}`;
 }
 
 /** #2066 — 취침 알람 dedup TTL (1h). */
@@ -2974,8 +2992,9 @@ export type SleepAlarmSkipReason = 'not-sleep' | 'not-preceding';
  *   1. `trip.sleepModeEnabled === true`
  *   2. `waypoint`(방금 arvlCd∈{0,1}로 진입/도착 확정된 역)가 `kind: 'intermediate'`
  *      — transfer/destination 자신은 "직전역"이 될 수 없다(그 경우는 이미 도착한 것).
- *   3. `nextWaypoint`(waypoint 바로 다음 대상)가 존재하고 `kind`가 'transfer' 또는 'destination'
- *      — waypoint가 정확히 그 환승/도착역의 "직전역"이어야 한다.
+ *   3. `nextWaypoint`(leg 타깃)가 존재하고 `kind`가 'transfer' 또는 'destination'.
+ *   4. (#3100) `crossing`이 설정한 칸(`readSleepAlarmStops`)에 걸린다 — 기본값 `[1역 전]`이면 "waypoint가
+ *      정확히 타깃의 직전역"일 때만(= 이전의 인접 쌍 규칙과 동일). `crossing` 생략 = 인접 쌍 1칸 전진.
  *
  * "1역차 금지"(이슈 #2066 스펙 "그 직전 역 ≠ 해당 구간의 출발역")는 별도 게이트가 필요 없다 —
  * `trip.waypoints`는 leg의 출발역(방금 탑승/환승한 역) 자체를 포함하지 않으므로, 환승/도착이
@@ -2987,7 +3006,8 @@ export function evaluateSleepAlarmTrigger(
   trip: Trip,
   waypoint: Waypoint,
   nextWaypoint: Waypoint | undefined,
-): { fire: true; target: Waypoint } | { fire: false; reason: SleepAlarmSkipReason } {
+  crossing: SleepAlarmCrossing = crossingForSingleAdvance(SLEEP_ALARM_MIN_STOPS_BEFORE),
+): { fire: true; target: Waypoint; remaining: number } | { fire: false; reason: SleepAlarmSkipReason } {
   if (trip.sleepModeEnabled !== true) {
     return { fire: false, reason: 'not-sleep' };
   }
@@ -2998,7 +3018,11 @@ export function evaluateSleepAlarmTrigger(
   ) {
     return { fire: false, reason: 'not-preceding' };
   }
-  return { fire: true, target: nextWaypoint };
+  const remaining = selectSleepAlarmFire(readSleepAlarmStops(trip), crossing);
+  if (remaining === undefined) {
+    return { fire: false, reason: 'not-preceding' };
+  }
+  return { fire: true, target: nextWaypoint, remaining };
 }
 
 /** 취침/준비 알람 발사가 쓰는 최소 deps — cron(`ScheduledDeps`)과 sync(`SyncSkippedFireDeps`) 양쪽이 만족한다. */
@@ -3008,14 +3032,44 @@ interface MaybeFireSleepAlarmInputs {
   trip: Trip;
   /** 방금 arvlCd∈{0,1}로 진입/도착 확정된 역(= 환승/도착역의 "직전역" 후보). */
   waypoint: Waypoint;
-  /** waypoint 바로 다음 대상 (shift 전 `trip.waypoints[1]`). */
+  /** leg 타깃(환승/하차). cron 전진은 `crossingForConsumed(trip.waypoints, ...)`의 target. */
   nextWaypoint: Waypoint | undefined;
+  /** #3100 — 이번 전진이 지나간 남은-정거장 범위. 생략 = 인접 쌍 1칸 전진(sync 쌍). */
+  crossing?: SleepAlarmCrossing;
   env: Env;
   deps: AlarmFireDeps;
   stats: ScheduledStats;
   now: number;
   log: Logger;
   generatePushId: () => string;
+}
+
+/**
+ * #3100 — 비기본 칸(1역 전이 아닌 N역 전)의 발사 outcome을 D1 `trip_events`(kind='sleep-alarm')에 1행 append한다.
+ * 기본 칸은 행을 만들지 않는다(D1 행 증가 0). 관측 전용 — 발사/dedup 판정에는 관여하지 않는다.
+ */
+async function recordNonDefaultSleepAlarm(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  target: Waypoint,
+  remaining: number,
+  outcome: 'fired' | 'rolled-back',
+  extra: Record<string, unknown>,
+  now: number,
+): Promise<void> {
+  if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) return;
+  await recordTripEvent(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'sleep-alarm',
+      station: waypoint.stationName,
+      line: waypoint.line,
+      meta: { outcome, remaining, targetStation: target.stationName, targetKind: target.kind, ...extra },
+    },
+    now,
+  );
 }
 
 /**
@@ -3060,18 +3114,18 @@ function buildSleepAlarmRetryPayload(
  * 완전히 독립된 발사 경로다.
  */
 async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<void> {
-  const { trip, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId } = inputs;
+  const { trip, waypoint, nextWaypoint, crossing, env, deps, stats, now, log, generatePushId } = inputs;
   // #3140 — lock 없는 트립은 알림이 없다(사용자 결정). 호출부가 아니라 여기서 막는다:
   // completeWaypointAdvance는 lock 활성 advance와 lockless 호출이 공유한다. D1 행은 없다(관측 대상 아님).
   if (!isBoardingLockActive(trip, now)) return;
-  const trigger = evaluateSleepAlarmTrigger(trip, waypoint, nextWaypoint);
+  const trigger = evaluateSleepAlarmTrigger(trip, waypoint, nextWaypoint, crossing);
   if (!trigger.fire) {
     // 'not-sleep' / 'not-preceding' 은 매 intermediate advance마다 정상적으로 대량 발생하는
     // routine 분기라 로그 노이즈를 만들지 않는다 (매역 알림의 다른 skip 사유들과 동일 정책).
     return;
   }
-  const target = trigger.target;
-  const dedupKey = sleepAlarmFireKey(trip.token, target.stationName);
+  const { target, remaining } = trigger;
+  const dedupKey = sleepAlarmFireKey(trip.token, target.stationName, remaining);
   const existingDedup = await env.TRIPS.get(dedupKey);
   if (existingDedup !== null) {
     stats.sleepAlarmDedupSkipped += 1;
@@ -3079,6 +3133,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
       target: target.stationName,
+      remaining,
     });
     return;
   }
@@ -3086,10 +3141,10 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   // 실패 시 아래에서 rollback(delete) — 영구 dedup 미스 방지.
   await env.TRIPS.put(dedupKey, '1', { expirationTtl: SLEEP_ALARM_FIRE_DEDUP_TTL_SEC });
 
-  const content = buildStationNotifContent(trip, target, trip.locale);
-  const collapseId = sleepAlarmCollapseId(trip.token, target.stationName);
   const targetKind: 'transfer' | 'destination' =
     target.kind === 'destination' ? 'destination' : 'transfer';
+  const content = sleepAlarmContent(trip.locale, targetKind, target.stationName, remaining);
+  const collapseId = sleepAlarmCollapseId(trip.token, target.stationName, remaining);
 
   const alertPushId = generatePushId();
   const alertHeal = await sendWithEnvHeal(
@@ -3133,6 +3188,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
         nextStation: target.stationName,
         tripToken: trip.token,
         sentAt: now,
+        // #3100 — 기본 칸(1역 전)은 필드 생략(wire 바이트 동일), 비기본 칸만 남은 정거장을 싣는다.
+        ...(remaining === SLEEP_ALARM_MIN_STOPS_BEFORE ? {} : { remainingStops: remaining }),
         title: content.title,
         body: content.body,
         config: deps.apnsConfig,
@@ -3158,8 +3215,10 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       station: waypoint.stationName,
       target: target.stationName,
       targetKind,
+      remaining,
       companionOk: companionHeal.result.ok,
     });
+    await recordNonDefaultSleepAlarm(env, trip, waypoint, target, remaining, 'fired', { pushId: alertPushId }, now);
   } else {
     // P2-1 — 주 채널 실패: dedup rollback(다음 재평가 기회 보존) + transient retry 큐 등록.
     stats.sleepAlarmRolledBack += 1;
@@ -3167,9 +3226,20 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
     log('sleep-alarm: visible push failed (dedup rolled back)', {
       token: trip.token.slice(0, 8),
       target: target.stationName,
+      remaining,
       status: alertHeal.result.status,
       reason: alertHeal.result.reason,
     });
+    await recordNonDefaultSleepAlarm(
+      env,
+      trip,
+      waypoint,
+      target,
+      remaining,
+      'rolled-back',
+      { pushId: alertPushId, status: alertHeal.result.status, pushReason: alertHeal.result.reason },
+      now,
+    );
     await enqueueRetryIfTransient(
       env.PENDING_PUSHES,
       {
@@ -6402,10 +6472,13 @@ export async function completeWaypointAdvance(
 ): Promise<{ tripEnded: boolean }> {
   // #2066 (Phase 2-backend) — 취침 알람 평가. waypoints shift 전이라 trip.waypoints[1]이
   // waypoint(방금 arvlCd 확정된 직전역 후보) 바로 다음 대상(환승/도착 여부 판정용).
+  // #3100 — 타깃·남은 정거장 범위는 소비 모델(`crossingForConsumed`) 한 곳에서 구한다(cron 1칸 전진).
+  const sleepConsumed = crossingForConsumed(trip.waypoints, ONE_STATION_STEP);
   await maybeFireSleepAlarm({
     trip,
     waypoint,
-    nextWaypoint: trip.waypoints[1],
+    nextWaypoint: sleepConsumed?.target,
+    crossing: sleepConsumed?.crossing,
     env,
     deps,
     stats,
@@ -7573,10 +7646,13 @@ export async function runLocklessIntermediate(
   // (`advanceBoardingLockWaypoint`)와 동일 로직 재사용 — 환승/도착 타겟 종류만 다르다.
   // #1967 (Ff-1) — kill switch 활성 시에도 실행: 매역 push만 억제 대상이지 취침 알람까지 죽이면
   // 안 된다(회귀 대응 중 취침 알람이 함께 죽는 새 회귀 방지).
+  // #3100 — 타깃·남은 정거장 범위는 소비 모델(`crossingForConsumed`) 한 곳에서 구한다(cron 1칸 전진).
+  const sleepConsumed = crossingForConsumed(trip.waypoints, ONE_STATION_STEP);
   await maybeFireSleepAlarm({
     trip,
     waypoint,
-    nextWaypoint: trip.waypoints[1],
+    nextWaypoint: sleepConsumed?.target,
+    crossing: sleepConsumed?.crossing,
     env,
     deps,
     stats,
