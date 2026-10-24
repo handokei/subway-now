@@ -330,6 +330,8 @@ export type LegBoardingPromptOutcome =
   | 'walk-gated'
   | 'no-candidates'
   | 'silenced'
+  /** #3200 — 응답한 열차(silencedTrainCode)와 같은/불명 선택이 무음 창에서 차단됨(열차 단위 무음). */
+  | 'silenced-train'
   | 'fired'
   /**
    * #2801 — 후보는 있으나 전부 관측됐고(arvlCd non-null) 임박(0/1/2)/approaching(3/5, 3차
@@ -370,6 +372,8 @@ export type HopEndPromptOutcome = 'silenced' | 'fired';
 export type OriginBoardingPromptOutcome =
   | 'too-far'
   | 'silenced'
+  /** #3200 — 열차 단위 무음 차단(leg-2 `silenced-train`과 동일 의미). */
+  | 'silenced-train'
   | 'no-candidates'
   | 'suppressed-not-imminent'
   | 'fired';

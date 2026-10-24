@@ -307,9 +307,13 @@ export function evaluateBoardingPromptRepeatGate(
   now: number,
 ): GateOutcome | null {
   if (!promptState) return null;
+  // #3200 — 응답한 열차(silencedTrainCode)를 아는 무음은 열차 단위다. 여기서 leg 단위로 막지 않고
+  // pool/selectedTrainCode를 아는 caller의 `shouldProceedToSend`가 `isPromptSilencedForTrain`으로
+  // 판정한다. 열차를 모르는(null-token) 응답은 기존대로 leg 단위 5분 무음.
   if (
     promptState.silencedUntil !== undefined &&
-    promptState.silencedUntil > now
+    promptState.silencedUntil > now &&
+    promptState.silencedTrainCode === undefined
   ) {
     return { pass: false, reason: 'silenced' };
   }
@@ -512,10 +516,46 @@ export function markPromptSilenced(
   prev: BoardingPromptState | undefined,
   now: number,
 ): BoardingPromptState {
+  // #3200 — 응답한 열차 = 마지막으로 발사된 프롬프트의 열차. null-token이거나 발사 이력이 없으면
+  // 열차를 특정할 수 없어 silencedTrainCode를 두지 않는다(leg 단위 5분 무음 유지). 이전 응답의
+  // silencedTrainCode가 잔존하지 않도록 매번 새로 계산해 덮는다.
+  const { silencedTrainCode: _stale, ...rest } = prev ?? {};
+  const lastKey = prev?.firedTrainCodes?.at(-1);
+  const lastToken = lastKey === undefined ? NULL_TRAIN_TOKEN : trainCodeTokenOf(lastKey);
   return {
-    ...prev,
+    ...rest,
     silencedUntil: now + DISMISS_SILENCE_MS,
+    ...(lastToken !== NULL_TRAIN_TOKEN ? { silencedTrainCode: lastToken } : {}),
   };
+}
+
+/**
+ * #3200 — 열차 단위 무음 판정(`shouldProceedToSend` 시점, selectedTrainCode를 안 뒤). 무음 중이고
+ * 응답한 열차를 아는 경우, 그 열차와 같거나 이번 선택을 특정 못 한(null) 때만 막는다 — 다른 trainCode의
+ * 도착 확정 열차는 무음과 무관하게 통과(열차당 1회·leg 상한 3은 다른 게이트가 유지).
+ * 열차를 모르는 무음(silencedTrainCode 부재)은 `evaluateBoardingPromptRepeatGate`가 이미 leg 단위로 막는다.
+ */
+/**
+ * #3200 — 열차 단위 무음이 지금 유효한가(응답한 열차를 아는 무음).
+ */
+function isTrainScopedSilenceActive(
+  promptState: BoardingPromptState | undefined,
+  now: number,
+): boolean {
+  return (
+    promptState?.silencedUntil !== undefined &&
+    promptState.silencedUntil > now &&
+    promptState.silencedTrainCode !== undefined
+  );
+}
+
+export function isPromptSilencedForTrain(
+  promptState: BoardingPromptState | undefined,
+  selectedTrainCode: string | null,
+  now: number,
+): boolean {
+  if (!isTrainScopedSilenceActive(promptState, now)) return false;
+  return selectedTrainCode === null || selectedTrainCode === promptState?.silencedTrainCode;
 }
 
 /**

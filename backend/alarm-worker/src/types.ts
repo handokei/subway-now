@@ -957,6 +957,11 @@ export interface BoardingPromptState {
   /** 사용자가 dismiss/미탑승으로 silence 요청한 시각 (epoch ms). */
   silencedUntil?: number;
   /**
+   * #3200 — 무음을 건 응답이 지칭한 열차(마지막 발사 열차의 trainCode). 있으면 무음은 그 열차에만
+   * 적용(다른 열차의 도착 확정은 즉시 발사). 부재 = 열차 불명(null-token/이력 없음) → leg 단위 5분 무음.
+   */
+  silencedTrainCode?: string;
+  /**
    * 이 trip에 최소 1회 발사됐는지 — 관측/D1 acceptance 전용 플래그.
    *
    * #2130 (Part B-be-2) 이후 boarding-prompt는 이 필드로 게이트하지 않는다("trip당 1회" 정책
