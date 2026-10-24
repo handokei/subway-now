@@ -69,10 +69,15 @@ let tripTransitionQueue: Promise<unknown> = Promise.resolve();
  * removeItem(ROUTE_KEY)은 recall 등 async 선행 단계 뒤에 돌아, 그 사이 fire-and-forget으로 쓴
  * setItem을 뒤늦게 지우고 재기록 경로가 없어 지도 경로가 소실됐다. cleanup과 같은
  * tripTransitionQueue에 enqueue해 항상 진행 중인 transition의 cleanup 뒤에 쓰이게 한다.
+ * route=null이면 removeItem. HomeScreen의 ROUTE_KEY 쓰기/삭제는 전부 이 헬퍼만 거친다(큐 밖 직접 호출 0건).
  */
-export function persistRouteAfterTransition(route: unknown): void {
+export function persistRouteAfterTransition(route: unknown | null): void {
   tripTransitionQueue = tripTransitionQueue
-    .then(() => AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(route)))
+    .then(() =>
+      route === null
+        ? AsyncStorage.removeItem(ROUTE_KEY)
+        : AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(route)),
+    )
     .catch(noop);
 }
 

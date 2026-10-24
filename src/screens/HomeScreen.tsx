@@ -64,8 +64,6 @@ import { useEnsureLiveActivity } from '../features/alarm/hooks/useEnsureLiveActi
 import { useForegroundLaMirrorSync } from '../features/alarm/hooks/useForegroundLaMirrorSync';
 import { useLiveActivityTokenRegistration } from '../features/alarm/hooks/useLiveActivityTokenRegistration';
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ROUTE_KEY } from '../shared/constants/storageKeys';
 import { SleepAlarmOverlay } from '../features/alarm/components/SleepAlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
 import { useTheme, typography, spacing, radiusGlass, lineTint, shadowStyle } from '../shared/theme';
@@ -693,7 +691,7 @@ export default function HomeScreen() {
     if (!destination) {
       setCategorized([]);
       lastComputedRouteSessionRef.current = null;
-      AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
+      persistRouteAfterTransition(null);
       return;
     }
     if (!effectiveOrigin) {
@@ -725,7 +723,7 @@ export default function HomeScreen() {
         lastComputedRouteSessionRef.current = sessionKey;
         persistRouteAfterTransition(preferred.candidate.route);
       } else {
-        AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
+        persistRouteAfterTransition(null);
       }
     });
     return () => interaction.cancel();
@@ -1782,7 +1780,7 @@ export default function HomeScreen() {
                             style={[styles.routePill, active && { backgroundColor: colors.segmentActive, ...shadowStyle('segment', isDark) }]}
                             onPress={() => {
                               setSelectedKey(category.key);
-                              AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(candidate.route)).catch(() => {});
+                              persistRouteAfterTransition(candidate.route);
                             }}
                           >
                             <Text style={[styles.routePillText, { color: active ? colors.ink : colors.muted }]}>
