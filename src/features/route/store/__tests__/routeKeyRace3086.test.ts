@@ -2,6 +2,8 @@
  * Cross-feature: #3086 ROUTE_KEY race — 실 useDestinationStore + 실 runTripBoundCleanups.
  * HomeScreen의 route setItem이 destination-switch cleanup의 늦은 removeItem에 지워지는지 검증.
  */
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useDestinationStore, persistRouteAfterTransition } from '../useDestinationStore';
 import { ROUTE_KEY } from '../../../../shared/constants/storageKeys';
@@ -74,5 +76,33 @@ describe('#3086 ROUTE_KEY race (destination-switch cleanup vs HomeScreen setItem
     const raw = await AsyncStorage.getItem(ROUTE_KEY);
     expect(raw).not.toBeNull();
     expect(JSON.parse(raw as string)).toEqual(routeToB);
+  });
+
+  it('A: 큐에 persist(X) 대기 중 사용자가 Y 탭 -> 최종 ROUTE_KEY는 Y (X 부활 금지)', async () => {
+    const routeY = { stations: [stationB, stationA] };
+    useDestinationStore.getState().setDestination(stationB);
+    await flush();
+    persistRouteAfterTransition(routeToB); // X
+    persistRouteAfterTransition(routeY); // 사용자 탭 Y
+    releaseRecall();
+    await flush();
+    expect(JSON.parse((await AsyncStorage.getItem(ROUTE_KEY)) as string)).toEqual(routeY);
+  });
+
+  it('B: route 없음(null) 저장은 removeItem이며 cleanup 뒤 stale route를 부활시키지 않는다', async () => {
+    await AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(routeToB));
+    useDestinationStore.getState().setDestination(stationB);
+    await flush();
+    persistRouteAfterTransition(null);
+    releaseRecall();
+    await flush();
+    expect(await AsyncStorage.getItem(ROUTE_KEY)).toBeNull();
+  });
+
+  it('배선 가드: HomeScreen은 ROUTE_KEY를 큐 밖에서 직접 쓰/지우지 않고 헬퍼만 호출한다', () => {
+    const src = readFileSync(join(__dirname, '../../../../screens/HomeScreen.tsx'), 'utf8');
+    expect(src).not.toMatch(/AsyncStorage\.setItem\(\s*ROUTE_KEY/);
+    expect(src).not.toMatch(/AsyncStorage\.removeItem\(\s*ROUTE_KEY/);
+    expect(src.match(/persistRouteAfterTransition\(/g)?.length).toBeGreaterThanOrEqual(4);
   });
 });
