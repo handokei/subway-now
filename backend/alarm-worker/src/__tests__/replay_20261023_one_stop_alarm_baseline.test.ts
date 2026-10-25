@@ -407,11 +407,29 @@ describe('#3100 PR-1 — 트립 171 실측 replay + 설정 {매 역, MAX} 주입
   });
 });
 
-describe('#3100 PR-1 — 트립 168 실측 replay + 설정 {매 역, MAX} 주입: lockless 가짜 전진이 칸을 소비한 사례는 오발사 0', () => {
-  it('1역 전 도달 전에는 하차 알람이 발사되지 않는다 (조기 발사 0)', async () => {
-    const r = await replay168({ sleepAlarm: EVERY_MAX });
-    const destination = r.seedWaypoints[r.seedWaypoints.length - 1].stationName;
-    const early = cronAlarms(r.result.cycles, destination).filter((at) => at < (r.oneStopMs as number) - 60_000);
-    expect(early).toEqual([]);
+// #3083 PR-1(#3211) 이후: 환승 체류 중 lockless 가짜 전진이 사라져 leg-2 칸이 lock 이후 실측 도착에 맞춰 정시 발사된다.
+describe('#3100 PR-1 — 트립 168 실측 replay + 설정 {매 역, MAX} 주입: #3083 PR-1 이후 가짜 전진 소멸로 leg-2 칸이 lock 후 정시 발사', () => {
+  it('하차역 알람이 남은 [3,2,1]로 각 1회, 각 역의 7268 도착 관측 이후·다음 역 도착 관측 이전, lock 부착 이전 발사 0', async () => {
+    const { seedWaypoints, fixture, heads, result } = await replay168({ sleepAlarm: EVERY_MAX });
+    const destIdx = seedWaypoints.length - 1;
+    const destination = seedWaypoints[destIdx].stationName;
+    const trainCode = '7268';
+
+    const fired = cronSleepAlarmRemainings(result.cycles, destination);
+    expect(fired.map((f) => f.remaining)).toEqual([3, 2, 1]);
+
+    const lockAttachedAt = heads.find((h) => h.lock !== undefined)?.tick as number;
+    expect(lockAttachedAt).toBeDefined();
+
+    fired.forEach(({ at, remaining }) => {
+      const station = seedWaypoints[destIdx - remaining].stationName;
+      const nextStation = seedWaypoints[destIdx - remaining + 1].stationName;
+      const arrivedAt = firstSightingMs(fixture, trainCode, station, [TRAIN_STATUS.ARRIVED]) as number;
+      expect(arrivedAt).toBeDefined();
+      expect(at).toBeGreaterThanOrEqual(arrivedAt);
+      expect(at).toBeGreaterThanOrEqual(lockAttachedAt);
+      const nextArrivedAt = firstSightingMs(fixture, trainCode, nextStation, [TRAIN_STATUS.ARRIVED]);
+      if (nextArrivedAt !== undefined) expect(at).toBeLessThan(nextArrivedAt);
+    });
   });
 });
