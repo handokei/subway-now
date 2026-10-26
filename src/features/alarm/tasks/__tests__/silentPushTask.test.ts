@@ -3329,11 +3329,13 @@ describe('silentPushTask', () => {
 
       it('수신 → fireCompanionAlarm에 tripToken/station/kind/body 전달', async () => {
         await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
+        // #3100 — body 미지정(구 backend) fallback도 1역 전 early 문구("다음 역 X에서 환승하세요!")와 동일 빌더.
+        expect(mockBuildAlarmContent).toHaveBeenCalledWith({ phaseId: 'early', type: 'transfer', stationName: '뚝섬' });
         expect(mockFireCompanionAlarm).toHaveBeenCalledWith({
           tripToken: 'tok-sta',
           station: '뚝섬',
           kind: 'transfer',
-          body: '성수에서 2호선 뚝섬으로 환승',
+          body: '뚝섬-transfer-body',
         });
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
@@ -3346,6 +3348,12 @@ describe('silentPushTask', () => {
         expect(mockFireCompanionAlarm).toHaveBeenCalledWith(
           expect.objectContaining({ body: '커스텀 문구' }),
         );
+      });
+
+      it('#3100 body 미지정 + destination → early 하차 문구 빌더(type=destination)', async () => {
+        await handleSilentPush(companionPayload({ pushId: 'sta-1', targetKind: 'destination' }));
+        expect(mockBuildAlarmContent).toHaveBeenCalledWith({ phaseId: 'early', type: 'destination', stationName: '뚝섬' });
+        expect(mockFireCompanionAlarm).toHaveBeenCalledWith(expect.objectContaining({ body: '뚝섬-destination-body' }));
       });
 
       it('targetKind=destination이면 kind=destination으로 전달', async () => {
