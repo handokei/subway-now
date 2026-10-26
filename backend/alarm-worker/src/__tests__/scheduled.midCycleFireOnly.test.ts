@@ -232,6 +232,51 @@ describe('#2615 — runMidCycleFireOnly (allowlist fire-only 진입점)', () => 
     expect(stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
   });
 
+  // #3100 (plan v4/v4.2) — 취침 mute는 intermediate 한정. 환승·하차 도착은 비취침과 같은 payload로 발사.
+  it.each<{ kind: 'transfer' | 'destination'; station: string }>([
+    { kind: 'transfer', station: '중곡' },
+    { kind: 'destination', station: '군자' },
+  ])('#3100 sleepModeEnabled + $kind — 비취침과 같은 station- push 발사', async ({ kind, station }) => {
+    const capture = async (sleepModeEnabled: boolean) => {
+      const kv = new InMemoryKV(() => NOW);
+      const calls: [string, RequestInit][] = [];
+      const fetchImpl = (async (url: string, init: RequestInit) => {
+        calls.push([url, init]);
+        return new Response('', { status: 200 });
+      }) as unknown as typeof fetch;
+      const trip = makeTrip({
+        sleepModeEnabled,
+        waypoints: [{ stationName: station, line: '7', kind }],
+      });
+      const stats = await runMidCycleFireOnly(
+        makeEnv(kv),
+        [makeSnapshot(trip)],
+        { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl },
+        NOW,
+        () => undefined,
+        () => 'push-3100',
+      );
+      const pushes = calls
+        .filter(([, init]) => ((init.headers ?? {}) as Record<string, string>)['apns-collapse-id']?.startsWith('station-'))
+        .map(([, init]) => {
+          const body = JSON.parse(init.body as string) as {
+            aps: { sound?: unknown; 'interruption-level'?: unknown };
+            data: Record<string, unknown>;
+          };
+          return { aps: body.aps, data: body.data };
+        });
+      return { stats, pushes };
+    };
+    const base = await capture(false);
+    const sleep = await capture(true);
+    expect(base.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(sleep.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(sleep.pushes).toHaveLength(1);
+    expect(sleep.pushes[0].aps.sound).toBe('alarm.wav');
+    expect(sleep.pushes[0].aps['interruption-level']).toBe('time-sensitive');
+    expect(sleep.pushes).toEqual(base.pushes);
+  });
+
   it('같은 pass 내 같은 (trip, station) 스냅샷 2건 — in-memory dedup으로 1회만 발사', async () => {
     const kv = new InMemoryKV(() => NOW);
     const trip = makeTrip();

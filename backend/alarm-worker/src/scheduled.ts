@@ -4021,7 +4021,13 @@ const FIRE_SKIP_REASON = {
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
 // boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
-// path(본 함수 + fireVanishFallbackStationPush)에만 적용한다.
+// path(본 함수 + fireVanishFallbackStationPush + runMidCycleFireOnly)에만 적용한다.
+// #3100 (ADR-048 개정) — mute는 intermediate 매역 한정이다. 취침 lock trip의 환승·하차 도착
+// station- push는 비취침과 동일하게(alarm.wav/time-sensitive) 발사한다(2026-10-25 사용자 결정).
+function isSleepMutedStationNotif(trip: Trip, waypoint: Waypoint): boolean {
+  return trip.sleepModeEnabled === true && waypoint.kind === 'intermediate';
+}
+
 /**
  * **호출 계약(Contract)** — 이 함수는 반드시 `advanceTripPosition`이 `{ result: 'advanced' }`를
  * 반환한 **직후**에만 호출한다. 현재 두 호출자(`tryAdvanceAndFireArvlcd`, consensus-fire 경로,
@@ -4054,7 +4060,7 @@ export async function fireArvlCdStationPush(
   const ssotForFireGate = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
   });
-  if (trip.sleepModeEnabled === true) {
+  if (isSleepMutedStationNotif(trip, waypoint)) {
     log('station-notif skip: sleep', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -4405,7 +4411,7 @@ export async function runMidCycleFireOnly(
 
   for (const { trip, waypoint, lock } of snapshot) {
     stats.evaluated += 1;
-    if (trip.sleepModeEnabled === true) continue;
+    if (isSleepMutedStationNotif(trip, waypoint)) continue;
     const dedupKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
     if (firedKeys.has(dedupKey)) continue;
     // #2615 (재생 실증) — 이 1건은 예외적으로 KV GET을 허용한다. 스냅샷에 담긴 trip이 primary
@@ -5020,7 +5026,8 @@ interface FireVanishFallbackStationPushInputs {
 }
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. fireArvlCdStationPush와
-// 동일 분기 — sleep-transfer(B4)·boarding-prompt(B7/B8) 게이트와는 완전히 별개.
+// 동일 분기(`isSleepMutedStationNotif`, #3100: intermediate 한정) — sleep-transfer(B4)·
+// boarding-prompt(B7/B8) 게이트와는 완전히 별개.
 export async function fireVanishFallbackStationPush(
   inputs: FireVanishFallbackStationPushInputs,
 ): Promise<void> {
@@ -5033,7 +5040,7 @@ export async function fireVanishFallbackStationPush(
   const ssot = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
   });
-  if (trip.sleepModeEnabled === true) {
+  if (isSleepMutedStationNotif(trip, waypoint)) {
     log('station-notif skip: sleep', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
