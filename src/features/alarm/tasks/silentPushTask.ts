@@ -1669,9 +1669,10 @@ async function fireSleepAlarmCompanion(
   payload: SleepAlarmCompanionSilentPushPayload,
   apnsToken: string | null,
 ): Promise<void> {
+  // #3100 — body 미지정(구 backend) fallback도 backend/safety-net과 같은 1역 전 early 문구를 쓴다.
   const body =
     payload.body ??
-    `${payload.originStation}에서 ${payload.nextLine}호선 ${payload.nextStation}으로 환승`;
+    buildAlarmContent({ phaseId: 'early', type: payload.targetKind, stationName: payload.nextStation }).body;
 
   const result = await fireCompanionAlarm({
     tripToken: payload.tripToken,
