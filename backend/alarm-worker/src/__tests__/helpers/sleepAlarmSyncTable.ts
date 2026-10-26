@@ -70,6 +70,34 @@ export function expectedFire(stops: number[], legIntermediates: number, remainin
   return stops.some((stop) => stop >= remaining && stop <= legIntermediates) ? remaining : undefined;
 }
 
+interface ExpectedFire {
+  /** 알람 문구·collapse-id·companion이 따르는 실제 남은 정거장 수. */
+  remaining: number;
+  /** 이번 평가가 선점하는 칸(내림차순). 매 역/기본은 [remaining] 하나. */
+  cells: number[];
+}
+
+/**
+ * #3100 v2.1 오라클 — 선택 모드: 남은 수 r <= N 인 모든 칸이 한 알람으로 소비된다(짧은 leg clamp, 상한 없음).
+ * 그 외 모드는 기존 `expectedFire`(to <= N < from).
+ */
+export function expectedFireCells(
+  sleepAlarm: Trip['sleepAlarm'],
+  stops: number[],
+  legIntermediates: number,
+  remaining: number,
+): ExpectedFire | undefined {
+  if (remaining < MIN) return undefined;
+  if (sleepAlarm?.mode === 'selected') {
+    const cells = stops.filter((stop) => remaining <= stop);
+    return cells.length === 0 ? undefined : { remaining, cells };
+  }
+  const fire = expectedFire(stops, legIntermediates, remaining);
+  return fire === undefined ? undefined : { remaining: fire, cells: [fire] };
+}
+
+const isClamp = (fire: ExpectedFire): boolean => fire.cells.some((cell) => cell !== fire.remaining);
+
 const POOL = ['상봉', '면목', '사가정', '용마산', '중곡', '군자', '어린이대공원'];
 const TARGET = '건대입구';
 
@@ -82,21 +110,30 @@ const suffix = (r: number) => (r === MIN ? '' : `:s${r}`);
 const sleepOffTrip = (waypoints: Waypoint[], sleepAlarm: Trip['sleepAlarm']) =>
   makeTrip(waypoints, { sleepModeEnabled: false, sleepAlarm });
 
-function assertSleepFire(r: SyncHttpResult, fire: number | undefined, source: string): void {
+function assertSleepFire(r: SyncHttpResult, fire: ExpectedFire | undefined, source: string): void {
   expect(r.status).toBe(200);
-  expect(r.alarms.map((a) => a.collapseId)).toEqual(fire === undefined ? [] : [sleepAlarmCollapseId(SYNC_TOKEN, TARGET, fire)]);
-  expect(r.alarmKeyCalls).toEqual(fire === undefined ? { get: 0, put: 0, delete: 0 } : { get: 1, put: 1, delete: 0 });
+  expect(r.alarms.map((a) => a.collapseId)).toEqual(fire === undefined ? [] : [sleepAlarmCollapseId(SYNC_TOKEN, TARGET, fire.remaining)]);
+  expect(r.alarmKeyCalls).toEqual(
+    fire === undefined ? { get: 0, put: 0, delete: 0 } : { get: fire.cells.length, put: fire.cells.length, delete: 0 },
+  );
   if (fire === undefined) {
     expect(r.sleepRows).toEqual([]);
     return;
   }
   const data = (r.companions[0].body.data ?? {}) as Record<string, unknown>;
-  if (fire === MIN) {
-    expect(data).not.toHaveProperty('remainingStops');
+  if (fire.remaining === MIN) expect(data).not.toHaveProperty('remainingStops');
+  else expect(data.remainingStops).toBe(fire.remaining);
+  if (fire.remaining === MIN && !isClamp(fire)) {
     expect(r.sleepRows).toEqual([]);
   } else {
-    expect(data.remainingStops).toBe(fire);
-    expect(r.sleepRows.map((row) => row.meta)).toEqual([expect.objectContaining({ remaining: fire, outcome: 'fired', source })]);
+    expect(r.sleepRows.map((row) => row.meta)).toEqual([
+      expect.objectContaining({
+        remaining: fire.remaining,
+        outcome: 'fired',
+        source,
+        ...(isClamp(fire) ? { cells: fire.cells } : {}),
+      }),
+    ]);
   }
 }
 
@@ -106,7 +143,8 @@ export function registerSleepAlarmSyncTable(): void {
       for (const m of [...new Set([MIN, MAX - 1, MAX, MAX + 1])].filter((n) => n >= MIN)) {
         for (const kind of ['transfer', 'destination'] as const) {
           for (const k of range(MIN, m + 1)) {
-            const fire = expectedFire(cfg.stops, m, m - k + 1);
+            const plan = expectedFireCells(cfg.sleepAlarm, cfg.stops, m, m - k + 1);
+            const fire = plan?.remaining;
             it(`취침 ON / ${cfg.name} / 중간역 ${m}개 / ${kind} / ${k}개 소비: ${fire === undefined ? '0회' : `남은 ${fire} 1회`}`, async () => {
               const waypoints = legWaypoints(m, kind);
               const kv = new InMemoryKV(() => NOW);
@@ -127,10 +165,11 @@ export function registerSleepAlarmSyncTable(): void {
                 expect(spy.alarmKeyCalls()).toEqual({ get: 0, put: 0, delete: 0 });
                 return;
               }
-              expect(spy.alarmKeyCalls()).toEqual({ get: 1, put: 1, delete: 0 });
-              expect([...kv.store.keys()].filter((key) => key.startsWith(ALARM_KEY_PREFIX))).toEqual([
-                `${ALARM_KEY_PREFIX}${TOKEN}:${TARGET}${suffix(fire)}`,
-              ]);
+              const cells = (plan as ExpectedFire).cells;
+              expect(spy.alarmKeyCalls()).toEqual({ get: cells.length, put: cells.length, delete: 0 });
+              expect([...kv.store.keys()].filter((key) => key.startsWith(ALARM_KEY_PREFIX)).sort()).toEqual(
+                cells.map((cell) => `${ALARM_KEY_PREFIX}${TOKEN}:${TARGET}${suffix(cell)}`).sort(),
+              );
               const data = companions(f.calls)[0].body.data as Record<string, unknown>;
               if (fire === MIN) expect(data).not.toHaveProperty('remainingStops');
               else {
@@ -191,8 +230,8 @@ export function registerSleepAlarmSyncTable(): void {
     const m = MAX + 1;
     for (const cfg of syncConfigCases()) {
       for (const k of range(MIN, m + 1)) {
-        const fire = expectedFire(cfg.stops, m, m - k + 1);
-        it(`취침 ON / ${cfg.name} / ${k}개 점프: ${fire === undefined ? '0회' : `남은 ${fire} 1회`}`, async () => {
+        const fire = expectedFireCells(cfg.sleepAlarm, cfg.stops, m, m - k + 1);
+        it(`취침 ON / ${cfg.name} / ${k}개 점프: ${fire === undefined ? '0회' : `남은 ${fire.remaining} 1회`}`, async () => {
           const waypoints = legWaypoints(m, 'destination');
           const r = await syncObserved(lockActiveTrip(waypoints, { sleepAlarm: cfg.sleepAlarm }), waypoints[k - 1].stationName);
           assertSleepFire(r, fire, 'sync-advance');
@@ -222,8 +261,8 @@ export function registerSleepAlarmSyncTable(): void {
     for (const cfg of syncConfigCases()) {
       FF_CHAIN_NAMES.slice(0, m).forEach((departed, p) => {
         const skip = p + 1;
-        const fire = expectedFire(cfg.stops, m, m - skip + 1);
-        it(`${cfg.name} / 열차가 ${departed} 출발 후 승격(skip ${skip}): ${fire === undefined ? '0회' : `남은 ${fire} 1회`}`, async () => {
+        const fire = expectedFireCells(cfg.sleepAlarm, cfg.stops, m, m - skip + 1);
+        it(`${cfg.name} / 열차가 ${departed} 출발 후 승격(skip ${skip}): ${fire === undefined ? '0회' : `남은 ${fire.remaining} 1회`}`, async () => {
           const r = await syncPromote('destination', { sleepAlarm: cfg.sleepAlarm }, { stationName: departed, trainSttus: TRAIN_DEPARTED });
           assertSleepFire(r, fire, 'sync-ff');
         });
@@ -260,7 +299,8 @@ export function registerSleepAlarmSyncTable(): void {
     ];
 
     for (const cfg of syncConfigCases()) {
-      const fire = expectedFire(cfg.stops, legIntermediates, remainingAtLastConsumed);
+      const plan = expectedFireCells(cfg.sleepAlarm, cfg.stops, legIntermediates, remainingAtLastConsumed);
+      const fire = plan?.remaining;
       it(`같은 호선 오라벨 환승(lock 유지) / ${cfg.name}: ${fire === undefined ? '0회' : `남은 ${fire} 1회`}`, async () => {
         const r = await syncObserved(lockActiveTrip(sameLine, { sleepAlarm: cfg.sleepAlarm }), observedLeg2);
         expect(r.stored?.waypoints[0]?.stationName).toBe(observedLeg2); // 전제: 환승이 소비됐다
@@ -268,8 +308,8 @@ export function registerSleepAlarmSyncTable(): void {
         expect(r.alarms.map((a) => a.collapseId)).toEqual(
           fire === undefined ? [] : [sleepAlarmCollapseId(SYNC_TOKEN, LEG2_DEST, fire)],
         );
-        if (fire !== undefined && fire !== MIN) {
-          expect(r.sleepRows.map((row) => row.meta)).toEqual([expect.objectContaining({ remaining: fire, source: 'sync-mixed' })]);
+        if (plan !== undefined && (plan.remaining !== MIN || isClamp(plan))) {
+          expect(r.sleepRows.map((row) => row.meta)).toEqual([expect.objectContaining({ remaining: plan.remaining, source: 'sync-mixed' })]);
         }
       });
 

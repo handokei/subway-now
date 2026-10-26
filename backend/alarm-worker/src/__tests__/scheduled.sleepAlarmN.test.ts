@@ -26,7 +26,7 @@ describe('evaluateSleepAlarmTrigger — crossing 인자 (#3100)', () => {
 
   it('crossing 생략 = 직전 역 1칸 전진 -> 기본 칸(1)만 걸린다 (현행 동작)', () => {
     const adjacent = makeTrip([waypoint, target], { sleepAlarm: { mode: 'every', stops: [3] } });
-    expect(evaluateSleepAlarmTrigger(adjacent, waypoint, target)).toEqual({ fire: true, target, remaining: 1 });
+    expect(evaluateSleepAlarmTrigger(adjacent, waypoint, target)).toEqual({ fire: true, target, remaining: 1, cells: [1] });
   });
 
   it('crossing 지정 시 실제 남은 수로 발사', () => {
@@ -34,6 +34,7 @@ describe('evaluateSleepAlarmTrigger — crossing 인자 (#3100)', () => {
       fire: true,
       target,
       remaining: 2,
+      cells: [2],
     });
   });
 
