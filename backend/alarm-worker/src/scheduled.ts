@@ -4773,7 +4773,7 @@ export async function fireSyncSkippedStationPasses(
  * `selectConsumedPrecedingAlarmPairs`는 순수 선택(호출자가 waitUntil 스케줄 여부 판단에도 쓴다),
  * `fireSyncConsumedPrecedingAlarms`는 그 쌍에 대한 발사.
  */
-export interface ConsumedPrecedingAlarmPair {
+interface ConsumedPrecedingAlarmPair {
   waypoint: Waypoint;
   nextWaypoint: Waypoint;
   crossing: SleepAlarmCrossing;
