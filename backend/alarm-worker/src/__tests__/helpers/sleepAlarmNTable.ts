@@ -89,7 +89,7 @@ export function registerSleepAlarmNTable(): void {
               expect(t.alarmsSoFar).toEqual(expected);
             });
 
-            // 문구: 기본 칸(MIN)은 기존 문구, 비기본 칸은 실제 남은 수를 담는다 + companion 칸 구분.
+            // 문구: 기본 칸(MIN)은 early 문구(#3100 사용자 결정 2026-10-26), 비기본 칸은 실제 남은 수를 담는다 + companion 칸 구분.
             const alerts = sleepAlerts(calls);
             expect(alerts).toHaveLength(fires.length);
             const comps = companions(calls);
@@ -101,8 +101,8 @@ export function registerSleepAlarmNTable(): void {
                 expect(data).not.toHaveProperty('remainingStops');
                 expect(aps.alert.body).toBe(
                   targetKind === 'transfer'
-                    ? `곧 ${TARGET}에 도착합니다. 환승 준비하세요!`
-                    : `곧 ${TARGET}에 도착합니다. 하차 준비하세요!`,
+                    ? `다음 역 ${TARGET}에서 환승하세요!`
+                    : `다음 역 ${TARGET}에서 하차하세요!`,
                 );
               } else {
                 expect(data.remainingStops).toBe(r);

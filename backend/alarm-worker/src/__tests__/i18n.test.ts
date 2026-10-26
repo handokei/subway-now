@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../../src/shared/constants/sleepAlarm';
 import { normalizeLocale, sleepAlarmContent, t, type SupportedLocale } from '../i18n';
 
 describe('normalizeLocale (#1895)', () => {
@@ -219,15 +220,48 @@ describe('sleepAlarmContent (#3100) — 취침 알람 N역 전 문구', () => {
   const STATION = '건대입구';
   const LOCALES: SupportedLocale[] = ['ko', 'en', 'ja', 'zh'];
 
+  // #3100 사용자 결정(2026-10-26) — 1역 전 취침 알람은 stationNotif(도착 임박) 문구와 분리해
+  // device `alarms.early*Body` / `notifications.*EarlyTitle` 문구("다음 역 X에서 환승하세요!")를 쓴다.
+  const ONE_STOP: Record<SupportedLocale, Record<'transfer' | 'destination', { title: string; body: string }>> = {
+    ko: {
+      transfer: { title: '환승 알림', body: `다음 역 ${STATION}에서 환승하세요!` },
+      destination: { title: '하차 알림', body: `다음 역 ${STATION}에서 하차하세요!` },
+    },
+    en: {
+      transfer: { title: 'Transfer alert', body: `Transfer at ${STATION} (next stop)!` },
+      destination: { title: 'Arrival alert', body: `Exit at ${STATION} (next stop)!` },
+    },
+    ja: {
+      transfer: { title: '乗換アラーム', body: `次の駅 ${STATION}で乗り換えてください!` },
+      destination: { title: '到着アラーム', body: `次の駅 ${STATION}で下車してください!` },
+    },
+    zh: {
+      transfer: { title: '换乘提醒', body: `下一站 ${STATION} 请换乘!` },
+      destination: { title: '到达提醒', body: `下一站 ${STATION} 请下车!` },
+    },
+  };
+
   it.each(LOCALES.flatMap((lc) => (['transfer', 'destination'] as const).map((kind) => [lc, kind] as const)))(
-    'locale=%s kind=%s: 기본 칸(1역 전)은 기존 stationNotif 문구와 바이트 동일',
+    'locale=%s kind=%s: 1역 전은 early 문구(다음 역 …)로 분리',
     (lc, kind) => {
-      expect(sleepAlarmContent(lc, kind, STATION, 1)).toEqual({
-        title: t(lc).stationNotifTitle(kind, STATION),
-        body: t(lc).stationNotifBody(kind, STATION),
-      });
+      expect(sleepAlarmContent(lc, kind, STATION, SLEEP_ALARM_MIN_STOPS_BEFORE)).toEqual(ONE_STOP[lc][kind]);
     },
   );
+
+  it.each(LOCALES.flatMap((lc) => (['transfer', 'destination'] as const).map((kind) => [lc, kind] as const)))(
+    'locale=%s kind=%s: 도착 push(stationNotif*) 문구는 불변 — 1역 전 취침 문구와 다르다',
+    (lc, kind) => {
+      const arrival = { title: t(lc).stationNotifTitle(kind, STATION), body: t(lc).stationNotifBody(kind, STATION) };
+      expect(arrival).not.toEqual(ONE_STOP[lc][kind]);
+    },
+  );
+
+  it('ko stationNotif 도착 push 원문 고정 (공유 문구 불변)', () => {
+    expect(t('ko').stationNotifTitle('transfer', STATION)).toBe('환승 임박');
+    expect(t('ko').stationNotifBody('transfer', STATION)).toBe(`곧 ${STATION}에 도착합니다. 환승 준비하세요!`);
+    expect(t('ko').stationNotifTitle('destination', STATION)).toBe('도착 임박');
+    expect(t('ko').stationNotifBody('destination', STATION)).toBe(`곧 ${STATION}에 도착합니다. 하차 준비하세요!`);
+  });
 
   const EXPECTED: Record<SupportedLocale, Record<'transfer' | 'destination', (n: number) => { title: string; body: string }>> = {
     ko: {

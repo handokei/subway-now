@@ -115,6 +115,9 @@ interface I18nStrings {
    */
   sleepAlarmTitle: (kind: SleepAlarmKind, count: number) => string;
   sleepAlarmBody: (kind: SleepAlarmKind, stationName: string, count: number) => string;
+  /** #3100 — 취침 알람 1역 전(SLEEP_ALARM_MIN_STOPS_BEFORE) 문구. device `*EarlyTitle`/`alarms.early*Body`와 byte-identical. */
+  sleepAlarmOneStopTitle: (kind: SleepAlarmKind) => string;
+  sleepAlarmOneStopBody: (kind: SleepAlarmKind, stationName: string) => string;
   /**
    * #2157 — eta-missing lock detach 시 재확인 alert push title. trip을 강제 종료하는 대신
    * lock만 해제하고 사용자에게 재선택(boardingPrompt/직접 탭)을 유도한다.
@@ -178,6 +181,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `환승 ${count}정거장 전` : `도착 ${count}정거장 전`),
     sleepAlarmBody: (kind, stationName, count) =>
       `${stationName}까지 ${count}정거장 남았습니다. ${kind === 'transfer' ? '환승' : '하차'} 준비하세요!`,
+    sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? '환승 알림' : '하차 알림'),
+    sleepAlarmOneStopBody: (kind, stationName) =>
+      `다음 역 ${stationName}에서 ${kind === 'transfer' ? '환승' : '하차'}하세요!`,
     trainReconfirmTitle: '탑승 열차를 찾을 수 없어요',
     trainReconfirmBody: '다시 확인해주세요',
   },
@@ -226,6 +232,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `Transfer in ${count} stops` : `Arrival in ${count} stops`),
     sleepAlarmBody: (kind, stationName, count) =>
       `${count} stops to ${stationName} — get ready to ${kind === 'transfer' ? 'transfer' : 'exit'}!`,
+    sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? 'Transfer alert' : 'Arrival alert'),
+    sleepAlarmOneStopBody: (kind, stationName) =>
+      kind === 'transfer' ? `Transfer at ${stationName} (next stop)!` : `Exit at ${stationName} (next stop)!`,
     trainReconfirmTitle: "We couldn't find your train",
     trainReconfirmBody: 'Please check again',
   },
@@ -272,6 +281,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `乗換まであと${count}駅` : `到着まであと${count}駅`),
     sleepAlarmBody: (kind, stationName, count) =>
       `${stationName}まであと${count}駅です。${kind === 'transfer' ? '乗換' : '下車'}の準備をしてください!`,
+    sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? '乗換アラーム' : '到着アラーム'),
+    sleepAlarmOneStopBody: (kind, stationName) =>
+      kind === 'transfer' ? `次の駅 ${stationName}で乗り換えてください!` : `次の駅 ${stationName}で下車してください!`,
     trainReconfirmTitle: '乗車列車が見つかりません',
     trainReconfirmBody: 'もう一度ご確認ください',
   },
@@ -316,14 +328,17 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `距换乘还有${count}站` : `距到达还有${count}站`),
     sleepAlarmBody: (kind, stationName, count) =>
       `距${stationName}还有${count}站。请准备${kind === 'transfer' ? '换乘' : '下车'}!`,
+    sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? '换乘提醒' : '到达提醒'),
+    sleepAlarmOneStopBody: (kind, stationName) =>
+      `下一站 ${stationName} ${kind === 'transfer' ? '请换乘' : '请下车'}!`,
     trainReconfirmTitle: '未能找到您的乘车列车',
     trainReconfirmBody: '请重新确认',
   },
 };
 
 /**
- * #3100 — 취침 알람 title/body. 기본 칸(1역 전)은 기존 매역 알림 문구(`stationNotif*`)를 그대로 반환해
- * 기본값의 push 본문이 바이트 동일하고, 그 외 칸은 실제 남은 정거장 수를 담은 문구를 쓴다.
+ * #3100 — 취침 알람 title/body. 기본 칸(1역 전)은 도착 임박 push(`stationNotif*`)와 구분되는
+ * early 문구("다음 역 X에서 환승하세요!", 사용자 결정 2026-10-26)를, 그 외 칸은 실제 남은 정거장 수를 담은 문구를 쓴다.
  */
 export function sleepAlarmContent(
   locale: SupportedLocale | undefined,
@@ -333,7 +348,7 @@ export function sleepAlarmContent(
 ): { title: string; body: string } {
   const strings = t(locale);
   if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) {
-    return { title: strings.stationNotifTitle(kind, stationName), body: strings.stationNotifBody(kind, stationName) };
+    return { title: strings.sleepAlarmOneStopTitle(kind), body: strings.sleepAlarmOneStopBody(kind, stationName) };
   }
   return { title: strings.sleepAlarmTitle(kind, remaining), body: strings.sleepAlarmBody(kind, stationName, remaining) };
 }
