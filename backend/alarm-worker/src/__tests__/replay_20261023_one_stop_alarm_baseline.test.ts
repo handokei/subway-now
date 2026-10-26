@@ -25,9 +25,12 @@ import {
 } from '../../../../src/shared/constants/sleepAlarm';
 import { TRAIN_STATUS } from '../alarm';
 import { getTrip } from '../trips';
+import { useApnsHarness } from './helpers/sleepAlarmHarness';
+import { lockActiveTrip, syncObserved } from './helpers/sleepAlarmSyncHttp';
 import type { Env, PositionPoint, Waypoint } from '../types';
 
 afterEach(() => vi.unstubAllGlobals());
+useApnsHarness();
 
 type Body = Record<string, unknown>;
 
@@ -428,16 +431,44 @@ describe('#3100 — 트립 173 실측 replay 취침 ON: intermediate station- = 
   });
 });
 
-// transitional — PR-2에서 변경: sync catch-up(`fireSyncConsumedPrecedingAlarms`)이 아직 기본 crossing만 쓰므로 비기본 설정에서도
-// 기본 칸 1회다. PR-2가 sync를 N으로 일반화하면 이 단언은 설정 기대 집합으로 바뀌어야 한다.
-describe('#3100 PR-1 — 트립 171 실측 replay + 설정 {매 역, MAX} 주입: sync 경로는 기본값과 동일 (PR-2 전)', () => {
-  it('하차역(뚝섬) 취침 알람이 정확히 1회, 기본 칸(칸 구분 필드 없음) — 설정 주입이 sync catch-up을 흔들지 않는다', async () => {
+// #3100 PR-2 — sync catch-up(`fireSyncConsumedPrecedingAlarms`)이 설정의 칸 집합을 따른다. 기대는 fixture 시드 경로에서 도출한다:
+// 하차역이 속한 leg(마지막 환승 뒤)의 중간역 수 m -> 설정 칸 ∩ [MIN, m]. 171의 leg-2는 성수 하나뿐(m = MIN)이라
+// 도출 집합이 기본값과 같다 — 칸 구분이 필요한 비기본 점프는 아래 173 leg-1 HTTP 테스트와 index.sleepAlarmSyncN*.test.ts가 덮는다.
+describe('#3100 PR-2 — 트립 171 실측 replay + 설정 {매 역, MAX} 주입: sync catch-up이 시드 경로에서 도출한 칸 집합을 따른다', () => {
+  it('하차역(뚝섬) 취침 알람이 도출 집합(남은 수)만큼 정확히 1회씩, 기본 칸은 칸 구분 필드 없음', async () => {
     const r = await replay171({ sleepAlarm: EVERY_MAX });
+    const lastTransferIdx = r.seedWaypoints.map((w) => w.kind).lastIndexOf('transfer');
+    const legIntermediates = r.seedWaypoints.length - 1 - (lastTransferIdx + 1);
+    const expectedRemainings = range(SLEEP_ALARM_MIN_STOPS_BEFORE, Math.min(legIntermediates, SLEEP_ALARM_MAX_STOPS_BEFORE));
     const httpAlarms = r.httpPushes.filter((p) => (p.aps as Body | undefined)?.sound === 'alarm.wav');
-    expect(httpAlarms).toHaveLength(1);
+    expect(httpAlarms).toHaveLength(expectedRemainings.length);
     const companions = r.httpPushes.filter((p) => (p.data as Body | undefined)?.kind === 'sleep-alarm-companion');
-    expect(companions).toHaveLength(1);
-    expect(companions[0].data).not.toHaveProperty('remainingStops');
+    expect(companions.map((c) => (c.data as Body).remainingStops)).toEqual(
+      expectedRemainings.map((remaining) => (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE ? undefined : remaining)),
+    );
+    for (const c of companions) {
+      if ((c.data as Body).remainingStops === undefined) expect(c.data).not.toHaveProperty('remainingStops');
+    }
+  });
+});
+
+// #3100 PR-2 (R2) — 173 leg-1(시드 경로에서 도출)을 HTTP `/boarding-lock/sync` 순수 점프로 소비한다. index.ts 게이트가
+// `readSleepAlarmStops` 단일 출처를 쓰는지(헬퍼를 기본값만 반환하도록 바꾸면 이 테스트가 red)를 실측 경로 위에서 고정한다.
+describe('#3100 PR-2 — 트립 173 leg-1 경로 + 설정 {매 역, MAX} 주입: HTTP 순수 점프가 칸 집합을 따른다', () => {
+  it('점프마다 도출한 남은 수로 정확히 1회(타깃 소비는 0), 칸 구분 필드는 비기본 칸만', async () => {
+    const { seedWaypoints } = await replay173({ sleepAlarm: EVERY_MAX });
+    const transferIdx = seedWaypoints.findIndex((w) => w.kind === 'transfer');
+    const leg1 = seedWaypoints.slice(0, transferIdx + 1);
+    const legIntermediates = transferIdx;
+    for (const jump of range(SLEEP_ALARM_MIN_STOPS_BEFORE, leg1.length)) {
+      const remaining = legIntermediates - jump + SLEEP_ALARM_MIN_STOPS_BEFORE;
+      const expected = remaining >= SLEEP_ALARM_MIN_STOPS_BEFORE && remaining <= SLEEP_ALARM_MAX_STOPS_BEFORE ? remaining : undefined;
+      const r = await syncObserved(lockActiveTrip(leg1, { sleepAlarm: EVERY_MAX }), leg1[jump - 1].stationName);
+      const data = r.companions.map((c) => c.body.data as Body);
+      const wireRemaining = expected === SLEEP_ALARM_MIN_STOPS_BEFORE ? undefined : expected;
+      expect(data.map((d) => d.remainingStops)).toEqual(expected === undefined ? [] : [wireRemaining]);
+      expect(r.alarms).toHaveLength(expected === undefined ? 0 : 1);
+    }
   });
 });
 
