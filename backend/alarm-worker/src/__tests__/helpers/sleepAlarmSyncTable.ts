@@ -281,6 +281,23 @@ export function registerSleepAlarmSyncTable(): void {
       });
     }
 
+    // leg 출발역은 칸이 아니다(v1.3): 환승역 자신을 관측해 소비해도 다음 leg의 "환승역 -> 타깃" 쌍을 칸으로 세지 않는다.
+    it.each(syncConfigCases())('환승역 자신을 관측(마지막 소비 = 환승역) / $name: 다음 leg 알람 0', async ({ sleepAlarm }) => {
+      // 환승역 -> 타깃 거리가 MAX 이하인 짧은 leg-2 (출발역을 칸으로 세면 걸릴 수 있는 배치).
+      const shortLeg2 = [
+        wp('어린이대공원', 'intermediate'),
+        wp('건대입구', 'transfer'),
+        wp(LEG2[0], 'intermediate'),
+        wp(LEG2[1], 'intermediate'),
+        wp(LEG2_DEST, 'destination'),
+      ];
+      const r = await syncObserved(lockActiveTrip(shortLeg2, { sleepAlarm }), '건대입구');
+      expect(r.stored?.waypoints[0]?.stationName).toBe(LEG2[0]); // 전제: 환승이 소비됐다
+      expect(r.stored?.boardingLock).toBeDefined(); // lock 유지 -> 게이트는 열려 있다
+      expect(r.alarms).toEqual([]);
+      expect(r.alarmKeyCalls).toEqual({ get: 0, put: 0, delete: 0 });
+    });
+
     it('취침 OFF + 설정 있음: 혼합 분기에서도 설정을 무시한다 (비인접 쌍으로 준비 알람 0)', async () => {
       const sleepAlarm: SleepAlarmConfig = { mode: 'every', stops: [MAX] };
       const r = await syncObserved(lockActiveTrip(sameLine, { sleepModeEnabled: false, sleepAlarm }), observedLeg2);
