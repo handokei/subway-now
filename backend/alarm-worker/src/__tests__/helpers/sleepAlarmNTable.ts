@@ -34,6 +34,14 @@ import {
   wp,
 } from './sleepAlarmHarness';
 
+interface FireEvent {
+  /** 발사 tick(0-base) — 그 tick의 남은 수는 m - tick. */
+  tick: number;
+  remaining: number;
+  /** 이번 발사가 새로 선점하는 칸(내림차순). 매 역/기본은 [remaining] 하나. */
+  cells: number[];
+}
+
 interface ConfigCase {
   name: string;
   /** register에서 정규화된 저장 형태(없으면 기본값). */
@@ -70,13 +78,45 @@ function legWaypoints(m: number, targetKind: 'transfer' | 'destination'): Waypoi
 
 const suffix = (r: number) => (r === MIN ? '' : `:s${r}`);
 
+/**
+ * 오라클. 매 역/기본: 칸 N은 tick(남은 수 == N)에서 정확히 그 칸만(`to <= N < from`). 선택(#3100 v2.1): 칸 N은 타깃당 1회,
+ * 남은 수 r <= N 이 된 첫 tick에 울리고, 한 tick에 새로 충족된 칸은 한 알람에 모두 기록(문구는 실제 남은 수 r).
+ */
+function expectedFires(cfg: ConfigCase, m: number): FireEvent[] {
+  if (cfg.sleepAlarm?.mode !== 'selected') {
+    return cfg.stops
+      .filter((r) => r >= MIN && r <= m)
+      .sort((a, b) => b - a)
+      .map((r) => ({ tick: m - r, remaining: r, cells: [r] }));
+  }
+  const claimed = new Set<number>();
+  const events: FireEvent[] = [];
+  for (let tick = 0; tick < m; tick++) {
+    const r = m - tick;
+    const cells = cfg.stops.filter((n) => r <= n && !claimed.has(n));
+    if (cells.length === 0) continue;
+    cells.forEach((n) => claimed.add(n));
+    events.push({ tick, remaining: r, cells });
+  }
+  return events;
+}
+
+/** 평가마다 후보 칸(이미 선점한 칸 포함) 수만큼 get — 선택 모드. 매 역/기본은 발사 칸당 1. */
+function expectedGets(cfg: ConfigCase, m: number): number {
+  if (cfg.sleepAlarm?.mode !== 'selected') return expectedFires(cfg, m).length;
+  return range(MIN, m).reduce((sum, r) => sum + cfg.stops.filter((n) => r <= n).length, 0);
+}
+
+const isRecorded = (e: FireEvent): boolean => e.remaining !== MIN || e.cells.some((c) => c !== e.remaining);
+
 export function registerSleepAlarmNTable(): void {
   describe(`#3100 N역 전 cron table (MAX=${MAX})`, () => {
     for (const cfg of configCases()) {
       for (const m of intermediateCounts()) {
         for (const targetKind of ['transfer', 'destination'] as const) {
           const waypoints = legWaypoints(m, targetKind);
-          const fires = cfg.stops.filter((r) => r >= MIN && r <= m).sort((a, b) => b - a);
+          const events = expectedFires(cfg, m);
+          const fires = events.map((e) => e.remaining);
 
           it(`취침 ON / ${cfg.name} / 중간역 ${m}개 / ${targetKind}: 남은 수 ${JSON.stringify(fires)} 각 1회 (tick별 누적)`, async () => {
             const d1 = fakeD1();
@@ -85,7 +125,7 @@ export function registerSleepAlarmNTable(): void {
 
             // tick j에서 남은 수 = m - j -> 그 tick에 발사되는 칸.
             perTick.forEach((t, j) => {
-              const expected = fires.filter((r) => m - r <= j).map((r) => sleepAlarmCollapseId(TOKEN, TARGET, r));
+              const expected = events.filter((e) => e.tick <= j).map((e) => sleepAlarmCollapseId(TOKEN, TARGET, e.remaining));
               expect(t.alarmsSoFar).toEqual(expected);
             });
 
@@ -111,16 +151,22 @@ export function registerSleepAlarmNTable(): void {
               }
             });
 
-            // dedup 키: 칸마다 별도(MIN은 접미사 없음), KV는 발사 칸당 get 1 + put 1.
+            // dedup 키: 칸마다 별도(MIN은 접미사 없음). KV: 평가마다 후보 칸 수만큼 get, 새로 선점한 칸 수만큼 put.
+            const claimed = events.flatMap((e) => e.cells);
             const stored = [...kv.store.keys()].filter((k) => k.startsWith(ALARM_KEY_PREFIX)).sort();
-            expect(stored).toEqual(fires.map((r) => `${ALARM_KEY_PREFIX}${TOKEN}:${TARGET}${suffix(r)}`).sort());
-            expect(spy.alarmKeyCalls()).toEqual({ get: fires.length, put: fires.length, delete: 0 });
+            expect(stored).toEqual(claimed.map((c) => `${ALARM_KEY_PREFIX}${TOKEN}:${TARGET}${suffix(c)}`).sort());
+            expect(spy.alarmKeyCalls()).toEqual({ get: expectedGets(cfg, m), put: claimed.length, delete: 0 });
 
-            // D1: 비기본 칸만 'sleep-alarm' 행 1건씩. 기본 칸/기본 설정은 0.
+            // D1: 비기본 칸(또는 선택 모드 clamp 발사 = 칸 != 남은 수)만 'sleep-alarm' 행 1건씩. 기본 칸/기본 설정은 0.
             const sleepRows = d1.rows.filter((row) => row.kind === 'sleep-alarm');
-            const nonDefault = fires.filter((r) => r !== MIN);
-            expect(sleepRows.map((row) => row.meta?.remaining)).toEqual(nonDefault);
-            for (const row of sleepRows) expect(row.meta).toMatchObject({ outcome: 'fired', targetStation: TARGET });
+            const recorded = events.filter(isRecorded);
+            expect(sleepRows.map((row) => row.meta?.remaining)).toEqual(recorded.map((e) => e.remaining));
+            sleepRows.forEach((row, idx) => {
+              expect(row.meta).toMatchObject({ outcome: 'fired', targetStation: TARGET });
+              if (recorded[idx].cells.some((c) => c !== recorded[idx].remaining)) {
+                expect(row.meta?.cells).toEqual(recorded[idx].cells);
+              }
+            });
           });
         }
       }
