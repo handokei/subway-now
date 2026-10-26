@@ -5,6 +5,9 @@
  * payload / dedup 키 / collapse-id / 문구 / companion wire / KV 호출 수 / D1 행을 **바이트 단위로**
  * 바꾸지 않았음을 같은 단언이 증명한다. 기대값은 실측 출력을 그대로 박은 것이며 통과시키려
  * 조정하지 않는다.
+ *
+ * #3100 사용자 결정(2026-10-26)으로 **문구(title/body)만** 의도적으로 갱신: 1역 전 취침 알람은 도착 임박 push와
+ * 구분되는 early 문구("다음 역 X에서 환승하세요!")를 쓴다. 문구 외 바이트(헤더/dedup/collapse-id/wire/KV/D1)는 불변.
  */
 import { describe, expect, it } from 'vitest';
 import { sleepAlarmCollapseId } from '../collapseId';
@@ -45,11 +48,11 @@ describe('#3100 golden — 기본값 키 문자열', () => {
 
 describe('#3100 golden — 기본값 push 바이트 (alert + companion)', () => {
   const CASES: { name: string; waypoints: Waypoint[]; locale: Trip['locale']; title: string; body: string; kind: string }[] = [
-    { name: '하차 ko', waypoints: [wp('군자', 'intermediate'), wp('어린이대공원', 'destination')], locale: 'ko', title: '도착 임박', body: '곧 어린이대공원에 도착합니다. 하차 준비하세요!', kind: 'destination' },
-    { name: '환승 ko', waypoints: [wp('군자', 'intermediate'), wp('건대입구', 'transfer')], locale: 'ko', title: '환승 임박', body: '곧 건대입구에 도착합니다. 환승 준비하세요!', kind: 'transfer' },
-    { name: '하차 en', waypoints: [wp('군자', 'intermediate'), wp('어린이대공원', 'destination')], locale: 'en', title: 'Arrival imminent', body: 'Arriving at 어린이대공원 — exit soon!', kind: 'destination' },
-    { name: '환승 ja', waypoints: [wp('군자', 'intermediate'), wp('건대입구', 'transfer')], locale: 'ja', title: 'まもなく乗換', body: 'まもなく건대입구に到着します。乗換の準備をしてください!', kind: 'transfer' },
-    { name: '하차 zh', waypoints: [wp('군자', 'intermediate'), wp('어린이대공원', 'destination')], locale: 'zh', title: '即将到达', body: '即将到达어린이대공원。请准备下车!', kind: 'destination' },
+    { name: '하차 ko', waypoints: [wp('군자', 'intermediate'), wp('어린이대공원', 'destination')], locale: 'ko', title: '하차 알림', body: '다음 역 어린이대공원에서 하차하세요!', kind: 'destination' },
+    { name: '환승 ko', waypoints: [wp('군자', 'intermediate'), wp('건대입구', 'transfer')], locale: 'ko', title: '환승 알림', body: '다음 역 건대입구에서 환승하세요!', kind: 'transfer' },
+    { name: '하차 en', waypoints: [wp('군자', 'intermediate'), wp('어린이대공원', 'destination')], locale: 'en', title: 'Arrival alert', body: 'Exit at 어린이대공원 (next stop)!', kind: 'destination' },
+    { name: '환승 ja', waypoints: [wp('군자', 'intermediate'), wp('건대입구', 'transfer')], locale: 'ja', title: '乗換アラーム', body: '次の駅 건대입구で乗り換えてください!', kind: 'transfer' },
+    { name: '하차 zh', waypoints: [wp('군자', 'intermediate'), wp('어린이대공원', 'destination')], locale: 'zh', title: '到达提醒', body: '下一站 어린이대공원 请下车!', kind: 'destination' },
   ];
 
   for (const c of CASES) {
