@@ -210,6 +210,15 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
   });
 
   async function sync(observedStationName: string) {
+    // 핸들러가 `c.executionCtx.waitUntil`로 스케줄하는 후속 작업(건너뛴 역 매역 push·trip_events 기록)을
+    // 수집해 전부 await한다. ctx 없이 호출하면 fire-and-forget이라 setImmediate 횟수로 "충분히 기다렸겠지"
+    // 하는 추측에 의존하게 되고, APNS JWT 서명·fetch 같은 실시간 I/O가 느린 CI에서는 결과보다 늦게 끝난다.
+    const waits: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (p: Promise<unknown>) => void waits.push(p),
+      passThroughOnException: () => {},
+      props: {},
+    } as unknown as ExecutionContext;
     const res = await app.fetch(
       new Request('http://example.com/boarding-lock/sync', {
         method: 'POST',
@@ -217,9 +226,9 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
         body: JSON.stringify({ token: TOKEN, observedStationName, observedAtMs: NOW, accuracy: 20 }),
       }),
       env,
+      ctx,
     );
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    await Promise.all(waits);
     return { status: res.status, body: (await res.json()) as { ok: boolean; advanced: boolean } };
   }
 
