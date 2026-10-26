@@ -95,6 +95,7 @@ import {
   createEmptyScheduledStats,
   fireSyncConsumedPrecedingAlarms,
   selectConsumedPrecedingAlarmPairs,
+  type SleepAlarmSyncSource,
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
   isLockActiveForLeg,
@@ -356,12 +357,16 @@ function markAdvanceHeldRecorded(tokenHash: string, observed: string, requested:
   return true;
 }
 
-/** sync 경로(진행 #3157 / 승격 fast-forward #3100)가 공유하는 소비 구간 직전역 알람 catch-up 스케줄러. */
+/**
+ * sync 경로(진행 #3157 / 승격 fast-forward #3100 / 혼합 분기 #3100)가 공유하는 소비 구간 알람 catch-up 스케줄러.
+ * 칸 선택은 `selectConsumedPrecedingAlarmPairs`(= `readSleepAlarmStops` 단일 출처)가 소유한다 — 호출부 게이트도 같은 함수.
+ */
 function scheduleSyncConsumedPrecedingAlarms(
   c: Context<{ Bindings: Env }>,
   trip: Trip,
   shiftedCount: number,
   now: number,
+  options: { requestedCount?: number; source: SleepAlarmSyncSource },
 ): void {
   const log = createJsonLogger();
   scheduleTripEvent(
@@ -386,6 +391,7 @@ function scheduleSyncConsumedPrecedingAlarms(
           now,
           log,
           () => crypto.randomUUID(),
+          options,
         ),
       )
       .catch((e) => log('boarding-lock/sync: preceding alarm failed', { error: String(e) })),
@@ -3629,6 +3635,19 @@ app.post('/boarding-lock/sync', async (c) => {
         });
       }
       working = cursor;
+      // #3100 — 환승 뒤 leg에서 슬라이스된 intermediate의 칸은 cron이 다시 볼 수 없다(관측역만 cron 위임).
+      // 순수 분기와 같은 catch-up을 루프 뒤 한 번 호출한다. lock 게이트는 환승 처리 후의 cursor lock(환승으로
+      // 해제됐으면 0, 같은 호선 오라벨로 유지됐으면 발사). `requestedCount`는 중단 경로(drift/유예/throw)에서
+      // 요청 구간 안의 타깃을 "곧 도착" 오알람으로 만들지 않기 위한 값이다.
+      const mixedTrip: Trip = { ...cursor, waypoints: existing.waypoints };
+      if (
+        selectConsumedPrecedingAlarmPairs(mixedTrip, appliedShiftedCount, consumedWaypoints.length).length > 0
+      ) {
+        scheduleSyncConsumedPrecedingAlarms(c, mixedTrip, appliedShiftedCount, now, {
+          requestedCount: consumedWaypoints.length,
+          source: 'sync-mixed',
+        });
+      }
       // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
       await maybeMirrorLockSyncProgress(c.env.TRIPS, working, appliedShiftedCount);
     } else {
@@ -3706,9 +3725,9 @@ app.post('/boarding-lock/sync', async (c) => {
       // cron에 맡긴다는 위 #2625 전제는 관측역이 trip에 남을 때만 성립하는데 이 분기는 관측역까지
       // 잘라낸다. lockless = 알림 없음(#3140)은 maybeFire*의 isBoardingLockActive 게이트가 소유한다
       // (cron 경로와 동일 단일 게이트). dedup은 기존 (token, target) 키.
-      // 혼합 분기(transfer/destination 소비)는 타깃이 이미 도달한 쌍이라 대상이 없다.
-      if (selectConsumedPrecedingAlarmPairs(existing.waypoints, advance.shiftedCount).length > 0) {
-        scheduleSyncConsumedPrecedingAlarms(c, existing, advance.shiftedCount, now);
+      // 혼합 분기(transfer/destination 소비)의 같은 catch-up은 그 분기 루프 뒤에서 한 번 호출한다(#3100).
+      if (selectConsumedPrecedingAlarmPairs(existing, advance.shiftedCount).length > 0) {
+        scheduleSyncConsumedPrecedingAlarms(c, existing, advance.shiftedCount, now, { source: 'sync-advance' });
       }
     }
 
@@ -3817,20 +3836,17 @@ app.post('/boarding-lock/sync', async (c) => {
             }),
           );
         }
-        // #3100 선행 — fast-forward로 skip된 구간의 타깃 직전역(1역 전) 알람은 cron이 다시 볼 수 없다
-        // (head가 타깃뿐). 진행 sync(#3157)와 같은 catch-up을 재사용한다: 선택 규칙(타깃 미소비 쌍만)·lock 게이트·
-        // (token, target) dedup 키 그대로. blockedAt(skip=0)이면 skip>0 조건으로 자연 제외된다.
+        // #3100 — fast-forward로 skip된 구간이 지나간 칸(타깃 직전역 이전 포함)의 알람은 cron이 다시 볼 수 없다
+        // (head가 타깃뿐이거나 칸이 이미 지났다). 진행 sync(#3157)와 같은 catch-up을 재사용한다: 칸 선택
+        // (`readSleepAlarmStops` 단일 출처, 타깃 미소비 쌍만)·lock 게이트·(token, target, remaining) dedup 키 그대로.
+        // blockedAt(skip=0)이면 skip>0 조건으로 자연 제외된다.
+        // slice 이전 waypoints + 방금 부착한 lock 스냅샷 — `buildStationNotifContent` 남은 정거장 계산과 lock 게이트용.
+        const fastForwardTrip: Trip = { ...working, waypoints: preSliceWaypoints };
         if (
           fastForward.skip > 0 &&
-          selectConsumedPrecedingAlarmPairs(preSliceWaypoints, fastForward.skip).length > 0
+          selectConsumedPrecedingAlarmPairs(fastForwardTrip, fastForward.skip).length > 0
         ) {
-          // slice 이전 waypoints + 방금 부착한 lock 스냅샷 — `buildStationNotifContent` 남은 정거장 계산과 lock 게이트용.
-          scheduleSyncConsumedPrecedingAlarms(
-            c,
-            { ...working, waypoints: preSliceWaypoints },
-            fastForward.skip,
-            now,
-          );
+          scheduleSyncConsumedPrecedingAlarms(c, fastForwardTrip, fastForward.skip, now, { source: 'sync-ff' });
         }
         scheduleTripEvent(
           c,
