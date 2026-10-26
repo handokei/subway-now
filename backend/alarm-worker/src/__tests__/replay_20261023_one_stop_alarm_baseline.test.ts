@@ -394,6 +394,40 @@ describe('#3100 PR-1 — 트립 173 실측 replay + 설정 {매 역, MAX} 주입
   });
 });
 
+// #3100 (plan v4.2 (b)) — 회귀 가드: 취침 mute를 intermediate 한정으로 좁혀도(환승·하차 도착 station- 해제)
+// 173 실측 취침 ON run에서 intermediate 매역 station- push는 여전히 0이고, alarm-/prepare- 알람 목록은 불변.
+// 주의: 173 비취침 base에는 transfer/destination station- push가 0건이라 환승·하차 발사 자체의 실측 오라클은 없다
+// (그쪽은 단위 테스트 M1/M2/M3가 담당) — 이 테스트는 "intermediate mute 유지 + 알람 목록 불변" 가드다.
+describe('#3100 — 트립 173 실측 replay 취침 ON: intermediate station- = 0, alarm-/prepare- 목록 불변', () => {
+  it('intermediate 매역 station- push 0 + alarm-/prepare- (tick, collapse-id) 목록이 변경 전과 동일', async () => {
+    const r = await replay173({ sleepAlarm: EVERY_MAX });
+    const intermediates = new Set(r.seedWaypoints.filter((w) => w.kind === 'intermediate').map((w) => w.stationName));
+    const stationPushes = r.result.cycles.flatMap((c) =>
+      c.pushes
+        .map((p) => p.headers.collapseId ?? '')
+        .filter((id) => id.startsWith('station-'))
+        .map((id) => ({ tick: c.simNowMs, id })),
+    );
+    const intermediateStationPushes = stationPushes.filter(({ id }) =>
+      [...intermediates].some((name) => id.endsWith(`-${name}`)),
+    );
+    expect(intermediateStationPushes).toEqual([]);
+
+    const alarmPushes = r.result.cycles.flatMap((c) =>
+      c.pushes
+        .map((p) => p.headers.collapseId ?? '')
+        .filter((id) => /^(?:alarm|prepare)-/.test(id))
+        .map((id) => ({ tick: c.simNowMs, id })),
+    );
+    // 변경 전(origin/dev 521510a5) 실측 재생 결과 — 불변 기준값.
+    expect(alarmPushes).toEqual([
+      { tick: 1792531306590, id: 'alarm-s3-replay-3100-173-건대입구' },
+      { tick: 1792531426587, id: 'alarm-s2-replay-3100-173-건대입구' },
+      { tick: 1792531546525, id: 'alarm-replay-3100-173-건대입구' },
+    ]);
+  });
+});
+
 // transitional — PR-2에서 변경: sync catch-up(`fireSyncConsumedPrecedingAlarms`)이 아직 기본 crossing만 쓰므로 비기본 설정에서도
 // 기본 칸 1회다. PR-2가 sync를 N으로 일반화하면 이 단언은 설정 기대 집합으로 바뀌어야 한다.
 describe('#3100 PR-1 — 트립 171 실측 replay + 설정 {매 역, MAX} 주입: sync 경로는 기본값과 동일 (PR-2 전)', () => {
