@@ -84,6 +84,16 @@ export function selectSleepAlarmFire(
   return stops.some((stop) => toRemaining <= stop && stop < fromRemaining) ? toRemaining : undefined;
 }
 
+/**
+ * 선택 모드("선택한 역에서만")의 후보 칸 — 남은 수가 `N` 이하가 된 모든 칸(내림차순). **상한(`N < fromRemaining`)이 없다**:
+ * 짧은 leg·점프·늦은 lock으로 칸을 정확히 못 밟아도, 첫 평가에서 걸린 칸이 한 번 울린다. 이미 울린 칸의 제외는 호출자의
+ * 칸 dedup(KV)이 한다. 매 역/기본값은 이 함수를 쓰지 않는다(`selectSleepAlarmFire`의 `to <= N < from` 유지).
+ * 기기 phase band도 같은 함수를 써야 backend와 판정이 어긋나지 않는다.
+ */
+export function selectedCellsDue(stops: readonly number[], { toRemaining }: SleepAlarmCrossing): number[] {
+  return stops.filter((stop) => toRemaining <= stop);
+}
+
 /** cron 1칸 전진: 방금 `toRemaining`에 도달 — 직전 위치는 한 정거장 더 멀었다. */
 export function crossingForSingleAdvance(toRemaining: number): SleepAlarmCrossing {
   return { fromRemaining: toRemaining + ONE_STATION_STEP, toRemaining };
