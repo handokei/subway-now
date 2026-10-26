@@ -6,7 +6,12 @@
  * sync가 환승을 넘어 여러 개를 한 번에 소비하는 경우(PR-2)에도 non-intermediate에서 끊어 leg를 가른다.
  */
 import { LEG_START_INDEX, ONE_STATION_STEP } from '../../../src/shared/constants/sleepAlarm';
-import { expandSleepAlarmStops, type SleepAlarmCrossing } from '../../../src/shared/utils/sleepAlarmCells';
+import {
+  expandSleepAlarmStops,
+  selectedCellsDue,
+  selectSleepAlarmFire,
+  type SleepAlarmCrossing,
+} from '../../../src/shared/utils/sleepAlarmCells';
 import type { Trip, Waypoint } from './types';
 
 /** `index` 뒤 첫 non-intermediate(환승/하차) 인덱스. 없으면 undefined. */
@@ -58,4 +63,30 @@ export function crossingForConsumed(
  */
 export function readSleepAlarmStops(trip: Pick<Trip, 'sleepModeEnabled' | 'sleepAlarm'>): number[] {
   return expandSleepAlarmStops(trip.sleepModeEnabled === true ? trip.sleepAlarm : undefined);
+}
+
+/** 한 평가의 발사 후보: 걸린 칸들과 문구에 쓸 실제 남은 수. */
+export interface SleepAlarmCandidates {
+  /** 이번 평가에서 "걸린" 칸(내림차순). 이미 울린 칸 제외는 발사 쪽 칸 dedup이 한다. 매 역/기본은 [remaining] 하나. */
+  cells: number[];
+  remaining: number;
+}
+
+/**
+ * 이 trip·crossing에서 발사할 후보. 선택 모드(`mode === 'selected'`, 취침 ON)만 "남은 수 <= N 인 모든 칸"
+ * (`selectedCellsDue`)이고, 기본값·매 역은 기존 `to <= N < from` 경로 그대로(칸 = 실제 남은 수 하나).
+ * cron(`evaluateSleepAlarmTrigger`)과 sync(`selectConsumedPrecedingAlarmPairs`)가 같은 함수로 판단한다.
+ */
+export function sleepAlarmCandidates(
+  trip: Pick<Trip, 'sleepModeEnabled' | 'sleepAlarm'>,
+  crossing: SleepAlarmCrossing,
+): SleepAlarmCandidates | undefined {
+  const { toRemaining: remaining } = crossing;
+  const config = trip.sleepModeEnabled === true ? trip.sleepAlarm : undefined;
+  if (config?.mode === 'selected') {
+    const cells = selectedCellsDue(config.stops, crossing);
+    return cells.length === 0 ? undefined : { cells, remaining };
+  }
+  const fired = selectSleepAlarmFire(readSleepAlarmStops(trip), crossing);
+  return fired === undefined ? undefined : { cells: [fired], remaining: fired };
 }

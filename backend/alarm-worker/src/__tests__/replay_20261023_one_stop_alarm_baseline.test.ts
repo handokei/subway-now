@@ -498,3 +498,44 @@ describe('#3100 PR-1 — 트립 168 실측 replay + 설정 {매 역, MAX} 주입
     });
   });
 });
+
+// ── #3100 v2 — "선택한 역에서만" 실측 replay: 칸은 타깃당 1회, 남은 수 <= N 이 된 첫 평가에서 ─────────────
+const SELECTED_MAX: SleepAlarmConfig = { mode: 'selected', stops: [SLEEP_ALARM_MAX_STOPS_BEFORE] };
+
+describe('#3100 v2 — 트립 171 실측 replay + 설정 {선택, MAX}: 짧은 leg(남은 1)에서 정확히 1회, 기본값 실행과 같은 시각', () => {
+  /** 실측 D1: 06:38:45.151 sync-received(성수). */
+  const SYNC_SEONGSU_TS = 1792445925151;
+
+  it('하차역(뚝섬) 알람 1회 · 남은 수 MIN(문구에 칸 MAX가 새지 않음) · companion sentAt이 기본값 실행의 companion과 동일(1792445925151)', async () => {
+    const base = await replay171();
+    const sel = await replay171({ sleepAlarm: SELECTED_MAX });
+    const destination = sel.seedWaypoints[sel.seedWaypoints.length - 1].stationName;
+    const isCompanion = (p: Body) => (p.data as Body | undefined)?.kind === 'sleep-alarm-companion';
+    const baseCompanions = base.httpPushes.filter(isCompanion);
+    expect(baseCompanions).toHaveLength(1);
+
+    const alarms = sel.httpPushes.filter((p) => (p.aps as Body | undefined)?.sound === 'alarm.wav');
+    expect(alarms).toHaveLength(1);
+    const companions = sel.httpPushes.filter(isCompanion);
+    expect(companions).toHaveLength(1);
+    expect(companions[0].data).toMatchObject({ nextStation: destination, sentAt: (baseCompanions[0].data as Body).sentAt });
+    expect((companions[0].data as Body).sentAt).toBe(SYNC_SEONGSU_TS);
+    expect(companions[0].data).not.toHaveProperty('remainingStops');
+    expect(cronAlarms(sel.result.cycles, destination)).toEqual([]);
+  });
+});
+
+describe('#3100 v2 — 트립 168 실측 replay + 설정 {선택, MAX}: 긴 leg에서 MAX 칸만 1회, {매 역, MAX}의 MAX 칸과 같은 tick', () => {
+  it('하차역 알람이 남은 MAX 하나뿐(2·1역 전에서 재발사 0)이고 시각 = {매 역, MAX} 실행의 남은 MAX 알람 tick', async () => {
+    const every = await replay168({ sleepAlarm: EVERY_MAX });
+    const sel = await replay168({ sleepAlarm: SELECTED_MAX });
+    const destination = sel.seedWaypoints[sel.seedWaypoints.length - 1].stationName;
+    const everyMax = cronSleepAlarmRemainings(every.result.cycles, destination).find(
+      (f) => f.remaining === SLEEP_ALARM_MAX_STOPS_BEFORE,
+    );
+    expect(everyMax).toBeDefined();
+    expect(cronSleepAlarmRemainings(sel.result.cycles, destination)).toEqual([
+      { at: (everyMax as { at: number }).at, remaining: SLEEP_ALARM_MAX_STOPS_BEFORE },
+    ]);
+  });
+});

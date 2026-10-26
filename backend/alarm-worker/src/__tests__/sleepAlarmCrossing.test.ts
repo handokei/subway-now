@@ -3,7 +3,7 @@
  * 남은 정거장 수는 "타깃이 속한 leg 안에서만" 센다 — 앞 leg의 환승역(non-intermediate)에서 끊는다.
  */
 import { describe, expect, it } from 'vitest';
-import { crossingForConsumed, readSleepAlarmStops } from '../sleepAlarmCrossing';
+import { crossingForConsumed, readSleepAlarmStops, sleepAlarmCandidates } from '../sleepAlarmCrossing';
 import type { Trip, Waypoint } from '../types';
 
 const i = (name: string): Waypoint => ({ stationName: name, line: '7', kind: 'intermediate' });
@@ -100,5 +100,40 @@ describe('readSleepAlarmStops — 설정은 취침 ON일 때만', () => {
 
   it.each([false, undefined])('취침 %s + 설정 있음 -> 설정 무시 [MIN]', (sleepModeEnabled) => {
     expect(readSleepAlarmStops(base({ sleepModeEnabled, sleepAlarm: { mode: 'every', stops: [3] } }))).toEqual([1]);
+  });
+});
+
+describe('sleepAlarmCandidates — 모드별 후보 칸 + 실제 남은 수 (#3100 v2.1)', () => {
+  const base = (over: Partial<Trip>): Trip => ({ token: 't', waypoints: [], sleepModeEnabled: true, ...over }) as unknown as Trip;
+  const sel = (...stops: number[]) => base({ sleepAlarm: { mode: 'selected', stops } });
+  const every = (start: number) => base({ sleepAlarm: { mode: 'every', stops: [start] } });
+  const cross = (toRemaining: number, fromRemaining: number = toRemaining + 1) => ({ fromRemaining, toRemaining });
+
+  it.each([
+    ['선택 {3} 짧은 leg(from 2, to 1)', sel(3), cross(1), { cells: [3], remaining: 1 }],
+    ['선택 {3,1} 짧은 leg', sel(3, 1), cross(1), { cells: [3, 1], remaining: 1 }],
+    ['선택 {3,1} to 2 (이미 지난 칸 3도 후보)', sel(3, 1), cross(2), { cells: [3], remaining: 2 }],
+    ['선택 {3} to 4 (아직 못 미침)', sel(3), cross(4), undefined],
+    ['선택 {3} 점프(from 5, to 2)', sel(3), cross(2, 5), { cells: [3], remaining: 2 }],
+  ])('%s', (_name, trip, crossing, expected) => {
+    expect(sleepAlarmCandidates(trip, crossing)).toEqual(expected);
+  });
+
+  it.each([
+    ['기본값 to 1', base({}), cross(1), { cells: [1], remaining: 1 }],
+    ['기본값 to 2', base({}), cross(2), undefined],
+    ['기본값 짧은 leg(from 2, to 1)', base({}), cross(1), { cells: [1], remaining: 1 }],
+    ['매 역 3 to 2', every(3), cross(2), { cells: [2], remaining: 2 }],
+    ['매 역 3 짧은 leg(from 2, to 1) -> 상한 유지: 칸 1 하나', every(3), cross(1), { cells: [1], remaining: 1 }],
+    ['매 역 3 점프(from 5, to 1) -> 실제 남은 수 칸 하나', every(3), cross(1, 5), { cells: [1], remaining: 1 }],
+    ['매 역 3 to 4', every(3), cross(4), undefined],
+  ])('기존 경로 유지 — %s', (_name, trip, crossing, expected) => {
+    expect(sleepAlarmCandidates(trip, crossing)).toEqual(expected);
+  });
+
+  it.each([false, undefined])('취침 %s + 선택 설정 -> 설정 무시(기본 경로)', (sleepModeEnabled) => {
+    const trip = base({ sleepModeEnabled, sleepAlarm: { mode: 'selected', stops: [3] } });
+    expect(sleepAlarmCandidates(trip, cross(1))).toEqual({ cells: [1], remaining: 1 });
+    expect(sleepAlarmCandidates(trip, cross(2))).toBeUndefined();
   });
 });

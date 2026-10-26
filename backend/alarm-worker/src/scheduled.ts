@@ -85,11 +85,10 @@ import { getTransferSeconds } from '../../../src/shared/utils/transferTimes';
 import { ONE_STATION_STEP, SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../src/shared/constants/sleepAlarm';
 import {
   crossingForSingleAdvance,
-  selectSleepAlarmFire,
   sleepAlarmSuffix,
   type SleepAlarmCrossing,
 } from '../../../src/shared/utils/sleepAlarmCells';
-import { crossingForConsumed, readSleepAlarmStops } from './sleepAlarmCrossing';
+import { crossingForConsumed, sleepAlarmCandidates } from './sleepAlarmCrossing';
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import {
   advanceTripPosition,
@@ -3040,8 +3039,9 @@ export type SleepAlarmSkipReason = 'not-sleep' | 'not-preceding';
  *   2. `waypoint`(방금 arvlCd∈{0,1}로 진입/도착 확정된 역)가 `kind: 'intermediate'`
  *      — transfer/destination 자신은 "직전역"이 될 수 없다(그 경우는 이미 도착한 것).
  *   3. `nextWaypoint`(leg 타깃)가 존재하고 `kind`가 'transfer' 또는 'destination'.
- *   4. (#3100) `crossing`이 설정한 칸(`readSleepAlarmStops`)에 걸린다 — 기본값 `[1역 전]`이면 "waypoint가
+ *   4. (#3100) `crossing`이 설정한 칸(`sleepAlarmCandidates`)에 걸린다 — 기본값 `[1역 전]`이면 "waypoint가
  *      정확히 타깃의 직전역"일 때만(= 이전의 인접 쌍 규칙과 동일). `crossing` 생략 = 인접 쌍 1칸 전진.
+ *      선택 모드는 남은 수 <= N 인 모든 칸이 걸린다(`cells`) — 이미 울린 칸의 제외는 발사 쪽 칸 dedup.
  *
  * "1역차 금지"(이슈 #2066 스펙 "그 직전 역 ≠ 해당 구간의 출발역")는 별도 게이트가 필요 없다 —
  * `trip.waypoints`는 leg의 출발역(방금 탑승/환승한 역) 자체를 포함하지 않으므로, 환승/도착이
@@ -3054,7 +3054,7 @@ export function evaluateSleepAlarmTrigger(
   waypoint: Waypoint,
   nextWaypoint: Waypoint | undefined,
   crossing: SleepAlarmCrossing = crossingForSingleAdvance(SLEEP_ALARM_MIN_STOPS_BEFORE),
-): { fire: true; target: Waypoint; remaining: number } | { fire: false; reason: SleepAlarmSkipReason } {
+): { fire: true; target: Waypoint; remaining: number; cells: number[] } | { fire: false; reason: SleepAlarmSkipReason } {
   if (trip.sleepModeEnabled !== true) {
     return { fire: false, reason: 'not-sleep' };
   }
@@ -3065,11 +3065,11 @@ export function evaluateSleepAlarmTrigger(
   ) {
     return { fire: false, reason: 'not-preceding' };
   }
-  const remaining = selectSleepAlarmFire(readSleepAlarmStops(trip), crossing);
-  if (remaining === undefined) {
+  const candidates = sleepAlarmCandidates(trip, crossing);
+  if (candidates === undefined) {
     return { fire: false, reason: 'not-preceding' };
   }
-  return { fire: true, target: nextWaypoint, remaining };
+  return { fire: true, target: nextWaypoint, ...candidates };
 }
 
 /** 취침/준비 알람 발사가 쓰는 최소 deps — cron(`ScheduledDeps`)과 sync(`SyncSkippedFireDeps`) 양쪽이 만족한다. */
@@ -3094,8 +3094,9 @@ interface MaybeFireSleepAlarmInputs {
 }
 
 /**
- * #3100 — 비기본 칸(1역 전이 아닌 N역 전)의 발사 outcome을 D1 `trip_events`(kind='sleep-alarm')에 1행 append한다.
- * 기본 칸은 행을 만들지 않는다(D1 행 증가 0). 관측 전용 — 발사/dedup 판정에는 관여하지 않는다.
+ * #3100 — 비기본 발사(1역 전이 아닌 N역 전, 또는 선택 모드 clamp = 선점 칸이 실제 남은 수와 다름)의 outcome을
+ * D1 `trip_events`(kind='sleep-alarm')에 1행 append한다. 기본 칸·매 역의 1역 전은 행을 만들지 않는다(D1 행 증가 0).
+ * clamp 발사만 `meta.cells`(선점한 칸)를 싣는다. 관측 전용 — 발사/dedup 판정에는 관여하지 않는다.
  */
 async function recordNonDefaultSleepAlarm(
   env: Env,
@@ -3103,11 +3104,13 @@ async function recordNonDefaultSleepAlarm(
   waypoint: Waypoint,
   target: Waypoint,
   remaining: number,
+  cells: number[],
   outcome: 'fired' | 'rolled-back',
   extra: Record<string, unknown>,
   now: number,
 ): Promise<void> {
-  if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) return;
+  const isClamp = cells.some((cell) => cell !== remaining);
+  if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE && !isClamp) return;
   await recordTripEvent(
     env.DB,
     {
@@ -3115,7 +3118,14 @@ async function recordNonDefaultSleepAlarm(
       kind: 'sleep-alarm',
       station: waypoint.stationName,
       line: waypoint.line,
-      meta: { outcome, remaining, targetStation: target.stationName, targetKind: target.kind, ...extra },
+      meta: {
+        outcome,
+        remaining,
+        ...(isClamp ? { cells } : {}),
+        targetStation: target.stationName,
+        targetKind: target.kind,
+        ...extra,
+      },
     },
     now,
   );
@@ -3173,10 +3183,15 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
     // routine 분기라 로그 노이즈를 만들지 않는다 (매역 알림의 다른 skip 사유들과 동일 정책).
     return;
   }
-  const { target, remaining } = trigger;
-  const dedupKey = sleepAlarmFireKey(trip.token, target.stationName, remaining);
-  const existingDedup = await env.TRIPS.get(dedupKey);
-  if (existingDedup !== null) {
+  const { target, remaining, cells } = trigger;
+  // 칸 단위 dedup(#3100 v2.1) — 후보 칸마다 키를 get해 이미 울린 칸을 제외한다. 기본값/매 역은 칸이 [remaining] 하나라
+  // get/put 1쌍·키가 기존 그대로다. 선택 모드는 칸 != 남은 수(clamp)일 수 있다.
+  const newCells: number[] = [];
+  for (const cell of cells) {
+    if ((await env.TRIPS.get(sleepAlarmFireKey(trip.token, target.stationName, cell))) === null) newCells.push(cell);
+  }
+  const claimKeys = newCells.map((cell) => sleepAlarmFireKey(trip.token, target.stationName, cell));
+  if (claimKeys.length === 0) {
     stats.sleepAlarmDedupSkipped += 1;
     log('alarm skip: dedup', {
       token: trip.token.slice(0, 8),
@@ -3188,7 +3203,9 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   }
   // claim 먼저 — cron tick 겹침(같은 trip이 동시 두 사이클로 평가되는 race)으로부터 보호.
   // 실패 시 아래에서 rollback(delete) — 영구 dedup 미스 방지.
-  await env.TRIPS.put(dedupKey, '1', { expirationTtl: SLEEP_ALARM_FIRE_DEDUP_TTL_SEC });
+  for (const claimKey of claimKeys) {
+    await env.TRIPS.put(claimKey, '1', { expirationTtl: SLEEP_ALARM_FIRE_DEDUP_TTL_SEC });
+  }
 
   const targetKind: 'transfer' | 'destination' =
     target.kind === 'destination' ? 'destination' : 'transfer';
@@ -3273,6 +3290,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       waypoint,
       target,
       remaining,
+      newCells,
       'fired',
       { pushId: alertPushId, ...(source === undefined ? {} : { source }) },
       now,
@@ -3280,7 +3298,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   } else {
     // P2-1 — 주 채널 실패: dedup rollback(다음 재평가 기회 보존) + transient retry 큐 등록.
     stats.sleepAlarmRolledBack += 1;
-    await env.TRIPS.delete(dedupKey);
+    for (const claimKey of claimKeys) await env.TRIPS.delete(claimKey);
     log('sleep-alarm: visible push failed (dedup rolled back)', {
       token: trip.token.slice(0, 8),
       target: target.stationName,
@@ -3294,6 +3312,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       waypoint,
       target,
       remaining,
+      newCells,
       'rolled-back',
       {
         pushId: alertPushId,
@@ -4761,13 +4780,13 @@ export async function fireSyncSkippedStationPasses(
  *
  * 대상 = 마지막 소비 역(`waypoints[shiftedCount - 1]`)이 intermediate이고, 그 뒤 첫 transfer/destination(타깃)이
  * **요청 소비 구간 밖**(`>= requestedCount`)인 쌍 하나. 타깃이 소비됐으면(관측역이 타깃 자신) 사용자가 이미 도착한
- * 것이라 알람이 무의미하다. 이 소비가 지나간 남은-정거장 범위(`crossingForConsumed`)가 설정 칸(`readSleepAlarmStops`
+ * 것이라 알람이 무의미하다. 이 소비가 지나간 남은-정거장 범위(`crossingForConsumed`)가 설정 칸(`sleepAlarmCandidates`
  * — 취침 ON일 때만 설정, 아니면 기본 `[1역 전]`)에 걸릴 때만 쌍을 돌려준다. 점프로 여러 칸을 건너뛰어도 1회이고
  * 실제 남은 수로 발사한다. lockless = 알림 없음(#3140)은 `maybeFire*`의 lock 게이트가 처리한다.
  * 트리거 평가는 `maybeFire*`가 소유한다 — 이 함수는 소비 구간에서 (직전역, 타깃, crossing) 한 쌍만 뽑는다.
  *
  * `trip.waypoints`는 slice 이전(pre-slice) 스냅샷이어야 한다(`buildStationNotifContent`의 남은 정거장 계산).
- * 칸 집합의 단일 출처는 `readSleepAlarmStops(trip)` — index.ts 게이트와 발사가 같은 함수로 판단한다.
+ * 칸 집합의 단일 출처는 `sleepAlarmCandidates(trip, crossing)` — index.ts 게이트와 발사가 같은 함수로 판단한다.
  * `requestedCount`: 혼합 분기 중단 경로(`applied < requested`)에서 요청 구간 안의 타깃을 "곧 도착" 오알람으로 만들지
  * 않기 위한 값. 생략하면 `shiftedCount`.
  * `selectConsumedPrecedingAlarmPairs`는 순수 선택(호출자가 waitUntil 스케줄 여부 판단에도 쓴다),
@@ -4779,6 +4798,8 @@ interface ConsumedPrecedingAlarmPair {
   crossing: SleepAlarmCrossing;
   /** 설정 칸이 걸린 실제 남은 정거장 수. */
   remaining: number;
+  /** 이번 소비가 걸친 칸(매 역/기본은 [remaining] 하나, 선택 모드는 여럿일 수 있다). */
+  cells: number[];
 }
 
 export function selectConsumedPrecedingAlarmPairs(
@@ -4788,10 +4809,10 @@ export function selectConsumedPrecedingAlarmPairs(
 ): ConsumedPrecedingAlarmPair[] {
   const consumed = crossingForConsumed(trip.waypoints, shiftedCount, requestedCount);
   if (consumed === undefined) return [];
-  const remaining = selectSleepAlarmFire(readSleepAlarmStops(trip), consumed.crossing);
-  if (remaining === undefined) return [];
+  const candidates = sleepAlarmCandidates(trip, consumed.crossing);
+  if (candidates === undefined) return [];
   const waypoint = trip.waypoints[shiftedCount - ONE_STATION_STEP];
-  return [{ waypoint, nextWaypoint: consumed.target, crossing: consumed.crossing, remaining }];
+  return [{ waypoint, nextWaypoint: consumed.target, crossing: consumed.crossing, ...candidates }];
 }
 
 /** #3100 — sync 경로 구분(D1 `sleep-alarm` 행 meta.source). cron은 생략. */
@@ -4811,15 +4832,16 @@ export async function fireSyncConsumedPrecedingAlarms(
   const stats = createEmptyScheduledStats(now);
   // maybeFire*는 env 치유 시 trip.apnsEnv를 mutate한다 — 호출자 스냅샷을 오염시키지 않는다.
   const scratch: Trip = { ...trip };
-  for (const { waypoint, nextWaypoint, crossing, remaining } of selectConsumedPrecedingAlarmPairs(
+  for (const { waypoint, nextWaypoint, crossing, cells } of selectConsumedPrecedingAlarmPairs(
     trip,
     shiftedCount,
     requestedCount,
   )) {
     const inputs = { trip: scratch, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId };
     await maybeFireSleepAlarm({ ...inputs, crossing, source });
-    // 준비 알람은 1역 전 고정(비취침 trip 전용) — 비인접 칸(remaining > MIN)에서는 부르지 않는다.
-    if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) await maybeFirePrepareAlarm(inputs);
+    // 준비 알람은 1역 전 고정(비취침 trip 전용) — 칸이 기본 칸 하나일 때만 부른다. 비인접 칸과 선택 모드 clamp(칸 != 남은 수)
+    // 에서는 부르지 않는다(취침 trip의 `prepare-alarm skipped/sleep` D1 행을 새로 만들지 않는다).
+    if (cells.length === ONE_STATION_STEP && cells[0] === SLEEP_ALARM_MIN_STOPS_BEFORE) await maybeFirePrepareAlarm(inputs);
   }
 }
 

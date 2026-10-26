@@ -12,6 +12,7 @@ import {
   crossingForSingleAdvance,
   expandSleepAlarmStops,
   normalizeSleepAlarmConfig,
+  selectedCellsDue,
   selectSleepAlarmFire,
   sleepAlarmStopOptions,
   sleepAlarmSuffix,
@@ -121,6 +122,29 @@ describe('selectSleepAlarmFire — to <= N < from 인 N이 있으면 실제 남�
       expect(selectSleepAlarmFire(stops, { fromRemaining, toRemaining })).toBe(expected);
     },
   );
+});
+
+describe('selectedCellsDue — 선택 모드: 남은 수 to <= N 인 모든 칸 (상한 없음, 내림차순)', () => {
+  it.each([
+    // [stops, to, expected]
+    [[3], 1, [3]], // 짧은 leg: 첫 평가가 남은 1이어도 3칸이 걸린다
+    [[3, 1], 1, [3, 1]], // 두 칸 동시 충족 -> 둘 다
+    [[3, 1], 2, [3]],
+    [[3, 1], 3, [3]],
+    [[3, 1], 4, []], // 아직 3칸에 못 미침
+    [[1], 2, []], // 기본값은 2역 전을 안 건드린다
+    [[1], 1, [1]],
+    [[3], 3, [3]],
+    [[3], 2, [3]], // 이미 지난 칸도 후보 — 칸 dedup이 거른다
+  ] as [number[], number, number[]][])('stops %j, to %i -> %j', (stops, toRemaining, expected) => {
+    expect(selectedCellsDue(stops, { fromRemaining: toRemaining + 1, toRemaining })).toEqual(expected);
+  });
+
+  it('from은 보지 않는다 (상한 N < from 제거) — selectSleepAlarmFire와 갈라지는 지점', () => {
+    const crossing = { fromRemaining: 2, toRemaining: 1 };
+    expect(selectedCellsDue([3], crossing)).toEqual([3]);
+    expect(selectSleepAlarmFire([3], crossing)).toBeUndefined();
+  });
 });
 
 describe('crossingForSingleAdvance', () => {
