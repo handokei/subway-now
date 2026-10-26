@@ -9049,6 +9049,168 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
   });
 });
 
+// #3100 (plan v4/v4.2) — 취침 lock trip의 환승·하차 도착 `station-` push는 mute하지 않는다.
+// intermediate 매역만 mute 유지(ADR-048 개정). M1=fireArvlCdStationPush, M2=fireVanishFallbackStationPush.
+// 오라클: 같은 입력의 비취침 run이 내는 push와 payload(aps/data/collapse)가 동일해야 한다.
+describe('#3100 — 취침 trip 환승·하차 도착 station- push (M1 arvlCd / M2 vanish-fallback)', () => {
+  const TOKEN = 'sleep3100-tok';
+  const ARRIVAL_KINDS: ReadonlyArray<{ kind: 'transfer' | 'destination'; station: string }> = [
+    { kind: 'transfer', station: '중곡' },
+    { kind: 'destination', station: '군자' },
+  ];
+
+  type CapturedPush = {
+    collapseId: string;
+    sound: unknown;
+    interruptionLevel: unknown;
+    data: Record<string, unknown>;
+  };
+
+  /** `station-` collapse-id alert push만 캡처 (`alarm-`/`prepare-`/boarding-prompt 제외). */
+  function captureStationPushes(apnsFetch: ReturnType<typeof vi.fn>): CapturedPush[] {
+    return (apnsFetch.mock.calls as unknown as [string, RequestInit][])
+      .filter((c) => {
+        const headers = (c[1]?.headers ?? {}) as Record<string, string>;
+        return (headers['apns-collapse-id'] ?? '').startsWith('station-');
+      })
+      .map((c) => {
+        const headers = c[1].headers as Record<string, string>;
+        const body = JSON.parse(c[1].body as string) as {
+          aps: { sound?: unknown; 'interruption-level'?: unknown };
+          data: Record<string, unknown>;
+        };
+        return {
+          collapseId: headers['apns-collapse-id'],
+          sound: body.aps.sound,
+          interruptionLevel: body.aps['interruption-level'],
+          data: body.data,
+        };
+      });
+  }
+
+  function makeTrip3100(
+    kind: 'intermediate' | 'transfer' | 'destination',
+    station: string,
+    overrides: Partial<Trip> = {},
+  ): Trip {
+    return makeLockTripFixture(TOKEN, {
+      waypoints: [{ stationName: station, line: '7', kind }],
+      ...overrides,
+    });
+  }
+
+  async function runM1(trip: Trip, station: string): Promise<CapturedPush[]> {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeArvlCdFireSeoul(station, 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-3100-m1',
+    });
+    return captureStationPushes(apnsFetch);
+  }
+
+  async function runM2(
+    trip: Trip,
+    ssotSetup?: (ssot: TripPositionSSoT) => void,
+  ): Promise<{ pushes: CapturedPush[]; gateBlocked: number }> {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const [waypoint] = trip.waypoints;
+    if (ssotSetup) {
+      const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, waypoint.stationName, {
+        expiresAt: trip.expiresAt,
+      });
+      ssotSetup(ssot);
+      await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+    }
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeFullEmptyStats();
+    await fireVanishFallbackStationPush({
+      trip,
+      waypoint,
+      lock: trip.boardingLock!,
+      env: makeEnv(kv),
+      deps: {
+        seoul: makeArvlCdFireSeoul('중곡', 0, null),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats,
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-3100-m2',
+      origin: 'vanish-fallback',
+    });
+    return { pushes: captureStationPushes(apnsFetch), gateBlocked: stats.transferDestinationGateBlocked };
+  }
+
+  describe.each(ARRIVAL_KINDS)('$kind ($station)', ({ kind, station }) => {
+    it('M1 arvlCd — 취침 ON도 발사, payload가 비취침과 동일 (station- collapse, alarm.wav, time-sensitive)', async () => {
+      const base = await runM1(makeTrip3100(kind, station), station);
+      const sleep = await runM1(makeTrip3100(kind, station, { sleepModeEnabled: true }), station);
+      expect(base).toHaveLength(1);
+      expect(sleep).toHaveLength(1);
+      expect(sleep[0].collapseId).toMatch(/^station-/);
+      expect(sleep[0].sound).toBe('alarm.wav');
+      expect(sleep[0].interruptionLevel).toBe('time-sensitive');
+      expect(sleep[0].data.kind).toBe(kind);
+      expect(sleep).toEqual(base);
+    });
+
+    it('M2 vanish-fallback — 취침 ON도 발사, payload가 비취침과 동일', async () => {
+      const { pushes: base } = await runM2(makeTrip3100(kind, station));
+      const { pushes: sleep } = await runM2(makeTrip3100(kind, station, { sleepModeEnabled: true }));
+      expect(base).toHaveLength(1);
+      expect(sleep).toHaveLength(1);
+      expect(sleep[0].sound).toBe('alarm.wav');
+      expect(sleep[0].interruptionLevel).toBe('time-sensitive');
+      expect(sleep).toEqual(base);
+    });
+
+    it('M2 — evaluateTransferDestinationGate가 차단하면 취침 ON도 0 (비취침과 같은 게이트, ssot-stale)', async () => {
+      // N9-stale: SSoT가 대상 역에 있으나 lastAdvanceAt이 3 cycle 이상 경과.
+      const staleSsot = (ssot: TripPositionSSoT) => {
+        ssot.motionState = 'moving';
+        ssot.lastAdvanceAt = NOW - 3 * 60_000;
+        ssot.lastAdvanceEvidence = 'arvlcd-confirmed-train';
+      };
+      const base = await runM2(makeTrip3100(kind, station), staleSsot);
+      const sleep = await runM2(makeTrip3100(kind, station, { sleepModeEnabled: true }), staleSsot);
+      expect(base.gateBlocked).toBe(1);
+      expect(base.pushes).toHaveLength(0);
+      expect(sleep.gateBlocked).toBe(1);
+      expect(sleep.pushes).toHaveLength(0);
+    });
+
+    it('lockless(boardingLock 없음) 취침 trip → station- push 0 (#3140 유지)', async () => {
+      const pushes = await runM1(
+        makeTrip3100(kind, station, { sleepModeEnabled: true, boardingLock: undefined }),
+        station,
+      );
+      expect(pushes).toHaveLength(0);
+    });
+  });
+
+  it('intermediate는 M1·M2 모두 취침 mute 유지 (비취침은 발사)', async () => {
+    const station = '중곡';
+    expect(await runM1(makeTrip3100('intermediate', station), station)).toHaveLength(1);
+    expect(
+      await runM1(makeTrip3100('intermediate', station, { sleepModeEnabled: true }), station),
+    ).toHaveLength(0);
+    expect((await runM2(makeTrip3100('intermediate', station))).pushes).toHaveLength(1);
+    expect(
+      (await runM2(makeTrip3100('intermediate', station, { sleepModeEnabled: true }))).pushes,
+    ).toHaveLength(0);
+  });
+});
+
 /**
  * #2779 — `fireVanishFallbackStationPush`(vanish-fallback/vanish-release 공용, origin으로만
  * 구분)의 모든 종료 경로가 D1 `trip_events`(kind='cron-fire-attempt')에 0건이었다(2026-09-21
