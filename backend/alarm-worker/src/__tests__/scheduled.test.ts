@@ -3512,9 +3512,14 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       // waypoint 자체가 이미 kind='transfer'라 evaluateSleepAlarmTrigger가 not-preceding으로
       // 차단한다 — 다만 그 transfer waypoint advance는 ADR-023에 따라 hop-end prompt
       // (category BOARDING_PROMPT)를 sleep 무관하게 독립 발사하므로 "alert 전무"가 아니라
-      // "sleep-alarm 전용 alert(sound=alarm.wav) 전무"로 좁혀 검증한다.
-      const alertCall = findPushByKindOrAlert(fetchImpl, (body) => body.aps?.sound === 'alarm.wav');
-      expect(alertCall).toBeUndefined();
+      // "sleep-alarm 전용 alert(collapse `alarm-`) 전무"로 좁혀 검증한다.
+      // #3100 — 취침 mute는 intermediate 한정이라 transfer 도착 매역 push(`station-`, alarm.wav)는
+      // 비취침과 동일하게 발사된다. 그래서 sound=alarm.wav 전무가 아니라 collapse 접두사로 구분한다.
+      const collapseIds = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).map(
+        ([, init]) => (init.headers as Record<string, string>)['apns-collapse-id'] ?? '',
+      );
+      expect(collapseIds.filter((id) => id.startsWith('alarm-'))).toEqual([]);
+      expect(collapseIds.filter((id) => id.startsWith('station-'))).toHaveLength(1);
       const companionCall = findPushByKindOrAlert(
         fetchImpl,
         (body) => body.data?.kind === 'sleep-alarm-companion',
@@ -9044,7 +9049,8 @@ describe('runScheduled — #2343 cron-fire-attempt D1 로그', () => {
         .filter((args) => args[2] === 'cron-fire-attempt')
         .filter((args) => (JSON.parse(args[5] as string) as { reason?: string }).reason === 'station-notif-sleep')
         .map((args) => args[3]);
-      expect(sleepSkips).toEqual(['중곡', '군자']);
+      // #3100 — 군자는 destination이라 취침 mute 대상이 아니다(intermediate 중곡만 mute 기록).
+      expect(sleepSkips).toEqual(['중곡']);
     });
   });
 });
