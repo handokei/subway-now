@@ -14,6 +14,7 @@ import {
 } from '../safetyNetScheduler';
 import { makeDirectRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
+import type { Route } from '../../../../shared/utils/stationRoute';
 import type { SleepAlarmConfig } from '../../../../shared/constants/sleepAlarm';
 
 jest.mock('expo-notifications');
@@ -36,10 +37,10 @@ jest.mock('../stationNotification', () => ({
 const mockLogScheduledAlarm = jest.fn();
 jest.mock('../alarmLog', () => ({ logScheduledAlarm: (...args: unknown[]) => mockLogScheduledAlarm(...args) }));
 
-// 쿼터 캡 테스트용 — 상한을 작게 낮춘다 (실제 값 60은 waypoint 21개가 필요해 fixture로 만들 수 없다).
+// 쿼터 캡 테스트용 — 상한을 6으로 낮춘다 (실제 값 60은 waypoint 21개가 필요해 fixture로 만들 수 없다).
 jest.mock('../../../../shared/constants/iosScheduledLimit', () => ({
   ...jest.requireActual('../../../../shared/constants/iosScheduledLimit'),
-  SAFETY_NET_MAX_WAYPOINTS: 4,
+  SAFETY_NET_MAX_WAYPOINTS: 6,
 }));
 
 const mockedSchedule = Notifications.scheduleNotificationAsync as jest.Mock;
@@ -64,7 +65,7 @@ beforeEach(() => {
   mockedCancel.mockResolvedValue(undefined);
 });
 
-async function register(route: ReturnType<typeof makeDirectRoute>, dest: string, sleepAlarm?: SleepAlarmConfig) {
+async function register(route: Route, dest: string, sleepAlarm?: SleepAlarmConfig) {
   return registerSafetyNetAlarms({
     tripToken: TOKEN,
     route,
@@ -187,13 +188,15 @@ describe('registerSafetyNetAlarms — 칸별 예약', () => {
       ],
       stopsAfterLastTransfer: 4,
     });
-    // waypoint 3 × 칸 3 = 9건, 상한 4 → 1역 전 3건 + 가장 이른 비기본 1건.
+    // waypoint 3 × 칸 3 = 9건, 상한 6 → 1역 전 3건 + 가장 이른 비기본 3건(교대 s3·s2, 서울역 s3).
     const result = await register(route, GANGNAM, EVERY_3);
-    expect(result.scheduled).toBe(4);
+    expect(result.scheduled).toBe(6);
     const ids = scheduled().map((s) => s.identifier);
     expect(ids).toEqual([
       `alarm-${TOKEN}-${교대}-transfer-s3`,
+      `alarm-${TOKEN}-${교대}-transfer-s2`,
       `alarm-${TOKEN}-${교대}-transfer`,
+      `alarm-${TOKEN}-${SEOUL}-transfer-s3`,
       `alarm-${TOKEN}-${SEOUL}-transfer`,
       `alarm-${TOKEN}-${GANGNAM}-destination`,
     ]);
@@ -266,6 +269,26 @@ describe('rescheduleSafetyNetAlarm — 칸별 재예약', () => {
     expect(byId[`alarm-${TOKEN}-${GANGNAM}-destination`].fireMs).toBe(
       newArrival - LEG_MS_PER_STOP + SAFETY_NET_BUFFER_MS,
     );
+  });
+
+  it('다른 앱 알림·다른 역/occurrence 예약은 건드리지 않는다', async () => {
+    mockedGetAll.mockResolvedValueOnce([
+      req('other-app', { foo: 1 }),
+      req(`alarm-${TOKEN}-${교대}-transfer`, {
+        channel: 'safety-net', station: 교대, tripToken: TOKEN, kind: 'transfer', occurrenceIdx: 0,
+      }),
+      entry('-s3', 3),
+    ]);
+    const result = await rescheduleSafetyNetAlarm({
+      tripToken: TOKEN,
+      route,
+      destinationName: GANGNAM,
+      stationName: GANGNAM,
+      newArrivalMs: START + 800_000,
+      now: START,
+    });
+    expect(result).toEqual({ cancelled: 1, scheduled: 1 });
+    expect(mockedCancel.mock.calls.map(([x]) => x)).toEqual([`alarm-${TOKEN}-${GANGNAM}-destination-s3`]);
   });
 
   it('보정 후 이미 지난 칸은 취소만 하고 남은 칸은 재예약한다', async () => {

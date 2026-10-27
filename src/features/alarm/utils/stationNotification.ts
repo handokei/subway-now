@@ -625,9 +625,7 @@ export function buildLiveActivityData(
     data.alarmType = alarmEvent.type;
     data.alarmStationName = getStationDisplayNameByName(alarmEvent.stationName, allStations);
     const isTransferAlarm = alarmEvent.type === 'transfer';
-    const rawBody = i18next.t(isTransferAlarm ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
-      station: data.alarmStationName,
-    });
+    const { body: rawBody } = earlyAlarmCopy(alarmEvent.stationName, isTransferAlarm, alarmEvent.band);
     const side = resolveExitSide(alarmEvent);
     const withSide = appendExitSide(rawBody, side);
     const hint = resolveQuickHint(alarmEvent);
@@ -845,13 +843,31 @@ export async function clearStationNotification(): Promise<void> {
 
 import type { AlarmPhaseId } from './alarmPhases';
 
-const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTransfer: boolean) => { title: string; body: string }> = {
-  early: (stationName, isTransfer) => ({
+/**
+ * early(N역 전) 알람 문구 — 안전망 알림·오버레이·Live Activity 알람 레이어가 공용한다.
+ * `band`(타깃까지 실제 남은 정거장 수, 기본 칸 제외)가 있으면 백엔드 push와 같은 "N정거장 전" 문구,
+ * 없으면 현행 "다음 역 X에서 환승/하차". 보간 변수는 `stops`(i18next `count`는 복수형 규칙과 충돌).
+ */
+function earlyAlarmCopy(
+  stationName: string,
+  isTransfer: boolean,
+  band?: number,
+): { title: string; body: string } {
+  const station = getStationDisplayNameByName(stationName, allStations);
+  if (band !== undefined) {
+    return {
+      title: i18next.t(isTransfer ? 'alarms.bandTransferTitle' : 'alarms.bandArrivalTitle', { stops: band }),
+      body: i18next.t(isTransfer ? 'alarms.bandTransferBody' : 'alarms.bandArrivalBody', { station, stops: band }),
+    };
+  }
+  return {
     title: i18next.t(isTransfer ? 'notifications.transferEarlyTitle' : 'notifications.arrivalEarlyTitle'),
-    body: i18next.t(isTransfer ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
-      station: getStationDisplayNameByName(stationName, allStations),
-    }),
-  }),
+    body: i18next.t(isTransfer ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', { station }),
+  };
+}
+
+const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTransfer: boolean, band?: number) => { title: string; body: string }> = {
+  early: (stationName, isTransfer, band) => earlyAlarmCopy(stationName, isTransfer, band),
   imminent: (stationName, isTransfer) => ({
     title: i18next.t(isTransfer ? 'notifications.transferImminentTitle' : 'notifications.arrivalImminentTitle'),
     body: i18next.t(isTransfer ? 'alarms.imminentTransferBody' : 'alarms.imminentArrivalBody', {
@@ -864,7 +880,7 @@ export function buildAlarmContent(
   event: AlarmEvent,
   source?: NotificationSource,
 ): { title: string; body: string } {
-  const { title, body } = ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
+  const { title, body } = ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer', event.band);
   const withSide = appendExitSide(body, resolveExitSide(event));
   const withHint = appendQuickHint(withSide, resolveQuickHint(event));
   const withSource = appendNotificationSource(withHint, source);

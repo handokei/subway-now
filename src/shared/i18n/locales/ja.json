@@ -186,6 +186,7 @@
     "arrivalTitle": "到着アラーム",
     "transferMessage": "{{station}}で\n乗り換え",
     "arrivalMessage": "{{station}}で\n下車",
+    "bandMessage": "{{station}}まで\nあと{{stops}}駅",
     "dismiss": "アラームを止める"
   },
   "destinationPicker": {
@@ -328,6 +329,10 @@
   "alarms": {
     "earlyTransferBody": "次の駅 {{station}}で乗り換えてください!",
     "earlyArrivalBody": "次の駅 {{station}}で下車してください!",
+    "bandTransferTitle": "乗換まであと{{stops}}駅",
+    "bandArrivalTitle": "到着まであと{{stops}}駅",
+    "bandTransferBody": "{{station}}まであと{{stops}}駅です。乗換の準備をしてください!",
+    "bandArrivalBody": "{{station}}まであと{{stops}}駅です。下車の準備をしてください!",
     "imminentTransferBody": "まもなく{{station}}に到着します。乗換の準備をしてください!",
     "imminentArrivalBody": "まもなく{{station}}に到着します。下車の準備をしてください!",
     "exitSideLeft": "左側のドアから降りてください",

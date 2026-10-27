@@ -3636,6 +3636,16 @@ describe('silentPushTask', () => {
           expect(lastEvent()).toMatchObject({ stationId: '2-뚝섬', band: 2 });
         });
 
+        it('오버레이 store 쓰기가 throw해도 안전망 취소·로그·ack는 계속된다', async () => {
+          mockSetAlarmEvent.mockImplementationOnce(() => {
+            throw new Error('store boom');
+          });
+          await handleSilentPush(companion({ remainingStops: 3 }));
+          expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
+          expect(mockLogCompanionAlarmFired).toHaveBeenCalledTimes(1);
+          expect(mockSendPushAck).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'fired' }));
+        });
+
         it('route 조회가 실패해도 오버레이는 뜬다 (stationId 없이)', async () => {
           (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
             if (key === ROUTE_KEY) throw new Error('storage-fail');

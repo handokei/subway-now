@@ -28,6 +28,9 @@ export interface AlarmEvent {
   // 사용자가 잠근 열차의 종착역명(Seoul `bstatnNm`). 대상역에서 종착하는 열차만 문 방향이 달라지는
   // 역(예: 성수 외선 당역 종착)에서 쓴다. lock 열차 row를 못 찾으면 undefined — 종착 불명으로 처리.
   trainTerminal?: string;
+  // #3100 — 취침 알람 N역 전 칸(타깃까지 실제 남은 정거장 수). 기본 칸(1역 전)은 undefined → 현행 문구.
+  // 문구(안전망 알림·오버레이·Live Activity)만 읽는다 — dedup 키·phase 판정은 이 필드를 보지 않는다.
+  band?: number;
 }
 
 /**

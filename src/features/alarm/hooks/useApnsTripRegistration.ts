@@ -59,6 +59,7 @@ import {
 } from '../../../shared/constants/boardingLock';
 import { SUBSURFACE_FLAP_QUARANTINE_MS } from '../../../shared/constants/barometer';
 import { ETA_POLLING_WINDOW_SEC } from '../../../shared/constants/eta';
+import type { SleepAlarmConfig } from '../../../shared/constants/sleepAlarm';
 import {
   REGISTER_KV_UNAVAILABLE_DEFAULT_RETRY_AFTER_SECONDS,
   REGISTER_DEGRADED_RETRY_INTERVAL_MS,
@@ -183,6 +184,11 @@ export interface UseApnsTripRegistrationInputs {
    */
   sleepMode?: boolean;
   /**
+   * #3100 — 취침 알람 "N역 전" 설정(`useSettingsStore.sleepAlarm`). 취침 ON일 때만 송신한다
+   * (백엔드는 `trip.sleepModeEnabled === true`일 때만 읽는다). undefined = 기본 → 필드 미송신.
+   */
+  sleepAlarm?: SleepAlarmConfig;
+  /**
    * #2130 (B-2) — 등록 시점 GPS fix (lat/lng + accuracy). boarding-prompt 근접 게이트
    * (backend B-backend, 별도 PR)의 입력으로 promptGeoContext에 동봉된다. GPS fix가 아예
    * 없으면(GPS 미해소/권한 거절) 필드 자체를 생략 — backend는 부재를 관대하게(지하/구 클라
@@ -272,6 +278,8 @@ interface RegisterCallInputs {
   boardingCommitted: boolean;
   /** #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 (ADR-023 결정 gate 미사용). */
   sleepMode: boolean;
+  /** #3100 — 취침 알람 N역 전 설정. 취침 ON일 때만 payload에 실린다. */
+  sleepAlarm?: SleepAlarmConfig;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
   createdAt: number;
   /**
@@ -404,6 +412,8 @@ async function callRegister(
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용으로 저장(ADR-023).
     // false/미설정은 필드 누락(graceful) — backend Trip.sleepModeEnabled=undefined 유지.
     ...(input.sleepMode ? { sleepModeEnabled: true } : {}),
+    // #3100 — 취침 ON + 비기본 설정일 때만. 단일 빌더라 heal/token refresh 경로도 같은 값을 싣는다.
+    ...(input.sleepMode && input.sleepAlarm ? { sleepAlarm: input.sleepAlarm } : {}),
     // #2280 — SSOT 출발역명. 캡처 전(undefined)이면 필드 자체 생략(graceful).
     ...(input.originStationName ? { originStationName: input.originStationName } : {}),
   });
@@ -426,6 +436,7 @@ export function useApnsTripRegistration({
   launchReconciliationSettled = true,
   boardingCommitted = false,
   sleepMode = false,
+  sleepAlarm,
   gpsFix = null,
   routeOriginStation = null,
   originStationName,
@@ -640,6 +651,7 @@ export function useApnsTripRegistration({
     launchReconciliationSettled,
     boardingCommitted,
     sleepMode,
+    sleepAlarm,
     gpsFix,
     routeOriginStation,
     originStationName,
@@ -664,6 +676,7 @@ export function useApnsTripRegistration({
     launchReconciliationSettled,
       boardingCommitted,
       sleepMode,
+      sleepAlarm,
       gpsFix,
       routeOriginStation,
       originStationName,
@@ -826,6 +839,7 @@ export function useApnsTripRegistration({
       launchReconciliationSettled: lrs,
       boardingCommitted: bc,
       sleepMode: sm,
+      sleepAlarm: sa,
       gpsFix: gf,
       originStationName: osn,
       customOrigin: co,
@@ -892,6 +906,7 @@ export function useApnsTripRegistration({
       trackingOptIn: toi,
       boardingCommitted: bc,
       sleepMode: sm,
+      sleepAlarm: sa,
       createdAt: resolveTripCreatedAt(sessionKey),
       cachedPromptContext: lastPromptContextRef.current,
       promptContextOverride: options?.promptContextOverride,
@@ -1662,6 +1677,7 @@ export function useApnsTripRegistration({
     launchReconciliationSettled,
     boardingCommitted,
     sleepMode,
+    sleepAlarm,
   ]);
 
   // ── #2130 (B-1 Tier 1) — context-heal on currentStation 전환 (#2150: 결과 상태 기준) ──

@@ -171,6 +171,9 @@ export default function HomeScreen() {
   const sleepMode = useSettingsStore((s) => s.sleepMode);
   const setSleepMode = useSettingsStore((s) => s.setSleepMode);
   const loadSleepMode = useSettingsStore((s) => s.loadSleepMode);
+  // #3100 — 취침 알람 N역 전 설정(register 송신 + 안전망은 훅이 store에서 직접 읽음).
+  const sleepAlarm = useSettingsStore((s) => s.sleepAlarm);
+  const loadSleepAlarm = useSettingsStore((s) => s.loadSleepAlarm);
   const loadAllowSpeaker = useSettingsStore((s) => s.loadAllowSpeaker);
   const showSleepModeGuide = useSleepModeGuide();
   const alarmEvent = useAlarmEventStore((s) => s.alarmEvent);
@@ -213,7 +216,6 @@ export default function HomeScreen() {
   const navigationPausedAt = useNavigationStore((s) => s.pausedAt);
   const stopNavigation = useNavigationStore((s) => s.stopNavigation);
   // #746: 알람 dismiss → silence 시작점 기록. 같은 컴포넌트의 userLocation을 같이 캡처.
-  const setDismissSilence = useAlarmEventStore((s) => s.setDismissSilence);
   // #746 reviewer P1: cold-start hydration — storage에 살아있는 silence 상태를
   // FG path가 무시하지 않도록 loadAlarmEvent와 같은 시퀀스로 hydrate.
   const loadDismissSilence = useAlarmEventStore((s) => s.loadDismissSilence);
@@ -1289,6 +1291,8 @@ export default function HomeScreen() {
     // #2032 (Issue D) — device 취침모드 상태. backend monitoring 전용 저장 (ADR-023 결정 gate 미사용).
     // skip 원인 분류 + evidence 재구성 자동화용. Device의 `shouldSuppressBySleepRule`이 실제 suppress gate.
     sleepMode,
+    // #3100 — 취침 알람 N역 전 설정. 취침 ON + 비기본일 때만 register에 실린다(백엔드 칸 판정 입력).
+    sleepAlarm,
     // #2130 (B-2) — 등록 시점 GPS fix. boarding-prompt 근접 게이트(backend B-backend) 입력.
     // fix 없으면(GPS 미해소/권한거절) undefined 대신 null로 명시 전달 — 필드 자체 생략은 hook이 처리.
     gpsFix:
@@ -1322,6 +1326,7 @@ export default function HomeScreen() {
   useEffect(() => {
     loadFavorites();
     loadSleepMode();
+    loadSleepAlarm();
     loadAllowSpeaker();
     loadCustomOrigin();
     loadRoutePreference();
@@ -1466,7 +1471,7 @@ export default function HomeScreen() {
       clearTimeout(firstSendFallbackTimerRef.current);
       firstSendFallbackTimerRef.current = null;
     }
-    const key = `${effectiveOrigin.id}__${destination.id}__${routeSig}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
+    const key = `${effectiveOrigin.id}__${destination.id}__${routeSig}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}:${alarmEvent?.stationName ?? ''}:${alarmEvent?.band ?? ''}`;
     if (key === prevNotifKeyRef.current) return;
     prevNotifKeyRef.current = key;
 
@@ -2237,10 +2242,6 @@ export default function HomeScreen() {
           sleepMode={sleepMode}
           event={alarmEvent}
           onDismiss={() => {
-            setDismissSilence(
-              Date.now(),
-              userLocation ? { lat: userLocation.lat, lng: userLocation.lng } : null,
-            ).catch(() => {});
             clearAlarmEvent();
           }}
         />

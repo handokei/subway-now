@@ -45,7 +45,14 @@ import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 
+import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../shared/constants/sleepAlarm';
+
 const logger = createLogger('ScheduledAlarmReceiver');
+
+/** #3100 — 백업의 칸이 기본(1역 전)인가. data.remaining 없음(구 예약 포함) = 기본. */
+function isDefaultCell({ remaining }: { remaining?: number }): boolean {
+  return (remaining ?? SLEEP_ALARM_MIN_STOPS_BEFORE) === SLEEP_ALARM_MIN_STOPS_BEFORE;
+}
 
 interface DestinationMeta {
   /** firedAlarms를 격리하는 데 쓰이는 destination id(#462). */
@@ -369,9 +376,12 @@ export async function reconcileScheduledAlarmDelivery(
     if (result.destinationId) {
       const fired = await getFiredAlarms(result.destinationId);
       // early/imminent 둘 다 마킹 — silent push 채널/live GPS 채널과 동일 dedup key 공간 공유(#1367).
-      fired.add(alarmKey({ phaseId: 'early', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
-      fired.add(alarmKey({ phaseId: 'imminent', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
-      await setFiredAlarms(result.destinationId, fired);
+      // #3100 — N역 전 백업은 1역 전 phase를 대신하지 않으므로 마킹하지 않는다(마킹하면 이후 1역 전 알람이 막힌다).
+      if (isDefaultCell(parsed)) {
+        fired.add(alarmKey({ phaseId: 'early', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
+        fired.add(alarmKey({ phaseId: 'imminent', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }));
+        await setFiredAlarms(result.destinationId, fired);
+      }
     }
     await setLastFiredAlarmStationName(parsed.station);
     return;
@@ -443,6 +453,9 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
     const fired = await getFiredAlarms(destinationId);
     let firedChanged = false;
     for (const { parsed } of accepted) {
+      lastStationName = parsed.station;
+      // #3100 — N역 전 백업은 early/imminent 키 마킹 제외(reconcile 경로와 동일).
+      if (!isDefaultCell(parsed)) continue;
       const keys = [
         alarmKey({ phaseId: 'early', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }),
         alarmKey({ phaseId: 'imminent', stationName: parsed.station, occurrenceIdx: parsed.occurrenceIdx }),
@@ -453,7 +466,6 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
           firedChanged = true;
         }
       }
-      lastStationName = parsed.station;
     }
     if (firedChanged) await setFiredAlarms(destinationId, fired);
   } else {

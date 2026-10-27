@@ -13,6 +13,7 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import { type ApnsEnv, setConfirmedApnsEnv } from '../../../shared/utils/apnsEnv';
 import { createLogger } from '../../../shared/utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
+import type { SleepAlarmConfig } from '../../../shared/constants/sleepAlarm';
 import { REGISTER_KV_UNAVAILABLE_ERROR } from '../../../shared/constants/registerContract';
 import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
 
@@ -196,6 +197,12 @@ export interface RegisterTripPayload {
    */
   sleepModeEnabled?: boolean;
   /**
+   * #3100 — 취침 알람 "N역 전" 설정. **backend 발사 결정 입력**: backend는 `trip.sleepModeEnabled === true`일 때만
+   * 읽고 칸 판정(`normalizeSleepAlarmConfig`)을 한다. 재등록은 incoming이 이기므로 모든 register 경로가 매번 실어야 한다.
+   * 미설정(기본 1역 전): 필드 미송신 — 기본 사용자의 body·hash는 바이트 동일.
+   */
+  sleepAlarm?: SleepAlarmConfig;
+  /**
    * #2120 (#2114 근본 수리 Phase 2) — trip 인스턴스 corrId (`getCurrentTripCorrIdSync()`).
    * backend가 Trip에 저장했다가 trip-ended push payload에 echo — device가 대조해 같은
    * tripToken(기기 고정)의 옛 trip 종료 push가 새 trip 등록 후 도착하는 race를 차단한다.
@@ -315,6 +322,7 @@ function buildRegisterHash(body: {
   trackingOptIn?: boolean;
   boardingCommitted?: boolean;
   sleepModeEnabled?: boolean;
+  sleepAlarm?: SleepAlarmConfig;
 }): string {
   // #2699 (요구사항 2, RCA "원인 확정" 코멘트) — 필드별 hash 포함 여부 재검토 결과:
   //   - alarmBucket(제거됨): `alarmAtEpochMs` 유래 — register가 호출되는 매 순간의 시계에
@@ -378,6 +386,9 @@ function buildRegisterHash(body: {
     // backend monitoring 값(Trip.sleepModeEnabled)이 즉시 갱신되어 이후 skip 원인 log가 정확.
     // ADR-023: backend push 발사 결정에는 미영향(저장/log 전용). 같은 값 연속 호출은 hash 동일 → skip.
     sleepModeEnabled: body.sleepModeEnabled === true,
+    // #3100 — 설정 변경 시 즉시 재등록(재등록은 incoming이 이긴다). undefined는 JSON.stringify가 생략하므로
+    // 기본 사용자의 hash 문자열은 변경 전과 바이트 동일.
+    sleepAlarm: body.sleepAlarm,
   });
 }
 
@@ -475,6 +486,8 @@ async function performRegisterFetch(
     // #2032 (Issue D) — device 취침모드 상태. ON일 때만 송신. backend는 monitoring 전용 저장 (ADR-023).
     // 미송신 시 backend Trip.sleepModeEnabled는 undefined 유지 — 기존 동작 완전 보존.
     ...(payload.sleepModeEnabled === true ? { sleepModeEnabled: true } : {}),
+    // #3100 — 취침 알람 N역 전 설정. 기본(미설정)이면 필드 자체 생략.
+    ...(payload.sleepAlarm ? { sleepAlarm: payload.sleepAlarm } : {}),
     // #2280 — SSOT 출발역명. trip 전체 수명 동안 불변이라 dedup hash에는 포함하지 않는다
     // (같은 trip 재등록마다 값이 같아 hash 갱신을 유발할 필요가 없다). 캡처 전(undefined)이면 생략.
     ...(payload.originStationName ? { originStationName: payload.originStationName } : {}),
@@ -618,6 +631,8 @@ export function registerActiveTrip(
     boardingCommitted: payload.boardingCommitted,
     // #2032 (Issue D) — sleepMode 변경 시 hash 갱신해 재등록 보장 (backend 저장값 즉시 동기화).
     sleepModeEnabled: payload.sleepModeEnabled,
+    // #3100 — 취침 알람 설정 변경 시 hash 갱신해 재등록 보장.
+    sleepAlarm: payload.sleepAlarm,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });

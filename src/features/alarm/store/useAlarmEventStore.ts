@@ -72,12 +72,11 @@ export const useAlarmEventStore = create<AlarmEventState>((set, get) => ({
 
   loadAlarmEvent: async () => {
     try {
+      // #3100 D1 — drain-only. 오버레이 단일 소스는 FG에서 칸마다 도착하는 backend companion
+      // (`silentPushTask.showCompanionOverlay`)이다. BG가 남긴 이벤트를 FG 복귀 때 재생하면 이중 표시되거나
+      // 마지막 한 건만 늦게 보인다. 구버전이 남긴 잔여 키만 비운다.
       const raw = await AsyncStorage.getItem(ALARM_EVENT_KEY);
       if (raw) {
-        // #2210 — set() 직접 호출 대신 setAlarmEvent를 경유해 중앙 게이트를 상속받는다.
-        // storage drain(removeItem)은 게이트 결과와 무관하게 항상 수행 — 억제된 stale 항목이
-        // 다음 FG 진입에서 재차 replay되지 않도록 무조건 비운다.
-        get().setAlarmEvent(JSON.parse(raw));
         await AsyncStorage.removeItem(ALARM_EVENT_KEY);
       }
     } catch {

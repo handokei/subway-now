@@ -2,9 +2,12 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   SLEEP_MODE_KEY,
+  SLEEP_ALARM_CONFIG_KEY,
   ALLOW_SPEAKER_KEY,
   ACCESSIBILITY_MODE_KEY,
 } from '../../../shared/constants/storageKeys';
+import type { SleepAlarmConfig } from '../../../shared/constants/sleepAlarm';
+import { normalizeSleepAlarmConfig } from '../../../shared/utils/sleepAlarmCells';
 import { getSentryOptIn, setSentryOptIn } from '../../../shared/infra/monitoring/sentryInit';
 
 /**
@@ -19,6 +22,14 @@ export interface SettingsState {
   sleepMode: boolean;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
+
+  /**
+   * #3100 — 취침 알람 "N역 전" 설정. `undefined` = 기본(1역 전 하나). 기본값과 같은 설정은 항상
+   * `undefined`로 정규화되어 저장 키가 없고, register body에도 실리지 않는다(기본 사용자 바이트 동일).
+   */
+  sleepAlarm: SleepAlarmConfig | undefined;
+  setSleepAlarm: (raw: unknown) => Promise<void>;
+  loadSleepAlarm: () => Promise<void>;
 
   allowSpeaker: boolean;
   setAllowSpeaker: (enabled: boolean) => Promise<void>;
@@ -40,6 +51,7 @@ export interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>((set) => ({
   sleepMode: false,
+  sleepAlarm: undefined,
   allowSpeaker: true,
   accessibilityMode: false,
   // #1038 — privacy stance. 사용자가 명시 동의해야 활성화.
@@ -58,6 +70,26 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       }
     } catch {
       // 저장된 데이터 없음 — false 유지
+    }
+  },
+
+  setSleepAlarm: async (raw: unknown) => {
+    const next = normalizeSleepAlarmConfig(raw);
+    set({ sleepAlarm: next });
+    if (next === undefined) {
+      await AsyncStorage.removeItem(SLEEP_ALARM_CONFIG_KEY);
+      return;
+    }
+    await AsyncStorage.setItem(SLEEP_ALARM_CONFIG_KEY, JSON.stringify(next));
+  },
+
+  loadSleepAlarm: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(SLEEP_ALARM_CONFIG_KEY);
+      set({ sleepAlarm: raw ? normalizeSleepAlarmConfig(JSON.parse(raw)) : undefined });
+    } catch {
+      // 손상 JSON / 읽기 실패 — 기본(undefined)
+      set({ sleepAlarm: undefined });
     }
   },
 
