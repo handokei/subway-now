@@ -139,6 +139,7 @@ const DEVICE_FILES: string[] = [
   'src/features/alarm/api/alarmBackend.ts',
   'src/features/alarm/components/SleepAlarmOverlay.tsx',
   'src/features/settings/store/useSettingsStore.ts',
+  'src/features/settings/components/SleepAlarmStops.tsx',
 ];
 
 describe('층 3 — 기기 파일 전체 검사', () => {
