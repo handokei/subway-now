@@ -113,12 +113,14 @@ describe('SleepAlarmOverlay', () => {
     expect(mockClearBoardingLock).not.toHaveBeenCalled();
   });
 
-  it('#806 도착 알람(early) dismiss → trip 유지. killAllAlarms만 호출, release 트리거 없음', async () => {
+  it('#806 도착 알람(early) dismiss → trip 유지. clearAlarmNotification만 호출(#3100: killAllAlarms 아님), release 트리거 없음', async () => {
     const { getByTestId } = renderAlarm('destination', '강남', 'early');
     fireEvent.press(getByTestId('alarm-dismiss-button'));
     await waitFor(() => {
-      expect(mockKillAllAlarms).toHaveBeenCalled();
-      expect(mockClearAlarmNotification).not.toHaveBeenCalled();
+      // #3100 D2 — 오버레이 소스가 칸마다 도착하는 companion뿐이므로, dismiss가 예약된 tripEndOffer·
+      // lastTrainAlarm·이후 칸 안전망 백업을 죽이면 안 된다(killAllAlarms = 예약 전부 cancel).
+      expect(mockClearAlarmNotification).toHaveBeenCalled();
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
       expect(mockDismiss).toHaveBeenCalled();
     });
     // #673/#806/#741/#746 회귀 가드 — dismiss는 BoardingLock storage를 절대 건드리지 않는다.
@@ -127,13 +129,51 @@ describe('SleepAlarmOverlay', () => {
     expect(mockClearBoardingLock).not.toHaveBeenCalled();
   });
 
-  it('#806 도착 알람(imminent) dismiss → trip 유지. killAllAlarms만 호출', async () => {
+  it('#806 도착 알람(imminent) dismiss → trip 유지. clearAlarmNotification만 호출 (#3100)', async () => {
     const { getByTestId } = renderAlarm('destination', '강남', 'imminent');
     fireEvent.press(getByTestId('alarm-dismiss-button'));
     await waitFor(() => {
-      expect(mockKillAllAlarms).toHaveBeenCalled();
-      expect(mockClearAlarmNotification).not.toHaveBeenCalled();
+      expect(mockClearAlarmNotification).toHaveBeenCalled();
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
       expect(mockDismiss).toHaveBeenCalled();
+    });
+  });
+
+  describe('#3100 — N역 전 칸(band) 오버레이', () => {
+    function renderBand(type: AlarmEvent['type'], stationName: string, band?: number) {
+      const event: AlarmEvent = { phaseId: 'early', type, stationName, ...(band === undefined ? {} : { band }) };
+      return render(<SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} />);
+    }
+
+    it('환승 band 3: 제목 "환승 3정거장 전", 본문은 남은 정거장 수를 담는다', () => {
+      const { getByTestId } = renderBand('transfer', '시청', 3);
+      expect(getByTestId('alarm-overlay-title').props.children).toBe('환승 3정거장 전');
+      expect(getByTestId('alarm-overlay-message').props.children).toBe('시청까지\n3정거장');
+    });
+
+    it('도착 band 2: 제목 "도착 2정거장 전"', () => {
+      const { getByTestId } = renderBand('destination', '강남', 2);
+      expect(getByTestId('alarm-overlay-title').props.children).toBe('도착 2정거장 전');
+      expect(getByTestId('alarm-overlay-message').props.children).toBe('강남까지\n2정거장');
+    });
+
+    it('band 없음(1역 전)은 현행 문구 그대로', () => {
+      const { getByText } = renderBand('transfer', '시청');
+      expect(getByText('환승 알림')).toBeTruthy();
+      expect(getByText('시청에서\n환승하세요')).toBeTruthy();
+    });
+
+    it.each([
+      ['transfer', 3],
+      ['destination', 3],
+      ['transfer', undefined],
+      ['destination', undefined],
+    ] as const)('dismiss(%s, band=%s) → 진동·알림만 정리, 예약 전부 cancel(killAllAlarms) 금지', async (type, band) => {
+      const { getByTestId } = renderBand(type, '시청', band);
+      fireEvent.press(getByTestId('alarm-dismiss-button'));
+      await waitFor(() => expect(mockDismiss).toHaveBeenCalled());
+      expect(mockClearAlarmNotification).toHaveBeenCalledTimes(1);
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
     });
   });
 
@@ -181,8 +221,9 @@ describe('SleepAlarmOverlay', () => {
       const rendered = renderAlarm('destination', '강남', 'early');
       await triggerModalClose(rendered);
       await waitFor(() => {
-        expect(mockKillAllAlarms).toHaveBeenCalled();
-        expect(mockClearAlarmNotification).not.toHaveBeenCalled();
+        // #3100 D2 — 닫기는 모든 알람에서 진동·알림 정리만 (예약 전부 cancel 아님).
+        expect(mockClearAlarmNotification).toHaveBeenCalled();
+        expect(mockKillAllAlarms).not.toHaveBeenCalled();
         expect(mockDismiss).toHaveBeenCalled();
       });
     });

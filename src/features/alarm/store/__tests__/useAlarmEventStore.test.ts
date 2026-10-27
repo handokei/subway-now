@@ -71,7 +71,10 @@ describe('useAlarmEventStore', () => {
     expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
   });
 
-  it('loadAlarmEvent: sleepMode=true면 AsyncStorage에서 알람 이벤트를 복원하고 제거한다', async () => {
+  // #3100 D1 — 오버레이 단일 소스는 companion. BG가 남긴 ALARM_EVENT_KEY를 FG 복귀 때 재생하면
+  // companion 오버레이와 이중 표시되거나 늦은 단일 슬롯이 마지막 칸 하나만 보여 오해를 만든다.
+  // 구버전이 남긴 잔여 키는 drain(removeItem)만 한다.
+  it('loadAlarmEvent: sleepMode=true여도 저장된 이벤트를 재생하지 않고 키만 비운다 (drain-only)', async () => {
     useSettingsStore.setState({ sleepMode: true });
     const event = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(event));
@@ -79,9 +82,21 @@ describe('useAlarmEventStore', () => {
     const { loadAlarmEvent } = useAlarmEventStore.getState();
     await loadAlarmEvent();
 
-    const { alarmEvent } = useAlarmEventStore.getState();
-    expect(alarmEvent).toEqual(event);
+    expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:alarm-event');
+  });
+
+  it('loadAlarmEvent: 이미 떠 있는 companion 오버레이(alarmEvent)를 지우지 않는다', async () => {
+    useSettingsStore.setState({ sleepMode: true });
+    const live = { phaseId: 'early' as const, type: 'transfer' as const, stationName: '시청', band: 3 };
+    useAlarmEventStore.setState({ alarmEvent: live });
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
+      JSON.stringify({ phaseId: 'early', type: 'destination', stationName: '강남' }),
+    );
+
+    await useAlarmEventStore.getState().loadAlarmEvent();
+
+    expect(useAlarmEventStore.getState().alarmEvent).toEqual(live);
   });
 
   // #2210 / #2258 — BG write(backgroundLocationTask)가 sleepMode 무관하게 남긴 stale

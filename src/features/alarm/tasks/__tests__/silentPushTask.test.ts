@@ -200,6 +200,14 @@ jest.mock('../../store/useBoardingLockStore', () => ({
   },
 }));
 
+// #3100 — companion 수신(FG)이 오버레이 단일 소스. store 쓰기만 가로채 호출 인자를 검증한다.
+const mockSetAlarmEvent = jest.fn();
+jest.mock('../../store/useAlarmEventStore', () => ({
+  useAlarmEventStore: {
+    getState: () => ({ setAlarmEvent: mockSetAlarmEvent }),
+  },
+}));
+
 // #2018 γ' — FG 상태에서 즉시 destination store setState. mock으로 호출 인자 검증.
 const mockDestinationSetState = jest.fn();
 jest.mock('../../../route/store/useDestinationStore', () => ({
@@ -3370,7 +3378,8 @@ describe('silentPushTask', () => {
         // 채널 통합으로 단일 kind 기준 1회 호출로 collapse됐다(occurrence 무관 전부 cancel).
         await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
         expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
-        expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledWith('뚝섬', 'transfer');
+        // #3100 — 부분 취소: 기본 칸(remainingStops 생략)은 fromRemaining=1(= 같은 역·종류 전부).
+        expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledWith('뚝섬', 'transfer', 1);
       });
 
       it('fired=false(not-sleep-mode) → OS 안전망 cancel 안 함 + ack(skipped, not-sleep-mode)', async () => {
@@ -3402,10 +3411,12 @@ describe('silentPushTask', () => {
 
       it('fired=true → logCompanionAlarmFired 호출 (Acceptance dashboard 반영)', async () => {
         await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
+        // #3100 (O5) — 수신 시점 AppState를 함께 적재(기본 mock = background).
         expect(mockLogCompanionAlarmFired).toHaveBeenCalledWith({
           originStation: '성수',
           nextStation: '뚝섬',
           nextLine: '2',
+          appState: 'background',
         });
       });
 
@@ -3457,6 +3468,207 @@ describe('silentPushTask', () => {
         mockFireCompanionAlarm.mockResolvedValueOnce({ fired: false, reason: 'not-sleep-mode' });
         await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
         expect(mockRefreshLa).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // #3100 — 취침 알람 N역 전: wire `remainingStops` 수신 → 칸별 원장·부분 취소·오버레이(FG)·로그.
+    // 백엔드 wire 계약(apns.ts sendSleepAlarmCompanionPush): 기본 칸(1역 전)은 remainingStops 생략,
+    // 그 외 칸은 실제 남은 정거장 수를 싣고 title/body는 항상 동반한다.
+    describe('sleep-alarm-companion — 칸(remainingStops) (#3100)', () => {
+      function companion(extra: Record<string, unknown> = {}) {
+        return {
+          data: {
+            data: {
+              data: {
+                kind: 'sleep-alarm-companion',
+                originStation: '성수',
+                targetKind: 'transfer',
+                nextLine: '2',
+                nextStation: '뚝섬',
+                tripToken: 'tok-sta',
+                pushId: 'sta-1',
+                title: 'T',
+                body: 'B',
+                ...extra,
+              },
+              dataString: null,
+            },
+            notification: null,
+            aps: { 'content-available': 1 },
+          },
+        };
+      }
+
+      const lastEvent = () => mockSetAlarmEvent.mock.calls[mockSetAlarmEvent.mock.calls.length - 1]?.[0];
+
+      beforeEach(() => {
+        mockAppStateHolder.currentState = 'active';
+        mockFireCompanionAlarm.mockResolvedValue({ fired: true });
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          return null;
+        });
+      });
+      afterEach(() => {
+        mockAppStateHolder.currentState = 'background';
+      });
+
+      describe('extractPayload — remainingStops', () => {
+        const fields = (remainingStops: unknown) => ({
+          kind: 'sleep-alarm-companion',
+          originStation: '성수',
+          targetKind: 'transfer',
+          nextLine: '2',
+          nextStation: '뚝섬',
+          tripToken: 'tok-sta',
+          remainingStops,
+        });
+
+        it.each([[2], [3], [4], [7]])('정수 ≥ 1 (%p)은 상한 없이 채택', (n) => {
+          expect(extractPayload(bgTaskData(fields(n)))).toMatchObject({ remainingStops: n });
+        });
+
+        it.each([[0], [-1], [1.5], ['3'], [null], [Number.NaN], [undefined]])(
+          '정수가 아니거나 1 미만(%p)은 undefined (= 기본 칸)',
+          (bad) => {
+            expect((extractPayload(bgTaskData(fields(bad))) as { remainingStops?: number }).remainingStops).toBeUndefined();
+          },
+        );
+      });
+
+      it('remainingStops=3 → 칸 3으로 원장 호출 (remaining 전달)', async () => {
+        await handleSilentPush(companion({ remainingStops: 3 }));
+        expect(mockFireCompanionAlarm).toHaveBeenCalledWith({
+          tripToken: 'tok-sta',
+          station: '뚝섬',
+          kind: 'transfer',
+          body: 'B',
+          remaining: 3,
+        });
+      });
+
+      it('remainingStops 생략(기본 칸) → 원장 호출에 remaining 없음 (기본 id 바이트 동일)', async () => {
+        await handleSilentPush(companion());
+        const [arg] = mockFireCompanionAlarm.mock.calls[0];
+        expect(arg.remaining).toBeUndefined();
+      });
+
+      it('발사 후 안전망은 자기 칸 이상만 취소: r=3 → 3, 생략 → 기본(1)', async () => {
+        await handleSilentPush(companion({ remainingStops: 3 }));
+        expect(mockCancelSafetyNetByStationKind).toHaveBeenLastCalledWith('뚝섬', 'transfer', 3);
+        await handleSilentPush(companion());
+        expect(mockCancelSafetyNetByStationKind).toHaveBeenLastCalledWith('뚝섬', 'transfer', 1);
+      });
+
+      it('본문 fallback(body 없는 구 backend)도 N역 전 칸이면 band를 담아 빌드', async () => {
+        await handleSilentPush(companion({ remainingStops: 2, body: undefined }));
+        expect(mockBuildAlarmContent).toHaveBeenCalledWith({
+          phaseId: 'early',
+          type: 'transfer',
+          stationName: '뚝섬',
+          band: 2,
+        });
+      });
+
+      describe('오버레이 (FG companion이 단일 소스)', () => {
+        it('FG + 3역 전 → setAlarmEvent({ early, type, stationName, band: 3 })', async () => {
+          await handleSilentPush(companion({ remainingStops: 3 }));
+          expect(mockSetAlarmEvent).toHaveBeenCalledTimes(1);
+          expect(lastEvent()).toMatchObject({ phaseId: 'early', type: 'transfer', stationName: '뚝섬', band: 3 });
+        });
+
+        it('FG + 기본 칸(remainingStops 생략)도 오버레이 — band 없음 (MIN = 현행 1역 전 문구)', async () => {
+          await handleSilentPush(companion());
+          expect(mockSetAlarmEvent).toHaveBeenCalledTimes(1);
+          expect(lastEvent()).toMatchObject({ phaseId: 'early', type: 'transfer', stationName: '뚝섬' });
+          expect(Object.prototype.hasOwnProperty.call(lastEvent(), 'band')).toBe(false);
+        });
+
+        it('r=3 → r=2 수신 시 슬롯이 band 3 → band 2로 교체, 둘 다 원장 통과(fired)', async () => {
+          await handleSilentPush(companion({ remainingStops: 3 }));
+          await handleSilentPush(companion({ remainingStops: 2, pushId: 'sta-2' }));
+          expect(mockSetAlarmEvent.mock.calls.map(([e]) => e.band)).toEqual([3, 2]);
+          expect(mockFireCompanionAlarm).toHaveBeenCalledTimes(2);
+        });
+
+        it('같은 칸 재수신(원장 dedup, fired=false)은 오버레이를 다시 세팅하지 않는다', async () => {
+          mockFireCompanionAlarm.mockResolvedValueOnce({ fired: false, reason: 'dedup' });
+          await handleSilentPush(companion({ remainingStops: 3 }));
+          expect(mockSetAlarmEvent).not.toHaveBeenCalled();
+        });
+
+        it('취침 OFF(fired=false, not-sleep-mode)면 오버레이 없음', async () => {
+          mockFireCompanionAlarm.mockResolvedValueOnce({ fired: false, reason: 'not-sleep-mode' });
+          await handleSilentPush(companion({ remainingStops: 3 }));
+          expect(mockSetAlarmEvent).not.toHaveBeenCalled();
+        });
+
+        it.each(['background', 'inactive'] as const)('앱이 %s면 store를 쓰지 않는다 (늦은 단일 슬롯 재생 방지)', async (state) => {
+          mockAppStateHolder.currentState = state;
+          await handleSilentPush(companion({ remainingStops: 3 }));
+          expect(mockSetAlarmEvent).not.toHaveBeenCalled();
+          // 소리·진동·안전망 취소는 AppState와 무관하게 그대로
+          expect(mockFireCompanionAlarm).toHaveBeenCalledTimes(1);
+          expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
+        });
+
+        it('저장된 route가 있으면 stationId를 채운다 (LA 출구 안내용)', async () => {
+          const route = {
+            type: 'transfer',
+            transferName: '뚝섬',
+            fromLine: '2',
+            toLine: '3',
+            stopsToTransfer: 4,
+            stopsFromTransfer: 3,
+            secondsToTransfer: 480,
+            secondsFromTransfer: 360,
+            transferStationId: '2-뚝섬',
+            destinationStationId: '3-목적',
+          };
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+            if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+            if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ROUTE_KEY) return JSON.stringify(route);
+            return null;
+          });
+          await handleSilentPush(companion({ remainingStops: 2 }));
+          expect(lastEvent()).toMatchObject({ stationId: '2-뚝섬', band: 2 });
+        });
+
+        it('route 조회가 실패해도 오버레이는 뜬다 (stationId 없이)', async () => {
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+            if (key === ROUTE_KEY) throw new Error('storage-fail');
+            if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+            if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            return null;
+          });
+          await handleSilentPush(companion({ remainingStops: 2 }));
+          expect(lastEvent()).toMatchObject({ type: 'transfer', stationName: '뚝섬', band: 2 });
+          expect(lastEvent().stationId).toBeUndefined();
+          expect(mockSendPushAck).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'fired' }));
+        });
+      });
+
+      describe('alarmLog — O5 측정', () => {
+        it('logCompanionAlarmFired에 appState(수신 시점)와 remainingStops가 실린다', async () => {
+          await handleSilentPush(companion({ remainingStops: 3 }));
+          expect(mockLogCompanionAlarmFired).toHaveBeenCalledWith({
+            originStation: '성수',
+            nextStation: '뚝섬',
+            nextLine: '2',
+            remainingStops: 3,
+            appState: 'active',
+          });
+        });
+
+        it('BG 수신이면 appState=background', async () => {
+          mockAppStateHolder.currentState = 'background';
+          await handleSilentPush(companion());
+          expect(mockLogCompanionAlarmFired).toHaveBeenCalledWith(
+            expect.objectContaining({ appState: 'background' }),
+          );
+        });
       });
     });
 

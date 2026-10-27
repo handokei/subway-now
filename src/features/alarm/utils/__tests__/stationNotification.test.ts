@@ -867,6 +867,16 @@ describe('stationNotification', () => {
       );
     });
 
+    it('#3100 alarmEvent에 band가 있으면 LA alarmBody도 N역 전 문구 (오버레이·알림과 같은 키)', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', band: 3 });
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alarmBody: '강남까지 3정거장 남았습니다. 하차 준비하세요!',
+          alarmShortLabel: '하차',
+        })
+      );
+    });
+
     it('alarmEvent에 stationId가 있으면 alarmBody에 좌/우 라인이 포함되고 alarmExitSide 필드가 채워진다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '잠실', stationId: '2-016', direction: 'up' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
@@ -1213,6 +1223,47 @@ describe('stationNotification', () => {
       expect(buildAlarmContent(imminentTransfer)).toEqual({
         title: '환승 임박',
         body: '곧 시청에 도착합니다. 환승 준비하세요!',
+      });
+    });
+
+    // #3100 — N역 전 칸(band = 실제 남은 정거장 수). 백엔드 sleepAlarmContent와 같은 문구.
+    describe('N역 전 band 문구 (#3100)', () => {
+      it('early destination + band 3 → 도착 3정거장 전', () => {
+        expect(buildAlarmContent({ ...earlyDest, band: 3 })).toEqual({
+          title: '도착 3정거장 전',
+          body: '강남까지 3정거장 남았습니다. 하차 준비하세요!',
+        });
+      });
+
+      it('early transfer + band 2 → 환승 2정거장 전', () => {
+        expect(buildAlarmContent({ ...earlyTransfer, band: 2 })).toEqual({
+          title: '환승 2정거장 전',
+          body: '시청까지 2정거장 남았습니다. 환승 준비하세요!',
+        });
+      });
+
+      it('band 없음은 현행 1역 전 문구 그대로', () => {
+        expect(buildAlarmContent(earlyDest).body).toBe('다음 역 강남에서 하차하세요!');
+      });
+
+      it('band가 있어도 좌/우 하차 라인(stationId 기반)은 그대로 덧붙는다', () => {
+        const { body } = buildAlarmContent({
+          phaseId: 'early',
+          type: 'destination',
+          stationName: '잠실',
+          stationId: '2-016',
+          direction: 'up',
+          band: 2,
+        });
+        expect(body.startsWith('잠실까지 2정거장 남았습니다. 하차 준비하세요!')).toBe(true);
+        expect(body).toContain('오른쪽 문으로 하차하세요');
+      });
+
+      it('imminent는 band와 무관하게 현행 문구 (band는 early 전용)', () => {
+        expect(buildAlarmContent({ ...imminentDest, band: 3 })).toEqual({
+          title: '도착 임박',
+          body: '곧 강남에 도착합니다. 하차 준비하세요!',
+        });
       });
     });
 
