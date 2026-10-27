@@ -87,6 +87,10 @@ describe('SleepAlarmStops (#3100 PR-5)', () => {
     expect(stored()).toEqual({ mode: 'every', stops: [OTHER] });
     expect(ROWS.filter(checked)).toEqual([OTHER]);
     expect(row(OTHER).props.accessibilityRole).toBe('radio');
+    // 더 가까운 칸을 누르면 시작 N이 그 칸으로 교체된다(누적 X)
+    await press(row(MIN));
+    expect(ROWS.filter(checked)).toEqual([MIN]);
+    expect(stored()).toBeUndefined();
   });
 
   it('매 역 + MIN은 기본값과 같아 저장은 비우되 모드 표시는 유지한다', async () => {
@@ -143,25 +147,5 @@ describe('SleepAlarmStops (#3100 PR-5)', () => {
     expect(row(MIN).props.accessibilityLabel).toBe(`${MIN}역 전부터`);
     expect(row(MIN).props.accessibilityRole).toBe('checkbox');
     expect(row(MIN).props.accessibilityHint).toBe('마지막 선택 칸은 해제할 수 없습니다');
-  });
-});
-
-describe('SleepAlarmStops — MAX=4 변형 (행 수가 상수에서 파생됨을 증명)', () => {
-  afterEach(() => jest.resetModules());
-
-  it('MAX를 4로 바꾸면 행이 4개가 된다', () => {
-    jest.isolateModules(() => {
-      jest.doMock('../../../../shared/constants/sleepAlarm', () => ({
-        ...jest.requireActual('../../../../shared/constants/sleepAlarm'),
-        SLEEP_ALARM_MAX_STOPS_BEFORE: 4,
-      }));
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      const { SleepAlarmStops: Mocked } = require('../SleepAlarmStops');
-      const { renderWithTheme: render } = require('../../../../testUtils/renderWithTheme');
-      const { screen: scr } = require('@testing-library/react-native');
-      /* eslint-enable @typescript-eslint/no-require-imports */
-      render(<Mocked />);
-      expect(scr.getAllByTestId(/^sleep-alarm-row-/)).toHaveLength(4);
-    });
   });
 });

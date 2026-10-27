@@ -16,6 +16,7 @@ import { LineGlowBackground } from '../shared/ui/LineGlowBackground';
 import { GLASS_SCREEN_BOTTOM_PADDING } from '../shared/ui/GlassTabBar';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
 import { SleepModeSilentWarning } from '../features/settings/components/SleepModeSilentWarning';
+import { SleepAlarmStops } from '../features/settings/components/SleepAlarmStops';
 import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
 import {
   DEBUG_MODAL_TRIGGER_RESET_MS,
@@ -131,6 +132,8 @@ export default function SettingsScreen() {
           </View>
 
           <SleepModeSilentWarning visible={sleepMode} />
+
+          <SleepAlarmStops disabled={!sleepMode} />
 
           <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
             <View style={styles.settingInfo}>

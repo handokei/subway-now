@@ -126,6 +126,12 @@
     "alarmSection": "Alarm",
     "sleepModeLabel": "Sleep mode",
     "sleepModeDescription": "Plays the wake-up alarm sound when earphones are connected",
+    "sleepAlarmTitle": "Alarm starts at",
+    "sleepAlarmModeEvery": "Every stop",
+    "sleepAlarmModeSelected": "Selected stops only",
+    "sleepAlarmRow_other": "From {{count}} stop(s) before",
+    "sleepAlarmHelperEvery": "Rings at every stop from {{count}} stop(s) before until just before arrival.",
+    "sleepAlarmHelperSelected": "Each checked stop rings once. On a short leg, it rings at the first stop after the origin.",
     "speakerOutputLabel": "Allow speaker output",
     "speakerOutputDescription": "Plays the alarm through the speaker even without earphones",
     "speakerOffTitle": "Turn off speaker output",
@@ -374,6 +380,7 @@
   "a11y": {
     "settings": {
       "sleepModeHint": "Plays a wake-up alarm sound when headphones are connected",
+      "sleepAlarmLastStopHint": "The last selected stop cannot be unchecked",
       "speakerOutputHint": "Plays alarm sound through the speaker when headphones are not connected",
       "sentryOptInHint": "Consent to send anonymous error reports",
       "accessibilityModeHint": "Guides quick-exit positions based on elevators",

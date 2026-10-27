@@ -126,6 +126,12 @@
     "alarmSection": "アラーム",
     "sleepModeLabel": "おやすみモード",
     "sleepModeDescription": "イヤホン接続時は起床アラーム音を鳴らします",
+    "sleepAlarmTitle": "何駅前から",
+    "sleepAlarmModeEvery": "毎駅",
+    "sleepAlarmModeSelected": "選んだ駅のみ",
+    "sleepAlarmRow_other": "{{count}}駅前から",
+    "sleepAlarmHelperEvery": "{{count}}駅前から到着直前まで毎駅鳴ります。",
+    "sleepAlarmHelperSelected": "チェックした項目ごとに1回ずつ鳴ります。区間が短い場合は出発駅の次の駅で鳴ります。",
     "speakerOutputLabel": "スピーカー出力を許可",
     "speakerOutputDescription": "イヤホン未接続時もスピーカーでアラーム音を再生します",
     "speakerOffTitle": "スピーカー出力をオフ",
@@ -374,6 +380,7 @@
   "a11y": {
     "settings": {
       "sleepModeHint": "イヤホン接続時に起床アラーム音で鳴ります",
+      "sleepAlarmLastStopHint": "最後に選んだ項目は解除できません",
       "speakerOutputHint": "イヤホン未接続時にスピーカーでアラーム音を再生",
       "sentryOptInHint": "匿名のエラー情報送信に同意",
       "accessibilityModeHint": "エレベーター基準で速やかな降車位置を案内",

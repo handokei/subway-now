@@ -126,6 +126,12 @@
     "alarmSection": "알람",
     "sleepModeLabel": "취침 모드",
     "sleepModeDescription": "이어폰 연결 시 기상 알람음으로 울립니다",
+    "sleepAlarmTitle": "N역 전부터",
+    "sleepAlarmModeEvery": "매 역",
+    "sleepAlarmModeSelected": "선택한 역에서만",
+    "sleepAlarmRow_other": "{{count}}역 전부터",
+    "sleepAlarmHelperEvery": "{{count}}역 전부터 도착 직전까지 매 역 울립니다.",
+    "sleepAlarmHelperSelected": "체크한 칸마다 한 번씩 울립니다. 구간이 짧으면 출발역 다음 역에서 울립니다.",
     "speakerOutputLabel": "스피커 출력 허용",
     "speakerOutputDescription": "이어폰 미연결 시에도 알람음을 스피커로 재생합니다",
     "speakerOffTitle": "스피커 출력 끄기",
@@ -374,6 +380,7 @@
   "a11y": {
     "settings": {
       "sleepModeHint": "이어폰 연결 시 기상 알람음으로 울립니다",
+      "sleepAlarmLastStopHint": "마지막 선택 칸은 해제할 수 없습니다",
       "speakerOutputHint": "이어폰 미연결 시 스피커로 알람음 재생",
       "sentryOptInHint": "익명 오류 정보 전송 동의",
       "accessibilityModeHint": "엘리베이터 기준으로 빠른 하차 위치 안내",

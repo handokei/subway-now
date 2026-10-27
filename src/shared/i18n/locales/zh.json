@@ -126,6 +126,12 @@
     "alarmSection": "提醒",
     "sleepModeLabel": "睡眠模式",
     "sleepModeDescription": "连接耳机时播放唤醒铃声",
+    "sleepAlarmTitle": "提前几站开始",
+    "sleepAlarmModeEvery": "每一站",
+    "sleepAlarmModeSelected": "仅所选站",
+    "sleepAlarmRow_other": "提前{{count}}站开始",
+    "sleepAlarmHelperEvery": "从提前{{count}}站起到到达前每站都会响铃。",
+    "sleepAlarmHelperSelected": "每个勾选项各响一次。区间较短时，在出发站的下一站响铃。",
     "speakerOutputLabel": "允许扬声器输出",
     "speakerOutputDescription": "即使未连接耳机也通过扬声器播放铃声",
     "speakerOffTitle": "关闭扬声器输出",
@@ -374,6 +380,7 @@
   "a11y": {
     "settings": {
       "sleepModeHint": "连接耳机时以起床闹钟音播放",
+      "sleepAlarmLastStopHint": "最后一个选项无法取消",
       "speakerOutputHint": "未连接耳机时通过扬声器播放闹钟音",
       "sentryOptInHint": "同意发送匿名错误信息",
       "accessibilityModeHint": "按电梯位置引导快速下车位置",
