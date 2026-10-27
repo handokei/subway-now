@@ -55,6 +55,8 @@ export interface UseSafetyNetSchedulerInputs {
  */
 export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSchedulerInputs): void {
   const sleepMode = useSettingsStore((s) => s.sleepMode);
+  // #3100 — 취침 알람 N역 전 설정. 칸 구성이 바뀌면 이미 무장한 예약이 stale이므로 identity에 든다.
+  const sleepAlarm = useSettingsStore((s) => s.sleepAlarm);
   // v9 d5 — lock 없음=알림 없음. lock 활성일 때만 무장하고, 해제/부재 시 armed 예약을 cancel한다.
   const lockActive = useBoardingLockStore((s) => s.lock !== null);
   const { healthy: silentPushHealthy } = useSilentPushHealthCheck();
@@ -71,7 +73,9 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
 
     const run = async (): Promise<void> => {
       const routeSig = routeSignature(route);
-      const nextIdentityBase = `${routeSig}|${destinationName ?? ''}|sleep:${sleepMode}`;
+      // 비기본 설정일 때만 `|cfg:` 접미 — 기본 사용자의 identity 문자열은 변경 전과 동일하다.
+      const cfgSuffix = sleepAlarm ? `|cfg:${JSON.stringify(sleepAlarm)}` : '';
+      const nextIdentityBase = `${routeSig}|${destinationName ?? ''}|sleep:${sleepMode}${cfgSuffix}`;
 
       if (!sleepMode || !lockActive || route === null || destinationName === null) {
         if (registeredIdentityRef.current !== null && registeredTripTokenRef.current) {
@@ -123,6 +127,7 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
         destinationName,
         startTime: tripStart,
         outageConfirmed: true,
+        sleepAlarm,
       });
       if (myToken !== inFlightTokenRef.current) return;
       registeredIdentityRef.current = nextIdentity;
@@ -133,5 +138,5 @@ export function useSafetyNetScheduler({ route, destinationName }: UseSafetyNetSc
     run().catch((e: unknown) => {
       logger.error('safetyNetScheduler 전환 실패:', e);
     });
-  }, [route, destinationName, sleepMode, lockActive, silentPushHealthy]);
+  }, [route, destinationName, sleepMode, sleepAlarm, lockActive, silentPushHealthy]);
 }

@@ -127,7 +127,19 @@ describe('층 2 — 대상 함수 본문에 1/2/3 리터럴이 없다', () => {
 });
 
 // ── 층 3: 기기 파일 전체 (기기 PR이 목록에 추가) ──────────────────────────────────────────────
-const DEVICE_FILES: string[] = [];
+const DEVICE_FILES: string[] = [
+  'src/features/alarm/tasks/silentPushTask.ts',
+  'src/features/alarm/utils/alarmLocalAuthority.ts',
+  'src/features/alarm/utils/safetyNetScheduler.ts',
+  'src/features/alarm/utils/scheduledAlarmReceiver.ts',
+  'src/features/alarm/utils/companionAlarmEvent.ts',
+  'src/features/alarm/utils/stationNotification.ts',
+  'src/features/alarm/hooks/useSafetyNetScheduler.ts',
+  'src/features/alarm/hooks/useApnsTripRegistration.ts',
+  'src/features/alarm/api/alarmBackend.ts',
+  'src/features/alarm/components/SleepAlarmOverlay.tsx',
+  'src/features/settings/store/useSettingsStore.ts',
+];
 
 describe('층 3 — 기기 파일 전체 검사', () => {
   for (const relPath of DEVICE_FILES) {
@@ -135,10 +147,6 @@ describe('층 3 — 기기 파일 전체 검사', () => {
       expect(fileViolations(read(relPath))).toEqual([]);
     });
   }
-
-  it('PR-1은 기기 파일을 건드리지 않는다 (목록은 기기 PR이 채운다)', () => {
-    expect(DEVICE_FILES).toEqual([]);
-  });
 });
 
 // ── 가드 자체 검증: 알려진 위반 패턴을 실제로 잡는가 ─────────────────────────────────────────

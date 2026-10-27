@@ -20,6 +20,8 @@ import {
 import { vibrateAlarm } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
+import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../shared/constants/sleepAlarm';
+import { sleepAlarmSuffix } from '../../../shared/utils/sleepAlarmCells';
 
 const logger = createLogger('AlarmLocalAuthority');
 
@@ -29,15 +31,21 @@ export const ALARM_LOCAL_LEDGER_TTL_MS = 60 * 60 * 1000;
 export type AlarmLocalKind = 'transfer' | 'destination';
 
 /**
- * 결정적 identifier 생성기 — `alarm-<tripToken>-<station>-<kind>`.
- * ledger dedup key로 사용된다. #2089(스케줄러 통합)에서 OS 예약 identifier로도 재사용 예정.
+ * 결정적 identifier 생성기 — `alarm-<tripToken>-<station>-<kind>[-s<remaining>]`.
+ * ledger dedup key로 사용된다. #2089(안전망)의 OS 예약 identifier도 같은 규칙을 재사용한다.
+ *
+ * #3100 — `remaining`(타깃까지 실제 남은 정거장 수)이 기본 칸(1역 전)이 아니면 `-s{N}` 접미를 붙여
+ * 칸마다 별개 id로 만든다(3역 전 → 2역 전 → 1역 전이 서로 dedup되지 않는다). 기본 칸은 기존 id 그대로.
  */
 export function buildAlarmLocalId(
   tripToken: string,
   station: string,
   kind: AlarmLocalKind,
+  remaining: number = SLEEP_ALARM_MIN_STOPS_BEFORE,
 ): string {
-  return `alarm-${tripToken}-${station}-${kind}`;
+  const suffix = sleepAlarmSuffix(remaining);
+  const base = `alarm-${tripToken}-${station}-${kind}`;
+  return suffix ? `${base}-${suffix}` : base;
 }
 
 interface AlarmLocalLedgerEntry {
@@ -125,6 +133,8 @@ export interface FireCompanionAlarmParams {
   kind: AlarmLocalKind;
   /** TTS로 읽을 본문. */
   body: string;
+  /** #3100 — 타깃까지 실제 남은 정거장 수. 미지정 = 기본 칸(1역 전). 원장 키에 칸으로 들어간다. */
+  remaining?: number;
 }
 
 export type FireCompanionAlarmSkipReason = 'not-sleep-mode' | 'dedup';
@@ -158,7 +168,7 @@ export async function fireCompanionAlarm(
     return { fired: false, reason: 'not-sleep-mode' };
   }
 
-  const id = buildAlarmLocalId(params.tripToken, params.station, params.kind);
+  const id = buildAlarmLocalId(params.tripToken, params.station, params.kind, params.remaining);
   if (await hasFiredLocally(id)) {
     return { fired: false, reason: 'dedup' };
   }

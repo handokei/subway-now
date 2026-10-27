@@ -10,7 +10,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import type { AlarmEvent } from '../../../shared/types/alarm';
 import { clearAlarmNotification } from '../utils/stationNotification';
-import { killAllAlarms } from '../utils/alarmKill';
 import { getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import stationsData from '../../../data/stations.json';
 import type { LineNumber, Station } from '../../../shared/types/station';
@@ -54,10 +53,17 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
   }
 
   const isTransfer = event.type === 'transfer';
-  const title = t(isTransfer ? 'alarmOverlay.transferTitle' : 'alarmOverlay.arrivalTitle');
-  const message = t(isTransfer ? 'alarmOverlay.transferMessage' : 'alarmOverlay.arrivalMessage', {
-    station: getStationDisplayNameByName(event.stationName, allStations),
-  });
+  const station = getStationDisplayNameByName(event.stationName, allStations);
+  // #3100 — N역 전 칸(band = 실제 남은 정거장 수)은 "N정거장 전" 문구, 기본 칸(1역 전)은 현행 문구.
+  const { band } = event;
+  const title =
+    band === undefined
+      ? t(isTransfer ? 'alarmOverlay.transferTitle' : 'alarmOverlay.arrivalTitle')
+      : t(isTransfer ? 'alarms.bandTransferTitle' : 'alarms.bandArrivalTitle', { stops: band });
+  const message =
+    band === undefined
+      ? t(isTransfer ? 'alarmOverlay.transferMessage' : 'alarmOverlay.arrivalMessage', { station })
+      : t('alarmOverlay.bandMessage', { station, stops: band });
   const tint = line != null ? lineTint(line, isDark) : null;
 
   // #806: dismiss는 알람 UI/진동만 끄고 trip(BoardingLock)은 절대 release하지 않는다.
@@ -66,18 +72,13 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
   //   감지한 시점에만 트리거 — dismiss는 그 라이프사이클에 관여하지 않는다.
   //   (이 함수는 BoardingLock storage를 import조차 하지 않는다 — 구조적으로 건드릴 수 없다.)
   //
-  // 분기는 알람 종류별로 후속 알람 정리 범위만 다르다:
-  //  - transfer: clearAlarmNotification만 — 후속 도착 알람(예약/발사 예정)을 보존.
-  //  - destination: killAllAlarms — 같은 도착역 후속 phase(imminent 등) 예약을 함께 차단,
-  //    같은 trip 안에서 도착 알람을 재발사하지 않도록.
+  // #3100 D2 — 모든 알람의 닫기 = 진동 중단 + 알람 알림 1건 dismiss(`clearAlarmNotification`)만. 오버레이 소스가
+  // 칸마다 도착하는 backend companion뿐이므로 `killAllAlarms`(전체 예약 cancel)를 쓰면 이후 칸의 안전망 백업·
+  // tripEndOffer·lastTrainAlarm이 함께 죽는다. 5분 전역 무음(setDismissSilence)도 호출부에서 제거됐다.
   //
-  // Android 백 버튼/스와이프(onRequestClose)도 동일 분기.
+  // Android 백 버튼/스와이프(onRequestClose)도 동일.
   const handleDismiss = async () => {
-    if (isTransfer) {
-      await clearAlarmNotification();
-    } else {
-      await killAllAlarms();
-    }
+    await clearAlarmNotification();
     onDismiss();
   };
 

@@ -431,4 +431,64 @@ describe('useSafetyNetScheduler', () => {
       expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1);
     });
   });
+
+  // #3100 — 칸별 백업. 설정이 바뀌면 이미 무장한 예약(칸 구성)이 stale이므로 cancel → 재무장해야 한다.
+  describe('#3100 — sleepAlarm 설정 반영', () => {
+    const EVERY_3 = { mode: 'every' as const, stops: [3] };
+
+    it('설정이 있으면 registerSafetyNetAlarms에 sleepAlarm을 넘긴다', async () => {
+      useSettingsStore.setState({ sleepMode: true, sleepAlarm: EVERY_3 });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+      expect(mockRegisterSafetyNetAlarms.mock.calls[0][0].sleepAlarm).toEqual(EVERY_3);
+    });
+
+    it('기본(설정 없음)이면 sleepAlarm 없이 호출 (기존 인자 그대로)', async () => {
+      useSettingsStore.setState({ sleepMode: true, sleepAlarm: undefined });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+      expect(mockRegisterSafetyNetAlarms.mock.calls[0][0].sleepAlarm).toBeUndefined();
+    });
+
+    it('설정 변경(기본 → every 3) 시 이전 등록 cancel 후 새 설정으로 재무장', async () => {
+      useSettingsStore.setState({ sleepMode: true, sleepAlarm: undefined });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+
+      act(() => {
+        useSettingsStore.setState({ sleepAlarm: EVERY_3 });
+      });
+
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(2));
+      expect(mockCancelAllSafetyNetAlarms).toHaveBeenCalledWith(TRIP_TOKEN);
+      expect(mockRegisterSafetyNetAlarms.mock.calls[1][0].sleepAlarm).toEqual(EVERY_3);
+    });
+
+    it('설정 변경(every 3 → selected {3,1}) 도 재무장 (identity에 설정 전체가 든다)', async () => {
+      useSettingsStore.setState({ sleepMode: true, sleepAlarm: EVERY_3 });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+
+      act(() => {
+        useSettingsStore.setState({ sleepAlarm: { mode: 'selected', stops: [3, 1] } });
+      });
+
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(2));
+    });
+
+    it('같은 내용의 설정 객체로 갈아끼워도(참조만 변경) 재무장하지 않는다', async () => {
+      useSettingsStore.setState({ sleepMode: true, sleepAlarm: EVERY_3 });
+      renderHook(() => useSafetyNetScheduler({ route: ROUTE, destinationName: GANGNAM }));
+      await waitFor(() => expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1));
+
+      act(() => {
+        useSettingsStore.setState({ sleepAlarm: { mode: 'every', stops: [3] } });
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegisterSafetyNetAlarms).toHaveBeenCalledTimes(1);
+    });
+  });
 });

@@ -791,7 +791,6 @@ export function useStationAlarm({
   // Seoul 열차 피드에서 이 trainCode와 일치하는 행을 찾아 1순위 ETA로 쓴다.
   const [currentLockTrainCode, setCurrentLockTrainCode] = useState<string | null>(null);
   const sleepMode = useSettingsStore((s) => s.sleepMode);
-  const setAlarmEvent = useAlarmEventStore((s) => s.setAlarmEvent);
   // #746 — dismiss silence 게이트 평가용 in-memory state. clear는 만료 시점에
   // store action을 통해 호출(storage도 함께 정리). 게이트 자체는 pure 함수.
   const dismissSilence = useAlarmEventStore((s) => s.dismissSilence);
@@ -1108,11 +1107,11 @@ export function useStationAlarm({
     } catch (e) {
       logger.error('firedAlarms 영속화 실패:', e);
     }
-    if (sleepModeRef.current) {
-      setAlarmEvent(event);
-    }
+    // #3100 D1 — 오버레이 store 쓰기(`setAlarmEvent`) 제거. 취침 오버레이의 단일 소스는 칸마다 도착하는
+    // backend companion(`silentPushTask.showCompanionOverlay`)이다 — 여기서도 쓰면 같은 역에서 이중 표시된다.
+    // (L>1 leg에서는 이 phase의 remainingStops가 trip 내내 L이라 FG에서 early가 안 뜨는 문제도 있었다.)
     // #2067 (Phase 2-device, D1) — sendAlarmNotification 제거. 알람 배너는 원격 visible push가
-    // 담당(Phase 2-backend). FG는 이제 dedup ledger 기록 + in-app store stamp만 수행한다.
+    // 담당(Phase 2-backend). FG는 이제 dedup ledger 기록만 수행한다.
     logFiredAlarm('fg', event, trigger);
     // #2395 (ADR-035 Phase1① — #2067 봉인 해제) — EXPO_PUBLIC_MINIMAL_ALARM ON이면 FG도
     // BG(stationPipeline #2379)와 동일하게 device 로컬 배너를 즉시 발사한다. markLocalStationFired
@@ -1391,7 +1390,6 @@ export function useStationAlarm({
     speedMps,
     accuracyMeters,
     hydrationPhase,
-    setAlarmEvent,
     nearestStation?.id,
     nearestStation?.line,
     // Epic #1204 N8 — lock.boardingLine 변경 시(환승 leg 교체 등) currentLine 재평가.

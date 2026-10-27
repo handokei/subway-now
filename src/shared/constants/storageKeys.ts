@@ -1,5 +1,7 @@
 export const FAVORITES_KEY = 'subway-now:favorites';
 export const SLEEP_MODE_KEY = 'subway-now:sleep-mode';
+/** #3100 — 취침 알람 "N역 전" 설정(`SleepAlarmConfig` JSON). 키 없음 = 기본(1역 전). */
+export const SLEEP_ALARM_CONFIG_KEY = 'subway-now:sleep-alarm-config';
 export const DESTINATION_KEY = 'subway-now:destination';
 export const FIRED_ALARMS_KEY = 'subway-now:fired-alarms';
 export const ALARM_EVENT_KEY = 'subway-now:alarm-event';

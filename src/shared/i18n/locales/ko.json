@@ -186,6 +186,7 @@
     "arrivalTitle": "하차 알림",
     "transferMessage": "{{station}}에서\n환승하세요",
     "arrivalMessage": "{{station}}에서\n내리세요",
+    "bandMessage": "{{station}}까지\n{{stops}}정거장",
     "dismiss": "알람 끄기"
   },
   "destinationPicker": {
@@ -328,6 +329,10 @@
   "alarms": {
     "earlyTransferBody": "다음 역 {{station}}에서 환승하세요!",
     "earlyArrivalBody": "다음 역 {{station}}에서 하차하세요!",
+    "bandTransferTitle": "환승 {{stops}}정거장 전",
+    "bandArrivalTitle": "도착 {{stops}}정거장 전",
+    "bandTransferBody": "{{station}}까지 {{stops}}정거장 남았습니다. 환승 준비하세요!",
+    "bandArrivalBody": "{{station}}까지 {{stops}}정거장 남았습니다. 하차 준비하세요!",
     "imminentTransferBody": "곧 {{station}}에 도착합니다. 환승 준비하세요!",
     "imminentArrivalBody": "곧 {{station}}에 도착합니다. 하차 준비하세요!",
     "exitSideLeft": "왼쪽 문으로 하차하세요",

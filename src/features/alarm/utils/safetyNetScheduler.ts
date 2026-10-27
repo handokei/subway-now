@@ -44,6 +44,11 @@ import { buildAlarmLocalId, type AlarmLocalKind } from './alarmLocalAuthority';
 import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { SAFETY_NET_MAX_WAYPOINTS } from '../../../shared/constants/iosScheduledLimit';
+import {
+  SLEEP_ALARM_MIN_STOPS_BEFORE,
+  type SleepAlarmConfig,
+} from '../../../shared/constants/sleepAlarm';
+import { sleepAlarmCellsForLeg } from '../../../shared/utils/sleepAlarmCells';
 import { createLogger } from '../../../shared/utils/logger';
 import { recordScheduledAlarm } from './prescheduledMetrics';
 // #2284 (P1 wire matrix gap) — #2089 리팩터로 구 3종 스케줄러가 호출하던 logScheduledAlarm
@@ -123,6 +128,27 @@ export interface SafetyNetNotificationData {
   station: string;
   kind: AlarmLocalKind;
   occurrenceIdx: number;
+  /**
+   * #3100 — 이 예약의 칸(타깃까지 실제 남은 정거장 수). 기본 칸(1역 전)은 필드 자체를 두지 않아
+   * 기본 사용자의 `content.data`가 변경 전과 바이트 동일하다. 구 OS 예약(필드 없음)도 기본 칸으로 읽는다.
+   */
+  remaining?: number;
+}
+
+/** 예약 data의 칸 — 필드 없음 = 기본 칸(1역 전). */
+function remainingOf({ remaining }: { remaining?: number }): number {
+  return remaining ?? SLEEP_ALARM_MIN_STOPS_BEFORE;
+}
+
+/**
+ * leg 길이로 환산한 "타깃 `remaining`정거장 전" 시점까지의 선행 시간(ms). 기본 칸은 기존 1역 전 값과 동일.
+ * register·reschedule·칸 루프가 공용한다(구조분해라 `.stops` 직접 접근 없음).
+ */
+function earlyLeadMs(
+  { legMs, stops }: Pick<SafetyNetWaypoint, 'legMs' | 'stops'>,
+  remaining: number,
+): number {
+  return (legMs / stops) * remaining;
 }
 
 /**
@@ -166,7 +192,7 @@ export function deriveSafetyNetWaypoints(
       legMs: Number.isFinite(legMs) && legMs > 0 ? legMs : HOP_TIME_MS,
     };
   });
-  return waypoints.filter((w) => w.stops > 1);
+  return waypoints.filter((w) => w.stops > SLEEP_ALARM_MIN_STOPS_BEFORE);
 }
 
 /** #1193 — (kind, stationName) 단위로 0-based occurrence를 부여한다. */
@@ -191,8 +217,10 @@ function buildIdentifier(
   station: string,
   kind: AlarmLocalKind,
   occurrenceIdx: number,
+  remaining: number,
 ): string {
-  const base = buildAlarmLocalId(tripToken, station, kind);
+  // 칸 접미(-s{N})는 occurrence(#n) 앞 — 전체 취소 prefix(`alarm-${token}-`)는 그대로 매치된다.
+  const base = buildAlarmLocalId(tripToken, station, kind, remaining);
   return occurrenceIdx > 0 ? `${base}#${occurrenceIdx}` : base;
 }
 
@@ -204,11 +232,14 @@ async function scheduleOne(params: {
   kind: AlarmLocalKind;
   occurrenceIdx: number;
   fireMs: number;
+  /** 칸(남은 정거장 수). 기본 칸이면 생략. */
+  remaining?: number;
 }): Promise<void> {
   const { identifier, tripToken, stationName, stationId, kind, occurrenceIdx, fireMs } = params;
-  // "1역 전" 문구는 early phase 메시지와 의미가 같다 — content 생성만 재사용, phase 개념 자체는
-  // 본 모듈에 없다(단일 fire).
-  const event: AlarmEvent = { phaseId: 'early', type: kind, stationName, stationId };
+  const band = params.remaining !== undefined && params.remaining > SLEEP_ALARM_MIN_STOPS_BEFORE ? params.remaining : undefined;
+  // 기본 칸 문구는 early phase 메시지("다음 역 X에서 …")와 같다 — content 생성만 재사용, phase 개념 자체는
+  // 본 모듈에 없다(단일 fire). N역 전 칸은 band로 "N정거장 전" 문구(백엔드 push와 동일).
+  const event: AlarmEvent = { phaseId: 'early', type: kind, stationName, stationId, ...(band !== undefined && { band }) };
   const { title, body } = buildAlarmContent(event);
   const data: SafetyNetNotificationData = {
     channel: 'safety-net',
@@ -216,6 +247,7 @@ async function scheduleOne(params: {
     station: stationName,
     kind,
     occurrenceIdx,
+    ...(band !== undefined && { remaining: band }),
   };
   await Notifications.scheduleNotificationAsync({
     identifier,
@@ -267,10 +299,33 @@ export interface RegisterSafetyNetParams {
   outageConfirmed: boolean;
   /** 현재 시각(ms epoch). past-time 가드용. 기본 Date.now(). */
   now?: number;
+  /** #3100 — 취침 알람 N역 전 설정. 없으면 기본(1역 전 하나). waypoint마다 leg 길이로 clamp한 칸별로 예약한다. */
+  sleepAlarm?: SleepAlarmConfig;
 }
 
 export interface RegisterSafetyNetResult {
   scheduled: number;
+}
+
+interface SafetyNetEntry {
+  wp: SafetyNetWaypointWithOccurrence;
+  remaining: number;
+  fireMs: number;
+}
+
+/**
+ * 엔트리가 OS 예약 상한({@link SAFETY_NET_MAX_WAYPOINTS})을 넘으면 기본 칸(1역 전)을 우선 보존하고
+ * 나머지 칸은 이른 시각 순으로 채운 뒤, 원래 순서(waypoint 순 · 칸 내림차순)로 돌려준다.
+ */
+function capSafetyNetEntries(entries: SafetyNetEntry[]): SafetyNetEntry[] {
+  if (entries.length <= SAFETY_NET_MAX_WAYPOINTS) return entries;
+  const isDefaultCell = (e: SafetyNetEntry): boolean => e.remaining === SLEEP_ALARM_MIN_STOPS_BEFORE;
+  const keep = new Set([
+    ...entries.filter(isDefaultCell),
+    ...entries.filter((e) => !isDefaultCell(e)).sort((a, b) => a.fireMs - b.fireMs),
+  ].slice(0, SAFETY_NET_MAX_WAYPOINTS));
+  logger.warn(`safety-net 엔트리 ${entries.length}건 > 상한 ${SAFETY_NET_MAX_WAYPOINTS} — 1역 전 우선 보존`);
+  return entries.filter((e) => keep.has(e));
 }
 
 /**
@@ -294,17 +349,23 @@ export async function registerSafetyNetAlarms(
   const waypoints = withOccurrenceIndices(deriveSafetyNetWaypoints(route, destinationName));
   if (waypoints.length === 0) return { scheduled: 0 };
 
-  // #1757 보존 — iOS 64-cap 회피. 실질적으로 도달하지 않는 방어적 상한.
-  const capped = waypoints.slice(0, SAFETY_NET_MAX_WAYPOINTS);
-
+  // waypoint × 칸 엔트리. 누적 도착 시각은 waypoint 단위로 쌓고 칸마다 자기 선행 시간을 뺀다.
   let cumulativeMs = startTime;
-  let scheduled = 0;
-  for (const wp of capped) {
+  const entries: SafetyNetEntry[] = [];
+  for (const wp of waypoints) {
     cumulativeMs += wp.legMs;
-    const earlyLeadMs = wp.legMs / wp.stops;
-    const fireMs = cumulativeMs - earlyLeadMs + SAFETY_NET_BUFFER_MS;
+    for (const remaining of sleepAlarmCellsForLeg(params.sleepAlarm, wp.stops)) {
+      entries.push({ wp, remaining, fireMs: cumulativeMs - earlyLeadMs(wp, remaining) + SAFETY_NET_BUFFER_MS });
+    }
+  }
+
+  // #1757 보존 — iOS 64-cap 회피. 상한 초과 시 1역 전(기본) 칸을 우선 보존한다.
+  const capped = capSafetyNetEntries(entries);
+
+  let scheduled = 0;
+  for (const { wp, remaining, fireMs } of capped) {
     if (fireMs <= startTime || fireMs <= nowMs) continue;
-    const identifier = buildIdentifier(tripToken, wp.stationName, wp.kind, wp.occurrenceIdx);
+    const identifier = buildIdentifier(tripToken, wp.stationName, wp.kind, wp.occurrenceIdx, remaining);
     await scheduleOne({
       identifier,
       tripToken,
@@ -313,6 +374,7 @@ export async function registerSafetyNetAlarms(
       kind: wp.kind,
       occurrenceIdx: wp.occurrenceIdx,
       fireMs,
+      remaining,
     });
     scheduled++;
   }
@@ -417,7 +479,17 @@ export function readSafetyNetData(
   if (typeof data.station !== 'string' || typeof data.tripToken !== 'string') return null;
   if (data.kind !== 'transfer' && data.kind !== 'destination') return null;
   const occurrenceIdx = typeof data.occurrenceIdx === 'number' ? data.occurrenceIdx : 0;
-  return { channel: 'safety-net', tripToken: data.tripToken, station: data.station, kind: data.kind, occurrenceIdx };
+  const { remaining } = data;
+  const validRemaining =
+    typeof remaining === 'number' && Number.isInteger(remaining) && remaining >= SLEEP_ALARM_MIN_STOPS_BEFORE;
+  return {
+    channel: 'safety-net',
+    tripToken: data.tripToken,
+    station: data.station,
+    kind: data.kind,
+    occurrenceIdx,
+    ...(validRemaining && { remaining }),
+  };
 }
 
 /**
@@ -431,11 +503,15 @@ export function readSafetyNetData(
 export async function cancelSafetyNetByStationKind(
   stationName: string,
   kind: AlarmLocalKind,
+  fromRemaining?: number,
 ): Promise<void> {
   const all = await Notifications.getAllScheduledNotificationsAsync();
   const targets = all.filter((req) => {
     const data = readSafetyNetData(req);
-    return data !== null && data.kind === kind && isSameStationName(data.station, stationName);
+    if (data === null || data.kind !== kind || !isSameStationName(data.station, stationName)) return false;
+    // #3100 — 부분 취소: companion이 칸 r을 전달했으면 r 이상 칸(이미 지났거나 방금 울린 칸)만 취소한다.
+    // 3역 전 companion은 3역 백업만 지우고 2·1역 백업은 남긴다. 미지정(GPS 도착 등) = 전부.
+    return fromRemaining === undefined || remainingOf(data) >= fromRemaining;
   });
   if (targets.length === 0) return;
   const cancelled = await cancelIdentifiersWithRetry(targets.map((req) => req.identifier));
@@ -497,14 +573,14 @@ export async function rescheduleSafetyNetAlarm(
   }
 
   const all = await Notifications.getAllScheduledNotificationsAsync();
-  const matches = all.filter((req) => {
+  const matches = all.flatMap((req) => {
     const data = readSafetyNetData(req);
-    return (
+    const isMatch =
       data !== null &&
       data.kind === target.kind &&
       data.occurrenceIdx === occurrenceIdx &&
-      isSameStationName(data.station, target.stationName)
-    );
+      isSameStationName(data.station, target.stationName);
+    return isMatch ? [{ identifier: req.identifier, remaining: remainingOf(data) }] : [];
   });
   if (matches.length === 0) {
     // 이미 armed된 예약이 없으면 reschedule은 새 예약을 만들지 않는다(P1-1) — cancel-only no-op.
@@ -515,25 +591,29 @@ export async function rescheduleSafetyNetAlarm(
   }
   const cancelled = await cancelIdentifiersWithRetry(matches.map((req) => req.identifier));
 
-  const earlyLeadMs = target.legMs / target.stops;
-  const fireMs = newArrivalMs - earlyLeadMs + SAFETY_NET_BUFFER_MS;
-  if (fireMs <= nowMs) {
-    logger.info(`reschedule cancel-only: fireMs=${fireMs} <= now=${nowMs}`);
-    return { cancelled, scheduled: 0 };
+  // #3100 — 매치마다 자기 칸의 선행 시간으로 재예약한다. 보정 후 이미 지난 칸은 취소만.
+  const cells = [...new Set(matches.map(({ remaining }) => remaining))].sort((a, b) => b - a);
+  let scheduledCount = 0;
+  for (const remaining of cells) {
+    const fireMs = newArrivalMs - earlyLeadMs(target, remaining) + SAFETY_NET_BUFFER_MS;
+    if (fireMs <= nowMs) {
+      logger.info(`reschedule cancel-only: remaining=${remaining} fireMs=${fireMs} <= now=${nowMs}`);
+      continue;
+    }
+    await scheduleOne({
+      identifier: buildIdentifier(tripToken, target.stationName, target.kind, occurrenceIdx, remaining),
+      tripToken,
+      stationName: target.stationName,
+      stationId: target.stationId,
+      kind: target.kind,
+      occurrenceIdx,
+      fireMs,
+      remaining,
+    });
+    scheduledCount++;
   }
-
-  const identifier = buildIdentifier(tripToken, target.stationName, target.kind, occurrenceIdx);
-  await scheduleOne({
-    identifier,
-    tripToken,
-    stationName: target.stationName,
-    stationId: target.stationId,
-    kind: target.kind,
-    occurrenceIdx,
-    fireMs,
-  });
   logger.info(
-    `reschedule done: station=${target.stationName} occurrence=${occurrenceIdx} cancelled=${cancelled} scheduled=1 newArrivalMs=${newArrivalMs}`,
+    `reschedule done: station=${target.stationName} occurrence=${occurrenceIdx} cancelled=${cancelled} scheduled=${scheduledCount} newArrivalMs=${newArrivalMs}`,
   );
-  return { cancelled, scheduled: 1 };
+  return { cancelled, scheduled: scheduledCount };
 }

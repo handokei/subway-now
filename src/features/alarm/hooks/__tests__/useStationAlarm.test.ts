@@ -1300,12 +1300,18 @@ describe('useStationAlarm', () => {
     expect(mockGetFiredAlarms).toHaveBeenCalledWith(altDestination.id);
   });
 
-  it('sets alarmEvent in store when sleepMode is on', async () => {
+  // #3100 D1 — 오버레이 단일 소스는 backend companion(칸마다 1회 도착). FG phase가 store를 쓰면
+  // 같은 역에서 phase + companion 이중 오버레이가 된다. phase 이벤트의 나머지 부작용(dedup 스탬프·
+  // firedAlarms 영속·alarmLog)은 그대로여야 한다.
+  it('#3100 sleepMode on이어도 FG phase 이벤트는 오버레이 store를 쓰지 않는다 (companion이 단일 소스)', async () => {
     useSettingsStore.setState({ sleepMode: true });
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-    await waitFor(() => expect(useAlarmEventStore.getState().alarmEvent).toEqual(earlyDest));
+    await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, expect.any(String)));
+    // 같은 이벤트의 나머지 부작용은 기존대로
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith(destination.id, expect.any(Set));
+    expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
   });
 
   it('does not set alarmEvent when sleepMode is off', async () => {

@@ -186,6 +186,7 @@
     "arrivalTitle": "到达提醒",
     "transferMessage": "在{{station}}\n换乘",
     "arrivalMessage": "在{{station}}\n下车",
+    "bandMessage": "距{{station}}\n还有{{stops}}站",
     "dismiss": "关闭提醒"
   },
   "destinationPicker": {
@@ -328,6 +329,10 @@
   "alarms": {
     "earlyTransferBody": "下一站 {{station}} 请换乘!",
     "earlyArrivalBody": "下一站 {{station}} 请下车!",
+    "bandTransferTitle": "距换乘还有{{stops}}站",
+    "bandArrivalTitle": "距到达还有{{stops}}站",
+    "bandTransferBody": "距{{station}}还有{{stops}}站。请准备换乘!",
+    "bandArrivalBody": "距{{station}}还有{{stops}}站。请准备下车!",
     "imminentTransferBody": "即将到达{{station}}。请准备换乘!",
     "imminentArrivalBody": "即将到达{{station}}。请准备下车!",
     "exitSideLeft": "请从左侧车门下车",

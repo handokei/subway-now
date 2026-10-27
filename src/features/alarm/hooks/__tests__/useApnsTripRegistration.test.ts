@@ -2389,6 +2389,7 @@ describe('useApnsTripRegistration', () => {
         'launchReconciliationSettled',
         'boardingCommitted',
         'sleepMode',
+        'sleepAlarm',
       ]);
     });
 
@@ -3973,6 +3974,68 @@ describe('useApnsTripRegistration', () => {
         (c) => (c[0] as { token: string }).token === 'token-SLEEP-NEW',
       );
       expect(refreshed?.[0].sleepModeEnabled).toBe(true);
+    });
+  });
+
+  // #3100 — 취침 알람 N역 전 설정 forward. 백엔드는 trip.sleepModeEnabled === true일 때만 읽으므로
+  // 취침 OFF에서는 설정이 저장돼 있어도 송신하지 않는다. 재등록은 incoming이 이기므로 모든 register
+  // 경로(메인 effect / 토큰 refresh)가 매번 실어야 한다.
+  describe('sleepAlarm (#3100)', () => {
+    const CONFIG = { mode: 'selected' as const, stops: [3, 1] };
+    const renderSleepAlarm = (initial: { sm?: boolean; sa?: typeof CONFIG }) =>
+      renderHook(
+        ({ sm, sa }: { sm?: boolean; sa?: typeof CONFIG }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            ...(sm === undefined ? {} : { sleepMode: sm }),
+            ...(sa === undefined ? {} : { sleepAlarm: sa }),
+          }),
+        { initialProps: initial },
+      );
+
+    it('취침 ON + 설정 있음 → payload.sleepAlarm 그대로', async () => {
+      renderSleepAlarm({ sm: true, sa: CONFIG });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].sleepAlarm).toEqual(CONFIG);
+    });
+
+    it('취침 ON + 설정 없음(기본) → payload에 sleepAlarm 키 없음', async () => {
+      renderSleepAlarm({ sm: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(Object.prototype.hasOwnProperty.call(mockRegister.mock.calls[0][0], 'sleepAlarm')).toBe(false);
+    });
+
+    it('취침 OFF + 설정 있음 → 송신하지 않는다 (백엔드 types.ts:554 정합)', async () => {
+      renderSleepAlarm({ sm: false, sa: CONFIG });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(Object.prototype.hasOwnProperty.call(mockRegister.mock.calls[0][0], 'sleepAlarm')).toBe(false);
+    });
+
+    it('설정 변경 시 재등록 (deps 반영)', async () => {
+      const { rerender } = renderSleepAlarm({ sm: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      rerender({ sm: true, sa: CONFIG });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].sleepAlarm).toEqual(CONFIG);
+    });
+
+    it('token refresh 경로도 최신 설정을 송신', async () => {
+      const { rerender } = renderSleepAlarm({ sm: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      rerender({ sm: true, sa: CONFIG });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-SLEEPALARM-NEW' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const refreshed = mockRegister.mock.calls.find(
+        (c) => (c[0] as { token: string }).token === 'token-SLEEPALARM-NEW',
+      );
+      expect(refreshed?.[0].sleepAlarm).toEqual(CONFIG);
     });
   });
 

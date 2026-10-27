@@ -29,6 +29,21 @@ export function sleepAlarmStopOptions(max: number = SLEEP_ALARM_MAX_STOPS_BEFORE
 }
 
 /**
+ * 길이 `legStops`(출발역 → 타깃까지 정거장 수)인 leg에서 실제로 울릴 칸 — 내림차순, 중복 없음.
+ *
+ * 출발역은 칸이 아니라 첫 역(남은 `legStops - 1`)이 상한이다: 설정한 칸이 더 크면 첫 역으로 clamp한다.
+ * 백엔드 발사와 같은 결과다 — 매 역 모드는 첫 역부터 MIN까지 한 칸씩, 선택 모드는 `selectedCellsDue`가
+ * 첫 평가에서 걸린 칸을 한 번에 선점해 1회 발사한다. 기기 안전망(OS 예약 백업)이 waypoint마다 이 칸으로 예약한다.
+ */
+export function sleepAlarmCellsForLeg(config: SleepAlarmConfig | undefined, legStops: number): number[] {
+  const ceiling = legStops - ONE_STATION_STEP;
+  const clamped = expandSleepAlarmStops(config)
+    .map((cell) => Math.min(cell, ceiling))
+    .filter((cell) => cell >= SLEEP_ALARM_MIN_STOPS_BEFORE);
+  return [...new Set(clamped)].sort((a, b) => b - a);
+}
+
+/**
  * 설정을 발사할 칸 목록으로 전개한다. 설정 없음 = 기본 `[MIN]`, 선택 = 체크한 칸, 매 역 = 시작 N부터 MIN까지 전부.
  * 반환은 내림차순.
  */

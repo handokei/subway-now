@@ -35,6 +35,7 @@ import {
   type SilentPushSsotMirror,
 } from '../utils/backendSsotMirror';
 import type { LineNumber, Station } from '../../../shared/types/station';
+import type { Route } from '../../../shared/utils/stationRoute';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
@@ -91,7 +92,10 @@ import {
   iosTimeSensitiveOption,
 } from '../utils/stationNotification';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
+import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../shared/constants/sleepAlarm';
 import { readStoredRouteLogged } from '../utils/readStoredRouteLogged';
+import { buildCompanionAlarmEvent } from '../utils/companionAlarmEvent';
+import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { updateWidgetFromSilentPush } from '../../widget/utils/updateWidgetFromSilentPush';
 import { readWidgetRefreshContext } from '../utils/widgetRefreshContext';
@@ -357,6 +361,11 @@ export interface SleepAlarmCompanionSilentPushPayload {
    * 사용자 표시 body (backend가 i18n resolve해서 넣어줌). 미지정 시 device fallback.
    */
   body?: string;
+  /**
+   * #3100 — 타깃까지 실제 남은 정거장 수(N역 전 칸). 기본 칸(1역 전)은 backend가 생략한다 → undefined = 기본 칸.
+   * 정수이며 1 이상이면 상한 없이 채택(MAX 변경 시 구 앱이 새 칸을 기본 id로 뭉개 dedup하는 것을 방지).
+   */
+  remainingStops?: number;
 }
 
 /**
@@ -885,7 +894,7 @@ function extractBoardingPromptPayload(
 function extractSleepAlarmCompanionPayload(
   obj: Record<string, unknown>,
 ): SleepAlarmCompanionSilentPushPayload | null {
-  const { originStation, targetKind, nextLine, nextStation, tripToken, pushId, sentAt, title, body } =
+  const { originStation, targetKind, nextLine, nextStation, tripToken, pushId, sentAt, title, body, remainingStops } =
     obj;
   if (typeof originStation !== 'string' || originStation.length === 0) return null;
   if (!isSleepAlarmTargetKind(targetKind)) return null;
@@ -903,6 +912,12 @@ function extractSleepAlarmCompanionPayload(
     sentAt: validSentAt(sentAt),
     title: typeof title === 'string' && title.length > 0 ? title : undefined,
     body: typeof body === 'string' && body.length > 0 ? body : undefined,
+    remainingStops:
+      typeof remainingStops === 'number' &&
+      Number.isInteger(remainingStops) &&
+      remainingStops >= SLEEP_ALARM_MIN_STOPS_BEFORE
+        ? remainingStops
+        : undefined,
   };
 }
 
@@ -1651,6 +1666,35 @@ function parseDestinationName(raw: string | null): string | null {
 }
 
 /**
+ * #3100 D1 — 취침 오버레이(SleepAlarmOverlay)의 **단일 소스**. companion이 칸마다 1회 도착하고, 원장(`-s{N}`)을
+ * 통과한 수신만(`fired:true`) 여기까지 온다 → 재수신·재시도는 오버레이를 다시 띄우지 않는다. 호출자가 FG일 때만 부른다
+ * (BG/잠금에서 store를 쓰면 늦은 단일 슬롯 재생이 된다; 잠금에서는 백엔드 alarm.wav 배너 + 진동·TTS로 이미 받는다).
+ * route/destination 조회 실패는 `stationId`·`direction`만 생략하고 오버레이는 그대로 띄운다.
+ */
+async function showCompanionOverlay(
+  payload: SleepAlarmCompanionSilentPushPayload,
+  band: number | undefined,
+): Promise<void> {
+  let route: Route = null;
+  let destinationName: string | null = null;
+  try {
+    const [routeRaw, destRaw] = await Promise.all([AsyncStorage.getItem(ROUTE_KEY), AsyncStorage.getItem(DESTINATION_KEY)]);
+    route = readStoredRouteLogged(routeRaw, destRaw);
+    destinationName = parseDestinationName(destRaw);
+  } catch (e) {
+    logger.warn('companion overlay: route/destination 조회 실패 — stationId 없이 표시', e);
+  }
+  const { nextStation, nextLine, targetKind, originStation } = payload;
+  try {
+    const event = buildCompanionAlarmEvent({ route, destinationName, nextStation, nextLine, targetKind, originStation, band });
+    useAlarmEventStore.getState().setAlarmEvent(event);
+  } catch (e) {
+    // 오버레이 실패가 소리·안전망 취소·ack를 막으면 안 된다.
+    logger.error('companion overlay 표시 실패:', e);
+  }
+}
+
+/**
  * #2067 (Phase 2-device, D3) — 취침모드 companion 알람 silent push 수신 시 처리.
  *
  * 절차:
@@ -1669,16 +1713,26 @@ async function fireSleepAlarmCompanion(
   payload: SleepAlarmCompanionSilentPushPayload,
   apnsToken: string | null,
 ): Promise<void> {
-  // #3100 — body 미지정(구 backend) fallback도 backend/safety-net과 같은 1역 전 early 문구를 쓴다.
+  // #3100 — 칸: wire `remainingStops`(생략 = 기본 1역 전). band는 기본 칸이 아닐 때만(문구가 "N정거장 전").
+  const { remainingStops } = payload;
+  const remaining = remainingStops ?? SLEEP_ALARM_MIN_STOPS_BEFORE;
+  const band = remaining > SLEEP_ALARM_MIN_STOPS_BEFORE ? remaining : undefined;
+  // #3100 — body 미지정(구 backend) fallback도 backend/safety-net과 같은 문구를 쓴다.
   const body =
     payload.body ??
-    buildAlarmContent({ phaseId: 'early', type: payload.targetKind, stationName: payload.nextStation }).body;
+    buildAlarmContent({
+      phaseId: 'early',
+      type: payload.targetKind,
+      stationName: payload.nextStation,
+      ...(band !== undefined && { band }),
+    }).body;
 
   const result = await fireCompanionAlarm({
     tripToken: payload.tripToken,
     station: payload.nextStation,
     kind: payload.targetKind,
     body,
+    remaining: remainingStops,
   });
 
   if (!result.fired) {
@@ -1693,13 +1747,18 @@ async function fireSleepAlarmCompanion(
 
   // companion 도달 = 사용자가 이미 소리/진동으로 인지 → 남은 OS 안전망 예약을 정리(#2089
   // cross-channel cancel의 대체 — 채널이 하나뿐이라 "반대 채널 cleanup"이 아니라 "companion으로
-  // 이미 전달된 waypoint의 안전망 제거"가 목적).
-  await cancelSafetyNetByStationKind(payload.nextStation, payload.targetKind);
+  // 이미 전달된 waypoint의 안전망 제거"가 목적). #3100 — 자기 칸 이상만 취소(3역 전 companion은 2·1역 백업을 남긴다).
+  // 오버레이는 취소보다 먼저(대기 중 await가 표시를 늦추지 않도록) — FG일 때만.
+  const appState = AppState.currentState;
+  if (appState === 'active') await showCompanionOverlay(payload, band);
+  await cancelSafetyNetByStationKind(payload.nextStation, payload.targetKind, remaining);
 
   logCompanionAlarmFired({
     originStation: payload.originStation,
     nextStation: payload.nextStation,
     nextLine: payload.nextLine,
+    remainingStops,
+    appState,
   });
   addDomainBreadcrumb('push', 'sleep-alarm-companion-fired', {
     nextLine: payload.nextLine,

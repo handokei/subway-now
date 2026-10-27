@@ -3414,6 +3414,30 @@ describe('alarmLog', () => {
       expect(saved[0].stationName).toBe('2·뚝섬');
     });
 
+    it('#3100 (O5): logCompanionAlarmFired가 칸(remainingStops)과 수신 시점 appState를 함께 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logCompanionAlarmFired({
+        originStation: '성수',
+        nextStation: '뚝섬',
+        nextLine: '2',
+        remainingStops: 3,
+        appState: 'active',
+      });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0].remainingStops).toBe(3);
+      expect(saved[0].appState).toBe('active');
+    });
+
+    it('#3100: remainingStops/appState를 안 넘기면 필드를 적재하지 않는다 (기존 entry 형태 유지)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logCompanionAlarmFired({ originStation: '성수', nextStation: '뚝섬', nextLine: '2' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect('remainingStops' in saved[0]).toBe(false);
+      expect('appState' in saved[0]).toBe(false);
+    });
+
     it('#2398: logCategoryRegistrationSucceeded가 category-registration entry(outcome=fired)를 적재한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
       logCategoryRegistrationSucceeded({

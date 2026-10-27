@@ -186,6 +186,7 @@
     "arrivalTitle": "Arrival alert",
     "transferMessage": "Transfer at\n{{station}}",
     "arrivalMessage": "Exit at\n{{station}}",
+    "bandMessage": "{{stops}} stops to\n{{station}}",
     "dismiss": "Dismiss alarm"
   },
   "destinationPicker": {
@@ -328,6 +329,10 @@
   "alarms": {
     "earlyTransferBody": "Transfer at {{station}} (next stop)!",
     "earlyArrivalBody": "Exit at {{station}} (next stop)!",
+    "bandTransferTitle": "Transfer in {{stops}} stops",
+    "bandArrivalTitle": "Arrival in {{stops}} stops",
+    "bandTransferBody": "{{stops}} stops to {{station}} — get ready to transfer!",
+    "bandArrivalBody": "{{stops}} stops to {{station}} — get ready to exit!",
     "imminentTransferBody": "Arriving at {{station}} — transfer soon!",
     "imminentArrivalBody": "Arriving at {{station}} — exit soon!",
     "exitSideLeft": "Exit on the left",

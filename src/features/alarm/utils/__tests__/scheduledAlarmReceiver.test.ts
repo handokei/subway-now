@@ -1178,3 +1178,42 @@ describe('sweepLegacyScheduledAlarms (#2112 P3)', () => {
     expect(mockCancelScheduled).not.toHaveBeenCalled();
   });
 });
+
+// #3100 — N역 전 백업(data.remaining > 1칸)이 발사돼도 1역 전 phase(early/imminent)의 dedup 키는
+// 마킹하지 않는다. 마킹하면 3역 백업 발사가 이후 1역 전 알람을 막는다.
+describe('#3100 칸별 백업 수신 마킹', () => {
+  const BAND_PARSED: SafetyNetNotificationData = { ...DEFAULT_PARSED, remaining: 3 };
+
+  it('reconcile: N역 전 백업(remaining=3)은 early/imminent 키를 fired set에 넣지 않는다', async () => {
+    await reconcileScheduledAlarmDelivery(makeRequest('id-s3', BAND_PARSED));
+    expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+    // 기준역 갱신은 칸과 무관하게 유지
+    expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('시청');
+  });
+
+  it('reconcile: 1역 전 백업(remaining=1)은 현행대로 early+imminent 마킹', async () => {
+    await reconcileScheduledAlarmDelivery(makeRequest('id-1', { ...DEFAULT_PARSED, remaining: 1 }));
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:시청', 'imminent:시청']));
+  });
+
+  it('drain: N역 전 백업은 마킹 제외, 같은 drain의 1역 전 백업은 마킹', async () => {
+    mockGetPresented.mockResolvedValueOnce([
+      { date: 1, request: makeRequest('id-s3', BAND_PARSED) },
+      { date: 2, request: makeRequest('id-1', { ...DEFAULT_PARSED, station: '강남', kind: 'destination' }) },
+    ]);
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+    expect(mockSetFiredAlarms).toHaveBeenCalledTimes(1);
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남', 'imminent:강남']));
+    handle.remove();
+  });
+
+  it('drain: N역 전 백업만 있으면 fired set은 쓰지 않고 기준역만 갱신', async () => {
+    mockGetPresented.mockResolvedValueOnce([{ date: 1, request: makeRequest('id-s3', BAND_PARSED) }]);
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+    expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+    expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('시청');
+    handle.remove();
+  });
+});
