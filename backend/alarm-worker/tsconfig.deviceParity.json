@@ -1,0 +1,6 @@
+{
+  "//": "#3191 — device 모듈을 import하는 parity 테스트 전용. device logger(@sentry/react-native)가 react-native·@types/node 전역 타입을 끌어와 fetch 타입이 바뀌므로 본 tsconfig와 분리해 따로 type-check한다.",
+  "extends": "./tsconfig.json",
+  "include": ["src/__tests__/legDirection.deviceParity.test.ts"],
+  "exclude": ["node_modules"]
+}

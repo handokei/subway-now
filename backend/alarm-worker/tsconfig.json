@@ -41,5 +41,8 @@
     "../../src/shared/utils/sleepAlarmCells.ts",
     "../../src/data/expressStops.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "src/__tests__/legDirection.deviceParity.test.ts"
+  ]
 }
