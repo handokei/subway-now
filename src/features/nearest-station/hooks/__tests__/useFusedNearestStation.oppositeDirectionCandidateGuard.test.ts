@@ -164,7 +164,11 @@ describe('#2696 (4번째 picker) — 반대 방향 다른 trainNo 오채택 가�
     );
 
     const rejects = getCandidateRejectEntries();
-    const directionRejects = rejects.filter((r) => r.reason === 'candidate-opposite-direction');
+    // #3191 PR-2D — fused 후보 점수 방향 필터(signal 태그)도 같은 reason으로 적재한다. 이 테스트의 대상은
+    // position-train enumeration 경로(#2696)이므로 signal 없는 entry만 본다.
+    const directionRejects = rejects.filter(
+      (r) => r.reason === 'candidate-opposite-direction' && r.signal === undefined,
+    );
     expect(directionRejects).toHaveLength(0);
   });
 });

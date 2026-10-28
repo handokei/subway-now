@@ -25,6 +25,11 @@ import {
   CYCLE_0626_46_ARRIVAL_YONGMASAN_BODY,
   CYCLE_0627_46_POSITION_7_BODY,
   CYCLE_0627_46_ARRIVAL_YONGMASAN_BODY,
+  CYCLE_0626_46_POSITION_7_TMS,
+  CYCLE_0626_46_ARRIVAL_YONGMASAN_TMS,
+  CYCLE_0627_46_POSITION_7_TMS,
+  CYCLE_0627_46_ARRIVAL_YONGMASAN_TMS,
+  W_ROWS_0626_0627,
 } from '../../../../testUtils/fixtures/replay_20261028_trip179_junggok';
 import type { LinePositions } from '../../../../shared/types/position';
 import type { StationArrival } from '../../../../shared/types/arrival';
@@ -85,6 +90,7 @@ async function loadCycle(positionBody: string, arrivalBody: string, nowMs: numbe
 function setup(
   cycle: { positions: LinePositions; arrival: StationArrival },
   route: FusedRouteContext | undefined,
+  role?: 'primary' | 'observer',
 ) {
   mockNearest.mockReturnValue({
     result: { station: yongmasan, distanceKm: 0.02 },
@@ -104,7 +110,9 @@ function setup(
   mockArrival.mockImplementation((name: string | null) =>
     name === yongmasan.name ? arrivalRet(cycle.arrival) : arrivalRet(null),
   );
-  return renderHook(() => useFusedNearestStation(undefined, undefined, route));
+  return renderHook(() =>
+    useFusedNearestStation(undefined, undefined, route, undefined, undefined, undefined, undefined, undefined, undefined, role),
+  );
 }
 
 const ENV_KEY = 'EXPO_PUBLIC_SEOUL_DATA_API_KEY';
@@ -129,6 +137,19 @@ afterEach(() => {
 });
 
 describe('#3191 PR-2D fused 방향 필터 — 10/28 06:26 중곡 오승리 replay', () => {
+  it('fixture 정합: R2 cycle 캡처 시각이 replay 시각 직전(≤5s)이고, 덤프 W에 중곡 오승리 enter 행이 있다', () => {
+    for (const [tMs, now] of [
+      [CYCLE_0626_46_POSITION_7_TMS, T_0626_49],
+      [CYCLE_0626_46_ARRIVAL_YONGMASAN_TMS, T_0626_49],
+      [CYCLE_0627_46_POSITION_7_TMS, T_0627_49],
+      [CYCLE_0627_46_ARRIVAL_YONGMASAN_TMS, T_0627_49],
+    ]) {
+      expect(now - tMs).toBeGreaterThanOrEqual(0);
+      expect(now - tMs).toBeLessThanOrEqual(5_000);
+    }
+    expect(W_ROWS_0626_0627.some((row) => row.startsWith('06:26:49 | enter | 7-016 | position/arrival-arriving'))).toBe(true);
+  });
+
   it('⑦ trip 179(route 있음): 반대 방향 7012(중곡 100점)가 빠져 사용자 열차 7035의 용마산이 현재역', async () => {
     const cycle = await loadCycle(CYCLE_0626_46_POSITION_7_BODY, CYCLE_0626_46_ARRIVAL_YONGMASAN_BODY, T_0626_49);
     const { result } = setup(cycle, routeContext179);
@@ -150,14 +171,21 @@ describe('#3191 PR-2D fused 방향 필터 — 10/28 06:26 중곡 오승리 repla
     expect(opposite).toHaveLength(0);
   });
 
-  it('⑪ 반대 방향 100점 position이 빠지면 후보·cycle당 position 1건(7012 → 중곡) push, arrival 1건(용마산 7012 전역진입)', async () => {
+  it('⑪ 반대 방향 100점 position(7012 → 중곡)과 전역진입 arrival(용마산 7012)이 후보×종류당 1건씩 push된다(10초 집계 윈도우로 count=2 한 entry)', async () => {
     const cycle = await loadCycle(CYCLE_0626_46_POSITION_7_BODY, CYCLE_0626_46_ARRIVAL_YONGMASAN_BODY, T_0626_49);
     setup(cycle, routeContext179);
     const opposite = getCandidateRejectEntries().filter((e) => e.reason === 'candidate-opposite-direction');
-    const byKind = (signal: string) => opposite.filter((e) => e.signal === signal);
-    expect(byKind('position')).toHaveLength(1);
-    expect(byKind('position')[0]).toMatchObject({ stationName: '중곡', line: '7' });
-    expect(byKind('arrival')).toHaveLength(1);
-    expect(byKind('arrival')[0]).toMatchObject({ stationName: '용마산', line: '7' });
+    // pushCandidateRejectEntry가 같은 reason을 10초 윈도우로 집계한다 → entry 1개, count = push 건수.
+    expect(opposite).toHaveLength(1);
+    expect(opposite[0].count).toBe(2);
+    // 마지막 push = 중곡 position(후보 순서 용마산 arrival → 중곡 position), 첫 push 종류 태그 보존.
+    expect(opposite[0]).toMatchObject({ stationName: '중곡', line: '7', signal: 'arrival' });
+  });
+
+  it("observer 인스턴스(DebugModal)는 관측 push를 하지 않는다 — 필터 결과는 동일(용마산)", async () => {
+    const cycle = await loadCycle(CYCLE_0626_46_POSITION_7_BODY, CYCLE_0626_46_ARRIVAL_YONGMASAN_BODY, T_0626_49);
+    const { result } = setup(cycle, routeContext179, 'observer');
+    expect(result.current.result?.station.id).toBe(yongmasan.id);
+    expect(getCandidateRejectEntries().filter((e) => e.reason === 'candidate-opposite-direction')).toHaveLength(0);
   });
 });

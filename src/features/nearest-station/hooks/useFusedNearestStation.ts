@@ -42,14 +42,19 @@ import { getBarometerDeltaTracking, getBarometerReadings } from '../../../shared
 import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
-import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
+import {
+  pickFusedStation,
+  type FusionConfidence,
+  type FusionSource,
+  type OppositeDirectionDrop,
+} from '../utils/pickFusedStation';
 import { shouldHoldStationaryFix } from '../utils/stationaryFixHold';
 import { shouldDowngradeFusion, STATIC_SPEED_THRESHOLD_MPS } from '../utils/movementGate';
 import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStrength';
 import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
-import { resolveTripDirection } from '../../route/utils/tripDirection';
+import { legDirectionByLine, resolveTripDirection } from '../../route/utils/tripDirection';
 import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
 import {
   logFusionPickerTier,
@@ -763,12 +768,36 @@ export function useFusedNearestStation(
   const p1 = useTrainPositions(l1, positionProvider);
   const p2 = useTrainPositions(l2, positionProvider);
 
+  // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
+  // #2728 (ADR-039 2단계) — candidateTrains(pickCandidateTrains)의 trainCode-lock 매칭 arc
+  // 검사에도 필요해 candidateTrains 이전으로 승격.
+  const arcStations = useMemo<Station[]>(() => {
+    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
+    const arc = computeRouteArc(
+      routeContext.route,
+      routeContext.origin,
+      routeContext.destination,
+    );
+    return arc?.stations ?? [];
+  }, [routeContext]);
+
   // #2204 — arrival-confirmed temporal consensus 추적. 직전 cycle의 highPriorityStationId를
   // 다음 cycle의 pickFusedStation 호출에 그대로 전달 — 연속 2 cycle 합의가 있어야 확정.
   // useEffect([fused])에서 렌더 완료 후 갱신되므로 이 memo 실행 시점엔 항상 "직전" 값.
   const prevHighPriorityStationIdRef = useRef<string | null>(null);
 
+  // #3191 PR-2D — 경로 arc에서 유도한 노선별 leg 진행 방향. route 없음(arcStations 비어있음)이면 null —
+  // 방향을 정의할 수 없으므로 fused 방향 필터를 적용하지 않는다(#2696/#2944는 trip leg 규칙).
+  const legDirections = useMemo(
+    () => (arcStations.length > 0 ? legDirectionByLine(arcStations) : null),
+    [arcStations],
+  );
+  // 방향 필터에서 빠진 점수>0 반대 방향 신호. fused memo 본문에서는 ref에 모으기만 하고 push는 아래
+  // effect가 한다(memo가 커밋 없이 재실행될 수 있어 memo 본문 side-effect를 피한다 — #2594 P5 리뷰 동일 사유).
+  const oppositeDirectionDropsRef = useRef<OppositeDirectionDrop[]>([]);
+
   const fused = useMemo(() => {
+    oppositeDirectionDropsRef.current = [];
     if (candidates.length === 0) return null;
     const arrivals = [a0.arrival, a1.arrival, a2.arrival];
     const positions = [p0.positions, p1.positions, p2.positions];
@@ -777,10 +806,29 @@ export function useFusedNearestStation(
         candidate: cand,
         arrival: arrivals[i] ?? null,
         positionMatches: matchPositionsForCandidate(cand, positions),
+        // route가 있으면: 맵에 있는 노선은 'up'|'down'|null(미해결 fail-closed), 경로에 없는 노선은 undefined.
+        direction: legDirections?.get(cand.station.line),
       })),
       prevHighPriorityStationIdRef.current,
+      (drop) => oppositeDirectionDropsRef.current.push(drop),
     );
-  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions]);
+  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions, legDirections]);
+
+  // #3191 PR-2D — 방향 필터 관측. 기존 reason 'candidate-opposite-direction'(#2696)을 재사용한다.
+  // observer(DebugModal) 인스턴스는 push하지 않는다(primary와 중복 집계 방지).
+  useEffect(() => {
+    if (resolvedInstrumentationRole === 'observer') return;
+    for (const { kind, stationName, line } of oppositeDirectionDropsRef.current) {
+      pushCandidateRejectEntry({
+        kind: 'candidate-reject',
+        ts: Date.now(),
+        reason: 'candidate-opposite-direction',
+        stationName,
+        line,
+        signal: kind,
+      });
+    }
+  }, [fused, resolvedInstrumentationRole]);
 
   useEffect(() => {
     prevHighPriorityStationIdRef.current = fused?.highPriorityStationId ?? null;
@@ -798,19 +846,6 @@ export function useFusedNearestStation(
   // effect로 전달하는 handoff ref. memo 본문에서 직접 record 호출하지 않는 이유는 아래 effect
   // 주석 참조(React가 memo를 커밋 없이 재실행할 수 있어 "하한만 보장"되는 문제).
   const candidateDistanceRejectCountRef = useRef(0);
-
-  // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
-  // #2728 (ADR-039 2단계) — candidateTrains(pickCandidateTrains)의 trainCode-lock 매칭 arc
-  // 검사에도 필요해 candidateTrains 이전으로 승격.
-  const arcStations = useMemo<Station[]>(() => {
-    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
-    const arc = computeRouteArc(
-      routeContext.route,
-      routeContext.origin,
-      routeContext.destination,
-    );
-    return arc?.stations ?? [];
-  }, [routeContext]);
 
   // #2696 (4번째 picker) — pickCandidateTrains에 lock leg의 진행 방향을 전달하기 위한 산출.
   // boardingLock.boardingStationId를 anchor로 resolveTripDirection을 호출해 'up'(상행/내선)|

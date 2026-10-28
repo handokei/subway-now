@@ -1,4 +1,4 @@
-import type { NearestStationResult } from '../../../shared/types/station';
+import type { LineNumber, NearestStationResult } from '../../../shared/types/station';
 import type { StationArrival } from '../../../shared/types/arrival';
 import type { LinePositions } from '../../../shared/types/position';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
@@ -36,7 +36,25 @@ export interface FusionCandidate {
    * null이면 신호 없음(미호출/실패/mock).
    */
   positionMatches?: LinePositions['trains'] | null;
+  /**
+   * #3191 PR-2D — 이 후보 노선의 leg 진행 방향(경로 arc 유도).
+   * - `'up'|'down'`: arrival은 해당 방향 리스트만, position은 `updnLine`이 일치하는 열차만 점수에 넣는다.
+   *   반대 방향 열차는 사용자가 탄 열차가 아니다(#2696/#2944와 같은 원칙).
+   * - `null`: route가 있는데 방향 미해결 → fail-closed(모든 신호 점수 0, 양방향 병합 금지).
+   * - `undefined`: route 없음(방향 정의 불가) → 필터 미적용(현행).
+   */
+  direction?: 'up' | 'down' | null;
 }
+
+/** 방향 필터로 점수에서 빠진 "점수>0 반대 방향" 신호 1건(후보·종류당 1회) — 관측용. */
+export interface OppositeDirectionDrop {
+  kind: 'arrival' | 'position';
+  stationName: string;
+  line: LineNumber;
+}
+
+/** position `updnLine` 숫자 인코딩: 0=상행·내선, 1=하행·외선 (memory reference_seoul_updnline_format_differs). */
+const UPDN_LINE_BY_DIRECTION = { up: 0, down: 1 } as const;
 
 /** mock/stale 무시 + arvlCd 우선순위 최댓값. */
 function bestPriorityForArrival(arrival: StationArrival | null | undefined): number {
@@ -64,6 +82,42 @@ function bestPriorityForPosition(
     if (p > best) best = p;
   }
   return best;
+}
+
+/** arrival에서 한 방향 리스트만 남긴다(다른 쪽은 비움). */
+function onlyDirection(arrival: StationArrival, direction: 'up' | 'down'): StationArrival {
+  return {
+    ...arrival,
+    up: direction === 'up' ? arrival.up : [],
+    down: direction === 'down' ? arrival.down : [],
+  };
+}
+
+/**
+ * 방향 필터 적용 후 후보의 두 신호. 반대 방향 신호는 제외하고, 그중 점수>0이었던 것이 있으면 drop으로 보고한다.
+ * direction===null(fail-closed)은 "반대"가 아니라 "방향 미상"이라 drop 보고 없이 전부 제외한다.
+ */
+function applyDirection(
+  c: FusionCandidate,
+  onDrop?: (drop: OppositeDirectionDrop) => void,
+): { arrival: StationArrival | null | undefined; trains: LinePositions['trains'] | null | undefined } {
+  const { direction, arrival, positionMatches } = c;
+  if (direction === undefined) return { arrival, trains: positionMatches };
+  if (direction === null) return { arrival: null, trains: null };
+
+  const { name: stationName, line } = c.candidate.station;
+  const wantUpdn = UPDN_LINE_BY_DIRECTION[direction];
+  const allTrains = positionMatches ?? [];
+  const trains = allTrains.filter((t) => t.updnLine === wantUpdn);
+  const oppositeTrains = allTrains.filter((t) => t.updnLine !== wantUpdn && t.updnLine !== -1);
+  if (bestPriorityForPosition(oppositeTrains) > 0) onDrop?.({ kind: 'position', stationName, line });
+
+  if (arrival == null) return { arrival, trains };
+  const opposite = direction === 'up' ? 'down' : 'up';
+  if (bestPriorityForArrival(onlyDirection(arrival, opposite)) > 0) {
+    onDrop?.({ kind: 'arrival', stationName, line });
+  }
+  return { arrival: onlyDirection(arrival, direction), trains };
 }
 
 /**
@@ -104,6 +158,9 @@ function confidenceFromPriority(
  * 4) 모두 0이면 GPS 최근접 사용.
  * 5) 후보가 비어있으면 null.
  *
+ * 6) #3191 PR-2D — `candidate.direction`이 있으면 반대 방향 신호를 점수에서 제외한다(`FusionCandidate.direction`).
+ *    제외된 점수>0 신호는 `onOppositeDirectionDrop`로 후보·종류당 1회 보고한다.
+ *
  * @param prevHighPriorityStationId #2204 — temporal consensus 추적용. 호출자가 직전 cycle
  *   결과의 `highPriorityStationId`를 그대로 넘기면 arrival-confirmed 확정에 연속 2 cycle 합의를
  *   요구한다. 미제공(undefined)이면 기존 단일 폴링 즉시 확정 동작 유지(backward compat).
@@ -111,6 +168,7 @@ function confidenceFromPriority(
 export function pickFusedStation(
   candidates: FusionCandidate[],
   prevHighPriorityStationId?: string | null,
+  onOppositeDirectionDrop?: (drop: OppositeDirectionDrop) => void,
 ): FusedStationResult | null {
   if (candidates.length === 0) return null;
 
@@ -120,8 +178,9 @@ export function pickFusedStation(
   let winnerPosScore = 0;
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
-    const arrScore = bestPriorityForArrival(c.arrival);
-    const posScore = bestPriorityForPosition(c.positionMatches);
+    const { arrival, trains } = applyDirection(c, onOppositeDirectionDrop);
+    const arrScore = bestPriorityForArrival(arrival);
+    const posScore = bestPriorityForPosition(trains);
     const p = Math.max(arrScore, posScore);
     if (p > winnerPriority) {
       winnerIdx = i;

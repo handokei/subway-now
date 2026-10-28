@@ -119,4 +119,18 @@ describe('pickFusedStation direction (#3191 PR-2D)', () => {
       { kind: 'arrival', stationName: '중곡', line: '7' },
     ]);
   });
+
+  it('방향 지정이어도 신호 자체가 null이면(미호출/실패) 현행처럼 GPS 최근접', () => {
+    const r = pickFusedStation([
+      { candidate: cand(yongmasan), arrival: null, positionMatches: null, direction: 'up' },
+    ]);
+    expect(r?.source).toBe('gps');
+  });
+
+  it('콜백 미지정이어도 반대 방향 신호를 안전하게 제외한다', () => {
+    const r = pickFusedStation([
+      { candidate: cand(junggok), positionMatches: OPPOSITE_UP_100, arrival: { up: [info(1)], down: [] }, direction: 'down' },
+    ]);
+    expect(r?.source).toBe('gps');
+  });
 });

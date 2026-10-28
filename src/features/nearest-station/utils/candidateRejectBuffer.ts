@@ -30,6 +30,8 @@ import type { LineNumber } from '../../../shared/types/station';
  *    lock.trainCode와 다른 trainNo이면서 lock leg의 진행 방향(updnLine)과 반대인 후보를
  *    제외한 횟수. 10/3 한양대 d=1589m 8178(반대 방향) 오채택 evidence — pickCandidateTrains가
  *    enumerate 단계에서 direction을 몰라 통과시킨 후보를 여기서 한 번 더 차단한다.
+ *    #3191 PR-2D: fused 후보 점수(pickFusedStation)에서 route leg 방향과 반대인 arrival/position이
+ *    점수>0인데 빠진 경우에도 같은 reason으로 적재한다(`signal` 태그로 구분).
  *  - `candidate-direction-unresolved` (#2914): lock이 추적 중인 line인데 lock leg의 진행
  *    방향(resolveTripDirection)을 해석할 수 없어(route/destination 없음 등) 전체 후보를
  *    무효화한 횟수(trainCode 정확 일치만 예외). 양방향 merge 재발 방지(#2696 불변식 ②).
@@ -78,6 +80,12 @@ export interface CandidateRejectEntry {
    * 이 entry로 요약된 것 — `DebugModal.formatCandidateRejectLine`이 `×N` suffix로 표시한다.
    */
   count?: number;
+  /**
+   * #3191 PR-2D — `candidate-opposite-direction` reason 한정. 방향 필터(fused 후보 점수)에서 빠진
+   * 신호 종류. position-train enumeration 경로(#2696/#2914)의 entry에는 없다. 집계 윈도우 안에서는
+   * 첫 push의 종류가 유지된다.
+   */
+  signal?: 'arrival' | 'position';
 }
 
 const db = createDebugBuffer<CandidateRejectEntry>(CANDIDATE_REJECT_BUFFER_CAPACITY);

@@ -1,4 +1,4 @@
-import type { LineNumber } from '../../../shared/types/station';
+import type { LineNumber, Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import {
   getFirstLeg,
@@ -143,6 +143,19 @@ export function resolveTripDirection(
   const nextIdx = lineStations.findIndex((s) => s.name === endName);
   if (currIdx < 0 || nextIdx < 0 || currIdx === nextIdx) return null;
 
+  return directionBetweenLineIdx(line, lineStations, currIdx, nextIdx);
+}
+
+/**
+ * 같은 노선 위 두 station idx 사이의 진행 방향. `resolveTripDirection`과 `legDirectionByLine`이
+ * 같은 극성 규칙을 쓰도록 공유한다. 호출자가 idx 유효성(≥0, 서로 다름)을 보장한다.
+ */
+function directionBetweenLineIdx(
+  line: LineNumber,
+  lineStations: ReturnType<typeof getStationsOnLine>,
+  currIdx: number,
+  nextIdx: number,
+): TripDirection {
   // #1922 — closed loop 본선 양 끝점: wraparound 짧은 쪽 경로의 방향 부호로 결정.
   // #2867 — 10/3 13:24 트립 + 9/17(#2692) 양방향 실측 52쌍으로 확정된 ground truth:
   // plus 방향(`travelDirectionSign`) = 내선 = 'up', minus 방향 = 외선 = 'down'.
@@ -162,4 +175,36 @@ export function resolveTripDirection(
     return nextIdx > currIdx ? 'up' : 'down';
   }
   return nextIdx > currIdx ? 'down' : 'up';
+}
+
+/**
+ * #3191 PR-2D — 경로 arc(순서 있는 station 시퀀스)를 노선 run 단위로 순회해 노선별 leg 진행 방향을 산출한다.
+ * run = 연속된 같은 노선 구간. 환승역은 노선별 별도 Station 객체라 환승 전후가 서로 다른 run이 된다.
+ *
+ * - run의 인접 두 역(첫 두 역)에 `resolveTripDirection`과 같은 극성 규칙을 적용한다.
+ * - run 길이가 1이거나(방향 정의 불가) 같은 노선의 run끼리 방향이 다르면 그 노선은 `null`(미해결).
+ * - 맵에 없는 노선 = 경로에 없는 노선(호출자는 필터를 적용하지 않는다).
+ */
+export function legDirectionByLine(
+  arcStations: readonly Station[],
+): Map<LineNumber, TripDirection | null> {
+  const out = new Map<LineNumber, TripDirection | null>();
+  let start = 0;
+  while (start < arcStations.length) {
+    const { line } = arcStations[start];
+    let end = start + 1;
+    while (end < arcStations.length && arcStations[end].line === line) end += 1;
+    const direction = end - start >= 2 ? runDirection(line, arcStations[start], arcStations[start + 1]) : null;
+    out.set(line, out.has(line) && out.get(line) !== direction ? null : direction);
+    start = end;
+  }
+  return out;
+}
+
+function runDirection(line: LineNumber, from: Station, to: Station): TripDirection | null {
+  const lineStations = getStationsOnLine(line);
+  const fromIdx = lineStations.findIndex((s) => s.id === from.id);
+  const toIdx = lineStations.findIndex((s) => s.id === to.id);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return null;
+  return directionBetweenLineIdx(line, lineStations, fromIdx, toIdx);
 }

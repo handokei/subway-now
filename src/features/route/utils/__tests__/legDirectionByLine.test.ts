@@ -53,6 +53,12 @@ describe('legDirectionByLine (#3191 PR-2D)', () => {
     expect(map.get('2')).toBe('up');
   });
 
+  it('같은 역이 연달아 있거나 노선에 없는 역이면 방향 판정 불가(null)', () => {
+    const a = findStationByNameAndLine('용마산', '7')!;
+    expect(legDirectionByLine([a, a]).get('7')).toBeNull();
+    expect(legDirectionByLine([a, { ...a, id: '7-NOPE' }]).get('7')).toBeNull();
+  });
+
   it('빈 arc는 빈 맵', () => {
     expect(legDirectionByLine([]).size).toBe(0);
   });
