@@ -76,7 +76,9 @@ import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg, SWAP_LOCK_TTL_MS } from './lockSwap';
 import {
   shouldDeferVanishSwap,
+  checkRenumberLeg,
   decideTimetableReattach,
+  legDirectionOf,
   lookupRenumberSuccessor,
   nextRenumberArm,
   resolveRenumberOrigin,
@@ -1384,6 +1386,27 @@ export function capLockSyncAdvance(
 ): { shiftedCount: number } {
   const limit = dwellFirstLegWaypointIndex(trip, now);
   return limit === null ? advance : { shiftedCount: Math.min(advance.shiftedCount, limit) };
+}
+
+/**
+ * #3083 PR-2 — lockless(활성·비PENDING lock 0개) `/boarding-lock/sync`의 소비 상한. lock 없는 trip의 sync 관측은
+ * 틀린 역일 수 있고(10/28 179: 06:26:56 중곡 -> 실열차는 용마산), 그 순수 intermediate 소비가 lock 후 그 역의 매역
+ * 알림을 지운다. 그래서 요청 구간에 transfer/destination이 없으면 0(hold), 있으면 **첫** transfer/destination까지만
+ * 소비한다(168의 환승 anchor 체인 유지: 환승역 관측은 anchor를 stamp해야 leg-2 프롬프트가 선다). payload 내용
+ * (trainCode 동봉 등)으로 면제하지 않는다 — cap은 승격 판정보다 먼저 계산되므로 면제하면 승격이 거부된 sync까지
+ * 통과한다(승격 성공 시 진행은 fast-forward가 담당). lock 활성 sync는 무변경(#2645 소관). cron `runLocklessIntermediate`는
+ * 건드리지 않는다(K5 #2926, 10/25 결정) — sync 채널만 다룬다. #2646(CLOSED)의 "장거리 catch-up 영구 정체" 우려는
+ * lock 활성 경로가 무제한 catch-up을 유지하는 것으로 비켜간다(축이 다름).
+ */
+export function capLocklessSyncAdvance(
+  advance: { shiftedCount: number },
+  trip: Trip,
+  now: number,
+): { shiftedCount: number } {
+  const { boardingLock, waypoints } = trip;
+  if (isBoardingLockActive(trip, now) && boardingLock?.trainCode !== PENDING_TRAIN_CODE_SENTINEL) return advance;
+  const firstGatedIdx = waypoints.slice(0, advance.shiftedCount).findIndex(isTransferOrDestination);
+  return { shiftedCount: firstGatedIdx < 0 ? 0 : firstGatedIdx + 1 };
 }
 
 /**
@@ -5362,13 +5385,9 @@ async function attemptVanishSwap(
   trip.consecutiveEtaMissing = 0;
   // #3158 — 번호 변경 열차(2호선 성수)였다면 시간표 후속이 나중에 관측될 때 정정할 수 있게 표식을 남긴다.
   // 호출자가 swap 직후 putTrip하므로 추가 KV write 0.
-  trip.renumberSuccessor = nextRenumberArm(
-    activeLock.line,
-    trip.renumberSuccessor,
-    activeLock.trainCode,
-    swapped.trainCode,
-    now,
-  );
+  trip.renumberSuccessor = checkRenumberLeg(trip, activeLock, now).ok
+    ? nextRenumberArm(activeLock.line, trip.renumberSuccessor, activeLock.trainCode, swapped.trainCode, now)
+    : undefined;
   await recordLockReattach(env, trip, waypoint, now, {
     source: 'vanish-swap',
     from: activeLock.trainCode,
@@ -5423,6 +5442,7 @@ export async function attemptTimetableSuccessorReattach(
 ): Promise<BoardingLockMeta | null> {
   const origin = resolveRenumberOrigin(activeLock.trainCode, trip.renumberSuccessor, now);
   if (lookupRenumberSuccessor(activeLock.line, origin, now) === null) return null;
+  if (!checkRenumberLeg(trip, activeLock, now).ok) return null;
   const fresh = await readFreshSelfPollPosition(env.TRIPS, activeLock.line, now);
   const decision = decideTimetableReattach({
     lockLine: activeLock.line,
@@ -5430,6 +5450,7 @@ export async function attemptTimetableSuccessorReattach(
     arm: trip.renumberSuccessor,
     positions: fresh?.positions ?? null,
     nowMs: now,
+    legDirection: legDirectionOf(trip, activeLock),
   });
   if (!decision.ok || decision.successorCode === activeLock.trainCode) return null;
   log('boarding-lock: timetable successor reattach', {
@@ -5837,6 +5858,7 @@ export async function runTrainCodeTracking(
   // 기존 miss 카운터(`consecutiveEtaMissing`, 이미 매 miss tick putTrip)가 담아 추가 KV write가 없다.
   const deferVanishSwap =
     estimate === null &&
+    checkRenumberLeg(trip, activeLock, now).ok &&
     shouldDeferVanishSwap({
       lockLine: activeLock.line,
       lockTrainCode: activeLock.trainCode,

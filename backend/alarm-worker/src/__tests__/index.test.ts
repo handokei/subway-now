@@ -5769,7 +5769,8 @@ describe('POST /boarding-lock/sync (#901)', () => {
     vi.useRealTimers();
   });
 
-  it('boardingLock 없는 trip — advance만 일어나고 lock 필드 추가 안 됨', async () => {
+  // #3083 PR-2 — lockless 순수 intermediate 소비는 hold(실측 179 06:26:56). 기대값 갱신: advance 0, lock 필드 추가 안 됨은 유지.
+  it('boardingLock 없는 trip — 순수 intermediate는 hold되고(advance 0) lock 필드 추가 안 됨', async () => {
     const env = makeKvEnv();
     const tripNoLock = tripWithLock();
     delete tripNoLock.boardingLock;
@@ -5781,7 +5782,7 @@ describe('POST /boarding-lock/sync (#901)', () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { advanced: boolean };
-    expect(body.advanced).toBe(true);
+    expect(body.advanced).toBe(false);
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
     expect(stored.boardingLock).toBeUndefined();
   });

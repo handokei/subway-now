@@ -99,6 +99,7 @@ import {
   fireSyncSkippedStationPasses,
   isBoardingLockActive,
   isLockActiveForLeg,
+  capLocklessSyncAdvance,
   capLockSyncAdvance,
   maybeFireHopEndPrompt,
   runMidCycleFireOnly,
@@ -3395,11 +3396,12 @@ app.post('/boarding-lock/sync', async (c) => {
     }),
   );
   const requestedAdvance = computeLockSyncAdvance(existing.waypoints, payload.observedStationName);
-  // #3083 — 환승 체류(anchor ∧ 활성 lock 없음 ∧ 창 안)에서는 leg-2 waypoint 소비를 막는다. `advance` 객체 자체를
-  // cap해 아래 소비자 전부(분기 진입/skipped 발사/slice/mirror/catch-up)가 같은 값을 본다.
-  const advance = capLockSyncAdvance(requestedAdvance, existing, now);
+  // #3083 — (PR-2) lockless면 첫 transfer/destination까지만(없으면 0), (PR-1) 환승 체류(anchor ∧ 활성 lock 없음 ∧ 창 안)면
+  // leg-2 waypoint 소비를 막는다. `advance` 객체 자체를 cap해 아래 소비자 전부(분기 진입/skipped 발사/slice/mirror/
+  // catch-up)가 같은 값을 본다. 두 cap은 상한이라 합성 순서와 무관하게 더 작은 쪽이 이긴다.
+  const advance = capLockSyncAdvance(capLocklessSyncAdvance(requestedAdvance, existing, now), existing, now);
   if (advance.shiftedCount < requestedAdvance.shiftedCount) {
-    createJsonLogger()('boarding-lock/sync: advance held (transfer-dwell)', {
+    createJsonLogger()('boarding-lock/sync: advance held', {
       token: existing.token.slice(0, 8),
       observed: payload.observedStationName,
       requested: requestedAdvance.shiftedCount,
@@ -3652,7 +3654,7 @@ app.post('/boarding-lock/sync', async (c) => {
       await maybeMirrorLockSyncProgress(c.env.TRIPS, working, appliedShiftedCount);
     } else {
       // 기존 경로 — 순수 intermediate 소비(transfer/destination 없음), 변경 없음. 이 분기는
-      // 드리프트/유예 없이 항상 요청된 전체를 적용한다.
+      // 드리프트/유예 없이 위 cap(`advance`, #3083 lockless hold·체류 hold)이 허용한 만큼을 적용한다.
       appliedShiftedCount = advance.shiftedCount;
       //
       // #2625 코드리뷰 P1-1 — sync 관측역 자신(`existing.waypoints[advance.shiftedCount - 1]`)은

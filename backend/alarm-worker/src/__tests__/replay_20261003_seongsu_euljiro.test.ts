@@ -222,6 +222,14 @@ describe('#2875 — 10/3 whole-trip 재생(성수→을지로입구, vanish swap
     const swappedTo = String(swapLogs[0]?.[1]?.newTrainCode);
     expect(['3201', '3203']).toContain(swappedTo);
 
+    // #3158 — lock 3174의 시간표 후속(3212)은 내선인데 이 trip leg는 외선(down)이다. 방향이 다른 후속으로는
+    // 시간표 재부착을 하지 않는다(F1) — lock-reattach 행에 timetable-successor가 없어야 하고, 교체는 외선 3203 하나다.
+    const reattachMetas = inserts
+      .filter((args) => args[2] === 'lock-reattach')
+      .map((args) => JSON.parse(String(args[5])) as { source: string; from: string; to: string });
+    expect(reattachMetas.filter((m) => m.source === 'timetable-successor')).toEqual([]);
+    expect(reattachMetas).toEqual([{ source: 'vanish-swap', from: '3174', to: '3203' }]);
+
     // ② 매역 sent — fire-attempt(cron-fire-attempt, outcome='sent') D1 행을 역별로 집계.
     const sentRows = inserts.filter((args) => args[2] === 'cron-fire-attempt').filter((args) => {
       const meta = args[5] ? (JSON.parse(String(args[5])) as { outcome?: string }) : {};

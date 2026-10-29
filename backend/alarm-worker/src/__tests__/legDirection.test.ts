@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { inferLegDirection } from '../legDirection';
+import { inferLegDirection, nextStationInDirection } from '../legDirection';
 import { pickAutoTrainCode } from '../boardingPrompt';
 import { ARRIVAL_CODE } from '../alarm';
 import type { ArrivalEntry } from '../seoul';
@@ -297,5 +297,24 @@ describe('#2943 J1→J2 — 10/9 실측 R2 fixture 전체 체인 (군자→광�
       // 목적이므로, 그 대가로 정방향 후보까지 같이 못 쓰는 것은 의도된 trade-off다(ADR-010).
       expect(pickAutoTrainCode(line5Arrivals, '5', null)).toBeNull();
     });
+  });
+});
+
+describe('#3158 nextStationInDirection — 2호선 본선에서 진행 방향 1역 앞', () => {
+  it('성수: up(내선)=건대입구, down(외선)=뚝섬 — inferLegDirection과 같은 극성', () => {
+    expect(nextStationInDirection('2', '성수', 'up')).toBe('건대입구');
+    expect(nextStationInDirection('2', '성수', 'down')).toBe('뚝섬');
+    expect(inferLegDirection('2', '성수', '건대입구')).toBe('up');
+    expect(inferLegDirection('2', '성수', '뚝섬')).toBe('down');
+  });
+
+  it('순환선 seam도 감아 돈다 (시청 up/down 모두 이웃을 돌려준다)', () => {
+    expect(nextStationInDirection('2', '시청', 'up')).not.toBeNull();
+    expect(nextStationInDirection('2', '시청', 'down')).not.toBeNull();
+  });
+
+  it('거부: 없는 역·순환 본선이 아닌 노선은 null', () => {
+    expect(nextStationInDirection('2', '없는역', 'up')).toBeNull();
+    expect(nextStationInDirection('7', '건대입구', 'up')).toBeNull();
   });
 });

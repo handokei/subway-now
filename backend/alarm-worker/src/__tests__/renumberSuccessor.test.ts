@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   RENUMBER_ARM_TTL_MS,
+  checkRenumberLeg,
+  legDirectionOf,
   RENUMBER_SWAP_DEFER_TICKS,
   shouldDeferVanishSwap,
   RENUMBER_OBSERVATION_MAX_AGE_MS,
@@ -17,6 +19,8 @@ import {
   resolveRenumberOrigin,
 } from '../renumberSuccessor';
 import type { PositionEntry } from '../seoul';
+import successorData from '../data/line2RenumberSuccessors.json';
+import type { Trip } from '../types';
 
 /** KST 벽시계 -> epoch ms. 2026-10-21=수, 2026-10-24=토, 2026-10-25=일. */
 function kst(month: number, day: number, hour: number, min: number, sec = 0): number {
@@ -83,9 +87,19 @@ describe('lookupRenumberSuccessor — 시간표 오라클(리서치 §1.2)', () 
     expect(lookupRenumberSuccessor('2', '', WEDNESDAY_0633)).toBeNull();
   });
 
-  it('거부: 시간표 종착~시발 시각에서 시간창 밖이면 null (같은 번호의 다른 시간대 오발 방지)', () => {
-    expect(lookupRenumberSuccessor('2', '3009', kst(10, 21, 12, 0))).toBeNull();
-    expect(lookupRenumberSuccessor('2', '3009', kst(10, 21, 6, 0))).toBeNull();
+  it('시각과 무관하다 — 저녁 +14분 어긋남(10/28 17:13, 3286 -> 3324)에도 후속을 돌려준다', () => {
+    expect(lookupRenumberSuccessor('2', '3286', kst(10, 28, 17, 13, 45))).toMatchObject({ successorCode: '3324', isUp: true });
+    // 같은 번호는 시간대와 무관하게 같은 후속 (키당 시간표 항목 1개, 시간창은 판별에 기여하지 않는다).
+    expect(lookupRenumberSuccessor('2', '3009', kst(10, 21, 12, 0))?.successorCode).toBe('3045');
+    expect(lookupRenumberSuccessor('2', '3009', kst(10, 21, 6, 0))?.successorCode).toBe('3045');
+  });
+
+  it.each(['weekday', 'weekend'] as const)('데이터 불변식: %s 표는 키당 항목이 정확히 1개다 (시간창을 지운 근거)', (dayType) => {
+    const tables = (successorData as { tables: Record<string, Record<string, unknown[]>> }).tables[dayType];
+    expect(Object.keys(tables).length).toBeGreaterThan(0);
+    for (const [key, entries] of Object.entries(tables)) {
+      expect({ key, count: entries.length }).toEqual({ key, count: 1 });
+    }
   });
 
   it('시간표 기준일 메타가 JSON에 담겨 있다', () => {
@@ -94,7 +108,7 @@ describe('lookupRenumberSuccessor — 시간표 오라클(리서치 §1.2)', () 
 });
 
 describe('decideTimetableReattach — 라이브 피드 관측 AND 조건', () => {
-  const base = { lockLine: '2', lockTrainCode: '3009', arm: undefined, nowMs: WEDNESDAY_0633 } as const;
+  const base = { lockLine: '2', lockTrainCode: '3009', arm: undefined, nowMs: WEDNESDAY_0633, legDirection: 'down' } as const;
   const successorRow = pos('3045', { terminus: '성수종착' });
 
   it('lock 열차 소멸 + 후속이 같은 방향·신선하게 관측 -> 허용', () => {
@@ -154,7 +168,7 @@ describe('vanish-swap 정정 표식 (RenumberArm)', () => {
     const arm = { from: '3009', swappedTo: '1509', armedAt: WEDNESDAY_0633 - 30_000 };
     expect(resolveRenumberOrigin('1509', arm, WEDNESDAY_0633)).toBe('3009');
     const positions = [pos('3045', { terminus: '성수종착' })];
-    expect(decideTimetableReattach({ lockLine: '2', lockTrainCode: '1509', arm, positions, nowMs: WEDNESDAY_0633 })).toMatchObject({ ok: true, fromCode: '3009', successorCode: '3045' });
+    expect(decideTimetableReattach({ lockLine: '2', lockTrainCode: '1509', arm, positions, nowMs: WEDNESDAY_0633, legDirection: 'down' })).toMatchObject({ ok: true, fromCode: '3009', successorCode: '3045' });
   });
 
   it('거부: lock이 swappedTo와 다르면(그 사이 사용자 탭 등) 표식은 무시 — 불간섭', () => {
@@ -198,11 +212,130 @@ describe('shouldDeferVanishSwap — 시간표 후속 대기 유예', () => {
   it('거부: 시간표 항목이 없으면(번호/노선/시간창) 즉시 기존 동작', () => {
     expect(shouldDeferVanishSwap({ ...base, lockTrainCode: '2999', missCount: 2 })).toBe(false);
     expect(shouldDeferVanishSwap({ ...base, lockLine: '7', missCount: 2 })).toBe(false);
-    expect(shouldDeferVanishSwap({ ...base, nowMs: kst(10, 21, 12, 0), missCount: 2 })).toBe(false);
+  });
+
+  it('시각과 무관하게 유예한다 — 저녁 어긋남(17:15)에도 항목이 있으면 유예 (시간창 삭제)', () => {
+    expect(shouldDeferVanishSwap({ ...base, lockTrainCode: '3286', nowMs: kst(10, 28, 17, 15, 45), missCount: 2 })).toBe(true);
   });
 
   it('vanish-swap이 옮긴 뒤에도(표식) 원 열차 항목으로 판정', () => {
     const arm = { from: '3009', swappedTo: '1509', armedAt: WEDNESDAY_0633 };
     expect(shouldDeferVanishSwap({ ...base, lockTrainCode: '1509', arm, missCount: 2 })).toBe(true);
+  });
+});
+
+// ── #3158 B: 시간표 후속 재부착 게이트 (G1 성수 leg / G2 방향 / G3 인접성 / G4 leg당 1회) ──
+
+const SEONGSU_LEG = ['성수', '건대입구']; // 성수 -> 건대입구 = 내선(up)
+const SEONGSU_OUTER_LEG = ['성수', '뚝섬', '한양대']; // 성수 -> 한양대 = 외선(down)
+
+function lockOn(trainCode: string, segmentStations: readonly string[], line = '2') {
+  return { line, trainCode, segmentStations };
+}
+function tripOf(over: Partial<Trip> = {}): Trip {
+  return { token: 'tok', waypoints: [], ...over } as unknown as Trip;
+}
+const EVENING_1713 = kst(10, 28, 17, 13, 45);
+
+describe('legDirectionOf — lock이 달린 leg의 진행 방향', () => {
+  it('segmentStations 양 끝으로 추론 (성수->건대입구 = up, 성수->한양대 = down)', () => {
+    expect(legDirectionOf(tripOf(), lockOn('3286', SEONGSU_LEG))).toBe('up');
+    expect(legDirectionOf(tripOf(), lockOn('3009', SEONGSU_OUTER_LEG))).toBe('down');
+  });
+
+  it('segmentStations가 1개뿐이면 leg 앵커(originStationName) -> 그 역으로 추론', () => {
+    expect(legDirectionOf(tripOf({ originStationName: '성수' }), lockOn('3286', ['건대입구']))).toBe('up');
+  });
+
+  it('거부: 1개뿐인데 앵커도 없으면 null (fail-closed)', () => {
+    expect(legDirectionOf(tripOf(), lockOn('3286', ['건대입구']))).toBeNull();
+  });
+});
+
+describe('checkRenumberLeg — leg 게이트 (사유 assert)', () => {
+  it('통과: 성수 포함 leg + 시간표 방향 == leg 방향 + 이력 없음 (10/28 3286, 성수->건대입구)', () => {
+    expect(checkRenumberLeg(tripOf(), lockOn('3286', SEONGSU_LEG), EVENING_1713)).toEqual({ ok: true });
+  });
+
+  it('G1-OR 통과: seg=[건대입구]만이어도 leg 앵커가 성수면 성수 leg', () => {
+    expect(checkRenumberLeg(tripOf({ originStationName: '성수' }), lockOn('3286', ['건대입구']), EVENING_1713)).toEqual({ ok: true });
+  });
+
+  it('G1 거부: leg에 성수가 없으면 no-renumber-station-on-leg (같은 번호 우연 일치 방어)', () => {
+    expect(checkRenumberLeg(tripOf({ originStationName: '강남' }), lockOn('3286', ['강남', '건대입구']), EVENING_1713)).toEqual({
+      ok: false,
+      reason: 'no-renumber-station-on-leg',
+    });
+  });
+
+  it('G2 거부: lock 열차 시간표 방향(내선)과 leg 방향(외선)이 다르면 direction-mismatch (10/3 3174->3212)', () => {
+    expect(checkRenumberLeg(tripOf(), lockOn('3286', SEONGSU_OUTER_LEG), EVENING_1713)).toEqual({ ok: false, reason: 'direction-mismatch' });
+  });
+
+  it('G2 거부: leg 방향을 못 구하면 direction-mismatch (fail-closed)', () => {
+    expect(checkRenumberLeg(tripOf({ originStationName: '성수' }), lockOn('3286', ['성수']), EVENING_1713)).toEqual({
+      ok: false,
+      reason: 'direction-mismatch',
+    });
+  });
+
+  it('G2: vanish-swap 표식이 있으면 원 열차(from) 시간표 방향으로 비교한다', () => {
+    const arm = { from: '3286', swappedTo: '2288', armedAt: EVENING_1713 - 30_000 };
+    expect(checkRenumberLeg(tripOf({ renumberSuccessor: arm }), lockOn('2288', SEONGSU_LEG), EVENING_1713)).toEqual({ ok: true });
+    expect(checkRenumberLeg(tripOf({ renumberSuccessor: arm }), lockOn('2288', SEONGSU_OUTER_LEG), EVENING_1713)).toEqual({
+      ok: false,
+      reason: 'direction-mismatch',
+    });
+  });
+
+  it('G4 거부: 이력 열차의 시간표 후속이 현재 lock이면(이미 번호를 바꾼 같은 열차) already-reattached-this-leg', () => {
+    expect(checkRenumberLeg(tripOf({ lockCodeHistory: ['3286'] }), lockOn('3324', SEONGSU_LEG), EVENING_1713)).toEqual({
+      ok: false,
+      reason: 'already-reattached-this-leg',
+    });
+  });
+
+  it('G4: 이력에 무관한 열차만 있으면 통과 (vanish-swap으로 옮겨진 lock의 정정은 허용)', () => {
+    expect(checkRenumberLeg(tripOf({ lockCodeHistory: ['3286'] }), lockOn('2288', SEONGSU_LEG), EVENING_1713)).toEqual({ ok: true });
+  });
+
+  it('시간표 항목이 없는 lock(지선 1509 등)은 비교 대상이 없어 게이트를 막지 않는다 (후속 조회가 따로 null)', () => {
+    expect(checkRenumberLeg(tripOf(), lockOn('1509', SEONGSU_LEG), EVENING_1713)).toEqual({ ok: true });
+  });
+});
+
+describe('decideTimetableReattach — G2 방향 / G3 인접성', () => {
+  const base = { lockLine: '2', lockTrainCode: '3286', arm: undefined, nowMs: EVENING_1713 } as const;
+  const successor = (over: Partial<PositionEntry> = {}) =>
+    pos('3324', { isUp: true, terminus: '성수종착', at: EVENING_1713 - 5_000, ...over });
+
+  it('통과: 후속 3324가 성수(내선)에 관측 + leg 방향 up (10/28)', () => {
+    expect(decideTimetableReattach({ ...base, legDirection: 'up', positions: [successor()] })).toMatchObject({ ok: true, successorCode: '3324' });
+  });
+
+  it('통과: 후속이 leg 방향 다음 역(건대입구)까지 나아간 상태여도 인접으로 본다', () => {
+    expect(decideTimetableReattach({ ...base, legDirection: 'up', positions: [successor({ stationName: '건대입구' })] })).toMatchObject({ ok: true });
+  });
+
+  it('G2 거부(사유): leg 방향이 시간표 방향과 다르면 direction-mismatch', () => {
+    expect(decideTimetableReattach({ ...base, legDirection: 'down', positions: [successor()] })).toEqual({ ok: false, reason: 'direction-mismatch' });
+  });
+
+  it('G2 거부(사유): leg 방향 미상이면 direction-mismatch (fail-closed)', () => {
+    expect(decideTimetableReattach({ ...base, legDirection: null, positions: [successor()] })).toEqual({ ok: false, reason: 'direction-mismatch' });
+  });
+
+  it('G3 거부(사유): 후속이 성수·다음 역이 아닌 먼 역에 있으면 successor-not-adjacent (번호 재사용 열차)', () => {
+    expect(decideTimetableReattach({ ...base, legDirection: 'up', positions: [successor({ stationName: '잠실' })] })).toEqual({
+      ok: false,
+      reason: 'successor-not-adjacent',
+    });
+  });
+
+  it('G3: 후속이 아예 없으면 기존 사유 successor-not-observed', () => {
+    expect(decideTimetableReattach({ ...base, legDirection: 'up', positions: [pos('3290', { isUp: true })] })).toEqual({
+      ok: false,
+      reason: 'successor-not-observed',
+    });
   });
 });

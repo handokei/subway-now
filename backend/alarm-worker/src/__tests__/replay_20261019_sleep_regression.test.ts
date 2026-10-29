@@ -240,9 +240,11 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
     expect(alarmCycles).toHaveLength(1);
     const firstTickAtOrAfter = r.cycles.map((c) => c.simNowMs).find((t) => t >= r.oneStopBeforeMs) as number;
     expect(alarmCycles[0].simNowMs).toBe(firstTickAtOrAfter);
-    // #3083 PR-1: 체류 중 sync 가짜 전진(18:05:43 어린이대공원)은 hold된다 — 정당한 advance 2건(18:04:10 성수,
-    // 18:04:29 건대입구 환승 waypoint)만 남는다. (cron lockless 가짜 전진은 PR-2 소관)
-    expect(r.events.filter((e) => e.kind === 'advance')).toHaveLength(2);
+    // #3083 PR-1: 체류 중 sync 가짜 전진(18:05:43 어린이대공원)은 hold된다.
+    // #3083 PR-2(sync lockless hold): 18:04:09 sync 성수 단독 순수 소비도 hold되고, 18:04:25 sync 건대입구가 성수+건대입구
+    // (환승 waypoint까지 = 첫 transfer cap과 일치)를 함께 소비한다(D1 fixture 행 1114~1118) — advance 정당 1건만 남는다.
+    // (cron lockless `runLocklessIntermediate` 가짜 전진은 K5 #2926 소관 — 이 PR이 건드리지 않는다)
+    expect(r.events.filter((e) => e.kind === 'advance')).toHaveLength(1);
   });
 
   // ── 결함 3: 실도착 전 destination-arrived 조기 종료 — 재생 불가 ─────────────────────────
