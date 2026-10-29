@@ -201,6 +201,7 @@ import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
 import { RegressionsSection } from './RegressionsSection';
 // SPIKE (throwaway, dev 미머지) — 가속도계 train-fingerprint 검증용 로거 섹션. 추가만, 기존 로직 변경 없음.
 import { AccelSpikeLoggerSection } from './AccelSpikeLoggerSection';
+import { BoardingActivitySpikeSection } from './BoardingActivitySpikeSection';
 // #1898 — RC-12. accelerometerFingerprint raw snapshot을 DebugModal에 노출. useFusedNearestStation이
 // pattern 라벨만 노출(unknown/walking/automotive/...)하던 기존 wire-up에 추가로, dashboard에
 // rmsMagnitude / sampleCount / lastUpdate를 시각화해 사용자 의문("speed 감지 작동 중?")을 즉시 해소.
@@ -3768,6 +3769,9 @@ function DebugModalInner({
 
           {/* SPIKE (throwaway) — 가속도계 train-fingerprint 검증 로거. */}
           <AccelSpikeLoggerSection />
+
+          {/* #3221 PR-1 SPIKE — 탑승 LA FG 시작/종료 + push-to-start token 확인. */}
+          <BoardingActivitySpikeSection />
 
           {/* #1022: Worker Quota admin view */}
           <Section title="Worker Quota" colors={colors}>
