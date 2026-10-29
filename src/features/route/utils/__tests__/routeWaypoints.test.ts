@@ -23,6 +23,10 @@ function stationById(line: LineNumber, id: string): Station {
   return found;
 }
 
+// #2747 PR-6 — 기존 케이스는 waypoint 구조(이름/노선/kind)만 검증한다. remainingSecToDest는 아래 전용 describe에서 검증.
+const structureOf = (...args: Parameters<typeof routeToWaypoints>): AlarmWaypoint[] =>
+  routeToWaypoints(...args).map(({ remainingSecToDest: _stamped, ...structure }) => structure);
+
 const wp = (
   stationName: string,
   line: LineNumber,
@@ -32,7 +36,7 @@ const wp = (
 describe('routeToWaypoints', () => {
   it('direct: 도착역 단일 waypoint (route.line)', () => {
     const route = makeDirectRoute(5, '2');
-    expect(routeToWaypoints(route, '강남')).toEqual([
+    expect(structureOf(route, '강남')).toEqual([
       { stationName: '강남', line: '2', kind: 'destination' },
     ]);
   });
@@ -45,7 +49,7 @@ describe('routeToWaypoints', () => {
       stopsToTransfer: 3,
       stopsFromTransfer: 4,
     });
-    expect(routeToWaypoints(route, '강남')).toEqual([
+    expect(structureOf(route, '강남')).toEqual([
       { stationName: '신도림', line: '1', kind: 'transfer' },
       { stationName: '강남', line: '2', kind: 'destination' },
     ]);
@@ -59,7 +63,7 @@ describe('routeToWaypoints', () => {
       stopsToTransfer: 3,
       stopsFromTransfer: 0,
     });
-    expect(routeToWaypoints(route, '신도림')).toEqual([
+    expect(structureOf(route, '신도림')).toEqual([
       { stationName: '신도림', line: '1', kind: 'destination' },
     ]);
   });
@@ -72,7 +76,7 @@ describe('routeToWaypoints', () => {
       ],
       stopsAfterLastTransfer: 2,
     });
-    expect(routeToWaypoints(route, '경복궁')).toEqual([
+    expect(structureOf(route, '경복궁')).toEqual([
       { stationName: '신도림', line: '1', kind: 'transfer' },
       { stationName: '교대', line: '2', kind: 'transfer' },
       { stationName: '경복궁', line: '3', kind: 'destination' },
@@ -87,7 +91,7 @@ describe('routeToWaypoints', () => {
       ],
       stopsAfterLastTransfer: 0,
     });
-    expect(routeToWaypoints(route, '교대')).toEqual([
+    expect(structureOf(route, '교대')).toEqual([
       { stationName: '신도림', line: '1', kind: 'transfer' },
       { stationName: '교대', line: '2', kind: 'destination' },
     ]);
@@ -96,7 +100,7 @@ describe('routeToWaypoints', () => {
   // 환승역 표기가 노선별로 다른 경우(예: 7호선 "상봉" vs 경의중앙 "상봉(시외버스터미널)").
   // 같은 역이므로 destination 단일화로 축약되어야 한다 (== 비교는 거짓 → 분리되는 회귀 방지).
   it('transfer: transferName과 destinationName의 노선별 표기가 달라도 같은 역으로 축약', () => {
-    const result = routeToWaypoints(
+    const result = structureOf(
       makeTransferRoute({ transferName: '상봉', fromLine: '7', toLine: 'gyeongui', stopsToTransfer: 3, stopsFromTransfer: 0 }),
       '상봉(시외버스터미널)',
     );
@@ -175,7 +179,7 @@ describe('routeToWaypoints', () => {
 
     it.each(cases)('$name', ({ route, destinationName, origin, expected }) => {
       const station = stationById(origin.line, origin.id);
-      expect(routeToWaypoints(route, destinationName, station)).toEqual(expected);
+      expect(structureOf(route, destinationName, station)).toEqual(expected);
     });
 
     it('multi-transfer: 각 segment 사이의 중간역을 모두 펼친다', () => {
@@ -187,7 +191,7 @@ describe('routeToWaypoints', () => {
         ],
         stopsAfterLastTransfer: 0,
       });
-      const result = routeToWaypoints(route, '교대', stationById('1', '1-039'));
+      const result = structureOf(route, '교대', stationById('1', '1-039'));
       // 1호선 pre intermediates [영등포] + transfer 신도림 + ... + destination 교대
       expect(result[0]).toEqual(wp('영등포', '1', 'intermediate'));
       expect(result[1]).toEqual(wp('신도림', '1', 'transfer'));
@@ -203,7 +207,7 @@ describe('routeToWaypoints', () => {
         stopsToTransfer: 3,
         stopsFromTransfer: 4,
       });
-      expect(routeToWaypoints(route, '강남', null)).toEqual(routeToWaypoints(route, '강남'));
+      expect(structureOf(route, '강남', null)).toEqual(structureOf(route, '강남'));
     });
   });
 });
@@ -242,6 +246,20 @@ describe('routeToWaypoints — remainingSecToDest (#2747 PR-6)', () => {
       });
       expect(remainingSecToDest).toBe(minutes! * 60);
     }
+  });
+
+  it('거부: 역을 찾을 수 없어 앵커링 불가한 waypoint는 필드를 생략한다 (도착 waypoint는 항상 0초)', () => {
+    const route = makeTransferRoute({
+      transferName: '없는환승역',
+      fromLine: '1',
+      toLine: '2',
+      stopsToTransfer: 3,
+      stopsFromTransfer: 4,
+    });
+    expect(routeToWaypoints(route, '없는도착역')).toEqual([
+      { stationName: '없는환승역', line: '1', kind: 'transfer' },
+      { stationName: '없는도착역', line: '2', kind: 'destination', remainingSecToDest: 0 },
+    ]);
   });
 
   it('도착 waypoint는 0초, 앞 waypoint일수록 같거나 크다 (목적지에 가까울수록 감소)', () => {

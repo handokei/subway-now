@@ -65,6 +65,7 @@ import {
 } from './kalmanFilter';
 import {
   buildLiveActivityContentState,
+  destinationEtaSeconds,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
   resolveCurrentStationName,
@@ -2267,6 +2268,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         try {
           const laHeartbeatDirty = await maybeFireLiveActivityUpdate(
             trip, waypoint, now, deps, stats, now, log, stationarySsot,
+            // #2747 PR-6 — newArrivalEpoch=now는 ETA 미지의 자리표시 -> 목적지 ETA 합산 금지.
+            false,
           );
           if (laHeartbeatDirty) {
             await putTrip(env.TRIPS, trip);
@@ -6846,7 +6849,8 @@ export async function completeWaypointAdvance(
   if (trip.activityPushToken && trip.activityState === 'live') {
     const contentState = buildLiveActivityContentState(
       nextWaypoint,
-      0,
+      // #2747 PR-6 — 방금 통과한 waypoint에 정차 중이므로 목적지까지 = 그 waypoint의 remainingSecToDest.
+      destinationEtaSeconds(waypoint, 0),
       trip.waypoints.length,
       trip,
       // #2849 — stationName은 방금 ground truth로 확정 통과한 `waypoint`(이 함수의 파라미터,
@@ -6896,6 +6900,9 @@ export async function maybeFireLiveActivityUpdate(
   // 상태에서도 한 정거장 앞선 역이 표시된다. optional(default null) — legacy 호출자는
   // resolveCurrentStationName의 trip-origin 폴백으로 흡수된다.
   ssot: TripPositionSSoT | null = null,
+  // #2747 PR-6 — false = `newArrivalEpoch`가 실측 ETA가 아님(lock-missing heartbeat는 now를 넘긴다).
+  // 이때 목적지 ETA는 합산할 수 없으므로 LA etaMinutes를 생략한다.
+  etaToWaypointKnown = true,
 ): Promise<boolean> {
   if (!trip.activityPushToken || trip.activityState !== 'live') return false;
   const last = trip.lastLaPushEpoch;
@@ -6937,7 +6944,8 @@ export async function maybeFireLiveActivityUpdate(
   const endPromptDue = ssot !== null && isEndPromptDue(ssot, now);
   const contentState = buildLiveActivityContentState(
     waypoint,
-    etaSeconds,
+    // #2747 PR-6 — 목적지까지 남은 시간(waypoint ETA + 그 waypoint의 remainingSecToDest). 합산 불가면 null=생략.
+    destinationEtaSeconds(waypoint, etaToWaypointKnown ? etaSeconds : null),
     trip.waypoints.length,
     trip,
     // #2849 — waypoint.stationName(다음 추적 대상) 대신 SSoT 현재역(미정착 시 trip origin).
