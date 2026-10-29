@@ -13,7 +13,8 @@
 
 | 위치 | 종류 | 요약 | 강제 |
 |---|---|---|---|
-| scheduled.ts:3474 | 불변식 | advance 미성공 시 fire path 진입 금지(조기 return) | 있음 |
+| scheduled.ts:3474 | 불변식 | `fireArvlCdStationPush`만 — advance 미성공 시 fire path 진입 금지(조기 return). advance 없이 발사만 하는 경로는 mid-cycle·position 진입(`sendStationPassedFireOnly`, #3223 ADR-050) 2곳뿐 | 있음 |
+| scheduled.ts `isEnteringTarget` / `isPositionEnteringFire` (#3223) | 불변식 | 매역 진입(position sttus0) 발사는 intermediate만 · 번호 변경역(`RENUMBER_STATION`) 제외 · trip/SSoT mutate 금지 · KV 쓰기=공용 dedup 키 1건 · 역당 1회(`stationPassedFiredKey` 공유) | 있음 (`scheduled.positionEntering.test.ts`, `replay_20261028_position_entering.test.ts`) |
 | scheduled.ts:1621 | 불변식 | 열차 미선택/lock 만료 trip은 fire 제외 | 부분 |
 | scheduled.ts:5615 | 불변식 | `promptDisplay`는 stampCurrentLegAnchor 외부에서 불변경 — leg-1 프롬프트 사망 방지 | **없음** |
 | scheduled.ts:7628 | 함정 | isNearOrigin은 부재 시 false → "존재 AND 멀다" 분리 판정 필수(#2532) | **없음** |

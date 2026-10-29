@@ -20,6 +20,7 @@ import path from 'node:path';
 import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
 import type { PositionPoint, Trip } from '../types';
 import { makeDesk20260913LockTrip } from './helpers/desk20260913Trip';
+import { makeRide20261028EveningTrip, makeRide20261028MorningTrip } from './helpers/ride20261028Trips';
 import { makeLine7SynthLockTrip } from './helpers/line7SynthTrip';
 import { makeRide20260918LocklessTrip } from './helpers/ride20260918Trip';
 import { buildRide20260918PositionSeries } from './helpers/ride20260918PositionSeries';
@@ -183,6 +184,14 @@ const RIDE_20260914_MORNING_LOCK_TRAIN = '7039';
 // (7256/중곡/≈3.03km/74m)로 hook 레벨에서 직접 측정한다(PR 본문 상세).
 const RIDE_20260918_FIXTURE_PATH = 'capture_20260918_line7_yongmasan_overshoot.fixture.json';
 const loadRide20260918Fixture = makeFixtureLoader(RIDE_20260918_FIXTURE_PATH);
+
+// #3223 — 2026-10-28 실측 라이드(trip 179 아침 7035 / trip 180 저녁 leg-2 7252). R2 `seoul-capture`
+// 원문(etag 일치)을 `buildReplayFixture.mjs`로 번들했다. 역 집합 회귀만 이 라이브러리가 맡고, 역별 발사
+// 시각(진입 첫 tick) 단언은 `replay_20261028_position_entering.test.ts`가 맡는다(`REPLAY_LIBRARY`는 twoPass 없음).
+const RIDE_20261028_MORNING_FIXTURE_PATH = 'capture_20261028_trip179_morning_7035.fixture.json';
+const loadRide20261028MorningFixture = makeFixtureLoader(RIDE_20261028_MORNING_FIXTURE_PATH);
+const RIDE_20261028_EVENING_FIXTURE_PATH = 'capture_20261028_trip180_evening_7252.fixture.json';
+const loadRide20261028EveningFixture = makeFixtureLoader(RIDE_20261028_EVENING_FIXTURE_PATH);
 
 export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
   {
@@ -415,6 +424,40 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // 발사된다(위 tripEnded 단언이 그대로 통과). minPushes: 매역 3 + 준비 알림 + 즉시 배너 제거분 감소(7→5).
       tripEnded: { reason: 'destination-arrived' },
       minPushes: 5,
+    },
+  },
+  {
+    slug: 'capture_20261028_trip179_morning_7035',
+    fixturePath: RIDE_20261028_MORNING_FIXTURE_PATH,
+    description:
+      '#3223 — 2026-10-28 아침 trip 179(7호선 7035, 군자 -> 어린이대공원 -> 건대입구 환승) 실캡처. 매역 알림 진입(position sttus0) 시점 발사 anchor.',
+    seedTrips: () => [
+      makeRide20261028MorningTrip('replay-library-ride-20261028-am', loadRide20261028MorningFixture().window.fromMs),
+    ],
+    cronIntervalMs: 'recorded',
+    phaseOffsetsMs: [0],
+    loadFixture: loadRide20261028MorningFixture,
+    expect: {
+      firedStations: ['군자(능동)', '어린이대공원(세종대)', '건대입구'],
+      hopEndPromptStations: ['건대입구'],
+      minPushes: 3,
+    },
+  },
+  {
+    slug: 'capture_20261028_trip180_evening_7252',
+    fixturePath: RIDE_20261028_EVENING_FIXTURE_PATH,
+    description:
+      '#3223 — 2026-10-28 저녁 trip 180 leg-2(7호선 7252, 어린이대공원 -> 군자 -> 중곡 -> 용마산) 실캡처. 매역 알림 진입(position sttus0) 시점 발사 anchor.',
+    seedTrips: () => [
+      makeRide20261028EveningTrip('replay-library-ride-20261028-pm', loadRide20261028EveningFixture().window.fromMs),
+    ],
+    cronIntervalMs: 'recorded',
+    phaseOffsetsMs: [0],
+    loadFixture: loadRide20261028EveningFixture,
+    expect: {
+      firedStations: ['어린이대공원(세종대)', '군자(능동)', '중곡', '용마산'],
+      tripEnded: { reason: 'destination-arrived' },
+      minPushes: 4,
     },
   },
 ];
