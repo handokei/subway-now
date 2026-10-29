@@ -17,13 +17,16 @@ describe('N역 전 band 문구 키', () => {
   describe.each(Object.keys(LOCALES))('%s', (code) => {
     const { alarms, alarmOverlay } = LOCALES[code];
 
-    it.each(BAND_ALARM_KEYS)('alarms.%s 가 있고 {{stops}}를 쓴다', (key) => {
+    // #3223 후속 — 정거장 수와 역명은 제목에, 본문은 "일어나서 … 준비하세요" 고정 문장이다.
+    it.each(['bandTransferTitle', 'bandArrivalTitle'])('alarms.%s 가 있고 {{station}}·{{stops}}를 쓴다', (key) => {
       expect(typeof alarms[key]).toBe('string');
       expect(alarms[key]).toContain('{{stops}}');
+      expect(alarms[key]).toContain('{{station}}');
     });
 
-    it.each(['bandTransferBody', 'bandArrivalBody'])('alarms.%s 는 {{station}}도 쓴다', (key) => {
-      expect(alarms[key]).toContain('{{station}}');
+    it.each(['bandTransferBody', 'bandArrivalBody'])('alarms.%s 는 고정 문장(보간 없음)', (key) => {
+      expect(typeof alarms[key]).toBe('string');
+      expect(alarms[key]).not.toContain('{{');
     });
 
     it('alarmOverlay.bandMessage 가 {{station}}·{{stops}}를 쓴다', () => {
@@ -38,24 +41,24 @@ describe('N역 전 band 문구 키', () => {
   });
 
   it('ko 문장이 백엔드 sleepAlarmTitle/Body와 동일', () => {
-    expect(ko.alarms.bandTransferTitle).toBe('환승 {{stops}}정거장 전');
-    expect(ko.alarms.bandArrivalTitle).toBe('도착 {{stops}}정거장 전');
-    expect(ko.alarms.bandTransferBody).toBe('{{station}}까지 {{stops}}정거장 남았습니다. 환승 준비하세요!');
-    expect(ko.alarms.bandArrivalBody).toBe('{{station}}까지 {{stops}}정거장 남았습니다. 하차 준비하세요!');
+    expect(ko.alarms.bandTransferTitle).toBe('{{station}} 환승까지 {{stops}}정거장');
+    expect(ko.alarms.bandArrivalTitle).toBe('{{station}} 도착까지 {{stops}}정거장');
+    expect(ko.alarms.bandTransferBody).toBe('일어나서 환승 준비하세요');
+    expect(ko.alarms.bandArrivalBody).toBe('일어나서 하차 준비하세요');
   });
 
   it('en/ja/zh 문장이 백엔드와 동일', () => {
-    expect(en.alarms.bandTransferTitle).toBe('Transfer in {{stops}} stops');
-    expect(en.alarms.bandArrivalTitle).toBe('Arrival in {{stops}} stops');
-    expect(en.alarms.bandTransferBody).toBe('{{stops}} stops to {{station}} — get ready to transfer!');
-    expect(en.alarms.bandArrivalBody).toBe('{{stops}} stops to {{station}} — get ready to exit!');
-    expect(ja.alarms.bandTransferTitle).toBe('乗換まであと{{stops}}駅');
-    expect(ja.alarms.bandArrivalTitle).toBe('到着まであと{{stops}}駅');
-    expect(ja.alarms.bandTransferBody).toBe('{{station}}まであと{{stops}}駅です。乗換の準備をしてください!');
-    expect(ja.alarms.bandArrivalBody).toBe('{{station}}まであと{{stops}}駅です。下車の準備をしてください!');
-    expect(zh.alarms.bandTransferTitle).toBe('距换乘还有{{stops}}站');
-    expect(zh.alarms.bandArrivalTitle).toBe('距到达还有{{stops}}站');
-    expect(zh.alarms.bandTransferBody).toBe('距{{station}}还有{{stops}}站。请准备换乘!');
-    expect(zh.alarms.bandArrivalBody).toBe('距{{station}}还有{{stops}}站。请准备下车!');
+    expect(en.alarms.bandTransferTitle).toBe('{{stops}} stops until transfer at {{station}}');
+    expect(en.alarms.bandArrivalTitle).toBe('{{stops}} stops until arrival at {{station}}');
+    expect(en.alarms.bandTransferBody).toBe('Wake up and get ready to transfer');
+    expect(en.alarms.bandArrivalBody).toBe('Wake up and get ready to exit');
+    expect(ja.alarms.bandTransferTitle).toBe('{{station}}乗換まであと{{stops}}駅');
+    expect(ja.alarms.bandArrivalTitle).toBe('{{station}}到着まであと{{stops}}駅');
+    expect(ja.alarms.bandTransferBody).toBe('起きて乗換の準備をしてください');
+    expect(ja.alarms.bandArrivalBody).toBe('起きて下車の準備をしてください');
+    expect(zh.alarms.bandTransferTitle).toBe('距{{station}}换乘还有{{stops}}站');
+    expect(zh.alarms.bandArrivalTitle).toBe('距{{station}}到达还有{{stops}}站');
+    expect(zh.alarms.bandTransferBody).toBe('请醒来准备换乘');
+    expect(zh.alarms.bandArrivalBody).toBe('请醒来准备下车');
   });
 });

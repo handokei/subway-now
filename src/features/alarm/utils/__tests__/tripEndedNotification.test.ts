@@ -93,7 +93,7 @@ function resetAll(): void {
 describe('notifyTripEnded (#2675)', () => {
   beforeEach(resetAll);
 
-  it('도착 종료 — 목적지 도착 제목 + 역명이 실린 본문으로 로컬 알림을 띄운다', async () => {
+  it('도착 종료 — "{역} 도착 · 안내 종료" 제목 + 도착 본문으로 로컬 알림을 띄운다 (#3223 후속, backend와 동일 문장)', async () => {
     await notifyTripEnded({ destination: ttuksom, reason: 'arrived' });
     expect(mockSchedule).toHaveBeenCalledTimes(1);
     const arg = mockSchedule.mock.calls[0][0] as {
@@ -101,8 +101,8 @@ describe('notifyTripEnded (#2675)', () => {
       content: { title: string; body: string; categoryIdentifier: string };
     };
     expect(arg.identifier).toBe(TRIP_ENDED_NOTIFICATION_ID);
-    expect(arg.content.title).toBe(i18next.t('route.tripEndedArrivedTitle'));
-    expect(arg.content.body).toContain('뚝섬');
+    expect(arg.content.title).toBe('뚝섬 도착 · 안내 종료');
+    expect(arg.content.body).toBe('목적지에 도착해 경로 안내를 마쳤어요');
     // [다음 여정 시작] 버튼이 붙도록 기존 category 재사용.
     expect(arg.content.categoryIdentifier).toBe(TRIP_ENDED_CATEGORY);
   });

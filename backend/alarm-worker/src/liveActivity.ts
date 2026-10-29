@@ -28,6 +28,7 @@ import {
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { extractOriginStation, recordTripMetrics } from './d1TripMetrics';
 import { readDeviceContact } from './deviceContact';
+import { buildTripEndedAlertContent } from './alertContent';
 import { t } from './i18n';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
@@ -700,6 +701,8 @@ export async function fireTripEndedAlertPush(
           deviceToken: resolveTripDeviceToken(trip),
           pushId,
           reason: externalReason,
+          // #3223 후속 — 목적지 도착 종료는 "{목적지} 도착 · 안내 종료" 문구.
+          alert: buildTripEndedAlertContent(reason, trip.destination, trip.locale),
           sentAt: now,
           // race 가드(#868 P1-2) — push 도착 시점에 클라가 trip 갈아탔으면 ACTIVE_TRIP_KEY 불일치로 cleanup skip.
           tripToken: trip.token,

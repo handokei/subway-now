@@ -109,14 +109,20 @@ export async function notifyTripEnded(input: NotifyTripEndedInput): Promise<void
     if (!claimTripEnd(await resolveEndClaimKey())) return;
     const stationName = destination ? getStationDisplayName(destination) : null;
     const { title: titleKey, body: bodyKey } = TRIP_ENDED_TEXT_KEYS[reason];
-    const bodyText = i18next.t(bodyKey);
-    const body = stationName ? `${stationName} · ${bodyText}` : bodyText;
+    // #3223 후속 — 도착 종료 + 목적지명이 있으면 "{역} 도착 · 안내 종료" / "목적지에 도착해 경로 안내를 마쳤어요"
+    // (backend `buildTripEndedAlertContent`와 같은 문장). 그 외 사유·역명 없음은 기존 문구 유지.
+    const arrivedNamed = reason === 'arrived' && stationName;
+    const bodyText = i18next.t(arrivedNamed ? 'route.tripEndedArrivedBody' : bodyKey);
+    const body = stationName && !arrivedNamed ? `${stationName} · ${bodyText}` : bodyText;
+    const title = arrivedNamed
+      ? i18next.t('route.tripEndedArrivedNamedTitle', { name: stationName })
+      : i18next.t(titleKey);
     const silent = useSettingsStore.getState().sleepMode;
     const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
     await Notifications.scheduleNotificationAsync({
       identifier: TRIP_ENDED_NOTIFICATION_ID,
       content: {
-        title: i18next.t(titleKey),
+        title,
         body,
         // [다음 여정 시작] 버튼. 이미 등록된 category를 재사용한다(#1798 P2).
         categoryIdentifier: TRIP_ENDED_CATEGORY,

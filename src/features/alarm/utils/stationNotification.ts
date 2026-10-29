@@ -867,8 +867,8 @@ function earlyAlarmCopy(
   const station = getStationDisplayNameByName(stationName, allStations);
   if (band !== undefined) {
     return {
-      title: i18next.t(isTransfer ? 'alarms.bandTransferTitle' : 'alarms.bandArrivalTitle', { stops: band }),
-      body: i18next.t(isTransfer ? 'alarms.bandTransferBody' : 'alarms.bandArrivalBody', { station, stops: band }),
+      title: i18next.t(isTransfer ? 'alarms.bandTransferTitle' : 'alarms.bandArrivalTitle', { station, stops: band }),
+      body: i18next.t(isTransfer ? 'alarms.bandTransferBody' : 'alarms.bandArrivalBody'),
     };
   }
   return {
@@ -880,10 +880,11 @@ function earlyAlarmCopy(
 const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTransfer: boolean, band?: number) => { title: string; body: string }> = {
   early: (stationName, isTransfer, band) => earlyAlarmCopy(stationName, isTransfer, band),
   imminent: (stationName, isTransfer) => ({
-    title: i18next.t(isTransfer ? 'notifications.transferImminentTitle' : 'notifications.arrivalImminentTitle'),
-    body: i18next.t(isTransfer ? 'alarms.imminentTransferBody' : 'alarms.imminentArrivalBody', {
+    // #3223 후속 — 역명은 제목에 들어가고 본문은 노선 정보 없는 폴백 문장(AlarmEvent에 다음 노선/방면이 없다).
+    title: i18next.t(isTransfer ? 'notifications.transferImminentTitle' : 'notifications.arrivalImminentTitle', {
       station: getStationDisplayNameByName(stationName, allStations),
     }),
+    body: i18next.t(isTransfer ? 'alarms.imminentTransferBody' : 'alarms.imminentArrivalBody'),
   }),
 };
 
@@ -964,7 +965,8 @@ export function buildStationPassedContent(
     title: i18next.t('route.stationPassed', {
       name: getStationDisplayNameByName(stationName, allStations),
     }),
-    body: i18next.t('route.stopsRemainingToDestination', {
+    // #3223 후속 — 환승 target은 "{역} 환승까지 N정거장", 목적지 target은 기존 "{역}까지 N정거장 남음".
+    body: i18next.t(targetKind === 'transfer' ? 'route.stopsRemainingToTransfer' : 'route.stopsRemainingToDestination', {
       count,
       destination: getStationDisplayNameByName(targetName, allStations),
     }),

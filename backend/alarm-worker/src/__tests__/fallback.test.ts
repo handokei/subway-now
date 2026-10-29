@@ -117,8 +117,8 @@ describe('runFallbackPushes (#572 P2c)', () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`https://${APNS_HOSTS.sandbox}/3/device/devicetoken-hex`);
     const body = JSON.parse(init.body as string);
-    expect(body.aps.alert.title).toBe('도착 임박');
-    expect(body.aps.alert.body).toContain('강남');
+    expect(body.aps.alert.title).toBe('강남 도착');
+    expect(body.aps.alert.body).toBe('이번 역에서 내리세요');
     expect(body.data.pushId).toBe('p-fire');
     expect(kv.store.has(pendingKey('p-fire'))).toBe(false);
   });
