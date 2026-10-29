@@ -117,7 +117,7 @@ export interface ParsedRawRow {
   /** `sub=false|true`. */
   subsurface: boolean;
   arvlCd: number;
-  /** `baroEvt=HH:MM:SS` (PR-0 이후 덤프만). 없거나 `-`면 null. */
+  /** `baroEvt=HH:MM:SS` (PR-0 이후 덤프만). 컬럼이 없으면(구 덤프) null. */
   baroEventAtMs: number | null;
 }
 
@@ -130,17 +130,17 @@ export function kstEpochMs(kstDate: string, hms: string): number {
 export function parseRawRow(line: string, kstDate: string): ParsedRawRow {
   const cols = line.split(' | ').map((c) => c.trim());
   const [time, , stationId, , gps, , sub, arvl, , , hpa, fix, , , baroEvt] = cols;
-  const accuracy = /gps\((\d+(?:\.\d+)?)m/.exec(gps);
-  if (!accuracy) throw new Error(`gps column parse failed: ${line}`);
+  // 덤프 원문 고정 포맷(`gps(<acc>m/…)`) - 형식이 바뀌면 NaN으로 테스트가 깨진다.
+  const [, accuracy] = gps.match(/gps\((\d+(?:\.\d+)?)m/) as RegExpMatchArray;
   return {
     nowMs: kstEpochMs(kstDate, time),
     stationId,
-    accuracyMeters: Number(accuracy[1]),
+    accuracyMeters: Number(accuracy),
     fixAtMs: kstEpochMs(kstDate, fix.replace('fix=', '')),
     hpa: Number(hpa.replace('hpa=', '')),
     subsurface: sub === 'sub=true',
     arvlCd: Number(arvl.replace('arvlCd=', '')),
     baroEventAtMs:
-      baroEvt && baroEvt !== 'baroEvt=-' ? kstEpochMs(kstDate, baroEvt.replace('baroEvt=', '')) : null,
+      baroEvt === undefined ? null : kstEpochMs(kstDate, baroEvt.replace('baroEvt=', '')),
   };
 }
