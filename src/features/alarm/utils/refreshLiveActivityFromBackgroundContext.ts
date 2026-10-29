@@ -19,7 +19,7 @@
  *   - currentStation 결정 순서 (#2589 — 확정 아키텍처: backend추적 → LA 표시 SSoT):
  *     1. backend SSoT mirror (fresh ≤180s, `resolveBackendSsotMirrorStation` 경유 — line 불일치는
  *        거부(null)해 다음 tier로. 활성 LA 없으면 update-only 가드로 no-op) — GPS 사망 상태에서도 우선
- *     2. BG_LAST_STATION(GPS) — mirror 부재/stale/거부 시 폴백
+ *     2. BG_LAST_STATION(GPS) — mirror 부재/stale/거부 시 폴백 (#2589 PR-5: bg.timestamp 나이 ≤ 60s만)
  *     3. 없음 → no-op (안전: 기존 LA 마지막 정상 상태 유지)
  *   - 그 외 → `buildLiveActivityData` → `updateLiveActivity`
  *
@@ -246,6 +246,17 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     if (!bg) {
       logger.info(
         'no currentStation source (mirror stale/absent/rejected + BG_LAST_STATION absent) — skip refresh (preserve last LA state)',
+      );
+      return;
+    }
+    // #2589 PR-5 — BG_LAST_STATION은 accuracy 게이트를 통과한 fix에서만 기록되므로(backgroundLocationTask)
+    // 이후 fix가 전부 기각되면 묵은 역이 그대로 남는다(2026-10-28 trip 180: 17:27:44 이후 gate-accuracy
+    // 기각 → 묵은 역으로 LA 전체 교체 가능). gap1 가드와 같은 상수(60s)를 상한으로 써 그보다 오래된 GPS 역은
+    // 쓰지 않고 마지막 정상 LA 상태를 유지한다. mirror 분기(1순위)는 이 상한과 무관하다.
+    const bgAgeMs = Date.now() - bg.timestamp;
+    if (bgAgeMs > BACKEND_SSOT_ADVANCE_STALE_GPS_MS) {
+      logger.info(
+        `la-refresh source=gps-bg stale-bg: age=${bgAgeMs}ms > ${BACKEND_SSOT_ADVANCE_STALE_GPS_MS}ms — skip (preserve last LA state)`,
       );
       return;
     }
