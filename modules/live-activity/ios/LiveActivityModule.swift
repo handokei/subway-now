@@ -23,7 +23,7 @@ public class LiveActivityModule: Module {
     public func definition() -> ModuleDefinition {
         Name("LiveActivity")
 
-        Events("onPushToken", "onActivityEnded", "onActivityDismissed", "onActivityEndObserved", "onActivityAdopted")
+        Events("onPushToken", "onActivityEnded", "onActivityDismissed", "onActivityEndObserved", "onActivityAdopted", "onBoardingPushToStartToken", "onBoardingActivityEnded")
 
         OnCreate {
             if #available(iOS 16.2, *) {
@@ -58,6 +58,27 @@ public class LiveActivityModule: Module {
                             ])
                         }
                     )
+                }
+
+                // #3221 — 탑승 LA는 별도 manager/이벤트. 여정 이벤트(onPushToken/onActivityDismissed 등)로
+                // 절대 합류시키지 않는다 — 탑승 token이 여정 trip에 등록되거나 swipe가 여정 sentinel을
+                // 쓰는 것을 막는다.
+                Task { [weak self] in
+                    await BoardingActivityManager.shared.setEventHandlers(
+                        onPushToStartTokenHex: { [weak self] hex in
+                            self?.sendEvent("onBoardingPushToStartToken", ["token": hex])
+                        },
+                        onActivityEnded: { [weak self] promptId, state in
+                            self?.sendEvent("onBoardingActivityEnded", [
+                                "promptId": promptId,
+                                "state": state,
+                            ])
+                        }
+                    )
+                    await BoardingActivityManager.shared.observeActivityUpdates()
+                    if #available(iOS 17.2, *) {
+                        await BoardingActivityManager.shared.observePushToStartToken()
+                    }
                 }
             }
         }
@@ -105,6 +126,28 @@ public class LiveActivityModule: Module {
         AsyncFunction("requestPushToken") { () async -> String? in
             if #available(iOS 16.2, *) {
                 return await LiveActivityManager.shared.currentPushTokenHex()
+            }
+            return nil
+        }
+
+        // #3221 — 탑승여부 LA (여정 LA와 별도 ActivityKit 타입).
+        AsyncFunction("startBoardingActivity") { (data: [String: Any]) in
+            if #available(iOS 16.2, *) {
+                try await BoardingActivityManager.shared.startFromForeground(data: data)
+            }
+        }
+
+        AsyncFunction("endBoardingActivities") { () -> Void in
+            if #available(iOS 16.2, *) {
+                await BoardingActivityManager.shared.endAll()
+            }
+        }
+
+        // 기기 단위 push-to-start token(hex). 17.2 미만/미발급이면 nil — 이후 발급은
+        // onBoardingPushToStartToken 이벤트로 도착한다.
+        AsyncFunction("requestBoardingPushToStartToken") { () async -> String? in
+            if #available(iOS 16.2, *) {
+                return await BoardingActivityManager.shared.currentPushToStartTokenHex()
             }
             return nil
         }

@@ -163,4 +163,58 @@ describe('live-activity push token / ended listeners', () => {
 
     await expect(mod.requestLiveActivityPushToken()).resolves.toBeNull();
   });
+
+  it('#3221: 탑승 push-to-start token / 종료 listener는 전용 이벤트에만 연결되고 ambient onPushToken과 분리된다', () => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'ios' });
+    mockAddListener.mockReturnValue({ remove: jest.fn() });
+    mockRequireOptionalNativeModule.mockReturnValue({ addListener: mockAddListener });
+
+    const mod = require('../index');
+    const tokenCb = jest.fn();
+    const endedCb = jest.fn();
+    mod.addBoardingPushToStartTokenListener(tokenCb);
+    mod.addBoardingActivityEndedListener(endedCb);
+
+    expect(mockAddListener).toHaveBeenCalledWith('onBoardingPushToStartToken', tokenCb);
+    expect(mockAddListener).toHaveBeenCalledWith('onBoardingActivityEnded', endedCb);
+    // ambient(여정) 이벤트는 구독되지 않는다 — 탑승 token이 여정 trip에 등록되는 경로 차단.
+    expect(mockAddListener).not.toHaveBeenCalledWith('onPushToken', expect.anything());
+    expect(mockAddListener).not.toHaveBeenCalledWith('onActivityDismissed', expect.anything());
+  });
+
+  it('#3221: 탑승 LA 함수 3종이 native 모듈로 위임되고, 모듈 부재 시 안전한 기본값을 반환한다', async () => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'ios' });
+    const native = {
+      startBoardingActivity: jest.fn().mockResolvedValue(undefined),
+      endBoardingActivities: jest.fn().mockResolvedValue(undefined),
+      requestBoardingPushToStartToken: jest.fn().mockResolvedValue('abcd'),
+      addListener: mockAddListener,
+    };
+    mockRequireOptionalNativeModule.mockReturnValue(native);
+    const mod = require('../index');
+    const data = {
+      promptId: 'p1',
+      tripToken: 't1',
+      phase: 'pre-boarding',
+      originStation: '용마산',
+      line: '7호선',
+      lineName: '7호선',
+      lineColorHex: '#747F00',
+      title: '탑승하셨나요?',
+    };
+    await mod.startBoardingActivity(data);
+    await mod.endBoardingActivities();
+    await expect(mod.requestBoardingPushToStartToken()).resolves.toBe('abcd');
+    expect(native.startBoardingActivity).toHaveBeenCalledWith(data);
+    expect(native.endBoardingActivities).toHaveBeenCalledTimes(1);
+
+    jest.resetModules();
+    mockRequireOptionalNativeModule.mockReturnValue(null);
+    const bare = require('../index');
+    await expect(bare.startBoardingActivity(data)).resolves.toBeUndefined();
+    await expect(bare.endBoardingActivities()).resolves.toBeUndefined();
+    await expect(bare.requestBoardingPushToStartToken()).resolves.toBeNull();
+    expect(bare.addBoardingPushToStartTokenListener(jest.fn()).remove).toBeDefined();
+    expect(bare.addBoardingActivityEndedListener(jest.fn()).remove).toBeDefined();
+  });
 });
