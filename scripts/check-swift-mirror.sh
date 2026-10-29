@@ -12,30 +12,38 @@
 
 set -euo pipefail
 
-FILE_A="modules/live-activity/ios/SubwayActivityAttributes.swift"
-FILE_B="targets/subway-widget/_shared/SubwayActivityAttributes.swift"
-
-for f in "$FILE_A" "$FILE_B"; do
-  if [ ! -f "$f" ]; then
-    echo "MIRROR 가드 오류: $f 가 없다. scripts/check-swift-mirror.sh의 FILE_A/FILE_B 경로를 갱신하라."
-    exit 1
-  fi
-done
+# MIRROR 사본 쌍 "pod경로:위젯경로". #3221: 탑승 LA attributes 추가.
+MIRROR_PAIRS=(
+  "modules/live-activity/ios/SubwayActivityAttributes.swift:targets/subway-widget/_shared/SubwayActivityAttributes.swift"
+  "modules/live-activity/ios/BoardingActivityAttributes.swift:targets/subway-widget/_shared/BoardingActivityAttributes.swift"
+)
 
 strip_comments() {
   grep -v '^[[:space:]]*//' "$1"
 }
 
-if ! diff_output=$(diff <(strip_comments "$FILE_A") <(strip_comments "$FILE_B")); then
-  echo "MIRROR drift detected (Wire-completion 5단 룰 위반 위험):"
-  echo "  $FILE_A"
-  echo "  $FILE_B"
-  echo ""
-  echo "$diff_output"
-  echo ""
-  echo "→ 한쪽을 수정했으면 반드시 다른 쪽도 함께 갱신하라 (헤더 주석 문구 차이는 무시됨, 코드만 비교)."
-  exit 1
-fi
+for pair in "${MIRROR_PAIRS[@]}"; do
+  FILE_A="${pair%%:*}"
+  FILE_B="${pair##*:}"
 
-echo "OK: Swift MIRROR 사본 2벌이 코드 기준 동일하다."
+  for f in "$FILE_A" "$FILE_B"; do
+    if [ ! -f "$f" ]; then
+      echo "MIRROR 가드 오류: $f 가 없다. scripts/check-swift-mirror.sh의 MIRROR_PAIRS 경로를 갱신하라."
+      exit 1
+    fi
+  done
+
+  if ! diff_output=$(diff <(strip_comments "$FILE_A") <(strip_comments "$FILE_B")); then
+    echo "MIRROR drift detected (Wire-completion 5단 룰 위반 위험):"
+    echo "  $FILE_A"
+    echo "  $FILE_B"
+    echo ""
+    echo "$diff_output"
+    echo ""
+    echo "→ 한쪽을 수정했으면 반드시 다른 쪽도 함께 갱신하라 (헤더 주석 문구 차이는 무시됨, 코드만 비교)."
+    exit 1
+  fi
+done
+
+echo "OK: Swift MIRROR 사본 ${#MIRROR_PAIRS[@]}쌍이 코드 기준 동일하다."
 exit 0

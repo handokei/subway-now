@@ -64,13 +64,15 @@ describe('useArrivalCountdown', () => {
 });
 
 describe('pickArrivalAtOrigin', () => {
-  it('첫 행이 unknown이면 그 방향은 후보에서 제외 — 다른 방향 실값을 고른다', () => {
+  it('내 방향 첫 행이 unknown이면 후보 없음 — 반대 방향 실값으로 대체하지 않는다(#1480 N8)', () => {
     const arrival: StationArrival = { up: [FAR_3], down: [row({ trainCode: 'D', arrivalSeconds: 300 })] };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({ arrivalSeconds: 300, receivedAtMs: 1_000 });
+    expect(pickArrivalAtOrigin(arrival, 'up')).toBeUndefined();
+    expect(pickArrivalAtOrigin(arrival, 'down')).toEqual({ arrivalSeconds: 300, receivedAtMs: 1_000 });
   });
 
-  it('양방향 첫 행이 모두 unknown이면 undefined (DEFAULT_WAIT_MINUTES graceful fallback)', () => {
-    expect(pickArrivalAtOrigin({ up: [FAR_3], down: [PREV_1] })).toBeUndefined();
+  it('내 방향 첫 행이 unknown이면 undefined (DEFAULT_WAIT_MINUTES graceful fallback)', () => {
+    expect(pickArrivalAtOrigin({ up: [FAR_3], down: [PREV_1] }, 'up')).toBeUndefined();
+    expect(pickArrivalAtOrigin({ up: [FAR_3], down: [PREV_1] }, 'down')).toBeUndefined();
   });
 });
 
@@ -156,22 +158,24 @@ describe('BoardingTrainList', () => {
 });
 
 describe('pickNextTrainMinutes (홈 ETA 입력, HomeScreen nextTrainMinutes)', () => {
-  it('서울교통공사 동작 불변: 양방향 첫 행 중 최소 분', () => {
+  it('내 방향 첫 행의 분 (#1480 N8: 양방향 최솟값 아님)', () => {
     const arrival: StationArrival = {
       up: [row({ trainCode: 'U', arrivalSeconds: 300 })],
       down: [row({ trainCode: 'D', arrivalSeconds: 130 })],
     };
-    expect(pickNextTrainMinutes(arrival)).toBe(2);
+    expect(pickNextTrainMinutes(arrival, 'down')).toBe(2);
+    expect(pickNextTrainMinutes(arrival, 'up')).toBe(5);
   });
 
   it('청량리 1001 상행처럼 첫 행이 unknown이면 그 방향은 Infinity (예전의 0분 "지금 도착" 오표기 제거)', () => {
     const arrival: StationArrival = { up: [FAR_3, SEC_240], down: [] };
-    expect(pickNextTrainMinutes(arrival)).toBe(Infinity);
+    expect(pickNextTrainMinutes(arrival, 'up')).toBe(Infinity);
   });
 
-  it('한 방향이 unknown이어도 다른 방향 실값이 있으면 그 값', () => {
+  it('내 방향이 unknown이면 다른 방향 실값이 있어도 Infinity, 내 방향 실값이면 그 값', () => {
     const arrival: StationArrival = { up: [FAR_3], down: [SEC_240] };
-    expect(pickNextTrainMinutes(arrival)).toBe(4);
+    expect(pickNextTrainMinutes(arrival, 'up')).toBe(Infinity);
+    expect(pickNextTrainMinutes(arrival, 'down')).toBe(4);
   });
 });
 

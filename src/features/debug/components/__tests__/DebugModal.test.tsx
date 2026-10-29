@@ -90,6 +90,14 @@ jest.mock('../../../../shared/hooks/useBarometer', () => ({
 jest.mock('../../../../shared/hooks/useLowPowerMode', () => ({
   useLowPowerMode: () => mockUseLowPowerMode(),
 }));
+// #3221 — BoardingActivitySpikeSection이 live-activity native 모듈 API를 쓴다(섹션 자체는 별도 테스트).
+jest.mock('live-activity', () => ({
+  addBoardingActivityEndedListener: () => ({ remove: () => undefined }),
+  addBoardingPushToStartTokenListener: () => ({ remove: () => undefined }),
+  endBoardingActivities: () => Promise.resolve(),
+  requestBoardingPushToStartToken: () => Promise.resolve(null),
+  startBoardingActivity: () => Promise.resolve(),
+}));
 // silentPushTask는 expo-task-manager native module이 필요 — jest 환경에서 chain break.
 jest.mock('../../../alarm/hooks/useSilentPushDiagnostics', () => ({
   useSilentPushDiagnostics: () => mockUseSilentPushDiagnostics(),

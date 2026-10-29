@@ -51,6 +51,17 @@ export interface LiveActivityData {
   // 배너를 계속 노출할 때 true. native 위젯은 "탑승하셨나요?" 질문 대신 "추적중" 안내 +
   // [아니에요] 버튼만 렌더한다 — 이미 확정된 열차라 재확인 질문이 불필요하기 때문.
   boardingAutoLocked?: boolean;
+  // #3221 PR-5 — 여정 LA 진행 막대(Line Glass). backend `computeLegProgressContext`가 채운다
+  // (기기 buildLiveActivityData는 원본 route를 모르는 재앵커링된 remainingRoute만 받아 채우지 않는다).
+  // 전부 optional — 없으면 위젯은 막대를 숨긴다(구 payload 호환).
+  legStopsTotal?: number;
+  nextLegStopsTotal?: number;
+  nextLineColorHex?: string;
+  // #3221 PR-5 — "다음 {역}" 라벨 / 환승 카드 "{노선} {방면} 방면". backend가 trip.waypoints로 채운다.
+  // 기기는 앵커된 route에 역 목록이 없어 nextLineName/nextLineColorHex(환승 route의 toLine)만 채운다.
+  nextStationName?: string;
+  nextLineName?: string;
+  nextLineDirection?: string;
 }
 
 const LiveActivityModule =
@@ -243,4 +254,68 @@ export function addActivityAdoptedListener(
   listener: (event: ActivityAdoptedEvent) => void,
 ): EventSubscription {
   return LiveActivityModule?.addListener('onActivityAdopted', listener) ?? NOOP_SUBSCRIPTION;
+}
+
+/**
+ * #3221 — 탑승여부 Live Activity (여정 LA와 별도 ActivityKit 타입 `BoardingActivityAttributes`).
+ * 시작: 앱 foreground(`startBoardingActivity`, iOS 16.2+) 또는 backend push-to-start(iOS 17.2+).
+ * 종료: 기기 소유 — 응답 intent / `endBoardingActivities` / 재질문 시 이전 end. 여정 LA 함수
+ * (`startLiveActivity`/`endLiveActivity`)와 서로 영향을 주지 않는다.
+ */
+export interface BoardingActivityData {
+  /** 같은 promptId 중복 시작은 native가 no-op 처리한다(재질문은 새 promptId). */
+  promptId: string;
+  tripToken: string;
+  phase: 'pre-boarding' | 'hop-end' | 'end-prompt';
+  originStation: string;
+  line: string;
+  lineName: string;
+  lineColorHex: string;
+  trainInfo?: string;
+  title: string;
+  body?: string;
+  nextLine?: string;
+}
+
+export function startBoardingActivity(data: BoardingActivityData): Promise<void> {
+  return LiveActivityModule?.startBoardingActivity(data) ?? Promise.resolve();
+}
+
+/** 모든 탑승 LA 종료. 여정 LA는 건드리지 않는다. */
+export function endBoardingActivities(): Promise<void> {
+  return LiveActivityModule?.endBoardingActivities() ?? Promise.resolve();
+}
+
+/** 기기 단위 push-to-start token(hex). 17.2 미만/미발급/모듈 부재는 null. */
+export function requestBoardingPushToStartToken(): Promise<string | null> {
+  return LiveActivityModule?.requestBoardingPushToStartToken?.() ?? Promise.resolve(null);
+}
+
+/**
+ * 탑승 push-to-start token 발급/갱신 구독. ambient 여정 `onPushToken`과 **다른 이벤트**다 —
+ * 탑승 token이 여정 trip의 LA token으로 등록되지 않는다.
+ */
+export function addBoardingPushToStartTokenListener(
+  listener: (event: PushTokenEvent) => void,
+): EventSubscription {
+  return (
+    LiveActivityModule?.addListener('onBoardingPushToStartToken', listener) ?? NOOP_SUBSCRIPTION
+  );
+}
+
+export interface BoardingActivityEndedEvent {
+  promptId: string;
+  state: 'ended' | 'dismissed';
+}
+
+/**
+ * 탑승 LA가 종료(.ended/.dismissed)된 시점 구독. 여정 `onActivityDismissed`(sentinel)와 무관 —
+ * 탑승 LA swipe는 mirror/BG 갱신을 막지 않는다.
+ */
+export function addBoardingActivityEndedListener(
+  listener: (event: BoardingActivityEndedEvent) => void,
+): EventSubscription {
+  return (
+    LiveActivityModule?.addListener('onBoardingActivityEnded', listener) ?? NOOP_SUBSCRIPTION
+  );
 }

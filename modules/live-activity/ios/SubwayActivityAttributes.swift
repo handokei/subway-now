@@ -56,6 +56,16 @@ struct SubwayActivityAttributes: ActivityAttributes {
         // forward해 backend가 "어느 열차인지" 알 수 있게 한다. optional — 구 backend/값 없음
         // 모두 nil로 안전 decode(기존 LA 세션 호환).
         var trainCode: String?
+        // #3221 PR-5 — 여정 LA 진행 막대(Line Glass). 현재 leg 전체 정거장 수 / 환승 후 다음 leg
+        // 전체 정거장 수 / 다음 leg 노선색. 전부 optional — 구 payload·산출 불가 시 nil이면 막대를 숨긴다.
+        var legStopsTotal: Int?
+        var nextLegStopsTotal: Int?
+        var nextLineColorHex: String?
+        // #3221 PR-5 — 시안 일치: "다음 {역}" 라벨 / 환승 카드 "지금 내려서 {노선} {방면} 방면으로".
+        // 전부 optional — 없으면 위젯은 "현재역" 라벨 / 노선색 칩 + 기본 환승 문구로 폴백.
+        var nextStationName: String?
+        var nextLineName: String?
+        var nextLineDirection: String?
     }
 }
 

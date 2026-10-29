@@ -38,6 +38,7 @@ import { isInTripByEvidence } from '../shared/utils/boardingWait';
 import { getFiredAlarms } from '../features/alarm/utils/notificationState';
 import { pickNextTrainMinutes } from '../features/arrival/utils/nextTrainMinutes';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
+import { resolveTripDirection } from '../features/route/utils/tripDirection';
 import { EditorialTimeline } from '../features/arrival/components/EditorialTimeline';
 import { arrivalInfoToArrivalTrain, journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
 import { EditorialArrivalRow } from '../features/arrival/components/EditorialArrivalRow';
@@ -750,10 +751,15 @@ export default function HomeScreen() {
     () => (route && journeyOrigin && destination ? buildJourneyDisplay(route, journeyOrigin, destination) : null),
     [route, journeyOrigin?.id, destination?.id],
   );
+  // #1480 N8 — 출발 대기는 내 진행 방향(route 활성 leg) 열차만 본다. 판정 불가면 null(데이터 없음, D5).
+  const originWaitDirection =
+    route && destination && effectiveOrigin
+      ? resolveTripDirection(route, destination.name, effectiveOrigin.id)
+      : null;
   const nextTrainMinutes = useMemo(() => {
     if (!arrival || arrivalIsMock) return null;
-    return pickNextTrainMinutes(arrival);
-  }, [arrival, arrivalIsMock]);
+    return pickNextTrainMinutes(arrival, originWaitDirection);
+  }, [arrival, arrivalIsMock, originWaitDirection]);
   // #2290 — in-trip 판정: 출발 leg의 boarding 대기를 표시 ETA에서 제외할지 여부.
   // P1-1 (PR #2295 리뷰): `Boolean(lock)`만으로 판정하면 user-tap lock(BoardingTrainList 직접
   // 탭)이 승강장에서 다음 열차를 기다리는 중에도 "이미 탑승"으로 오판했다. `hasConsumedOriginWait`가
@@ -832,7 +838,7 @@ export default function HomeScreen() {
         originStation: effectiveOrigin
           ? { lat: effectiveOrigin.lat, lng: effectiveOrigin.lng }
           : undefined,
-        arrivalAtOrigin: pickArrivalAtOrigin(rawArrival),
+        arrivalAtOrigin: pickArrivalAtOrigin(rawArrival, originWaitDirection),
         excludeOriginWait: isInTrip,
       })
     : null;

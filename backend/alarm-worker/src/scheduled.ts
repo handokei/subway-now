@@ -53,7 +53,7 @@ import {
   shouldStampOriginProximity,
 } from './boardingPrompt';
 import { isBoardingPromptFireOnceBlocked, stampBoardingPromptFireOnce } from './boardingPromptFireOnce';
-import { computeMultiHopContext } from './tripMultiHop';
+import { computeMultiHopContext, waypointAfter } from './tripMultiHop';
 import {
   detectKalmanDrift,
   KALMAN_DRIFT_GRACE_MS,
@@ -2993,8 +2993,7 @@ function deriveStationNotifCounts(trip: Trip, waypoint: Waypoint): StationNotifC
  * 새 KV 읽기 없음(이미 로드된 trip.waypoints만 사용).
  */
 function deriveTransferNextLeg(trip: Trip, waypoint: Waypoint): StationNotifCounts {
-  const idx = trip.waypoints.indexOf(waypoint);
-  const next = idx === -1 ? undefined : trip.waypoints[idx + 1];
+  const next = waypointAfter(trip, waypoint);
   return next ? { nextLine: next.line, nextStation: next.stationName } : {};
 }
 
