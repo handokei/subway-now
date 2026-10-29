@@ -3590,6 +3590,19 @@ app.post('/boarding-lock/sync', async (c) => {
           // 사용자는 "해제됐다가 되살아난 옛 trainCode lock"을 갖게 됨, #864 실패 모드).
           // `advanceBoardingLockWaypoint`는 넘겨받은 trip 객체(cursor)를 in-place mutate하고
           // 결과를 반환값으로 알려주므로 그 mutate된 cursor 자체를 계속 신뢰한다.
+          // destination은 종료 안내(cleanup)보다 도착 alert가 먼저여야 해서 소비 확정 직전 훅으로, transfer는 소비 확정 뒤에 발사한다.
+          const fireObserved = () =>
+            fireSyncObservedTransferDestination(
+              c.env,
+              existing, // 원본을 넘겨야 남은 정거장 계산이 보존된다.
+              wp,
+              lockBeforeAdvance,
+              { apnsConfig, apnsHosts, archFlag },
+              now,
+              log,
+              () => crypto.randomUUID(),
+            );
+          const isDestinationWp = wp.kind === 'destination';
           const result = await advanceBoardingLockWaypoint(
             cursor,
             wp,
@@ -3600,20 +3613,12 @@ app.post('/boarding-lock/sync', async (c) => {
             log,
             undefined,
             () => crypto.randomUUID(),
+            isDestinationWp ? fireObserved : undefined,
           );
           if (!result.consumed) break; // gps-far 유예 등 — trip 보존, 더 진행하지 않는다.
           appliedShiftedCount += 1;
-          // #2645 PR-3 — 소비가 확정된 transfer/destination의 visible 알림. 원본 `existing`을 넘겨야 남은 정거장 계산이 보존된다.
-          await fireSyncObservedTransferDestination(
-            c.env,
-            existing,
-            wp,
-            lockBeforeAdvance,
-            { apnsConfig, apnsHosts, archFlag },
-            now,
-            log,
-            () => crypto.randomUUID(),
-          );
+          // #2645 PR-3 — 소비가 확정된 transfer의 visible 알림(destination은 위 훅에서 이미 발사).
+          if (!isDestinationWp) await fireObserved();
           if (result.tripEnded) {
             tripEnded = true;
             break;

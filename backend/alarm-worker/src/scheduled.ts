@@ -6417,6 +6417,9 @@ export async function advanceBoardingLockWaypoint(
   // #2066 (Phase 2-backend) — 취침 알람 visible/companion push 발사용 pushId 발급자.
   // optional — legacy 테스트 호출자는 미전달 시 `crypto.randomUUID` fallback.
   generatePushId: () => string = () => crypto.randomUUID(),
+  // #2645 PR-3 — destination 소비가 확정되어 cleanup(종료 안내 push)에 들어가기 **직전** 호출. gps-far 유예(consumed=false)
+  // 에서는 호출되지 않는다. sync가 도착 alert를 종료 안내보다 먼저 보내기 위한 훅(그 외 호출자는 미전달).
+  beforeDestinationEnd?: () => Promise<void>,
 ): Promise<AdvanceBoardingLockWaypointResult> {
   // ADR-017 T5 (#1558) — SSoT 통합 게이트.
   // evidence 가 제공되면 `advanceTripPosition`이 동의해야만 trip.waypoints / cleanup 이 진행된다.
@@ -6574,6 +6577,7 @@ export async function advanceBoardingLockWaypoint(
           kind: waypoint.kind,
           backstopElapsedMs,
         });
+        await beforeDestinationEnd?.();
         await cleanupTripWithLa(trip, env, deps, stats, now, log, {
           reason: 'destination-arrived',
           endPath: 'lock-active-destination-gps-far-backstop',
@@ -6596,6 +6600,7 @@ export async function advanceBoardingLockWaypoint(
 
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
+    await beforeDestinationEnd?.();
     await cleanupTripWithLa(trip, env, deps, stats, now, log, {
       reason: 'destination-arrived',
       endPath: 'lock-active-destination',
