@@ -42,8 +42,8 @@ describe('#2909 stationNotifCollapseId 호출부 — 전부 역 단위(2-argumen
     }
   });
 
-  it('호출부가 최소 4곳(arvlcd 본류 / mid-cycle / sync catch-up / vanish-fallback) 존재한다', () => {
+  it('호출부가 최소 3곳(arvlcd 본류 / mid-cycle·sync catch-up 공용 sendStationPassedAlertPush / vanish-fallback) 존재한다', () => {
     const calls = extractStationNotifCollapseIdCalls(SCHEDULED_SOURCE);
-    expect(calls.length).toBeGreaterThanOrEqual(4);
+    expect(calls.length).toBeGreaterThanOrEqual(3);
   });
 });

@@ -4437,6 +4437,64 @@ export interface MidCycleFireStats {
 }
 
 /**
+ * 매역 station-passed alert push 공용 발송 (mid-cycle/진입 발사 `sendStationPassedFireOnly` + sync-skipped 발사).
+ * payload 빌드 + content/sound + env self-heal 전송까지만 하고 heal 결과를 반환한다 — dedup·D1 기록은 호출자 책임.
+ */
+async function sendStationPassedAlertPush(inputs: {
+  env: Env;
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  deps: Pick<MidCycleFireDeps, 'apnsConfig' | 'apnsHosts' | 'fetchImpl' | 'archFlag'>;
+  now: number;
+  log: Logger;
+  pushId: string;
+  origin: 'arvlcd' | 'device-sync';
+}) {
+  const { env, trip, waypoint, lock, deps, now, log, pushId, origin } = inputs;
+  const payload = buildStationPassedImminentPayload({
+    trip,
+    waypoint,
+    lock,
+    pushId,
+    now,
+    origin,
+    ssot: null,
+    archFlag: deps.archFlag,
+  });
+  const content = buildStationNotifContent(trip, waypoint, trip.locale);
+  const soundFields = stationNotifSoundFields(waypoint.kind);
+  return sendWithEnvHeal(
+    (host) =>
+      sendAlertPush({
+        deviceToken: resolveTripDeviceToken(trip),
+        title: content.title,
+        body: content.body,
+        pushId,
+        tripToken: trip.token,
+        sound: soundFields.sound,
+        interruptionLevel: soundFields.interruptionLevel,
+        // 역 단위 collapse-id (#2909, 코드리뷰 P1-5). 한 호출에서 여러 station push 가 연속 발사될 수 있고
+        // (sync-skipped) 다음 cron 이 같은 역을 또 쏴도(mid-cycle) iOS 가 같은 token+station 만 최신으로 교체하며,
+        // trip 단위 collapse 처럼 다른 역 배너를 덮거나 과거 역명이 살아남지 않는다.
+        collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
+        expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+        data: buildSilentPushData(payload),
+        contentAvailable: true,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+}
+
+/**
  * #2615 / #3223 — advance 없이 station-passed push 1건만 발사하고 성공 시 공용 dedup 키(`stationPassedFiredKey`)를
  * stamp 한다. mid-cycle(`runMidCycleFireOnly`)과 메인 pass 의 진입 발사(`fireEnteringStationPush`)가 공유한다.
  * trip/SSoT 를 mutate 하지 않는다(KV 쓰기 = dedup 키 1건뿐). 호출 전 취침 mute·dedup GET 은 호출자 책임.
@@ -4457,46 +4515,7 @@ async function sendStationPassedFireOnly(inputs: {
   midCycle: boolean;
 }): Promise<{ ok: boolean }> {
   const { env, trip, waypoint, lock, deps, now, log, pushId, entering, midCycle } = inputs;
-  const payload = buildStationPassedImminentPayload({
-    trip,
-    waypoint,
-    lock,
-    pushId,
-    now,
-    origin: 'arvlcd',
-    ssot: null,
-    archFlag: deps.archFlag,
-  });
-  const content = buildStationNotifContent(trip, waypoint, trip.locale);
-  const soundFields = stationNotifSoundFields(waypoint.kind);
-  const heal = await sendWithEnvHeal(
-    (host) =>
-      sendAlertPush({
-        deviceToken: resolveTripDeviceToken(trip),
-        title: content.title,
-        body: content.body,
-        pushId,
-        tripToken: trip.token,
-        sound: soundFields.sound,
-        interruptionLevel: soundFields.interruptionLevel,
-        // #2909 (ADR-040 0단계, 구 #2615 trip 단위 collapse 폐기) — 역 단위 collapse.
-        // 다음 정각 cron이 같은 역을 또 쏴도(같은 token+station) iOS가 알림센터에서
-        // 최신으로 교체해 중복 스택은 방지하면서, 다른 역 배너는 덮지 않고 나란히 쌓인다.
-        collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
-        expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
-        data: buildSilentPushData(payload),
-        contentAvailable: true,
-        config: deps.apnsConfig,
-        host,
-        fetchImpl: deps.fetchImpl,
-        now,
-      }),
-    trip.apnsEnv,
-    deps.apnsHosts,
-    log,
-    trip.token.slice(0, 8),
-    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-  );
+  const heal = await sendStationPassedAlertPush({ env, trip, waypoint, lock, deps, now, log, pushId, origin: 'arvlcd' });
   const path = entering ? POSITION_ENTERING_FIRE_PATH : undefined;
 
   if (!heal.result.ok) {
@@ -4787,48 +4806,7 @@ export async function fireSyncSkippedStationPasses(
 
     try {
       const pushId = generatePushId();
-      const payload = buildStationPassedImminentPayload({
-        trip,
-        waypoint,
-        lock,
-        pushId,
-        now,
-        origin: 'device-sync',
-        ssot: null,
-        archFlag: deps.archFlag,
-      });
-      const content = buildStationNotifContent(trip, waypoint, trip.locale);
-      const soundFields = stationNotifSoundFields(waypoint.kind);
-      const heal = await sendWithEnvHeal(
-        (host) =>
-          sendAlertPush({
-            deviceToken: resolveTripDeviceToken(trip),
-            title: content.title,
-            body: content.body,
-            pushId,
-            tripToken: trip.token,
-            sound: soundFields.sound,
-            interruptionLevel: soundFields.interruptionLevel,
-            // 코드리뷰 P1-5 — 역 단위 collapse-id. 이 함수는 한 sync 호출에서 여러 station의
-            // push를 연속 발사할 수 있어(다른 arvlcd/vanish-fallback 경로와 달리 tick당
-            // 1건 보장이 없음) trip 단위 collapse를 쓰면 APNs가 N건을 배너 1개로 collapse하며
-            // 순서 보장이 없어 과거 역명이 살아남을 위험이 있었다. 기존 매역 alert 관례
-            // (`prepareAlarmCollapseId` 등)와 동일하게 station을 명시해 역 단위로 분리한다.
-            collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
-            expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
-            data: buildSilentPushData(payload),
-            contentAvailable: true,
-            config: deps.apnsConfig,
-            host,
-            fetchImpl: deps.fetchImpl,
-            now,
-          }),
-        trip.apnsEnv,
-        deps.apnsHosts,
-        log,
-        trip.token.slice(0, 8),
-        { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-      );
+      const heal = await sendStationPassedAlertPush({ env, trip, waypoint, lock, deps, now, log, pushId, origin: 'device-sync' });
 
       if (!heal.result.ok) {
         log('sync-skipped-fire: push failed', {
