@@ -164,10 +164,10 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     boardingPromptTitle: '탑승하셨나요?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
-      // #3223 후속 — "{출발} {노선}호선 · {HH:MM} {다음역} 방면 열차 (목적지 {종착})". 시각/목적지는 없으면 그 조각만 생략.
+      // #3223 후속 — "{출발} {노선}호선 · {HH:MM} {다음역} 방면 {종착}행 열차". 시각/종착역은 없으면 그 조각만 생략.
       const time = etaTimeStr ? `${etaTimeStr} ` : '';
-      const dest = destinationStation ? ` (목적지 ${destinationStation})` : '';
-      return `${originStation} ${line}호선 · ${time}${nextStation} 방면 열차${dest}`;
+      const bound = destinationStation ? `${destinationStation}행 ` : '';
+      return `${originStation} ${line}호선 · ${time}${nextStation} 방면 ${bound}열차`;
     },
     hopEndPromptTitle: ({ transferStation }) => `${transferStation}에서 내리셨나요?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
@@ -225,8 +225,8 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
       const time = etaTimeStr ? `${etaTimeStr} ` : '';
-      const dest = destinationStation ? ` (destination ${destinationStation})` : '';
-      return `${originStation} line ${line} · ${time}train toward ${nextStation}${dest}`;
+      const bound = destinationStation ? `, bound for ${destinationStation}` : '';
+      return `${originStation} line ${line} · ${time}toward ${nextStation}${bound}`;
     },
     hopEndPromptTitle: ({ transferStation }) => `Did you get off at ${transferStation}?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
@@ -286,8 +286,8 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
       const time = etaTimeStr ? `${etaTimeStr} ` : '';
-      const dest = destinationStation ? ` (目的地 ${destinationStation})` : '';
-      return `${originStation} ${line}号線 · ${time}${nextStation}方面の列車${dest}`;
+      const bound = destinationStation ? ` ${destinationStation}行きの` : 'の';
+      return `${originStation} ${line}号線 · ${time}${nextStation}方面${bound}列車`;
     },
     hopEndPromptTitle: ({ transferStation }) => `${transferStation}で降りましたか?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
@@ -341,8 +341,9 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
       const time = etaTimeStr ? `${etaTimeStr} ` : '';
-      const dest = destinationStation ? ` (目的地 ${destinationStation})` : '';
-      return `${originStation} ${line}号线 · ${time}开往${nextStation}方向的列车${dest}`;
+      return destinationStation
+        ? `${originStation} ${line}号线 · ${time}${nextStation}方向,开往${destinationStation}的列车`
+        : `${originStation} ${line}号线 · ${time}开往${nextStation}方向的列车`;
     },
     hopEndPromptTitle: ({ transferStation }) => `您在${transferStation}下车了吗?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
