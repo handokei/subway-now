@@ -85,6 +85,15 @@ describe('BoardingActivitySpikeSection (#3221 PR-1)', () => {
     expect(getByTestId('debug-boarding-la-status').props.children).toContain('boom');
   });
 
+  it('Error가 아닌 값으로 거부돼도 문자열로 표시한다', async () => {
+    mockStart.mockRejectedValue('native-down');
+    const { getByTestId } = renderWithTheme(<BoardingActivitySpikeSection />);
+    await act(async () => {
+      fireEvent.press(getByTestId('debug-boarding-la-start'));
+    });
+    expect(getByTestId('debug-boarding-la-status').props.children).toContain('native-down');
+  });
+
   it('종료 버튼은 endBoardingActivities를 호출하고, 종료 이벤트를 상태에 반영한다', async () => {
     const { getByTestId } = renderWithTheme(<BoardingActivitySpikeSection />);
     await act(async () => {

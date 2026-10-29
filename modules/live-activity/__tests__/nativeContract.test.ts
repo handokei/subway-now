@@ -70,7 +70,13 @@ describe('탑승 LA 타입 격리 (#3221 PR-1)', () => {
     expect(code).not.toContain('onActivityDismissed');
     expect(code).not.toContain('emitActivityDismissed');
     expect(code).toContain('onActivityEnded');
-    const wiring = extractBlock(moduleSource, 'BoardingActivityManager.shared.setEventHandlers');
+    const wiringStart = moduleSource.indexOf('BoardingActivityManager.shared.setEventHandlers');
+    expect(wiringStart).toBeGreaterThanOrEqual(0);
+    const wiring = moduleSource.slice(
+      wiringStart,
+      moduleSource.indexOf('BoardingActivityManager.shared.observeActivityUpdates', wiringStart),
+    );
+    expect(wiring).toContain('"onBoardingPushToStartToken"');
     expect(wiring).toContain('"onBoardingActivityEnded"');
     expect(wiring).not.toContain('"onActivityDismissed"');
     expect(wiring).not.toContain('"onPushToken"');

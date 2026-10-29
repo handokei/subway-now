@@ -187,12 +187,19 @@ private func writePendingBoardingIntent(
     defaults.set(jsonString, forKey: PENDING_BOARDING_INTENT_KEY)
 }
 
-/// (a) 현재 추적 중인 Activity(들)의 boardingPhase를 즉시 전환 — 버튼 탭 즉시 시각 피드백.
-/// 아키텍처상 활성 Activity는 최대 1개(LiveActivityManager.endAllActivities)이므로 전수 update해도
-/// 안전하다. `nil`이면 프롬프트 배너를 즉시 숨긴다(미탑승/아직이요 — 아직 판단 유보라 boarded/arrival
-/// 어느 쪽으로도 전환하지 않고 LockScreenView.isBoardingPrompt를 false로 되돌린다).
+/// (a) 버튼 탭 즉시 시각 피드백. #3221 — 응답한 질문은 **탑승 LA(`Activity<BoardingActivityAttributes>`)를
+/// end(.immediate)** 해서 사라지게 한다(서버 POST/pending marker는 각 intent가 그대로 수행).
+/// 탑승 LA는 질문당 1개 최대 — 타입이 여정과 달라 여정 LA는 영향받지 않는다.
+///
+/// 구 backend(split 미지원)가 만든 여정 LA의 질문 행(`boardingPhase`)은 같은 함수에서 이전처럼
+/// 닫는다 — split 도입 전 trip의 낙관 갱신 회귀를 막는 호환 경로다(여정 LA가 질문을 더 이상
+/// 싣지 않는 시점에 제거). `nil`이면 프롬프트 배너를 즉시 숨긴다(boarded/arrival 어느 쪽으로도
+/// 전환하지 않고 LockScreenView.isBoardingPrompt를 false로 되돌린다).
 @available(iOS 17.0, *)
 private func markCurrentActivity(boardingPhase: String?) async {
+    for activity in Activity<BoardingActivityAttributes>.activities {
+        await activity.end(nil, dismissalPolicy: .immediate)
+    }
     for activity in Activity<SubwayActivityAttributes>.activities {
         var state = activity.content.state
         state.boardingPhase = boardingPhase
@@ -452,6 +459,36 @@ struct EndTripIntent: LiveActivityIntent {
             line: ""
         )
         await postTripEnd(tripToken: tripToken)
+        return .result()
+    }
+}
+
+/// #3221 — 15분 정지 종료 제안(`end-prompt`)의 [계속 안내] 버튼.
+///
+/// 서버 호출이 **없다**(네트워크 0): trip을 그대로 유지하고 탑승 LA만 닫는다. "계속"은 이전까지
+/// 무응답이었지만(#3007 S4-c) 이제 명시 버튼이다. 여정 LA·pending marker·backend 모두 건드리지 않는다.
+@available(iOS 17.0, *)
+struct ContinueGuidanceIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "계속 안내"
+    static var isDiscoverable: Bool = false
+    static var openAppWhenRun: Bool = false
+
+    @Parameter(title: "tripToken")
+    var tripToken: String
+
+    init() {
+        self.tripToken = ""
+    }
+
+    init(tripToken: String) {
+        self.tripToken = tripToken
+    }
+
+    func perform() async throws -> some IntentResult {
+        intentLog.info("perform CONTINUE_GUIDANCE tapped tripToken=\(tripToken, privacy: .public)")
+        for activity in Activity<BoardingActivityAttributes>.activities {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
         return .result()
     }
 }

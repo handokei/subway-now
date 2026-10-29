@@ -244,3 +244,67 @@ export function addActivityAdoptedListener(
 ): EventSubscription {
   return LiveActivityModule?.addListener('onActivityAdopted', listener) ?? NOOP_SUBSCRIPTION;
 }
+
+/**
+ * #3221 — 탑승여부 Live Activity (여정 LA와 별도 ActivityKit 타입 `BoardingActivityAttributes`).
+ * 시작: 앱 foreground(`startBoardingActivity`, iOS 16.2+) 또는 backend push-to-start(iOS 17.2+).
+ * 종료: 기기 소유 — 응답 intent / `endBoardingActivities` / 재질문 시 이전 end. 여정 LA 함수
+ * (`startLiveActivity`/`endLiveActivity`)와 서로 영향을 주지 않는다.
+ */
+export interface BoardingActivityData {
+  /** 같은 promptId 중복 시작은 native가 no-op 처리한다(재질문은 새 promptId). */
+  promptId: string;
+  tripToken: string;
+  phase: 'pre-boarding' | 'hop-end' | 'end-prompt';
+  originStation: string;
+  line: string;
+  lineName: string;
+  lineColorHex: string;
+  trainInfo?: string;
+  title: string;
+  body?: string;
+  nextLine?: string;
+}
+
+export function startBoardingActivity(data: BoardingActivityData): Promise<void> {
+  return LiveActivityModule?.startBoardingActivity(data) ?? Promise.resolve();
+}
+
+/** 모든 탑승 LA 종료. 여정 LA는 건드리지 않는다. */
+export function endBoardingActivities(): Promise<void> {
+  return LiveActivityModule?.endBoardingActivities() ?? Promise.resolve();
+}
+
+/** 기기 단위 push-to-start token(hex). 17.2 미만/미발급/모듈 부재는 null. */
+export function requestBoardingPushToStartToken(): Promise<string | null> {
+  return LiveActivityModule?.requestBoardingPushToStartToken?.() ?? Promise.resolve(null);
+}
+
+/**
+ * 탑승 push-to-start token 발급/갱신 구독. ambient 여정 `onPushToken`과 **다른 이벤트**다 —
+ * 탑승 token이 여정 trip의 LA token으로 등록되지 않는다.
+ */
+export function addBoardingPushToStartTokenListener(
+  listener: (event: PushTokenEvent) => void,
+): EventSubscription {
+  return (
+    LiveActivityModule?.addListener('onBoardingPushToStartToken', listener) ?? NOOP_SUBSCRIPTION
+  );
+}
+
+export interface BoardingActivityEndedEvent {
+  promptId: string;
+  state: 'ended' | 'dismissed';
+}
+
+/**
+ * 탑승 LA가 종료(.ended/.dismissed)된 시점 구독. 여정 `onActivityDismissed`(sentinel)와 무관 —
+ * 탑승 LA swipe는 mirror/BG 갱신을 막지 않는다.
+ */
+export function addBoardingActivityEndedListener(
+  listener: (event: BoardingActivityEndedEvent) => void,
+): EventSubscription {
+  return (
+    LiveActivityModule?.addListener('onBoardingActivityEnded', listener) ?? NOOP_SUBSCRIPTION
+  );
+}
