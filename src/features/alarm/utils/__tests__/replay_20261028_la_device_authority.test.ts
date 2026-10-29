@@ -25,20 +25,21 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 const mockUpdateLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockAddPushTokenListener = jest.fn();
-jest.mock('live-activity', () => ({
+// 'live-activity'(alias)와 modules/live-activity(상대 경로)가 같은 모듈로 해석되는 환경(CI)이 있어, 두 mock이
+// 서로를 덮어써도 동작하도록 같은 factory를 양쪽에 쓴다.
+function mockLiveActivityFactory() {
+  return {
   isLiveActivityEnabled: () => true,
-  updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
-  endLiveActivity: jest.fn().mockResolvedValue(undefined),
-  hasActiveLiveActivity: () => true,
-}));
-jest.mock('../../../../../modules/live-activity', () => ({
   startLiveActivity: jest.fn().mockResolvedValue(undefined),
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: jest.fn().mockResolvedValue(undefined),
   hasActiveLiveActivity: () => true,
   requestLiveActivityPushToken: async () => null,
   addPushTokenListener: (...args: unknown[]) => mockAddPushTokenListener(...args),
-}));
+  };
+}
+jest.mock('live-activity', () => mockLiveActivityFactory());
+jest.mock('../../../../../modules/live-activity', () => mockLiveActivityFactory());
 
 jest.mock('../../api/alarmBackend', () => ({
   registerLiveActivityToken: jest.fn().mockResolvedValue({ ok: true }),
