@@ -115,8 +115,11 @@ describe('useNearestStation — BG fix 주입 (#3191 PR-2)', () => {
   it('FG watch 구독이 살아 있으면 주입하지 않는다 (0회)', async () => {
     const { result } = await mount();
     await storeBgFix(bgFix());
+    const getItem = AsyncStorage.getItem as jest.Mock;
+    getItem.mockClear();
     await tick();
 
+    expect(getItem).not.toHaveBeenCalledWith(BG_LAST_FIX_KEY);
     expect(result.current.isWatchActive()).toBe(true);
     expect(result.current.userLocation).toBeNull();
     expect(result.current.lastFixFromBg).toBe(false);

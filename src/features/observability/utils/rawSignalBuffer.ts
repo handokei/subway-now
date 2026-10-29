@@ -155,6 +155,13 @@ export interface RawSignalEntry {
    * 판단 불가. PR-2 배선 전 replay/덤프에서 유지 vs 현행 비율을 보기 위한 기록.
    */
   holdEligible?: boolean | null;
+  /**
+   * #3191 PR-2 — hold가 꺼진 첫 조건 이름(StationaryHoldBlock). null = hold 통과 또는 판단 불가. 관측 전용.
+   * 구 entry에는 없다(optional).
+   */
+  holdBlock?: string | null;
+  /** #3191 PR-2 — G2 입력: fix↔GPS 최근접역 거리(m). 모르면 null. 관측 전용. */
+  distM?: number | null;
   /** #3191 PR-0 — 프로세스당 1회, 첫 hPa 기준선이 생긴 뒤 첫 push entry에만 부착. */
   launch?: RawSignalLaunch;
 }

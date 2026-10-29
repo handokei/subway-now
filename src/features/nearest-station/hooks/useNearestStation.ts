@@ -4,6 +4,7 @@ import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NearestStationResult, Station } from '../../../shared/types/station';
 import { BG_LAST_STATION_KEY } from '../../../shared/constants/storageKeys';
+import { readBgLastFix } from '../utils/bgLastFix';
 import { findNearestStations } from '../utils/findNearestStation';
 import {
   isAccuracyAcceptable,
@@ -20,6 +21,7 @@ import {
   FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
   FG_WATCH_LOCKED_TIME_INTERVAL_MS,
+  BG_FIX_INJECT_POLL_INTERVAL_MS,
   isValidGpsSpeedMps,
 } from '../../../shared/constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../../../shared/constants/e2e';
@@ -151,6 +153,9 @@ interface UseNearestStationReturn {
   // #852: 마지막 신뢰 fix epoch ms. BG 진입 후 새 fix가 없으면 이 시각은 정지.
   // null = 한 번도 fix 없음(cold start). 디버그 모달 표기용.
   lastFixAtMs: number | null;
+  // #3191 PR-2 — 마지막 채택 fix(L)가 BG task fix 주입분인가. true면 BG task가 이미 backend에 업로드했으므로
+  // FG 업로드(useFgPositionUpload)는 건너뛴다. FG watch/one-shot fix가 채택되면 false로 돌아온다.
+  lastFixFromBg: boolean;
   // #3191 PR-0 — FG watch 구독이 지금 살아 있는지(관측 전용 getter, render 유발 없음). Raw signal이
   // 기록 시점의 watch 상태를 남기기 위한 것 — 어떤 판정도 이 값을 읽지 않는다.
   isWatchActive: () => boolean;
@@ -265,6 +270,7 @@ export function useNearestStation(
   // 모듈 마운트 타이밍에 따라 'unknown'/'background'일 수 있어 wrapper로 통일.
   const [gpsActive, setGpsActive] = useState<GpsActiveState>(() => currentGpsActive());
   const [lastFixAtMs, setLastFixAtMs] = useState<number | null>(null);
+  const [lastFixFromBg, setLastFixFromBg] = useState(false);
   const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
   // #1313 — "지하라 throttle 중인가"의 SSOT. startWatch가 호출 시점에 이 ref를 읽어 watch 옵션을
   // 고른다. subsurface 원시값이 아니라 throttle 여부(=== true)를 들고 있어 warmup(undefined)과
@@ -398,9 +404,17 @@ export function useNearestStation(
     }
   }, GPS_QUALITY_GATE_TIMER_INTERVAL_MS);
 
-  const applyLocation = useCallback((coords: Location.LocationObjectCoords, timestamp: number) => {
+  const applyLocation = useCallback((coords: Location.LocationObjectCoords, timestamp: number, fromBg = false) => {
     const { latitude, longitude, speed, accuracy } = coords;
     const fix: FixSample = { lat: latitude, lng: longitude, timestamp };
+    // #3191 PR-2 — L 단조성. 같거나 과거 timestamp fix(watch inactive→active 직후 재전달, 중복 콜백)가
+    // 표시 경로(좌표/시각/accuracy)를 되돌리지 못하게 한다(10/28 06:26:51→06:26:34, 17:25:08→17:24:46 실측).
+    // 품질 게이트(evaluateGpsQuality)는 표시 경로가 아니므로 그대로 평가한다(위 주석과 정합).
+    const priorFix = lastFixRef.current;
+    if (priorFix !== null && timestamp <= priorFix.timestamp) {
+      evaluateGpsQuality(accuracy, timestamp, latitude, longitude, speed);
+      return;
+    }
     if (!isPlausibleJump(lastFixRef.current, fix)) {
       setLocationUncertain(true);
       return;
@@ -413,6 +427,7 @@ export function useNearestStation(
     // #852: 신뢰 fix가 채택된 시점을 기록 — 디버그 모달 GPS 섹션에서 stale window 시각화.
     // jump/accuracy drop된 fix는 채택 안 함(stale 시각이 그대로 유지) — 사용자가 stale 구간 식별 가능.
     setLastFixAtMs(timestamp);
+    setLastFixFromBg(fromBg);
     const stationsResult = findNearestStations(latitude, longitude, MAX_STATION_DISTANCE_KM);
 
     const newId = stationsResult?.primary.id ?? null;
@@ -487,6 +502,32 @@ export function useNearestStation(
   }, []);
 
   const isWatchActive = useCallback(() => subscriptionRef.current !== null, []);
+
+  // #3191 PR-2 — BG task fix 주입. FG watch 구독이 없는 동안(BG 전환 후 stopWatch / enabled=false 제외)에도
+  // BG task가 수용한 마지막 fix(BG_LAST_FIX_KEY)가 L이 되어, "새 fix 없음 = 이동 없음"이 BG에서도 성립한다.
+  // 주입 조건을 AppState가 아니라 구독 상태로 둔다: W 덤프 Raw 300행 중 watch=active app=background 81행 —
+  // BG 중에도 FG fix가 전진했다. 같거나 과거 timestamp는 applyLocation 단조성 가드가 거른다.
+  // AppState 이벤트에 묶인 usePolling은 BG에서 interval을 지우므로 쓰지 않는다(useBackendSsotMirrorPoll과 같은 순수 interval).
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      if (!enabledRef.current || subscriptionRef.current !== null) return;
+      void readBgLastFix().then((bgFix) => {
+        if (cancelled || bgFix === null) return;
+        const { lat, lng, timestamp, acc, speed } = bgFix;
+        applyLocation(
+          { latitude: lat, longitude: lng, accuracy: acc, speed } as Location.LocationObjectCoords,
+          timestamp,
+          true,
+        );
+      });
+    };
+    const id = setInterval(tick, BG_FIX_INJECT_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [applyLocation]);
 
   const startWatch = useCallback(async () => {
     const generation = ++watchGenerationRef.current;
@@ -916,6 +957,7 @@ export function useNearestStation(
     locationUncertain,
     gpsActive,
     lastFixAtMs,
+    lastFixFromBg,
     isWatchActive,
     gpsQualityDegraded,
     source: exposed.source,

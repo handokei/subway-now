@@ -38,7 +38,11 @@ import { useFusedStationDetection } from './useFusedStationDetection';
 import type { BarometerSignal } from '../../../shared/hooks/useBarometer';
 // #2241 (ADR-030 §Replay harness backbone P0-1) — 기압계 원시 hPa. ambient ring buffer module
 // (useBarometer가 push, 여기서는 read-only snapshot). subsurface(파생 boolean)와 별 채널.
-import { getBarometerDeltaTracking, getBarometerReadings } from '../../../shared/utils/barometerState';
+import {
+  getBarometerDeltaTracking,
+  getBarometerReadings,
+  getLastBarometerReadingAtMs,
+} from '../../../shared/utils/barometerState';
 import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
@@ -48,7 +52,7 @@ import {
   type FusionSource,
   type OppositeDirectionDrop,
 } from '../utils/pickFusedStation';
-import { shouldHoldStationaryFix } from '../utils/stationaryFixHold';
+import { isBarometerObservable, stationaryHoldBlock } from '../utils/stationaryFixHold';
 import { shouldDowngradeFusion, STATIC_SPEED_THRESHOLD_MPS } from '../utils/movementGate';
 import { isStrongFusionSource } from '../../../shared/constants/fusionSourceStrength';
 import type { PositionStability } from '../utils/positionStaticDetector';
@@ -211,6 +215,8 @@ interface UseFusedNearestStationReturn {
   gpsActive: import('../../../shared/constants/gpsStatus').GpsActiveState;
   /** #852 — 마지막 신뢰 fix epoch ms. null = 한 번도 fix 없음. 디버그 표기용. */
   lastFixAtMs: number | null;
+  /** #3191 PR-2 — 마지막 채택 fix가 BG task fix 주입분인가(FG 업로드 skip 입력). */
+  lastFixFromBg: boolean;
   /**
    * #733 — 위치 이력 기반 정적/이동/판정불가. iOS가 speed=-1(미측정)을 보고하는 정적 케이스에서
    * movementGate fallback 신호로 사용. 호출자(useStationAlarm 등)가 evaluateMovement에 전달해
@@ -590,6 +596,37 @@ export function useFusedNearestStation(
   const gpsFixAgeMs = typeof gps.lastFixAtMs === 'number' ? Date.now() - gps.lastFixAtMs : null;
   const isDecisionGpsStale = gpsFixAgeMs !== null && gpsFixAgeMs >= GPS_QUALITY_GATE_MAX_AGE_MS;
   const decisionUserLocation = isDecisionGpsStale ? null : gps.userLocation;
+  // #3191 PR-2 — 정지 fix 유지(hold). 지상에서 정지하면 iOS가 15초 넘게 새 fix를 주지 않는다. L이 지상 품질
+  // 정지 fix(acc<=30, 속도 없음, 최근접역 >=150m)이고 L 이후 이동 증거(새 fix / 기압 하강 / 기압 ΔP 이벤트)가
+  // 없으면 사용자는 L 위치에 그대로 있다 — 나이로 버리지 않고 결정 tier 거리 게이트 입력으로 계속 쓴다.
+  // 판정은 렌더당 1회만 계산해 게이트 입력과 Raw 기록(아래 effect)이 같은 값을 공유한다.
+  // usePositionStability(위)와 lockGpsDrift(아래)는 일부러 decisionUserLocation 그대로 둔다 — 전자는 #2713
+  // 자기강화 방지, 후자는 lock 범위(hold는 lock 없음 전용)다.
+  const holdFixAtMs = typeof gps.lastFixAtMs === 'number' ? gps.lastFixAtMs : null;
+  // gps.liveResult는 sticky override 없는 GPS 최근접 결과 — G2는 fix 자체와 역 사이 거리다.
+  const nearestStationDistanceM = gps.liveResult ? gps.liveResult.distanceKm * 1000 : null;
+  const holdBlock = stationaryHoldBlock({
+    fix:
+      holdFixAtMs === null
+        ? null
+        : { accuracyMeters: gps.accuracyMeters, speedMps: gps.speedMps, atMs: holdFixAtMs },
+    hasNewerFix: false,
+    subsurface: barometerSubsurface,
+    baroEventAtMs: getBarometerDeltaTracking().lastDeltaEventAtMs,
+    barometerAvailable:
+      barometerSignal != null &&
+      isBarometerObservable({
+        unavailableReason: barometerSignal.unavailableReason,
+        firstReadingAtMs: getBarometerDeltaTracking().firstHpaAtMs,
+        lastReadingAtMs: getLastBarometerReadingAtMs(),
+        nowMs: Date.now(),
+      }),
+    lockActive: boardingLock != null,
+    nearestStationDistanceM,
+  });
+  const stationaryHold = holdBlock === null;
+  // 결정 tier 거리 게이트 입력. fix가 신선하면 decisionUserLocation 그대로, 오래됐어도 hold면 L을 계속 쓴다.
+  const gateUserLocation = decisionUserLocation ?? (stationaryHold ? gps.userLocation : null);
   // #2387 — approachLine(route/lock/legAdvance 권위 line 판정)의 legAdvance 입력. reactive 구독
   // 필수 — getState()는 useMemo 재계산을 트리거하지 않아 store 값이 바뀌어도 ssotGuardResult가
   // stale하게 남는다.
@@ -738,10 +775,11 @@ export function useFusedNearestStation(
     pushCandidateRejectEntry({
       kind: 'candidate-reject',
       ts: Date.now(),
-      reason: 'gps-stale',
+      // #3191 PR-2 — stale이어도 hold로 L을 계속 쓴 경우는 따로 센다(held 대 stale 비율 = hold 효과 측정).
+      reason: stationaryHold ? 'gps-stale-held' : 'gps-stale',
       line,
     });
-  }, [isDecisionGpsStale, candidates]);
+  }, [isDecisionGpsStale, candidates, stationaryHold]);
 
   // arrival 폴링: 후보 역명 단위 K=3 고정.
   // 각 후보의 호선을 lineHint로 함께 전달해 schedule fallback이 환승역에서 정확한
@@ -925,7 +963,7 @@ export function useFusedNearestStation(
         // #2713 (ADR-039 1단계) — stale fix로 실측 열차 신호(trainCode 일치)를 거리로 오거부하는
         // 회귀의 실제 발생 지점(2026-09-18 라이드 7256/중곡 3030m reject 실측). stale이면
         // decisionUserLocation=null → distanceGateActive=false(가드 자체 비활성, graceful fallback).
-        userLocation: decisionUserLocation,
+        userLocation: gateUserLocation,
         stationCoordinates,
         // #2728 (ADR-039 2단계) — boardingLock.trainCode와 일치하는 candidate는 GPS 거리 대신
         // arc(경로) 정합성으로 검증한다. lock 없으면 lockedTrainCode=null → 기존 동작 그대로
@@ -1040,7 +1078,7 @@ export function useFusedNearestStation(
     // 포함돼야 avgRejectPerFire가 왜곡되지 않는다.
     candidateDistanceRejectCountRef.current = candidateDistanceRejectCount;
     return out;
-  }, [candidates, p0.positions, p1.positions, p2.positions, decisionUserLocation, allowedLines, boardingLock, arcStations, lockedTrainUpdnLine]);
+  }, [candidates, p0.positions, p1.positions, p2.positions, gateUserLocation, allowedLines, boardingLock, arcStations, lockedTrainUpdnLine]);
 
   // #2594 (P5 리뷰 fix) — record 호출을 memo 본문에서 이 effect로 이전. useEffect는 실제로
   // 커밋된 렌더에서, deps([candidateTrains]) 참조가 실제로 바뀔 때만 실행되므로 React가 memo를
@@ -1176,7 +1214,7 @@ export function useFusedNearestStation(
     if (
       !passesFusionDistanceGate({
         candidate,
-        userLocation: decisionUserLocation,
+        userLocation: gateUserLocation,
         accuracyMeters: gps.accuracyMeters,
         gpsNearest: candidates[0],
         maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
@@ -1240,7 +1278,7 @@ export function useFusedNearestStation(
   }, [
     trainProgress,
     gps.userLocation,
-    decisionUserLocation,
+    gateUserLocation,
     gps.accuracyMeters,
     candidates,
     boardingLock,
@@ -1266,10 +1304,10 @@ export function useFusedNearestStation(
   // strict bad-accuracy 가드 면제 (positionTrain caller와 동일 정신). lockless trip은 lockActive=false로
   // R13-a strict reject 자연 적용 — 지하 dead zone 누수 차단.
   // #2713 (ADR-039 1단계) — fused/route 후보의 거리 sanity도 stale fix로 왜곡되지 않도록
-  // decisionUserLocation(신선도 게이트 통과분만)을 전달. stale이면 passesFusionDistanceGate가
+  // gateUserLocation(신선도 게이트 통과분 + #3191 PR-2 hold된 L)을 전달. 둘 다 아니면 passesFusionDistanceGate가
   // userLocation===null 경로로 통과시킨다(요구사항 2, 신규 게이트 아님).
   const gateOpts = {
-    userLocation: decisionUserLocation,
+    userLocation: gateUserLocation,
     accuracyMeters: gps.accuracyMeters,
     gpsNearest: candidates[0],
     maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
@@ -1351,10 +1389,10 @@ export function useFusedNearestStation(
         ? (findStationByNameAndLine(wifiStation.name, targetLine) ?? wifiStation)
         : wifiStation;
     // 거리 게이트 — GPS가 신선할 때만 적용. dead zone(null)/stale(#2713)은 자동 면제.
-    if (decisionUserLocation) {
+    if (gateUserLocation) {
       const distanceKm = haversine(
-        decisionUserLocation.lat,
-        decisionUserLocation.lng,
+        gateUserLocation.lat,
+        gateUserLocation.lng,
         resolvedStation.lat,
         resolvedStation.lng,
       );
@@ -1431,7 +1469,8 @@ export function useFusedNearestStation(
     gps.accuracyMeters !== null &&
     gps.accuracyMeters <= GPS_DERIVED_ACCURACY_MAX_M &&
     gps.lastFixAtMs !== null &&
-    Date.now() - gps.lastFixAtMs <= GPS_DERIVED_FIX_MAX_AGE_MS &&
+    // #3191 PR-2 — 정지 fix 유지(hold) 중이면 나이와 무관하게 "좋은 fix"다(D: 17:44~17:46 뚝섬 사무실, fix 96s).
+    (Date.now() - gps.lastFixAtMs <= GPS_DERIVED_FIX_MAX_AGE_MS || stationaryHold) &&
     gpsTopCandidate !== null &&
     fused != null &&
     gpsTopCandidate.station.name !== fused.result.station.name &&
@@ -2700,25 +2739,16 @@ export function useFusedNearestStation(
       watchForDump = watchActive ? 'active' : 'inactive';
     }
     const baroEventAtMs = getBarometerDeltaTracking().lastDeltaEventAtMs;
-    // #3191 PR-1 — 정지 fix 유지 술어 판정을 기록만 한다(게이트 입력은 PR-2). L = 이 훅이 보는 마지막 fix
-    // 이므로 hasNewerFix=false. fix 시각을 모르면(테스트 mock 등) 판단 불가 = null.
-    const { lastFixAtMs, accuracyMeters, speedMps } = gps;
-    const holdEligible =
-      typeof lastFixAtMs === 'number'
-        ? shouldHoldStationaryFix({
-            fix: { accuracyMeters, speedMps, atMs: lastFixAtMs },
-            hasNewerFix: false,
-            subsurface: barometerSubsurface,
-            baroEventAtMs,
-            barometerAvailable: barometerSignal != null && barometerSignal.unavailableReason === undefined,
-            lockActive: boardingLock != null,
-          })
-        : null;
+    // #3191 PR-2 — hold 판정은 렌더 본문에서 1회 계산한 값을 그대로 기록한다(게이트 입력과 같은 값).
+    // fix 시각을 모르면(테스트 mock 등) 판단 불가 = holdEligible null.
+    const holdEligible = holdFixAtMs === null ? null : stationaryHold;
     const instrumentationForDump = {
       watch: watchForDump,
       appState: AppState.currentState,
       baroEventAtMs,
       holdEligible,
+      holdBlock,
+      distM: nearestStationDistanceM,
     };
     // #1859 — CTRadioAccessTechnology 스냅샷. tech는 native 캐시에서 동기 읽기.
     // vote는 useCellularTech()가 이미 산출한 값을 그대로 사용(재분류 없음).
@@ -2811,6 +2841,8 @@ export function useFusedNearestStation(
     locationUncertain: gps.locationUncertain || gpsFallbackStale,
     gpsActive: gps.gpsActive,
     lastFixAtMs: gps.lastFixAtMs,
+    // #3191 PR-2 — L이 BG task fix 주입분이면 FG 업로드(useFgPositionUpload)가 건너뛴다.
+    lastFixFromBg: gps.lastFixFromBg === true,
     positionStability,
     estimatorStrategy: estimate?.strategy ?? null,
     // D2(#1208) + #1235 (D9 wire) — useStationAlarm hop window 게이트 + DebugModal Trip/Fusion/GPS 섹션 SSOT.

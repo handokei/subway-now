@@ -132,6 +132,14 @@ function recordDeltaTracking(prior: readonly BarometerReading[], reading: Barome
   };
 }
 
+/**
+ * #3191 PR-2 (D2(b)) — 가장 최근 reading 시각. ring(60s TTL)이 비어도(reset 직후) 세션 동안 유지된다.
+ * 없으면 null. "기압계가 지금 값을 주고 있는가" 판정용.
+ */
+export function getLastBarometerReadingAtMs(): number | null {
+  return lastReading?.t ?? null;
+}
+
 /** 현재 델타 계측 스냅샷 (Raw signal 기록부가 pull). */
 export function getBarometerDeltaTracking(): Readonly<BarometerDeltaTracking> {
   return deltaTracking;

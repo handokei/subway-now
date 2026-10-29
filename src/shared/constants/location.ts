@@ -80,3 +80,7 @@ export const GPS_SPEED_INVALID = -1;
 export function isValidGpsSpeedMps(value: number | null | undefined): value is number {
   return value != null && value >= 0;
 }
+
+// #3191 PR-2 — FG watch 구독이 꺼져 있을 때 BG task의 마지막 fix(BG_LAST_FIX_KEY)를 읽는 폴링 주기(ms).
+// useBackendSsotMirrorPoll과 같은 5초 패턴.
+export const BG_FIX_INJECT_POLL_INTERVAL_MS = 5_000;

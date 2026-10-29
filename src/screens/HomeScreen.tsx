@@ -312,7 +312,7 @@ export default function HomeScreen() {
   // 안 지워지고 zombie station-passed 알림이 계속 발사됐다. 기존 BG-only pull-death backstop을
   // FG poll 주기에도 배선 — 신규 판정/cleanup 로직 없음(기존 checkTripDeathByPull 재사용).
   useTripDeathForegroundBackstop();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted, lastFixFromBg } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
@@ -988,6 +988,8 @@ export default function HomeScreen() {
     motionStationary,
     // #1363 — 사용자 추정 현재역 이름. backend 진단 log에서 trip waypoint와 명시 구분.
     currentStationName: result?.station.name ?? null,
+    // #3191 PR-2 — BG task fix 주입분은 BG task가 이미 업로드했다.
+    fixFromBg: lastFixFromBg,
   });
   // #2089 — OS 예약 스케줄러 3종(alarmScheduler/tripBoundScheduler/boardingLockScheduler)
   // 통합 후속. sleepMode ON인 trip에 한해 backend-outage 안전망 알람을 등록한다(취침모드
