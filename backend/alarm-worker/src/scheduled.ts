@@ -4554,6 +4554,44 @@ async function sendStationPassedFireOnly(inputs: {
 }
 
 /**
+ * #3223 (U1 포함) — transfer/destination 진입 발사의 T7 게이트. arvlcd 경로(`tryAdvanceAndFireArvlcd`)와 같은
+ * `evaluateTransferDestinationGate` + 같은 입력(`isDeviceSyncStale`, 기본 maxFreshCycles)을 재사용한다 — 새 임계 없음.
+ * 정지 trip "환승임박 건대입구" 오발사(N9, 6/19) 방어: lock 열차 position 만으로 발사하지 않고 SSoT 위치·advance 신선도가 맞아야 한다.
+ * intermediate / SSoT 부재(legacy — arvlcd 경로는 lazy-seed 후 통과)는 통과. 차단 시 arvlcd 와 같은 형식으로 로그·통계·D1 사유를 남긴다.
+ * `record=false`(mid pass)는 trip/SSoT 를 건드리지 않으려 D1/SSoT 마커 기록 없이 로그만 남긴다.
+ */
+async function passesEnteringTransferGate(inputs: {
+  env: Env;
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  ssot: TripPositionSSoT | null;
+  now: number;
+  log: Logger;
+  stats?: ScheduledStats;
+  record: boolean;
+}): Promise<boolean> {
+  const { env, trip, waypoint, lock, ssot, now, log, stats, record } = inputs;
+  if (ssot === null || !isTransferOrDestination(waypoint)) return true;
+  const deviceSyncStale = isDeviceSyncStale(ssot, now);
+  const gate = evaluateTransferDestinationGate(ssot, trip, waypoint, now, { deviceSyncStale });
+  if (gate.pass) return true;
+  if (stats) stats.transferDestinationGateBlocked += 1;
+  log('position-entering-fire: transfer/destination gate blocked', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    station: waypoint.stationName,
+    kind: waypoint.kind,
+    reason: gate.blockReason satisfies TransferDestinationBlockReason | undefined,
+    ...buildTransferGateBlockMeta(ssot, gate, deviceSyncStale, now),
+  });
+  if (record && gate.blockReason !== undefined) {
+    await recordFireBlockReasonTransition(env, trip, waypoint, ssot, gate.blockReason, now);
+  }
+  return false;
+}
+
+/**
  * #3223 — 메인 pass 의 진입(position sttus0) 매역 발사. 도착 확정(advance)은 그대로 두고 push 만 앞당긴다.
  * 취침 mute / 공용 dedup GET 을 mid-cycle 과 동일하게 거친 뒤 `sendStationPassedFireOnly` 로 발사한다.
  */
@@ -4563,17 +4601,20 @@ async function fireEnteringStationPush(inputs: {
   lock: BoardingLockMeta;
   env: Env;
   deps: ScheduledDeps;
+  stats: ScheduledStats;
+  ssot: TripPositionSSoT | null;
   now: number;
   log: Logger;
   generatePushId: () => string;
 }): Promise<void> {
-  const { trip, waypoint, lock, env, deps, now, log, generatePushId } = inputs;
+  const { trip, waypoint, lock, env, deps, stats, ssot, now, log, generatePushId } = inputs;
   if (isSleepMutedStationNotif(trip, waypoint)) return;
   try {
     if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) return;
   } catch {
     // read 실패는 보수적으로 계속 진행(발사 시도) — mid-cycle 과 동일.
   }
+  if (!(await passesEnteringTransferGate({ env, trip, waypoint, lock, ssot, now, log, stats, record: true }))) return;
   await sendStationPassedFireOnly({
     env,
     trip,
@@ -4646,8 +4687,13 @@ export async function runMidCycleFireOnly(
       const estimate = await estimateBoardingLockArrival({ seoul: deps.seoul } as ScheduledDeps, lock, waypoint, now);
       // #3223 — 도착 확증 또는 intermediate 진입(position sttus0)이면 발사. 진입은 advance 없이 발사만(도착 tick 이 advance).
       if (!estimate) continue;
-      const entering = isPositionEnteringFire(estimate, waypoint);
+      const entering = isPositionEnteringFire(estimate);
       if (!estimate.arrived && !entering) continue;
+      // #3223 U1 포함 — transfer/destination 진입은 T7 게이트 통과 시만(SSoT 는 이 경우에만 1회 read, arvlcd 경로와 같은 cacheTtl).
+      if (entering && isTransferOrDestination(waypoint)) {
+        const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+        if (!(await passesEnteringTransferGate({ env, trip, waypoint, lock, ssot, now, log, record: false }))) continue;
+      }
 
       const outcome = await sendStationPassedFireOnly({
         env,
@@ -6119,10 +6165,10 @@ export async function runTrainCodeTracking(
     return;
   }
 
-  // #3223 — intermediate 매역은 position 진입(sttus0) 첫 tick 에 push 만 앞당겨 발사한다. advance 는 위 도착 분기가
+  // #3223 — 매역(intermediate·transfer·destination)은 position 진입(sttus0) 첫 tick 에 push 만 앞당겨 발사한다. advance 는 위 도착 분기가
   // 그대로 맡고(취침 알람·준비 진동·LA 불변), 도착 tick 의 발사는 공용 dedup 으로 건너뛴다. trip 은 mutate 하지 않는다.
-  if (isPositionEnteringFire(estimate, waypoint)) {
-    await fireEnteringStationPush({ trip, waypoint, lock: activeLock, env, deps, now, log, generatePushId });
+  if (isPositionEnteringFire(estimate)) {
+    await fireEnteringStationPush({ trip, waypoint, lock: activeLock, env, deps, stats, ssot, now, log, generatePushId });
   }
 
   // #3132 — 도착 시각을 모르면(epoch=null: 코레일 barvlDt=0 + position 추정 없음) reschedule push와 LA ETA
@@ -6204,11 +6250,12 @@ export function isEnteringTarget(train: PositionEntry, targetStation: string, lo
 }
 
 /**
- * #3223 — 진입 신호로 매역 push 만 앞당겨 발사할 대상인가. intermediate 만(U1: transfer·destination 은 도착 시점 유지).
+ * #3223 — 진입 신호로 매역 push 만 앞당겨 발사할 대상인가. kind 무관(intermediate·transfer·destination, U1 포함 — 10/29 사용자 결정).
+ * 알림 push 만 앞당긴다: advance·transfer-release·hop-end·취침 알람·LA·trip 종료는 도착 확정 그대로(U2).
  * 호출자는 `estimate.arrived===false` 인 경우만 넘긴다(도착이면 기존 도착 발사 경로).
  */
-function isPositionEnteringFire(estimate: BoardingLockArrivalEstimate, waypoint: Waypoint): boolean {
-  return !estimate.arrived && estimate.entering === true && waypoint.kind === 'intermediate';
+function isPositionEnteringFire(estimate: BoardingLockArrivalEstimate): boolean {
+  return !estimate.arrived && estimate.entering === true;
 }
 
 export async function estimateBoardingLockArrival(

@@ -2,7 +2,7 @@
  * #3223 — 매역 알림을 열차 위치(realtimePosition) 진입(trainSttus 0) 시점에 1회 발사.
  *
  * 스펙(이슈 #3223 + plan v2/v2.1, 결정 U1~U3): 발사 시점만 앞당긴다.
- *  - intermediate 매역만(transfer/destination 은 현행 도착 시점 유지, U1)
+ *  - intermediate + transfer + destination 모두 진입 발사(U1 포함으로 개정, 10/29 사용자 결정 — 초안 v2 는 intermediate 한정이었다)
  *  - 번호 변경역(2호선 성수)은 진입 트리거 제외(U3)
  *  - advance(waypoint shift)·취침 알람·준비 진동은 도착 확정 그대로(U2) — 진입 발사는 trip/SSoT를 mutate하지 않는다
  *  - 역당 1회 — `stationPassedFiredKey` 공용 dedup, 진입 창을 건너뛰면 도착 시점에 1회 폴백
@@ -23,6 +23,7 @@ import {
 } from '../scheduled';
 import { SeoulArrivalClient, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
+import { seedSsot, writeSsot, readSsot } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -319,21 +320,61 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     expect(sent(tick.events, RENUMBER_STATION)).toEqual([]);
   });
 
-  it('거부 — transfer waypoint 진입은 발사하지 않는다 (U1)', async () => {
+  it('transfer 진입(0) tick: 알림 1건(path=position-entering), waypoint 불변(advance 0); 도착 tick: 알림 0 + advance 그대로 (U1 포함, 10/29)', async () => {
     const world = makeWorld();
     await world.seed(tripOf([GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' }]));
-    const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(tick.events.filter((e) => e.kind === 'cron-fire-attempt' && e.meta.outcome === 'sent')).toEqual([]);
-    expect(tick.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
-    expect((await world.trip()).waypoints).toHaveLength(2);
+    const entering = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    const rows = sent(entering.events, '건대입구');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].meta).toMatchObject({ waypointKind: 'transfer', path: 'position-entering' });
+    expect(entering.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toHaveLength(1);
+    expect((await world.trip()).waypoints.map((w) => w.stationName)).toEqual(['건대입구', '성수']);
+
+    const arrived = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);
+    expect(sent(arrived.events, '건대입구')).toEqual([]);
+    expect(arrived.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
+    expect((await world.trip()).waypoints.map((w) => w.stationName)).toEqual(['성수']);
   });
 
-  it('거부 — destination waypoint 진입은 발사하지 않는다 (U1)', async () => {
+  it('destination 진입(0) tick: 알림 1건, trip 유지; 도착 tick: 알림 0 + trip 종료(삭제) 그대로 (U1 포함, 10/29)', async () => {
     const world = makeWorld();
     await world.seed(tripOf([GEONDAE_DEST]));
-    const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(tick.events.filter((e) => e.kind === 'cron-fire-attempt' && e.meta.outcome === 'sent')).toEqual([]);
-    expect(tick.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
+    const entering = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    const rows = sent(entering.events, '건대입구');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].meta).toMatchObject({ waypointKind: 'destination', path: 'position-entering' });
+    expect((await world.trip()).waypoints).toHaveLength(1);
+
+    const arrived = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);
+    expect(sent(arrived.events, '건대입구')).toEqual([]);
+    expect(arrived.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
+    expect(await world.kv.get(`trip:${TOKEN}`)).toBeNull();
+  });
+
+  it('transfer·destination 도 진입 창을 건너뛰면 도착 시점 1회 폴백 (진입 경로 표식 없음)', async () => {
+    for (const waypoints of [
+      [GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' } as Waypoint],
+      [GEONDAE_DEST],
+    ]) {
+      const world = makeWorld();
+      await world.seed(tripOf(waypoints));
+      const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);
+      const rows = sent(tick.events, '건대입구');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].meta.path).not.toBe('position-entering');
+    }
+  });
+
+  it('취침 모드여도 transfer·destination 은 mute 대상이 아니다 — 진입 발사 (isSleepMutedStationNotif intermediate 한정)', async () => {
+    for (const waypoints of [
+      [GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' } as Waypoint],
+      [GEONDAE_DEST],
+    ]) {
+      const world = makeWorld();
+      await world.seed(tripOf(waypoints, { sleepModeEnabled: true }));
+      const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+      expect(sent(tick.events, '건대입구')).toHaveLength(1);
+    }
   });
 
   it('거부 — 취침 모드 intermediate 는 진입 발사도 무음 skip (isSleepMutedStationNotif 공유)', async () => {
@@ -341,6 +382,78 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     await world.seed(tripOf([GUNJA, AEDAE, GEONDAE_TRANSFER], { sleepModeEnabled: true }));
     const tick = await world.runTick([{ stationName: '군자(능동)', sttus: STATUS.ENTERING }]);
     expect(sent(tick.events, '군자(능동)')).toEqual([]);
+  });
+});
+
+describe('transfer/destination 진입 발사 — T7 게이트(evaluateTransferDestinationGate) 적용 (ADR-010 FP=miss 동급)', () => {
+  const PRIOR = '어린이대공원(세종대)';
+  const skippedReasons = (events: ReturnType<typeof makeWorld>['events']) =>
+    events.filter((e) => e.kind === 'cron-fire-attempt' && e.station === '건대입구' && e.meta.outcome === 'skipped-reason').map((e) => e.meta.reason);
+
+  /** SSoT 를 심는다 — lastAdvanceAt/currentStationId 로 게이트 입력을 통제. */
+  async function seedWith(world: ReturnType<typeof makeWorld>, trip: Trip, ssotPatch: { currentStationId: string; lastAdvanceAt: number }) {
+    await world.seed(trip);
+    const seeded = await seedSsot(world.kv as unknown as KVNamespace, TOKEN, ssotPatch.currentStationId, { expiresAt: trip.expiresAt });
+    await writeSsot(world.kv as unknown as KVNamespace, { ...seeded, lastAdvanceAt: ssotPatch.lastAdvanceAt }, { expiresAt: trip.expiresAt });
+  }
+  const transferTrip = (): Trip =>
+    tripOf([GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' }], { passedStations: [PRIOR] });
+  const destinationTrip = (): Trip => tripOf([GEONDAE_DEST], { passedStations: [PRIOR] });
+
+  it('정지 trip — SSoT 위치가 환승역도 직전 hop도 아니면 진입 push 0, 사유 ssot-not-at-or-approaching, dedup 키 미stamp', async () => {
+    for (const trip of [transferTrip(), destinationTrip()]) {
+      const world = makeWorld();
+      await seedWith(world, trip, { currentStationId: '용마산', lastAdvanceAt: T0 - 10_000 });
+      const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+      expect(sent(tick.events, '건대입구')).toEqual([]);
+      expect(tick.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
+      expect(skippedReasons(tick.events)).toEqual(['ssot-not-at-or-approaching']);
+      expect(await world.kv.get(stationPassedFiredKey(TOKEN, '7035', '건대입구'))).toBeNull();
+    }
+  });
+
+  it('advance stale(직전 hop 이지만 마지막 advance 가 3 cycle 이상 전) → 진입 push 0, 사유 ssot-stale', async () => {
+    for (const trip of [transferTrip(), destinationTrip()]) {
+      const world = makeWorld();
+      await seedWith(world, trip, { currentStationId: PRIOR, lastAdvanceAt: T0 - 10 * 60_000 });
+      const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+      expect(sent(tick.events, '건대입구')).toEqual([]);
+      expect(skippedReasons(tick.events)).toEqual(['ssot-stale']);
+    }
+  });
+
+  it('게이트 통과(SSoT 가 직전 hop + 신선) → 진입 push 1건', async () => {
+    for (const trip of [transferTrip(), destinationTrip()]) {
+      const world = makeWorld();
+      await seedWith(world, trip, { currentStationId: PRIOR, lastAdvanceAt: T0 - 30_000 });
+      const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+      expect(sent(tick.events, '건대입구')).toHaveLength(1);
+    }
+  });
+
+  it('device sync stale 이면 신선도 검사 dormant — arvlcd 경로와 동일 산정(isDeviceSyncStale)', async () => {
+    const world = makeWorld();
+    await world.seed(transferTrip());
+    const seeded = await seedSsot(world.kv as unknown as KVNamespace, TOKEN, PRIOR, { expiresAt: T0 + 3600_000 });
+    await writeSsot(
+      world.kv as unknown as KVNamespace,
+      { ...seeded, lastAdvanceAt: T0 - 10 * 60_000, lastDeviceSyncAt: T0 - 60 * 60_000 },
+      { expiresAt: T0 + 3600_000 },
+    );
+    const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    expect(sent(tick.events, '건대입구')).toHaveLength(1);
+  });
+
+  it('게이트 차단된 진입 뒤에도 도착 시점 경로는 별도로 동작한다 — dedup 키가 없어 도착 tick 이 push 를 막지 않는다 (SSoT 가 신선해지면 도착에서 1회)', async () => {
+    const world = makeWorld();
+    await seedWith(world, transferTrip(), { currentStationId: '용마산', lastAdvanceAt: T0 - 10_000 });
+    await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    // 이후 SSoT 가 직전 hop 으로 따라잡음(정상 흐름)
+    const ssot = await readSsot(world.kv as unknown as KVNamespace, TOKEN);
+    await writeSsot(world.kv as unknown as KVNamespace, { ...ssot!, currentStationId: PRIOR, lastAdvanceAt: T0 + 30_000 }, { expiresAt: T0 + 3600_000 });
+    const arrived = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);
+    expect(sent(arrived.events, '건대입구')).toHaveLength(1);
+    expect(sent(arrived.events, '건대입구')[0].meta.path).not.toBe('position-entering');
   });
 });
 
@@ -370,11 +483,24 @@ describe('runMidCycleFireOnly — 진입 발사 (mid pass)', () => {
     expect(second.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
   });
 
-  it('거부 — transfer·destination 진입은 발사 0 (U1)', async () => {
+  it('transfer·destination 진입 → 각 1건 발사 (U1 포함, 10/29), 같은 키 재실행은 dedup으로 0', async () => {
     const transfer = await runMid(tripOf([GEONDAE_TRANSFER, AEDAE]), [{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(transfer.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
-    const destination = await runMid(tripOf([GEONDAE_DEST]), [{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(destination.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+    expect(transfer.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(sent(transfer.world.events, '건대입구')[0].meta).toMatchObject({ midCycle: true, path: 'position-entering' });
+    const destTrip = tripOf([GEONDAE_DEST]);
+    const destination = await runMid(destTrip, [{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    expect(destination.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    const again = await runMid(destTrip, [{ stationName: '건대입구', sttus: STATUS.ARRIVED }], destination.world);
+    expect(again.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+  });
+
+  it('거부 — transfer/destination 진입도 T7 게이트에 막히면 mid pass 발사 0 (SSoT 가 환승역·직전 hop 이 아님)', async () => {
+    const trip = tripOf([GEONDAE_TRANSFER, AEDAE], { passedStations: ['어린이대공원(세종대)'] });
+    const world = makeWorld();
+    const seeded = await seedSsot(world.kv as unknown as KVNamespace, TOKEN, '용마산', { expiresAt: trip.expiresAt });
+    await writeSsot(world.kv as unknown as KVNamespace, { ...seeded, lastAdvanceAt: T0 - 10_000 }, { expiresAt: trip.expiresAt });
+    const blocked = await runMid(trip, [{ stationName: '건대입구', sttus: STATUS.ENTERING }], world);
+    expect(blocked.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
   });
 
   it('거부 — 번호 변경역·취침 intermediate 는 발사 0', async () => {

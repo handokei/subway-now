@@ -89,17 +89,18 @@ function loadFixture(fixtureName: string) {
 }
 
 describe('#3223 — 매역 알림은 진입(position sttus0)이 노출된 intermediate 역에서 그 첫 tick에 발사된다 (실측 10/28 replay)', () => {
-  it('trip 179 아침 7035: 군자 06:30:46(진입 첫 tick, 현행 06:31:46) / 어린이대공원 06:33:46(진입 미노출, 불변) / 건대입구 transfer 06:35:46(불변), 역당 1회', async () => {
+  it('trip 179 아침 7035: 군자 06:30:46(진입 첫 tick, 현행 06:31:46) / 어린이대공원 06:33:46(진입 미노출, 불변) / 건대입구 transfer 06:34:46(진입 첫 tick, 현행 06:35:46), 역당 1회', async () => {
     const result = await replay(AM_FIXTURE, makeRide20261028MorningTrip);
     const log = fireLog(result);
     expect(firstKst(log)).toEqual({
       '군자(능동)': '06:30:46',
       '어린이대공원(세종대)': '06:33:46',
-      건대입구: '06:35:46',
+      건대입구: '06:34:46',
     });
     for (const fires of log.values()) expect(fires).toHaveLength(1);
     expect(firstEnteringTick(AM_FIXTURE, result, AM_TRAIN, '군자(능동)')).toBe('06:30:46');
     expect(firstEnteringTick(AM_FIXTURE, result, AM_TRAIN, '어린이대공원(세종대)')).toBeNull();
+    expect(firstEnteringTick(AM_FIXTURE, result, AM_TRAIN, '건대입구')).toBe('06:34:46');
   });
 
   it('trip 180 저녁 7252: 어린이대공원 17:26:46 / 중곡 17:30:46 (진입 첫 tick) · 군자 17:29:46(진입 미노출, 불변) · 용마산 dest 17:33:47(불변), 역당 1회', async () => {

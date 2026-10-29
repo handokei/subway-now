@@ -53,3 +53,24 @@ acceptance 문구 정정(plan v2-1 U5): "각 역 = 진입 첫 tick"이 아니다
 - 진입 후 길게 정차하는 역(종점, 번호 변경역)에서는 알림이 일찍 울릴 수 있다. 번호 변경역은 제외했고, 종점 측정값은 출발 종점(방화, 불암산)뿐이라 경로 중간 intermediate에서는 10/28 기준 오발사 0건이다(진입 4건 모두 13~21초 뒤 같은 역에 도착).
 - 알림이 LA보다 최대 약 60초 먼저 다음 역으로 넘어간다(mid-cycle 발사와 같은 구조적 차이가 커지는 것).
 - 이 결정은 차단 가정에 의존한다: 번호 변경역이 `RENUMBER_STATION` 하나라는 것. 다른 노선에 번호 변경이 생기면 그 데이터에 추가해야 제외된다(추정 — 현재 데이터는 2호선 성수 1곳).
+
+## U1 포함으로 개정 (2026-10-29 사용자 결정: "진입 시점으로 진행해야 한다")
+
+초안(결정 3)은 transfer·destination을 도착 시점으로 남겼다(U1 제외). 2026-10-29 사용자 결정으로 **U1 = 포함**으로 바꾼다. 이 절이 결정 3과 대안 표의 "transfer/destination 포함" 행을 대체한다.
+
+### 이 ADR이 수정·대체·모순하는 결정
+
+| 기존 결정 | 축 | 처분 |
+| --- | --- | --- |
+| 본 ADR 결정 3 "적용 범위는 intermediate만" | 적용 kind | **대체**: intermediate·transfer·destination 모두 진입 첫 tick에 **알림 push만** 1회 발사한다. 번호 변경역 제외(U3)는 유지 |
+| 본 ADR 결정 4 "취침 mute는 진입 경로도 공유(intermediate 매역 무음)" | 취침 | 유지: mute는 `isSleepMutedStationNotif`(#3100, intermediate 한정) 그대로라 transfer/destination 진입 발사는 취침 모드에서도 발사된다(도착 시점 발사와 동일) |
+| 본 ADR 대안 표 "transfer/destination 포함 — U1 결정으로 제외, T7 SSoT 게이트 필요" | 게이트 | **T7 적용으로 해소**: 진입 발사도 `evaluateTransferDestinationGate`(`transferDestinationGate.ts`)를 arvlcd 경로와 같은 입력(`isDeviceSyncStale`, 기본 `maxFreshCycles`)으로 거친다. 새 임계 없음. 차단 시 push 0 + `transfer/destination gate blocked` 로그·`transferDestinationGateBlocked` 통계·D1 `skipped-reason`(메인 pass), dedup 키는 stamp하지 않아 도착 시점 폴백은 그대로다. advance·transfer-release·hop-end·취침 알람·LA·trip 종료는 여전히 도착 시점(U2) |
+
+### 중복 방지(코드 확인)
+
+진입 발사는 `stationPassedFiredKey`(경로 무관 공용 마커)를 stamp한다. 도착 경로 3곳(`fireArvlCdStationPush`, `fireVanishFallbackStationPush`, sync-skipped 발사)은 모두 push **직전** 이 키를 GET해 있으면 push만 건너뛰고 return한다. advance(`advanceTripPosition` / `advanceBoardingLockWaypoint`)는 push 이전·이후와 무관한 별도 호출이라 계속 실행된다. 따라서 도착 tick은 알림 0건 + advance·transfer-release·trip 종료 그대로다.
+
+### 리스크 추가
+
+- 정지 trip "환승임박" 오발사(N9, 6/19) 방어를 위해 transfer/destination 진입 발사에는 T7 게이트를 **적용**한다(ADR-010: FP=miss 동급). SSoT 부재(legacy)는 arvlcd 경로와 같이 통과한다. mid pass는 진입 후보일 때만 SSoT를 1회 read하고, trip/SSoT를 쓰지 않으려 D1·SSoT 마커 기록 없이 로그만 남긴다. 10/28 replay 건대입구 06:34:46은 SSoT가 직전 hop(어린이대공원)이고 마지막 advance가 60초 전이라 통과한다.
+- 진입 후 도착까지의 지연이 긴 종점(destination)에서는 알림이 일찍 울릴 수 있다. 측정은 D1 `path:'position-entering'` 행 대비 trip 종료 행 간격으로 1주 본다.
