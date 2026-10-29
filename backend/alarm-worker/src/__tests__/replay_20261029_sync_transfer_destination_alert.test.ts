@@ -180,7 +180,8 @@ describe('POST /boarding-lock/sync — lock 활성 transfer/destination visible 
     expect(alerts()).toEqual([{ station: DESTINATION, kind: 'destination', origin: 'device-sync' }]);
     expect(fireAttempts(DESTINATION)[0].meta).toMatchObject({ waypointKind: 'destination', outcome: 'sent' });
     // 종료 안내(trip-ended)는 nextWaypoint 없는 별도 alert — 기존 동작 유지.
-    expect(pushes().filter((p) => p.pushType === 'alert')).toHaveLength(2);
+    // 순서: 도착 alert가 먼저, 종료 안내가 그 뒤(사용자에게 "도착" -> "안내 종료"로 읽혀야 한다).
+    expect(pushes().filter((p) => p.pushType === 'alert').map((p) => p.data.nextWaypoint)).toEqual([DESTINATION, undefined]);
   });
 
   it('거부(이미 진입/도착 발사된 역): 같은 dedup 키가 있으면 sync는 visible push 0 — 사유 sync-station-passed-dedup, trip은 그대로 전진', async () => {
