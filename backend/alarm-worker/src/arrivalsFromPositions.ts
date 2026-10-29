@@ -170,8 +170,8 @@ export function synthesizeArrivalsFromPositions(
  * `pickAutoTrainCode(realArrivals, ...)` 가 candidate 를 찾지 못한 경우 positions snapshot 으로
  * 합성 entry 를 만들어 retry 하는 helper.
  *
- * autoLock + lockSwap 두 caller 모두 동형 패턴 (real candidate 시도 → 실패 시 합성 retry) 을
- * 쓰므로 한 곳에 모아 SonarCloud duplication < 3% 유지.
+ * 현재 caller 는 vanish 경로(`lockSwap.attachTrainCodeForLeg`)뿐이다(autoLock.ts 는 이 helper 를 쓰지 않는다, #3158 정정).
+ * real candidate 시도 → 실패 시 합성 retry 패턴을 한 곳에 모은다.
  *
  * 반환:
  *   - `{ trainCode, arrivals }` — fallback 으로 채택한 trainCode + merged arrivals (caller 의
@@ -185,12 +185,14 @@ export interface FallbackPickInputs {
   direction: 'up' | 'down' | null;
   segmentStations: readonly string[];
   targetStation: string;
+  /** #3158 PR-2 — `pickAutoTrainCode` 99-only 모호성 차단 opt-in (vanish 전용, `lockSwap.ts`). */
+  rejectAmbiguousUntiered?: boolean;
 }
 
 export function pickFallbackTrainCodeFromPositions(
   inputs: FallbackPickInputs,
 ): { trainCode: string; arrivals: readonly ArrivalEntry[] } | null {
-  const { realArrivals, positions, line, direction, segmentStations, targetStation } = inputs;
+  const { realArrivals, positions, line, direction, segmentStations, targetStation, rejectAmbiguousUntiered } = inputs;
   if (!positions || positions.length === 0) return null;
 
   const synthesized = synthesizeArrivalsFromPositions({
@@ -209,7 +211,7 @@ export function pickFallbackTrainCodeFromPositions(
     ...realArrivals,
     ...synthesized.filter((s) => !realCodes.has(s.trainCode)),
   ];
-  const trainCode = pickAutoTrainCode(merged, line, direction);
+  const trainCode = pickAutoTrainCode(merged, line, direction, { rejectAmbiguousUntiered });
   if (!trainCode) return null;
   return { trainCode, arrivals: merged };
 }
@@ -217,8 +219,8 @@ export function pickFallbackTrainCodeFromPositions(
 /**
  * `pickAutoTrainCode` 시도 → 실패 시 `pickFallbackTrainCodeFromPositions` retry 의 결합 helper.
  *
- * autoLock + lockSwap 두 caller 가 동형으로 사용 (direction 만 다름) — duplication < 3% 유지를
- * 위해 한 곳에 모음. 반환된 `arrivals` 는 caller 가 chosen entry 의 subwayNm cross-check 등
+ * 현재 caller 는 vanish 경로(`lockSwap.attachTrainCodeForLeg`)뿐이다(autoLock.ts 는 이 helper 를 쓰지 않는다, #3158 정정).
+ * 반환된 `arrivals` 는 caller 가 chosen entry 의 subwayNm cross-check 등
  * subsequent verification 에 사용한다.
  *
  * 입력
@@ -236,14 +238,16 @@ export interface ResolveTrainCodeInputs {
   direction: 'up' | 'down' | null;
   segmentStations: readonly string[];
   targetStation: string;
+  /** #3158 PR-2 — `pickAutoTrainCode` 99-only 모호성 차단 opt-in (vanish 전용, `lockSwap.ts`). */
+  rejectAmbiguousUntiered?: boolean;
 }
 
 export function resolveTrainCodeWithFallback(
   inputs: ResolveTrainCodeInputs,
 ): { trainCode: string; arrivals: readonly ArrivalEntry[] } | null {
-  const { realArrivals, line, direction } = inputs;
+  const { realArrivals, line, direction, rejectAmbiguousUntiered } = inputs;
   const realCandidate =
-    realArrivals.length > 0 ? pickAutoTrainCode(realArrivals, line, direction) : null;
+    realArrivals.length > 0 ? pickAutoTrainCode(realArrivals, line, direction, { rejectAmbiguousUntiered }) : null;
   if (realCandidate) return { trainCode: realCandidate, arrivals: realArrivals };
   return pickFallbackTrainCodeFromPositions(inputs);
 }

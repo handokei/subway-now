@@ -595,10 +595,20 @@ export function evaluateHopEndPromptGates(inputs: {
  * `line`은 boarding line (사용자 trip 출발 라인). lineAlias.matchLine으로 별칭(예: "1호선"
  * vs "지하철1호선") 매칭.
  */
+export interface PickAutoTrainCodeOptions {
+  /**
+   * #3158 PR-2 — tier(2/1/0/3/5) 후보가 없고 같은 방향 99-only 후보가 2개 이상이면 null.
+   * vanish-swap(`lockSwap.ts`) 전용 opt-in: 99-only에서 받은 순서 첫 후보를 고르면 사라진 lock 열차의
+   * 앞/뒤 관계를 모른 채 뒤 열차로 옮기게 된다(10/28 3286 -> 2288). 프롬프트(`scheduled.ts`)는 미지정 = 무변경.
+   */
+  rejectAmbiguousUntiered?: boolean;
+}
+
 export function pickAutoTrainCode(
   arrivals: readonly ArrivalEntry[],
   line: string,
   direction: 'up' | 'down' | null,
+  options: PickAutoTrainCodeOptions = {},
 ): string | null {
   const matching = arrivals.filter((a) => matchLine(a.subwayNm, line));
   if (matching.length === 0) return null;
@@ -632,6 +642,7 @@ export function pickAutoTrainCode(
     if (tier.length === 1) return tier[0].trainCode || null;
     if (tier.length > 1) return null; // ambiguity → 자동 안 함
   }
-  // 그 외(99 운행중 등) — 받은 순서 첫 후보.
+  // 그 외(99 운행중 등) — 받은 순서 첫 후보. 단 vanish opt-in이면 2개 이상은 모호 -> null.
+  if (options.rejectAmbiguousUntiered && directional.length > 1) return null;
   return directional[0].trainCode || null;
 }
