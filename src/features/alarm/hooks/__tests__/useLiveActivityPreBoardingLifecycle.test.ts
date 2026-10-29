@@ -164,7 +164,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
         writer: 'D6',
         source: 'auto-locked-pre-boarding',
         data: expect.objectContaining({ boardingAutoLocked: true }),
-        authority: 'n/a',
+        authority: 'not-active',
       });
     });
 
@@ -330,6 +330,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
       useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
       const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
       expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1); // D5
+      await flushAll(); // D5의 la-write(비동기)가 끝난 뒤에 비운다
       mockLogLaWrite.mockClear();
       act(() => {
         useBoardingLockStore.setState({ lock: LOCK });

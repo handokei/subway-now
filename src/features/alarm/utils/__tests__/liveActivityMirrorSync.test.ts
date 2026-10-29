@@ -24,7 +24,7 @@ jest.mock('../laDismissSentinel', () => ({
   isLaDismissed: () => mockIsLaDismissed(),
 }));
 
-const mockShouldSkipDeviceLiveActivityWrite = jest.fn((..._args: unknown[]) => false);
+const mockShouldSkipDeviceLiveActivityWrite = jest.fn(async (..._args: unknown[]) => false);
 const mockReconcileLiveActivityToken = jest.fn((..._args: unknown[]) => Promise.resolve());
 const mockResolveDeviceFallbackSource = jest.fn(async (..._args: unknown[]) => undefined as string | undefined);
 jest.mock('../liveActivityPushChannel', () => ({
@@ -87,7 +87,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
     jest.clearAllMocks();
     mockHasActiveLiveActivity.mockReturnValue(true);
     mockIsLaDismissed.mockResolvedValue(false);
-    mockShouldSkipDeviceLiveActivityWrite.mockReturnValue(false);
+    mockShouldSkipDeviceLiveActivityWrite.mockResolvedValue(false);
     mockResolveDeviceFallbackSource.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
     arbitrationTestHelpers.reset();

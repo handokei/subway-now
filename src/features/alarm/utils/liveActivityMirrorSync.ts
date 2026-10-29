@@ -16,8 +16,8 @@
  * 소비자도 자동 적용받는다:
  *   1. LA dismiss sentinel(#926) — 사용자가 방금 LA를 dismiss했으면 mirror 갱신도 부활시키지 않는다
  *      (BG 경로와 대칭 — `refreshLiveActivityFromBackgroundContext`도 동일 sentinel을 본다).
- *   2. (#2659에서 제거) `shouldSkipDeviceLiveActivityWrite`(#2481) backend-authority 스킵 —
- *      그 게이트는 GPS-sourced 쓰기 전용으로 좁혔다. 근거는 함수 본문 주석 참조.
+ *   2. (#2659에서 제거 -> #2735 PR-4에서 복귀) `shouldSkipDeviceLiveActivityWrite`(#2481) backend-authority
+ *      스킵 — backend가 LA를 갱신 중이면 mirror 전체 교체도 하지 않는다(BG D2 / FG D4 공용). 근거는 본문 주석.
  *   3. GPS writer recency arbitration(`liveActivityGpsWriteArbitration.ts`) — mirror 경로는
  *      alarmEvent는 계산하지 않아 항상 null로 넘기므로(ETA는 #2805부터 static ETA floor를 싣는다),
  *      GPS writer(`updateStationNotification`)가 최근에 쓴 ETA/알람 배지를 blank로 덮어쓰지 않도록
@@ -37,7 +37,9 @@
  * 반환값(#2610 code review 4번) — 실제로 `updateLiveActivity`를 호출했으면 true, 어느 가드에서든
  * skip했으면 false. FG 소비처가 이 값으로만 dedup ref를 갱신해, no-op tick은 다음 tick에 재시도한다.
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as LiveActivity from 'live-activity';
+import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
 import {
   calculateStaticETA,
@@ -47,7 +49,11 @@ import {
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
-import { reconcileLiveActivityToken } from './liveActivityPushChannel';
+import {
+  reconcileLiveActivityToken,
+  resolveDeviceFallbackSource,
+  shouldSkipDeviceLiveActivityWrite,
+} from './liveActivityPushChannel';
 import { isDeviceGpsLiveActivityWriteRecent } from './liveActivityGpsWriteArbitration';
 import {
   logLaWrite,
@@ -91,16 +97,21 @@ export async function updateLiveActivityFromMirrorStation(
   // #3163 후속 P1-b — mirror tick은 BG-only trip에서 유일하게 주기적으로 도는 LA 경로다. 이 tick에서도 LA 토큰
   // 불변식을 복구한다(data 없음 -> 재생성 금지, 토큰 재조회/재등록만). 아래 양보/skip 사유와 무관하게 먼저 실행.
   void reconcileLiveActivityToken();
-  // #2659 — backend-authority 게이트(`shouldSkipDeviceLiveActivityWrite`, #2481)는 **GPS-sourced**
-  // 쓰기 전용이다. 그 게이트의 근거는 "device GPS 추정치로 backend의 정확한 N정거장을 덮어쓰지
-  // 마라"인데, 이 경로가 쓰는 값은 GPS 추정치가 아니라 **backend 자신의 SSoT mirror**라 애초에
-  // 권위 충돌이 없다. 그런데 게이트가 소스를 구분하지 않아, LA push 세션이 등록된 순간부터
-  // mirror 경로까지 함께 막혀 LA의 writer가 backend LA push 하나만 남았다 —
-  // 2026-09-16 라이드에서 그 단일 채널이 0건(`laPushDelivery=0/0`)이 되자 LA가 탑승역
-  // ("용마산 / 탑승하셨나요?")에 13분간 얼어붙었다. mirror는 HTTP(`POST /position` 응답, #2261)로
-  // 지하에서도 갱신되므로, 이 경로를 열어두면 "알림은 늦어도 화면은 맞다"가 성립한다.
-  // 게이트는 GPS 경로(`updateStationNotification` / `refreshLiveActivityFromBackgroundContext`의
-  // BG_LAST_STATION 분기)에 그대로 남아 있다.
+  // #2659 — 이전에는 이 경로를 backend-authority 게이트에서 면제했다. 근거는 "이 경로가 쓰는 값은 GPS
+  // 추정치가 아니라 backend 자신의 SSoT mirror라 권위 충돌이 없다"였고, 게이트가 소스를 구분하지 않아
+  // LA push 세션 등록 순간부터 mirror까지 막히던 2026-09-16 회귀(`laPushDelivery=0/0`, LA 13분 정체)를 푼 것이다.
+  //
+  // #2735 PR-4 (U3) — 면제를 "backend가 LA를 갱신 중이 아닐 때"로 좁힌다. mirror 쓰기는 값은 backend 것이어도
+  // ActivityKit content-state **전체 교체**라 backend LA push가 직전에 실은 trainCode/boardingPhase/ETA를
+  // 지운다(invariants "mirror 전체 교체"). 2026-10-28 trip 180: lock 이후 8건의 device 쓰기가 이 클래스였다.
+  // #2659의 면제 근거(LA push 채널이 죽으면 LA가 얼어붙는다)는 silent push 수신 공백이 T를 넘으면 권위가
+  // 풀려 device 쓰기가 재개되므로 계속 충족된다. 판정은 BG(D2)와 FG poll(D4)이 같은 코어에서 받는다.
+  const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+  if (await shouldSkipDeviceLiveActivityWrite(tripToken)) {
+    logger.info('backend-authority active trip — skip mirror-sourced refresh (#2735 PR-4)');
+    logLiveActivityMirrorSkip('la-mirror-skip-backend-authority', mirrorStation.name);
+    return false;
+  }
   if (isDeviceGpsLiveActivityWriteRecent()) {
     logger.info(
       'GPS writer wrote recently — mirror writer yields this tick (avoid ETA/alarm badge blank)',
@@ -134,7 +145,18 @@ export async function updateLiveActivityFromMirrorStation(
   // graceful fallback — 회귀 없음).
   const remainingRoute = anchorRouteToCurrentStation(route, mirrorStation, destination.id);
   const etaMinutes = calculateStaticETA(remainingRoute, { excludeOriginWait: true });
-  const data = buildLiveActivityData(mirrorStation, 0, destination, remainingRoute, etaMinutes, false, null);
+  // #2735 PR-4 (ADR-041 결정 4) — backend 침묵 판정 뒤의 device 쓰기에는 출처를 붙인다.
+  const fallbackSource = await resolveDeviceFallbackSource(tripToken);
+  const data = buildLiveActivityData(
+    mirrorStation,
+    0,
+    destination,
+    remainingRoute,
+    etaMinutes,
+    false,
+    null,
+    fallbackSource,
+  );
   await LiveActivity.updateLiveActivity(data);
   // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
   logLiveActivityUpdated();

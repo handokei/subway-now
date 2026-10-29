@@ -375,7 +375,8 @@
     "positionTrain": "Train data",
     "routeProgress": "Route est.",
     "gpsOnly": "GPS est.",
-    "uncertain": "Locating…"
+    "uncertain": "Locating…",
+    "deviceFallback": "Device est."
   },
   "a11y": {
     "settings": {

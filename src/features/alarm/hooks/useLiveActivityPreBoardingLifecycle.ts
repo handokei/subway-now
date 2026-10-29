@@ -46,6 +46,8 @@ import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import i18next from 'i18next';
 import * as LiveActivity from 'live-activity';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
 import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
@@ -54,7 +56,10 @@ import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { clearStationNotification } from '../utils/stationNotification';
-import { startAmbientLiveActivityTokenRegistration } from '../utils/liveActivityPushChannel';
+import {
+  shouldSkipDeviceLiveActivityWrite,
+  startAmbientLiveActivityTokenRegistration,
+} from '../utils/liveActivityPushChannel';
 import { logLaWrite } from '../utils/alarmLog';
 import { resolveGpsFreeOrigin } from '../utils/gpsFreeOrigin';
 import { createLogger } from '../../../shared/utils/logger';
@@ -146,6 +151,22 @@ function describeOriginSource(
 }
 
 /**
+ * #2735 PR-4 — D6(auto-locked pre-boarding) 쓰기. lock 직후 backend가 이미 이 trip의 LA를 갱신 중이면
+ * (등록 확인 + lock + silent push 수신 공백 <= T) "추적중" 배너 전체 교체가 backend LA push 내용을 지우므로
+ * 쓰지 않는다. 판정은 BG/FG 어디서든 같은 `shouldSkipDeviceLiveActivityWrite`다(tripToken = ACTIVE_TRIP_KEY).
+ */
+async function updateAutoLockedPreBoarding(data: LiveActivity.LiveActivityData): Promise<void> {
+  const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+  if (await shouldSkipDeviceLiveActivityWrite(activeTripToken)) {
+    log.info('backend-authority 활성 trip — auto-locked pre-boarding LA 쓰기 스킵(#2735 PR-4)');
+    return;
+  }
+  await LiveActivity.updateLiveActivity(data);
+  // #2735 PR-1 — D6 writer(auto-locked pre-boarding). 위 게이트를 통과한 쓰기.
+  logLaWrite({ writer: 'D6', source: 'auto-locked-pre-boarding', data, authority: 'not-active' });
+}
+
+/**
  * #2782 — `route`는 호출자(HomeScreen)가 이미 계산해둔 값을 그대로 받는다(`useApnsTripRegistration`/
  * `buildBoardingPromptContext`와 동일 패턴 — 이 훅은 GPS currentStation을 아예 보지 않으므로
  * 자체적으로 route를 재계산할 입력이 없다). `resolveGpsFreeOrigin`의 R-3(route 밖 노선 후보
@@ -198,14 +219,9 @@ export function useLiveActivityPreBoardingLifecycle(route: Route): void {
       if (preBoardingActiveRef.current && lock.boardingEvidence === true) {
         const tripToken = getCurrentTripCorrIdSync();
         const data = buildAutoLockedPreBoardingLiveActivityData(destination, resolvedOrigin, tripToken);
-        LiveActivity.updateLiveActivity(data)
-          .then(() => {
-            // #2735 PR-1 — D6 writer(auto-locked pre-boarding). 권위 게이트를 받지 않는 경로.
-            logLaWrite({ writer: 'D6', source: 'auto-locked-pre-boarding', data, authority: 'n/a' });
-          })
-          .catch((e) => {
-            log.warn('auto-locked pre-boarding LA 갱신 실패', e);
-          });
+        updateAutoLockedPreBoarding(data).catch((e) => {
+          log.warn('auto-locked pre-boarding LA 갱신 실패', e);
+        });
       }
       // 탑승 확정 — 콘텐츠 소유권을 GPS-트리거 파이프라인에 넘긴다.
       preBoardingActiveRef.current = false;

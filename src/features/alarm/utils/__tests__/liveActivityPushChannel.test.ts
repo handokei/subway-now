@@ -718,6 +718,16 @@ describe('liveActivityPushChannel', () => {
       expect(await shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
     });
 
+    it('등록 확인 저장이 실패해도 체인이 끊기지 않는다 — 그 등록은 미확인(false), 다음 등록 성공은 반영', async () => {
+      (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('disk full'));
+      await registerOk();
+      putLock();
+      await setLastSilentPushReceivedAt(T0);
+      expect(await shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(false);
+      await registerOk();
+      expect(await shouldSkipDeviceLiveActivityWrite('trip-1')).toBe(true);
+    });
+
     it('storage 읽기가 throw해도 false(device 쓰기 유지) — 게이트가 쓰기를 막는 쪽으로 실패하지 않는다', async () => {
       await registerOk();
       (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('down'));

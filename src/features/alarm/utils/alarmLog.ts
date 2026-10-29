@@ -616,9 +616,11 @@ export type AlarmLogReason =
   //   'la-mirror-skip-dismissed'         : LA dismiss sentinel(#926) 활성.
   //   'la-mirror-skip-gps-writer-recent' : GPS writer가 arbitration 창 내에 최근 씀 — mirror 양보.
   //   'la-mirror-skip-no-active-la'      : update-only 가드 — 활성 LA 없음(create 안 함).
+  //   'la-mirror-skip-backend-authority' : backend가 LA를 갱신 중(#2735 PR-4) — device 쓰기 양보.
   | 'la-mirror-skip-dismissed'
   | 'la-mirror-skip-gps-writer-recent'
   | 'la-mirror-skip-no-active-la'
+  | 'la-mirror-skip-backend-authority'
   // #2735 PR-1 — source='la-write'(writer별)·'la-refresh-decision'(반환 지점별) reason.
   | `la-write-${LaWriterId}`
   | `la-decision-${LaRefreshDecision}`

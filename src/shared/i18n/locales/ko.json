@@ -375,7 +375,8 @@
     "positionTrain": "열차 데이터",
     "routeProgress": "경로 추정",
     "gpsOnly": "GPS 추정",
-    "uncertain": "위치 확인 중"
+    "uncertain": "위치 확인 중",
+    "deviceFallback": "기기 추정"
   },
   "a11y": {
     "settings": {

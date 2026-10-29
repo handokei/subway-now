@@ -3810,6 +3810,7 @@ describe('silentPushTask', () => {
           if (key === ACTIVE_TRIP_KEY) return 'tk-active';
           return null;
         });
+        mockGetBoardingLock.mockResolvedValue(null);
         mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
         mockShouldCheckTripDeathOnSilentPush.mockReturnValue(true);
 

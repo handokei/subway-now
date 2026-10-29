@@ -19,6 +19,7 @@ import { ACTIVE_TRIP_KEY, APNS_TOKEN_KEY } from '../../../shared/constants/stora
 import {
   ensureLiveActivityRegistered,
   endLiveActivityWithDeregister,
+  resolveDeviceFallbackSource,
   shouldSkipDeviceLiveActivityWrite,
   startAmbientLiveActivityTokenRegistration,
 } from './liveActivityPushChannel';
@@ -735,9 +736,15 @@ export async function updateStationNotification(
       const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
       // #2481 — backend-authority 모드 + 이미 backend가 이 trip의 LA push 채널을 쥐고 있으면
       // device GPS 추정치로 backend의 정확한 "N정거장"을 덮어쓰지 않는다(Wave 2).
-      if (shouldSkipDeviceLiveActivityWrite(tripToken)) {
+      if (await shouldSkipDeviceLiveActivityWrite(tripToken)) {
         liveActivityLogger.info('backend-authority 활성 trip — device LA 쓰기 스킵(backend push 단독 저자)');
         return;
+      }
+      // #2735 PR-4 (ADR-041 결정 4) — backend 침묵 판정 뒤의 device 쓰기에는 출처를 붙인다. data는 위에서
+      // 이미 만들어졌으므로 buildLiveActivityData와 같은 규칙(debug 게이트 포함)으로 sourceLabel만 덧붙인다.
+      const fallbackSource = await resolveDeviceFallbackSource(tripToken);
+      if (fallbackSource && shouldDiscloseNotificationSource(fallbackSource)) {
+        data.sourceLabel = i18next.t(notificationSourceI18nKey(fallbackSource));
       }
       // #2667 (코드리뷰 P1-1) — LA를 만들 수 있는 호출 **직전**에 ambient token 구독을 보장한다.
       // 이 함수는 FG 컴포넌트 트리뿐 아니라 `backgroundLocationTask`(headless JS)에서도 실행되는데,
