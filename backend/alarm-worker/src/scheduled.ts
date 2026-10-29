@@ -75,7 +75,9 @@ import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg, SWAP_LOCK_TTL_MS } from './lockSwap';
 import {
   shouldDeferVanishSwap,
+  checkRenumberLeg,
   decideTimetableReattach,
+  legDirectionOf,
   lookupRenumberSuccessor,
   nextRenumberArm,
   resolveRenumberOrigin,
@@ -5380,13 +5382,9 @@ async function attemptVanishSwap(
   trip.consecutiveEtaMissing = 0;
   // #3158 — 번호 변경 열차(2호선 성수)였다면 시간표 후속이 나중에 관측될 때 정정할 수 있게 표식을 남긴다.
   // 호출자가 swap 직후 putTrip하므로 추가 KV write 0.
-  trip.renumberSuccessor = nextRenumberArm(
-    activeLock.line,
-    trip.renumberSuccessor,
-    activeLock.trainCode,
-    swapped.trainCode,
-    now,
-  );
+  trip.renumberSuccessor = checkRenumberLeg(trip, activeLock, now).ok
+    ? nextRenumberArm(activeLock.line, trip.renumberSuccessor, activeLock.trainCode, swapped.trainCode, now)
+    : undefined;
   await recordLockReattach(env, trip, waypoint, now, {
     source: 'vanish-swap',
     from: activeLock.trainCode,
@@ -5441,6 +5439,7 @@ export async function attemptTimetableSuccessorReattach(
 ): Promise<BoardingLockMeta | null> {
   const origin = resolveRenumberOrigin(activeLock.trainCode, trip.renumberSuccessor, now);
   if (lookupRenumberSuccessor(activeLock.line, origin, now) === null) return null;
+  if (!checkRenumberLeg(trip, activeLock, now).ok) return null;
   const fresh = await readFreshSelfPollPosition(env.TRIPS, activeLock.line, now);
   const decision = decideTimetableReattach({
     lockLine: activeLock.line,
@@ -5448,6 +5447,7 @@ export async function attemptTimetableSuccessorReattach(
     arm: trip.renumberSuccessor,
     positions: fresh?.positions ?? null,
     nowMs: now,
+    legDirection: legDirectionOf(trip, activeLock),
   });
   if (!decision.ok || decision.successorCode === activeLock.trainCode) return null;
   log('boarding-lock: timetable successor reattach', {
@@ -5855,6 +5855,7 @@ export async function runTrainCodeTracking(
   // 기존 miss 카운터(`consecutiveEtaMissing`, 이미 매 miss tick putTrip)가 담아 추가 KV write가 없다.
   const deferVanishSwap =
     estimate === null &&
+    checkRenumberLeg(trip, activeLock, now).ok &&
     shouldDeferVanishSwap({
       lockLine: activeLock.line,
       lockTrainCode: activeLock.trainCode,

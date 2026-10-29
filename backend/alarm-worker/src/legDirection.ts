@@ -173,3 +173,27 @@ export function inferLegDirection(
   }
   return sign === 1 ? 'down' : 'up';
 }
+
+/**
+ * #3158 — 순환 본선(2호선)에서 `stationName`으로부터 `direction`으로 1역 진행한 역명. 인접 두 역 중 `inferLegDirection`이
+ * 그 방향으로 판정하는 쪽이다(같은 극성 SSoT). 순환 본선 밖·미등록 역이면 null.
+ * 시간표 후속 열차가 번호 변경역(성수)에서 leg 방향으로 막 출발했을 때 있을 수 있는 다음 역을 구하는 데 쓴다.
+ */
+export function nextStationInDirection(
+  line: LineNumber,
+  stationName: string,
+  direction: 'up' | 'down',
+): string | null {
+  const from = findStationByNameAndLine(
+    stationName,
+    line as Parameters<typeof findStationByNameAndLine>[1],
+  );
+  if (!from) return null;
+  const sharedLine = line as unknown as SharedLineNumber;
+  const loop = getLineStationsSorted(line).filter((s) => isClosedLoopMainStation(sharedLine, s.id));
+  const fromIdx = loop.findIndex((s) => s.id === from.id);
+  if (fromIdx === -1) return null;
+  const neighbours = [loop[(fromIdx + 1) % loop.length], loop[(fromIdx - 1 + loop.length) % loop.length]];
+  const next = neighbours.find((s) => inferLegDirection(line, stationName, s.name) === direction);
+  return next?.name ?? null;
+}
