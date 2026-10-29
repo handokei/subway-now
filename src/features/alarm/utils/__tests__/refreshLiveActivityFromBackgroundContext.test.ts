@@ -45,10 +45,11 @@ jest.mock('../liveActivityPushChannel', () => ({
   reconcileLiveActivityToken: (...args: unknown[]) => mockReconcileLiveActivityToken(...args),
 }));
 
+const mockLoggerInfo = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
-    info: jest.fn(),
+    info: (...args: unknown[]) => mockLoggerInfo(...args),
     warn: jest.fn(),
     error: jest.fn(),
   }),
@@ -103,7 +104,9 @@ const destination = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127
 const bgStation = {
   station: { id: '0226', name: '역삼', line: '2', lat: 37.5, lng: 127.04 },
   distanceKm: 0.15,
-  timestamp: 1_700_000_000_000,
+  // #2589 PR-5 — gps-bg 분기는 bg.timestamp 나이 상한(60s)이 생겼다. 고정 과거값이면 항상 stale이라
+  // "쓰기" 테스트가 성립하지 않으므로 모듈 로드 시각(테스트 파일 실행 동안 상한 안쪽)을 쓴다.
+  timestamp: Date.now(),
 };
 const directRoute = { type: 'direct', line: '2', stops: 1 };
 
@@ -298,7 +301,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     const bgAtDestination = {
       station: destination, // 강남 — 이미 목적지에 도착(anchoring 대상)
       distanceKm: 0,
-      timestamp: 1_700_000_000_000,
+      timestamp: Date.now(),
     };
     setupStorage({
       [DESTINATION_KEY]: JSON.stringify(destination),
@@ -783,6 +786,72 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       mockReadBackendSsotMirror.mockRejectedValueOnce(new Error('storage down'));
       await expect(refreshLiveActivityOnMirrorAdvance()).resolves.toBeUndefined();
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2589 PR-5 — BG_LAST_STATION(GPS) 2순위 분기 신선도 상한. trip 180(17:27:44 이후 BG fix 전부
+  // gate-accuracy 기각 → BG_LAST_STATION이 갱신 안 된 채 wake) 에서 묵은 역으로 LA 전체 교체가 가능했다.
+  describe('#2589 PR-5 stale-bg 상한 (BACKEND_SSOT_ADVANCE_STALE_GPS_MS=60s)', () => {
+    const NOW = 1_800_000_000_000;
+    const bgAged = (ageMs: number) => ({ ...bgStation, timestamp: NOW - ageMs });
+    const arrange = (bg: unknown) =>
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bg),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+      });
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(NOW);
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('61s 전 fix → LA 쓰기 없음(no-op) + stale-bg 로그', async () => {
+      arrange(bgAged(61_000));
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockBuild).not.toHaveBeenCalled();
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      expect(mockLoggerInfo).toHaveBeenCalledWith(expect.stringContaining('stale-bg'));
+    });
+
+    it('59s 전 fix → 기존대로 gps-bg 쓰기', async () => {
+      arrange(bgAged(59_000));
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      expect(mockLoggerInfo).not.toHaveBeenCalledWith(expect.stringContaining('stale-bg'));
+    });
+
+    it('경계 정확히 60s는 쓴다(상한 초과만 차단 — gap1 가드의 <= 와 동일 의미)', async () => {
+      arrange(bgAged(60_000));
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    });
+
+    it('trip 180 모사 — 마지막 수용 fix 이후 wake가 이어져도(61s→10분) 쓰기 0건', async () => {
+      for (const ageMs of [61_000, 120_000, 5 * 60_000, 10 * 60_000]) {
+        arrange(bgAged(ageMs));
+        await refreshLiveActivityFromBackgroundContext();
+      }
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('[거부] stale-bg여도 mirror(1순위) 채택은 막지 않는다 — 상한은 gps-bg 분기 전용', async () => {
+      arrange(bgAged(10 * 60_000));
+      mockReadBackendSsotMirror.mockResolvedValue({
+        currentStationId: '성수',
+        currentStationLine: '2',
+        motionState: 'moving',
+        lastAdvanceEvidence: 'cron',
+        lastAdvanceAt: NOW - 5_000,
+        passedStations: [],
+        receivedAt: NOW,
+      });
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     });
   });
 
