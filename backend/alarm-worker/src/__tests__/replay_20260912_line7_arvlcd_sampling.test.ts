@@ -149,10 +149,11 @@ async function replayAtPhase(phaseOffsetSec: number): Promise<Set<string>> {
       now: () => simNow,
       generatePushId: () => `p-${t}`,
       log: (msg: string, ctx?: Record<string, unknown>) => {
-        // arvlCd 경로 + vanish-fallback(position 확증) 경로 둘 다 station-passed 발사로 집계.
+        // arvlCd 경로 + vanish-fallback(position 확증) 경로 + #3223 position 진입 발사(mid-cycle-fire 로그 키 공유) 모두 station-passed 발사로 집계.
         if (
           (msg === 'arvlcd-fire: station-passed push' ||
-            msg === 'vanish-fallback-fire: station-passed push') &&
+            msg === 'vanish-fallback-fire: station-passed push' ||
+            msg === 'mid-cycle-fire: station-passed push') &&
           ctx?.station
         ) {
           fired.add(String(ctx.station));
@@ -268,7 +269,8 @@ describe('전 체인 E2E — 탭→register→lock부착→매역 알림 (라이
         log: (msg: string, ctx?: Record<string, unknown>) => {
           if (
             (msg === 'arvlcd-fire: station-passed push' ||
-              msg === 'vanish-fallback-fire: station-passed push') &&
+              msg === 'vanish-fallback-fire: station-passed push' ||
+              msg === 'mid-cycle-fire: station-passed push') &&
             ctx?.station
           ) {
             fired.add(String(ctx.station));

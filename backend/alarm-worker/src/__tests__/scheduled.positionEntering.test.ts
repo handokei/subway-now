@@ -269,9 +269,6 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     expect(sent(arrived.events, '군자(능동)')).toEqual([]);
     expect(arrived.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
     expect((await world.trip()).waypoints.map((w) => w.stationName)).toEqual(['어린이대공원(세종대)', '건대입구']);
-    expect(
-      arrived.events.some((e) => e.kind === 'cron-fire-attempt' && e.meta.reason === 'station-passed-dedup'),
-    ).toBe(true);
   });
 
   it('진입이 연속 2 tick 보여도 발사는 1회 (중복 발사 0)', async () => {

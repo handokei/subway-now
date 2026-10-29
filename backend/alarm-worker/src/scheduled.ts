@@ -81,6 +81,8 @@ import {
   legDirectionOf,
   lookupRenumberSuccessor,
   nextRenumberArm,
+  RENUMBER_LINE,
+  RENUMBER_STATION,
   resolveRenumberOrigin,
 } from './renumberSuccessor';
 import { appendLockCodeHistory } from './lockCodeHistory';
@@ -4435,6 +4437,139 @@ export interface MidCycleFireStats {
 }
 
 /**
+ * #2615 / #3223 — advance 없이 station-passed push 1건만 발사하고 성공 시 공용 dedup 키(`stationPassedFiredKey`)를
+ * stamp 한다. mid-cycle(`runMidCycleFireOnly`)과 메인 pass 의 진입 발사(`fireEnteringStationPush`)가 공유한다.
+ * trip/SSoT 를 mutate 하지 않는다(KV 쓰기 = dedup 키 1건뿐). 호출 전 취침 mute·dedup GET 은 호출자 책임.
+ * `fireArvlCdStationPush`("advance 미성공 시 fire 금지") 와 다른, advance 없는 발사 경로다 — invariants 참고.
+ */
+async function sendStationPassedFireOnly(inputs: {
+  env: Env;
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  deps: MidCycleFireDeps;
+  now: number;
+  log: Logger;
+  pushId: string;
+  /** #3223 — position 진입(sttus0) 트리거 발사인가 (D1 meta.path 로 도착 시점 발사와 구분). */
+  entering: boolean;
+  /** D1 meta.midCycle — mid pass 발사만 true. */
+  midCycle: boolean;
+}): Promise<{ ok: boolean }> {
+  const { env, trip, waypoint, lock, deps, now, log, pushId, entering, midCycle } = inputs;
+  const payload = buildStationPassedImminentPayload({
+    trip,
+    waypoint,
+    lock,
+    pushId,
+    now,
+    origin: 'arvlcd',
+    ssot: null,
+    archFlag: deps.archFlag,
+  });
+  const content = buildStationNotifContent(trip, waypoint, trip.locale);
+  const soundFields = stationNotifSoundFields(waypoint.kind);
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendAlertPush({
+        deviceToken: resolveTripDeviceToken(trip),
+        title: content.title,
+        body: content.body,
+        pushId,
+        tripToken: trip.token,
+        sound: soundFields.sound,
+        interruptionLevel: soundFields.interruptionLevel,
+        // #2909 (ADR-040 0단계, 구 #2615 trip 단위 collapse 폐기) — 역 단위 collapse.
+        // 다음 정각 cron이 같은 역을 또 쏴도(같은 token+station) iOS가 알림센터에서
+        // 최신으로 교체해 중복 스택은 방지하면서, 다른 역 배너는 덮지 않고 나란히 쌓인다.
+        collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
+        expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
+        data: buildSilentPushData(payload),
+        contentAvailable: true,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
+  );
+  const path = entering ? POSITION_ENTERING_FIRE_PATH : undefined;
+
+  if (!heal.result.ok) {
+    log('mid-cycle-fire: push failed', {
+      status: heal.result.status,
+      reason: heal.result.reason,
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+    });
+    // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, midCycle, path, pushId);
+    return { ok: false };
+  }
+
+  log('mid-cycle-fire: station-passed push', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    station: waypoint.stationName,
+    kind: waypoint.kind,
+    ...(entering ? { path } : {}),
+  });
+  try {
+    await env.TRIPS.put(stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName), '1', {
+      expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC,
+    });
+  } catch (e) {
+    // best-effort 힌트 — 실패해도 correctness는 device collapse-id가 보장(runMidCycleFireOnly doc 참고).
+    log('mid-cycle-fire: dedup marker put failed (best-effort, swallowed)', {
+      error: String(e),
+      token: trip.token.slice(0, 8),
+    });
+  }
+  // #2893 — pushId 동봉(device 수신 push와 사후 대조).
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, midCycle, path, pushId);
+  return { ok: true };
+}
+
+/**
+ * #3223 — 메인 pass 의 진입(position sttus0) 매역 발사. 도착 확정(advance)은 그대로 두고 push 만 앞당긴다.
+ * 취침 mute / 공용 dedup GET 을 mid-cycle 과 동일하게 거친 뒤 `sendStationPassedFireOnly` 로 발사한다.
+ */
+async function fireEnteringStationPush(inputs: {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  env: Env;
+  deps: ScheduledDeps;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}): Promise<void> {
+  const { trip, waypoint, lock, env, deps, now, log, generatePushId } = inputs;
+  if (isSleepMutedStationNotif(trip, waypoint)) return;
+  try {
+    if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) return;
+  } catch {
+    // read 실패는 보수적으로 계속 진행(발사 시도) — mid-cycle 과 동일.
+  }
+  await sendStationPassedFireOnly({
+    env,
+    trip,
+    waypoint,
+    lock,
+    deps,
+    now,
+    log,
+    pushId: generatePushId(),
+    entering: true,
+    midCycle: false,
+  });
+}
+
+/**
  * #2615 (재설계, 코드리뷰 F1~F10) — cycle 내 +30초 재폴링 pass의 fire-only 진입점.
  *
  * `runScheduled`를 재진입하지 않는다(F3/F4) — 1차 pass가 만든 `MidCycleTripSnapshot[]`만
@@ -4490,82 +4625,29 @@ export async function runMidCycleFireOnly(
 
     try {
       const estimate = await estimateBoardingLockArrival({ seoul: deps.seoul } as ScheduledDeps, lock, waypoint, now);
-      if (!estimate?.arrived) continue;
+      // #3223 — 도착 확증 또는 intermediate 진입(position sttus0)이면 발사. 진입은 advance 없이 발사만(도착 tick 이 advance).
+      if (!estimate) continue;
+      const entering = isPositionEnteringFire(estimate, waypoint);
+      if (!estimate.arrived && !entering) continue;
 
-      const pushId = generatePushId();
-      const payload = buildStationPassedImminentPayload({
+      const outcome = await sendStationPassedFireOnly({
+        env,
         trip,
         waypoint,
         lock,
-        pushId,
+        deps,
         now,
-        origin: 'arvlcd',
-        ssot: null,
-        archFlag: deps.archFlag,
-      });
-      const content = buildStationNotifContent(trip, waypoint, trip.locale);
-      const soundFields = stationNotifSoundFields(waypoint.kind);
-      const heal = await sendWithEnvHeal(
-        (host) =>
-          sendAlertPush({
-            deviceToken: resolveTripDeviceToken(trip),
-            title: content.title,
-            body: content.body,
-            pushId,
-            tripToken: trip.token,
-            sound: soundFields.sound,
-            interruptionLevel: soundFields.interruptionLevel,
-            // #2909 (ADR-040 0단계, 구 #2615 trip 단위 collapse 폐기) — 역 단위 collapse.
-            // 다음 정각 cron이 같은 역을 또 쏴도(같은 token+station) iOS가 알림센터에서
-            // 최신으로 교체해 중복 스택은 방지하면서, 다른 역 배너는 덮지 않고 나란히 쌓인다.
-            collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
-            expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
-            data: buildSilentPushData(payload),
-            contentAvailable: true,
-            config: deps.apnsConfig,
-            host,
-            fetchImpl: deps.fetchImpl,
-            now,
-          }),
-        trip.apnsEnv,
-        deps.apnsHosts,
         log,
-        trip.token.slice(0, 8),
-        { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-      );
-
-      if (!heal.result.ok) {
+        pushId: generatePushId(),
+        entering,
+        midCycle: true,
+      });
+      if (!outcome.ok) {
         stats.errors += 1;
-        log('mid-cycle-fire: push failed', {
-          status: heal.result.status,
-          reason: heal.result.reason,
-          token: trip.token.slice(0, 8),
-          station: waypoint.stationName,
-        });
-        // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, true, undefined, pushId);
         continue;
       }
-
       stats.fired += 1;
       firedKeys.add(dedupKey);
-      log('mid-cycle-fire: station-passed push', {
-        token: trip.token.slice(0, 8),
-        trainCode: lock.trainCode,
-        station: waypoint.stationName,
-        kind: waypoint.kind,
-      });
-      try {
-        await env.TRIPS.put(dedupKey, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
-      } catch (e) {
-        // best-effort 힌트 — 실패해도 correctness는 device collapse-id가 보장(위 doc 참고).
-        log('mid-cycle-fire: dedup marker put failed (best-effort, swallowed)', {
-          error: String(e),
-          token: trip.token.slice(0, 8),
-        });
-      }
-      // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, true, undefined, pushId);
     } catch (e) {
       stats.errors += 1;
       log('mid-cycle-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
@@ -6059,6 +6141,12 @@ export async function runTrainCodeTracking(
     return;
   }
 
+  // #3223 — intermediate 매역은 position 진입(sttus0) 첫 tick 에 push 만 앞당겨 발사한다. advance 는 위 도착 분기가
+  // 그대로 맡고(취침 알람·준비 진동·LA 불변), 도착 tick 의 발사는 공용 dedup 으로 건너뛴다. trip 은 mutate 하지 않는다.
+  if (isPositionEnteringFire(estimate, waypoint)) {
+    await fireEnteringStationPush({ trip, waypoint, lock: activeLock, env, deps, now, log, generatePushId });
+  }
+
   // #3132 — 도착 시각을 모르면(epoch=null: 코레일 barvlDt=0 + position 추정 없음) reschedule push와 LA ETA
   // 갱신(즉시 트리거 포함)을 하지 않는다. 열차는 피드에 보이므로 ETA-missing(vanish) 카운터도 올리지 않는다.
   let laDirty = false;
@@ -6119,7 +6207,31 @@ export type BoardingLockArrivalEstimate =
   | { epoch: number; arrived: true; arvlCd: 0 | 1 | null }
   // #3132 — epoch=null: 열차는 피드에서 보이지만 도착 시각을 모른다(코레일 barvlDt=0, position 추정도 없음).
   // 호출자는 reschedule/LA ETA 갱신을 하지 않는다(지어낸 now 금지). `estimate===null`(열차 소실)과 구분된다.
-  | { epoch: number | null; arrived: false; arvlCd: number | null };
+  // #3223 — entering: 열차가 목표역에 position trainSttus 0(진입)으로 노출됐다(`isEnteringTarget`). arrived 는 바꾸지 않는다 —
+  // advance·취침 알람·준비 진동·LA 는 도착 확정 그대로이고, 매역 push 발사만 이 신호로 앞당긴다(참일 때만 설정).
+  | { epoch: number | null; arrived: false; arvlCd: number | null; entering?: true };
+
+/** #3223 — 진입 시점 발사 D1 `cron-fire-attempt` meta.path (도착 시점 발사와 구분). */
+export const POSITION_ENTERING_FIRE_PATH = 'position-entering';
+
+/**
+ * #3223 — 열차가 목표역에 진입(position trainSttus 0) 중인가. 순수 판정.
+ * 번호 변경역(2호선 성수, `data/line2RenumberSuccessors.json` meta)은 제외한다: 같은 물리 열차가 종착 후
+ * 최대 7.5분(10/19 3047 실측 451초) 정차해 진입 발사가 그만큼 일찍 울린다 — 도착 시점 발사를 유지한다.
+ */
+export function isEnteringTarget(train: PositionEntry, targetStation: string, lock: BoardingLockMeta): boolean {
+  if (train.trainSttus !== TRAIN_STATUS.APPROACHING || train.stationName !== targetStation) return false;
+  if (!lock.segmentStations.includes(targetStation)) return false;
+  return !(lock.line === RENUMBER_LINE && targetStation === RENUMBER_STATION);
+}
+
+/**
+ * #3223 — 진입 신호로 매역 push 만 앞당겨 발사할 대상인가. intermediate 만(U1: transfer·destination 은 도착 시점 유지).
+ * 호출자는 `estimate.arrived===false` 인 경우만 넘긴다(도착이면 기존 도착 발사 경로).
+ */
+function isPositionEnteringFire(estimate: BoardingLockArrivalEstimate, waypoint: Waypoint): boolean {
+  return !estimate.arrived && estimate.entering === true && waypoint.kind === 'intermediate';
+}
 
 export async function estimateBoardingLockArrival(
   deps: ScheduledDeps,
@@ -6153,17 +6265,20 @@ export async function estimateBoardingLockArrival(
     // vanish-fallback 발사 경로로 진입, #2571).
     return { epoch: posEstimate.epoch ?? now, arrived: true, arvlCd: null };
   }
-  // 아직 도착 전 — ETA는 arrivals(시간을 아는 행)가 있으면 우선, 없으면 position 추정.
+  // 아직 도착 전 — #3223 진입 신호는 어느 ETA 분기로 나가든 함께 실린다.
+  const enteringFlag: { entering?: true } =
+    train && isEnteringTarget(train, waypoint.stationName, lock) ? { entering: true } : {};
+  // ETA는 arrivals(시간을 아는 행)가 있으면 우선, 없으면 position 추정.
   // #3132 — 매칭 행이 시간 모름(null)이면 position 추정을 우선하고, 그것도 없으면 epoch=null(열차는 보이나
   // 시각 불명)로 돌려준다 — 예전엔 0초로 접혀 epoch=now가 LA 즉시 트리거를 발사했다.
   if (matched && matched.arrivalSeconds !== null) {
-    return { epoch: now + matched.arrivalSeconds * 1000, arrived: false, arvlCd: matched.arvlCd };
+    return { epoch: now + matched.arrivalSeconds * 1000, arrived: false, arvlCd: matched.arvlCd, ...enteringFlag };
   }
   if (posEstimate && posEstimate.epoch !== null) {
-    return { epoch: posEstimate.epoch, arrived: false, arvlCd: matched?.arvlCd ?? null };
+    return { epoch: posEstimate.epoch, arrived: false, arvlCd: matched?.arvlCd ?? null, ...enteringFlag };
   }
   if (matched) {
-    return { epoch: null, arrived: false, arvlCd: matched.arvlCd };
+    return { epoch: null, arrived: false, arvlCd: matched.arvlCd, ...enteringFlag };
   }
   return null;
 }
