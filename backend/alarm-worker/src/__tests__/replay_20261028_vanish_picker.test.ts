@@ -50,7 +50,6 @@ describe('#3158 vanish picker — 99-only 모호성', () => {
   it('trip 180 17:15:45: 건대입구 arrival 내선 후보가 2288·3290 둘 다 arvlCd99면 교체 대상 없음(null)', async () => {
     const cap = captureAt('replay_20261028_trip180', '17:15:45');
     const trip = tripOf(cap, {
-      route: { type: 'transfer', line: '2', stops: 5 },
       destination: '용마산',
       waypoints: [
         { stationName: '건대입구', line: '2', kind: 'transfer' },
@@ -70,7 +69,6 @@ describe('#3158 vanish picker — 99-only 모호성', () => {
   it('10/22 18:46:45: 왕십리 arrival 외선 6405 arvlCd5 단독 tier는 그대로 6405로 교체', async () => {
     const cap = captureAt('replay_20261022_wangsimni', '18:46:45');
     const trip = tripOf(cap, {
-      route: { type: 'transfer', line: '2', stops: 7 },
       destination: '한강진',
       waypoints: [
         { stationName: '왕십리(성동구청)', line: '2', kind: 'intermediate' },

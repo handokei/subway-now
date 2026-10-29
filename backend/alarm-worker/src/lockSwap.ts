@@ -151,6 +151,8 @@ export async function attachTrainCodeForLeg(
     direction,
     segmentStations,
     targetStation: targetWaypoint.stationName,
+    // #3158 PR-2 — vanish 전용: tier 없는 99-only 후보가 2개 이상이면 뒤 열차로 옮기지 않는다(null).
+    rejectAmbiguousUntiered: true,
   });
   if (!resolved) return null;
   const { trainCode, arrivals } = resolved;
