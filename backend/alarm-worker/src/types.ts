@@ -153,6 +153,19 @@ export interface Trip {
    */
   activityState?: 'live' | 'ended';
   /**
+   * #3221 (PR-2, dormant) — 클라이언트가 "탑승여부 LA + 여정 LA 2개 분리"를 지원한다는 capability.
+   * `POST /trips` register body로 수용(미지원/잘못된 값은 제거 → 구 클라이언트 현행 동작).
+   * `split:true`이면 여정 LA content-state에서 탑승 질문 필드(boardingPhase, boardingAlert 계열, boardingPrompt 계열)를
+   * 생략한다(`buildLiveActivityContentState`). `boardingStart`는 탑승 LA 시작 경로: iOS 17.2+
+   * push-to-start / 17.0~17.1 FG만 / 시작 불가.
+   */
+  laClient?: LaClientCapability;
+  /**
+   * #3221 (PR-2, dormant) — 탑승 LA push-to-start token(기기 단위, hex). register body로 받아 재등록 시 보존.
+   * 소비자(탑승 LA 시작 push 발사)는 PR-3. KV 쓰기 추가 0(기존 putTrip에 piggyback).
+   */
+  boardingPushToStartToken?: string;
+  /**
    * 마지막으로 LA update push로 통지한 도착 epoch(ms) — #586 D.
    * 30s+ 변동 시점에만 다음 발사해 APNs LA budget을 절감한다 (reschedule push의 15s 임계와 별개).
    * waypoint shift 시 reset(undefined) — 새 hop의 첫 update를 보장한다.
@@ -1227,4 +1240,12 @@ export interface Env {
    * 생성: `wrangler.toml`의 `[[durable_objects.bindings]]` + `[[migrations]]` 참조.
    */
   TRIP_DO?: DurableObjectNamespace;
+}
+
+/** #3221 — `Trip.laClient` capability. */
+export const LA_BOARDING_START_MODES = ['push-to-start', 'fg-only', 'none'] as const;
+export type LaBoardingStartMode = (typeof LA_BOARDING_START_MODES)[number];
+export interface LaClientCapability {
+  split: true;
+  boardingStart: LaBoardingStartMode;
 }
