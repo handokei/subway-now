@@ -3821,11 +3821,31 @@ describe('silentPushTask', () => {
           expect.objectContaining({
             activeTripToken: 'tk-active',
             payloadTripToken: 'tk-payload',
+            lockActive: false,
           }),
         );
         expect(mockCheckTripDeathByPull).toHaveBeenCalledWith(
           'https://api.test.dev',
           'silent-push',
+        );
+      });
+
+      // #2735 PR-4 V1-a(a) — lock 활성 여부를 판정 입력으로 넘긴다(BOARDING_LOCK_KEY 기준).
+      it('BoardingLock이 저장돼 있으면 lockActive=true로 판정 위임', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'tk-active';
+          return null;
+        });
+        mockGetBoardingLock.mockResolvedValue({ trainCode: '7123' });
+        mockGetTripDeathPullBackendUrl.mockReturnValue('https://api.test.dev');
+        mockShouldCheckTripDeathOnSilentPush.mockReturnValue(false);
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent', tripToken: 'tk-active' }));
+
+        expect(mockShouldCheckTripDeathOnSilentPush).toHaveBeenCalledWith(
+          expect.objectContaining({ lockActive: true }),
         );
       });
 

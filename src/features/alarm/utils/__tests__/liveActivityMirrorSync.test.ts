@@ -26,9 +26,11 @@ jest.mock('../laDismissSentinel', () => ({
 
 const mockShouldSkipDeviceLiveActivityWrite = jest.fn((..._args: unknown[]) => false);
 const mockReconcileLiveActivityToken = jest.fn((..._args: unknown[]) => Promise.resolve());
+const mockResolveDeviceFallbackSource = jest.fn(async (..._args: unknown[]) => undefined as string | undefined);
 jest.mock('../liveActivityPushChannel', () => ({
   shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) =>
     mockShouldSkipDeviceLiveActivityWrite(...args),
+  resolveDeviceFallbackSource: (...args: unknown[]) => mockResolveDeviceFallbackSource(...args),
   reconcileLiveActivityToken: (...args: unknown[]) => mockReconcileLiveActivityToken(...args),
 }));
 
@@ -86,6 +88,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
     mockHasActiveLiveActivity.mockReturnValue(true);
     mockIsLaDismissed.mockResolvedValue(false);
     mockShouldSkipDeviceLiveActivityWrite.mockReturnValue(false);
+    mockResolveDeviceFallbackSource.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
     arbitrationTestHelpers.reset();
   });
@@ -103,6 +106,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
       expectedEta,
       false,
       null,
+      undefined,
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
@@ -126,7 +130,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
 
   it('route가 null이면 etaMinutes도 null(기존대로) — #2805 거부 케이스', async () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, null);
-    expect(mockBuild).toHaveBeenCalledWith(mirrorStation, 0, destination, null, null, false, null);
+    expect(mockBuild).toHaveBeenCalledWith(mirrorStation, 0, destination, null, null, false, null, undefined);
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
   });
@@ -156,13 +160,43 @@ describe('updateLiveActivityFromMirrorStation', () => {
     );
   });
 
-  it('#2659 — backend-authority 활성 trip이어도 mirror-sourced 쓰기는 진행된다 (게이트는 GPS 전용)', async () => {
+  // #2735 PR-4 (U3) — #2659를 좁힌다. 코어에 게이트를 두면 BG(D2)와 FG poll(D4)이 함께 받는다.
+  it('#2735 — backend-authority 활성 trip이면 mirror-sourced 쓰기는 skip (D2/D4 공용 게이트)', async () => {
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) =>
       key === ACTIVE_TRIP_KEY ? 'apns-token-abc' : null,
     );
-    mockShouldSkipDeviceLiveActivityWrite.mockReturnValue(true);
+    mockShouldSkipDeviceLiveActivityWrite.mockResolvedValue(true);
+    const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute, {
+      writer: 'D4',
+    });
+    expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
+    expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    expect(mockLogLaWrite).not.toHaveBeenCalled();
+    expect(applied).toBe(false);
+    expect(mockLogLiveActivityMirrorSkip).toHaveBeenCalledWith(
+      'la-mirror-skip-backend-authority',
+      mirrorStation.name,
+    );
+  });
+
+  it('[거부] 권위가 active가 아니면 mirror-sourced 쓰기는 진행 — 침묵 뒤 출처(deviceFallback)를 싣는다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) =>
+      key === ACTIVE_TRIP_KEY ? 'apns-token-abc' : null,
+    );
+    mockShouldSkipDeviceLiveActivityWrite.mockResolvedValue(false);
+    mockResolveDeviceFallbackSource.mockResolvedValue('deviceFallback');
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
-    expect(mockShouldSkipDeviceLiveActivityWrite).not.toHaveBeenCalled();
+    expect(mockResolveDeviceFallbackSource).toHaveBeenCalledWith('apns-token-abc');
+    expect(mockBuild).toHaveBeenCalledWith(
+      mirrorStation,
+      0,
+      destination,
+      directRoute,
+      expect.anything(),
+      false,
+      null,
+      'deviceFallback',
+    );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
   });

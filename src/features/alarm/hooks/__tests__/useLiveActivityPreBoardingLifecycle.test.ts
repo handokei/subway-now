@@ -58,7 +58,23 @@ jest.mock('../../../../shared/utils/stationRoute', () => {
   };
 });
 
+// #2735 PR-4 — D6(auto-locked pre-boarding)는 backend 권위 게이트를 받는다. 판정 자체는
+// liveActivityPushChannel.test.ts가 검증하고, 여기서는 wire-up만 본다(기본: 권위 아님).
+const mockShouldSkipDeviceLiveActivityWrite = jest.fn(async (..._args: unknown[]) => false);
+jest.mock('../../utils/liveActivityPushChannel', () => ({
+  ...jest.requireActual('../../utils/liveActivityPushChannel'),
+  shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) => mockShouldSkipDeviceLiveActivityWrite(...args),
+}));
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { useLiveActivityPreBoardingLifecycle } from '../useLiveActivityPreBoardingLifecycle';
+
+/** 게이트 판정(storage 읽기 + await)과 update 체인이 모두 끝날 때까지 이벤트 루프를 비운다. */
+const flushAll = () =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 
 const { gangnam, chungmuro, hyochang } = MOCK_STATIONS;
 
@@ -80,6 +96,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     mockClearStationNotification.mockResolvedValue(undefined);
     // 기본값: lock.boardingStationId로 resolve 안 됨(미기재 테스트는 tripOrigin fallback으로 귀결).
     mockGetStationById.mockReturnValue(undefined);
+    mockShouldSkipDeviceLiveActivityWrite.mockResolvedValue(false);
     useDestinationStore.setState({ destination: null, tripOrigin: null, customOrigin: null });
     useBoardingLockStore.setState({ lock: null });
   });
@@ -140,7 +157,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
         useBoardingLockStore.setState({ lock: LOCK });
       });
       rerender({});
-      await flush();
+      await flushAll();
 
       expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
       expect(mockLogLaWrite).toHaveBeenCalledWith({
@@ -162,7 +179,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
         useBoardingLockStore.setState({ lock: LOCK });
       });
       rerender({});
-      await flush();
+      await flushAll();
 
       expect(mockLogLaWrite).not.toHaveBeenCalled();
     });
@@ -243,7 +260,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     expect(mockClearStationNotification).toHaveBeenCalledTimes(1);
   });
 
-  it('#2528 — evidence 있는 lock으로 전환 시 추적중(auto-locked) 배너로 한 번 더 update한다', () => {
+  it('#2528 — evidence 있는 lock으로 전환 시 추적중(auto-locked) 배너로 한 번 더 update한다', async () => {
     mockGetCurrentTripCorrIdSync.mockReturnValue('corr-999');
     useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
     const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
@@ -253,6 +270,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
       useBoardingLockStore.setState({ lock: LOCK }); // LOCK.boardingEvidence === true
     });
     rerender({});
+    await flushAll();
 
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
     const autoLockedData = mockUpdateLiveActivity.mock.calls[1][0];
@@ -262,7 +280,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     expect(autoLockedData.boardingPromptTripToken).toBe('corr-999');
   });
 
-  it('#2528 — tripToken 없이 evidence 있는 lock으로 전환되면 boardingPromptTripToken 없이 추적중 배너를 갱신한다', () => {
+  it('#2528 — tripToken 없이 evidence 있는 lock으로 전환되면 boardingPromptTripToken 없이 추적중 배너를 갱신한다', async () => {
     mockGetCurrentTripCorrIdSync.mockReturnValue(null);
     useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
     const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
@@ -272,6 +290,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
       useBoardingLockStore.setState({ lock: LOCK });
     });
     rerender({});
+    await flushAll();
 
     const autoLockedData = mockUpdateLiveActivity.mock.calls[1][0];
     expect(autoLockedData.boardingAutoLocked).toBe(true);
@@ -300,10 +319,40 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
       useBoardingLockStore.setState({ lock: LOCK });
     });
     rerender({});
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushAll();
 
     expect(mockWarn).toHaveBeenCalledWith('auto-locked pre-boarding LA 갱신 실패', expect.any(Error));
+  });
+
+  // #2735 PR-4 — D6 게이트. backend가 LA를 갱신 중이면 auto-locked "추적중" 배너 update를 skip한다.
+  describe('#2735 PR-4 D6 backend 권위 게이트', () => {
+    const lockTransition = async () => {
+      useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+      const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1); // D5
+      mockLogLaWrite.mockClear();
+      act(() => {
+        useBoardingLockStore.setState({ lock: LOCK });
+      });
+      rerender({});
+      await flushAll();
+    };
+
+    it('권위 active면 auto-locked update도 la-write도 없다 — 판정은 ACTIVE_TRIP_KEY 기준', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+      mockShouldSkipDeviceLiveActivityWrite.mockResolvedValue(true);
+      await lockTransition();
+      expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith('apns-token-abc');
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+      await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+    });
+
+    it('[거부] 권위가 아니면 auto-locked update + D6 la-write 그대로', async () => {
+      await lockTransition();
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
+      expect(mockLogLaWrite).toHaveBeenCalledWith(expect.objectContaining({ writer: 'D6' }));
+    });
   });
 
   it('Android — 아무 것도 하지 않는다', () => {
@@ -389,7 +438,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     expect(data.lineColorHex).toBe(gangnam.lineColor);
   });
 
-  it('(#2782 red②) 후보 전부 null(route도 없음)이어도 auto-locked 전환 시 boardingPhase/boardingAutoLocked 버튼 필드는 유지된다', () => {
+  it('(#2782 red②) 후보 전부 null(route도 없음)이어도 auto-locked 전환 시 boardingPhase/boardingAutoLocked 버튼 필드는 유지된다', async () => {
     useDestinationStore.setState({ destination: chungmuro, tripOrigin: null, customOrigin: null });
     const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(null));
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
@@ -401,6 +450,7 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
       useBoardingLockStore.setState({ lock: LOCK }); // LOCK.boardingEvidence === true
     });
     rerender({});
+    await flushAll();
 
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
     const autoLockedData = mockUpdateLiveActivity.mock.calls[1][0];
