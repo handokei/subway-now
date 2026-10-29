@@ -11,6 +11,7 @@
  * "같은 열차 3324를 따라간다"로 뒤집은 것이다(#3161 결정: 번호가 바뀌어도 같은 열차).
  */
 import { describe, expect, it } from 'vitest';
+import { RENUMBER_SWAP_DEFER_TICKS } from '../renumberSuccessor';
 import type { Trip } from '../types';
 import { loadCaptures, runCaptureTicks } from './helpers/renumberProbe';
 
@@ -85,20 +86,19 @@ describe('#3158 트립 180 — 번호가 바뀐 같은 열차(3286 -> 3324)를 �
     expect(gets).toBeLessThanOrEqual(DEV_BASELINE_POSITION_GETS + MAX_EXTRA_READS);
   });
 
-  it('hold 상한: 후속 3324가 끝내 관측되지 않으면 유예는 miss 4 직전까지만 — 그 뒤엔 기존 vanish-swap/fallback으로 수렴', async () => {
+  it('hold 상한: 후속 3324가 끝내 관측되지 않으면 vanish-swap은 dev(miss 3)보다 정확히 RENUMBER_SWAP_DEFER_TICKS tick만 늦어진다', async () => {
     const withoutSuccessor = loadCaptures('replay_20261028_trip180').map((cap) => ({
       ...cap,
       entries: cap.entries.map((e) => ({ ...e, body: stripTrain(e.body, '3324') })),
     }));
     const ticks = await runCaptureTicks(withoutSuccessor, makeTrip180, TOKEN);
-    // miss 1,2,3(= 17:14:46 miss=1 ...)은 유예: lock 3286 유지. 후속이 없으니 시간표 재부착 행은 0.
     expect(ticks.flatMap((t) => t.d1).filter((r) => r.kind === 'lock-reattach' && r.meta.source === 'timetable-successor')).toEqual([]);
-    const firstSwap = ticks.findIndex((t) => t.lock !== '3286');
-    expect(firstSwap).toBeGreaterThan(-1);
-    // 유예 상한: dev는 miss 3(17:15:45)에서 교체. 유예로 최대 RENUMBER_SWAP_DEFER_TICKS(2) tick 늦어질 뿐 무기한 보류는 아니다.
+    // dev는 17:15:45(miss 3)에 교체. 유예 구간(17:15:45~17:16:45)에는 lock 3286을 유지하고, 유예가 끝나는 tick에 기존 vanish-swap으로 수렴한다.
     const devSwapIndex = ticks.findIndex((t) => t.kst === '17:15:45');
-    expect(firstSwap).toBeLessThanOrEqual(devSwapIndex + 2);
-    expect(firstSwap).toBeGreaterThan(devSwapIndex);
+    const firstSwap = ticks.findIndex((t) => t.lock !== '3286');
+    expect(firstSwap).toBe(devSwapIndex + RENUMBER_SWAP_DEFER_TICKS);
+    expect(ticks.slice(0, firstSwap).map((t) => t.lock)).toEqual(Array(firstSwap).fill('3286'));
+    expect(ticks[firstSwap].d1.find((r) => r.kind === 'lock-reattach')?.meta).toMatchObject({ source: 'vanish-swap', from: '3286' });
   });
 });
 

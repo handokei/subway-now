@@ -132,7 +132,7 @@ export async function runCaptureTicks(captures: readonly Capture[], makeTrip: (t
     const trip = raw ? (JSON.parse(raw) as Trip) : null;
     const d1: D1Row[] = inserts.slice(before.ins).flatMap((args) => {
       // trip_events INSERT만 (meta가 JSON 객체 문자열). 다른 테이블 INSERT는 제외.
-      const meta = parseMeta(args[5]);
+      const meta = typeof args[2] === 'string' ? parseMeta(args[5]) : null;
       return meta === null ? [] : [{ kind: String(args[2]), station: String(args[3]), meta }];
     });
     ticks.push({

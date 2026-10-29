@@ -110,7 +110,7 @@ export interface AttachLockInputs {
  * fail-closed(direction=null)로 매 마지막 hop마다 swap이 통째로 막히는 과차단(ADR-010 거부
  * 케이스 ⓓ)을 줄인다. 앵커도 없으면(구 client/캡처 전 트립) 진짜로 추론 불가 — null 유지.
  */
-function resolveLegOriginStation(trip: Trip, line: string): string | undefined {
+export function resolveLegOriginStation(trip: Trip, line: string): string | undefined {
   return trip.currentLegAnchor?.line === line
     ? trip.currentLegAnchor.boardingStation
     : trip.originStationName;
