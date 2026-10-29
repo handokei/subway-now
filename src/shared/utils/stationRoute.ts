@@ -1150,7 +1150,7 @@ function resolveTransferWaitMinutes(
   timetableBoardableWaitSecondsByLeg: StaticEtaOptions['timetableBoardableWaitSecondsByLeg'],
   transferCount: number,
   nowMs: number,
-  firstPendingWaitIdx = 0,
+  firstPendingWaitIdx: number,
 ): number {
   let total = 0;
   for (let i = firstPendingWaitIdx; i < transferCount; i++) {
