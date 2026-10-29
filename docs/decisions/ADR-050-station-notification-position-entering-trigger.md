@@ -64,7 +64,7 @@ acceptance 문구 정정(plan v2-1 U5): "각 역 = 진입 첫 tick"이 아니다
 | --- | --- | --- |
 | 본 ADR 결정 3 "적용 범위는 intermediate만" | 적용 kind | **대체**: intermediate·transfer·destination 모두 진입 첫 tick에 **알림 push만** 1회 발사한다. 번호 변경역 제외(U3)는 유지 |
 | 본 ADR 결정 4 "취침 mute는 진입 경로도 공유(intermediate 매역 무음)" | 취침 | 유지: mute는 `isSleepMutedStationNotif`(#3100, intermediate 한정) 그대로라 transfer/destination 진입 발사는 취침 모드에서도 발사된다(도착 시점 발사와 동일) |
-| 본 ADR 대안 표 "transfer/destination 포함 — U1 결정으로 제외, T7 SSoT 게이트 필요" | 게이트 | **모순(의도)**: 진입 발사는 `evaluateTransferDestinationGate`(T7)를 거치지 않는다. 진입 발사는 advance가 없고(trip/SSoT 불변) lock 열차의 position 행(열차 신원 확정)만 근거라, advance 직전 게이트의 대상(advance 허용 여부)이 아니다. advance·transfer-release·hop-end·취침 알람·LA·trip 종료는 여전히 도착 시점이고 그 게이트를 그대로 통과해야 한다(U2) |
+| 본 ADR 대안 표 "transfer/destination 포함 — U1 결정으로 제외, T7 SSoT 게이트 필요" | 게이트 | **T7 적용으로 해소**: 진입 발사도 `evaluateTransferDestinationGate`(`transferDestinationGate.ts`)를 arvlcd 경로와 같은 입력(`isDeviceSyncStale`, 기본 `maxFreshCycles`)으로 거친다. 새 임계 없음. 차단 시 push 0 + `transfer/destination gate blocked` 로그·`transferDestinationGateBlocked` 통계·D1 `skipped-reason`(메인 pass), dedup 키는 stamp하지 않아 도착 시점 폴백은 그대로다. advance·transfer-release·hop-end·취침 알람·LA·trip 종료는 여전히 도착 시점(U2) |
 
 ### 중복 방지(코드 확인)
 
@@ -72,5 +72,5 @@ acceptance 문구 정정(plan v2-1 U5): "각 역 = 진입 첫 tick"이 아니다
 
 ### 리스크 추가
 
-- transfer/destination 진입 발사는 T7 `transferDestinationGate`(정지 trip "환승임박" false fire 방어, N9)를 거치지 않는다. lock 열차 신원이 확정된 position sttus0 행만 근거다. device 정지 + lock 활성 + 같은 열차가 목표역 진입으로 노출되는 조합은 열차가 실제로 그 역에 진입한 것이므로 false fire가 아니다.
+- 정지 trip "환승임박" 오발사(N9, 6/19) 방어를 위해 transfer/destination 진입 발사에는 T7 게이트를 **적용**한다(ADR-010: FP=miss 동급). SSoT 부재(legacy)는 arvlcd 경로와 같이 통과한다. mid pass는 진입 후보일 때만 SSoT를 1회 read하고, trip/SSoT를 쓰지 않으려 D1·SSoT 마커 기록 없이 로그만 남긴다. 10/28 replay 건대입구 06:34:46은 SSoT가 직전 hop(어린이대공원)이고 마지막 advance가 60초 전이라 통과한다.
 - 진입 후 도착까지의 지연이 긴 종점(destination)에서는 알림이 일찍 울릴 수 있다. 측정은 D1 `path:'position-entering'` 행 대비 trip 종료 행 간격으로 1주 본다.
