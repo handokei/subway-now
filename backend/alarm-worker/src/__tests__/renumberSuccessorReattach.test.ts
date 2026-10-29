@@ -76,4 +76,49 @@ describe('attemptTimetableSuccessorReattach', () => {
     trip.renumberSuccessor = { from: '3045', swappedTo: '3045', armedAt: NOW - 1_000 };
     expect(await attemptTimetableSuccessorReattach(trip, WAYPOINT, lockOf('3045'), env, NOW, vi.fn())).toBeNull();
   });
+
+  // ── #3158 B 게이트 (G1~G4): 게이트에 걸리면 self-poll KV를 읽지도 않고 trip/이벤트는 불변 ──
+  it('G1 거부: leg에 성수가 없으면(강남->뚝섬 leg) 후속이 관측돼도 null, KV read 0', async () => {
+    const { env, trip, events, getSpy } = await setup([row('3045')]);
+    trip.originStationName = '강남';
+    getSpy.mockClear();
+    const lock = { ...lockOf('3009'), segmentStations: ['강남', '뚝섬'] };
+    expect(await attemptTimetableSuccessorReattach(trip, WAYPOINT, lock, env, NOW, vi.fn())).toBeNull();
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(trip.boardingLock).toBeUndefined();
+    expect(events).toEqual([]);
+  });
+
+  it('G1-OR 통과: seg=[뚝섬]만이어도 leg 앵커(originStationName)가 성수면 재부착 (confirm/register lock 경로)', async () => {
+    const { env, trip } = await setup([row('3045')]);
+    trip.originStationName = '성수';
+    const lock = { ...lockOf('3009'), segmentStations: ['뚝섬'] };
+    const next = await attemptTimetableSuccessorReattach(trip, WAYPOINT, lock, env, NOW, vi.fn());
+    expect(next?.trainCode).toBe('3045');
+  });
+
+  it('G2 거부: 시간표 방향(외선)과 leg 방향(성수->건대입구=내선)이 다르면 null, KV read 0 (10/3 3174->3212 유형)', async () => {
+    const { env, trip, events, getSpy } = await setup([row('3045')]);
+    getSpy.mockClear();
+    const lock = { ...lockOf('3009'), segmentStations: ['성수', '건대입구'] };
+    expect(await attemptTimetableSuccessorReattach(trip, WAYPOINT, lock, env, NOW, vi.fn())).toBeNull();
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it('G3 거부: 후속이 성수·다음 역(뚝섬)이 아닌 먼 역(잠실)에서만 관측되면 null (같은 번호 재사용 열차)', async () => {
+    const { env, trip, events } = await setup([row('3045', { stationName: '잠실' })]);
+    expect(await attemptTimetableSuccessorReattach(trip, WAYPOINT, lockOf('3009'), env, NOW, vi.fn())).toBeNull();
+    expect(trip.boardingLock).toBeUndefined();
+    expect(events).toEqual([]);
+  });
+
+  it('G4 거부: 이번 leg에서 이미 3009 -> 3045로 재부착했으면(이력) 같은 leg에서 또 조회하지 않는다', async () => {
+    const { env, trip, events, getSpy } = await setup([row('3045')]);
+    trip.lockCodeHistory = ['3009'];
+    getSpy.mockClear();
+    expect(await attemptTimetableSuccessorReattach(trip, WAYPOINT, lockOf('3045'), env, NOW, vi.fn())).toBeNull();
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
 });
