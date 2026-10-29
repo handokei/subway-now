@@ -258,9 +258,11 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
     expect((await sync('군자')).body.advanced).toBe(false);
     expect(await heads()).toEqual(LEG2_WAYPOINTS.map((w) => w.stationName));
 
+    // #3083 PR-2 — 창이 끝나도 lock 없는 순수 intermediate 관측(군자)은 lockless hold가 막는다(체류 hold와 별개 사유).
     await putTrip(kv as unknown as KVNamespace, makeTrip({ legBoardingEligibleAt: NOW - TRANSFER_DWELL_WAIT_MS }));
-    expect((await sync('군자')).body.advanced).toBe(true);
-    expect(await heads()).toEqual(['중곡', '용마산']);
+    expect((await sync('군자')).body.advanced).toBe(false);
+    expect(await heads()).toEqual(LEG2_WAYPOINTS.map((w) => w.stationName));
+    expect(events.filter((e) => e.kind === 'advance-held').at(-1)?.meta).toMatchObject({ requested: 2, cappedTo: 0 });
   });
 
   it('거부(수정 후에도 전진해야 함): 활성 lock 6종 생성 형태 — segmentStations[0] 무관', async () => {
@@ -297,13 +299,16 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
     expect((await sync('어린이대공원')).body.advanced).toBe(false);
   });
 
-  it('셀 10: anchor 없는 트립(leg-1)은 기존대로 전진 — advance-held 없음', async () => {
+  it('셀 10: anchor 없는 트립(leg-1)은 체류 hold가 없다 — #3083 PR-2 lockless hold만 적용(순수 intermediate는 hold, destination 관측은 소비)', async () => {
     await putTrip(
       kv as unknown as KVNamespace,
       makeTrip({ currentLegAnchor: undefined, legBoardingEligibleAt: undefined }),
     );
-    expect((await sync('군자')).body.advanced).toBe(true);
-    expect(events.filter((e) => e.kind === 'advance-held')).toEqual([]);
+    expect((await sync('군자')).body.advanced).toBe(false);
+    const [held] = events.filter((e) => e.kind === 'advance-held');
+    expect(held.meta).toMatchObject({ requested: 2, cappedTo: 0 });
+    // 체류 사유가 아님: anchor 없는 trip은 isTransferDwell=false.
+    expect(isTransferDwell(makeTrip({ currentLegAnchor: undefined, legBoardingEligibleAt: undefined }), NOW)).toBe(false);
   });
 
   it('셀 9: 환승 waypoint가 남은 상태에서 leg-2 역 관측 → 환승까지만 소비(cap=t+1)', async () => {

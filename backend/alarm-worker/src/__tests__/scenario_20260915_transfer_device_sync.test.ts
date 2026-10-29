@@ -121,12 +121,17 @@ function syncRequest(body: Record<string, unknown>): Request {
 describe('#2645 환승역 하차 확정 — /boarding-lock/sync가 slice하는 순간 처리 (2026-09-15 b00dd879 재구성)', () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
+  // #3083 PR-2 — 핸들러는 `Date.now()`로 lock 만료를 판정하는데 fixture(`NOW`)는 고정값이라, 시계 주입이 없으면 lock이
+  // 이미 만료로 보여 lockless hold(`capLocklessSyncAdvance`)가 걸린다. 시계 주입 누락 보정이며 fixture 데이터 변경이 아니다.
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
     fetchSpy = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -339,12 +344,17 @@ describe('#2645 환승역 하차 확정 — /boarding-lock/sync가 slice하는 �
 describe('PR #2649 코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/MEDIUM-4/LOW-5 (2026-09-15)', () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
+  // #3083 PR-2 — 핸들러는 `Date.now()`로 lock 만료를 판정하는데 fixture(`NOW`)는 고정값이라, 시계 주입이 없으면 lock이
+  // 이미 만료로 보여 lockless hold(`capLocklessSyncAdvance`)가 걸린다. 시계 주입 누락 보정이며 fixture 데이터 변경이 아니다.
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
     fetchSpy = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 

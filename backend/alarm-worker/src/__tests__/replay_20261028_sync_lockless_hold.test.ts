@@ -16,6 +16,7 @@ import { exportPKCS8, generateKeyPair } from 'jose';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import app from '../index';
 import { resetApnsJwtCache } from '../apns';
+import { capLocklessSyncAdvance } from '../scheduled';
 import { getTrip, putTrip } from '../trips';
 import type { BoardingLockMeta, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -243,5 +244,34 @@ describe('POST /boarding-lock/sync — lockless 순수 hold + 첫 transfer/desti
     await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock({ expiresAt: FIRST_SYNC.ts }) }));
     expect((await sync(FIRST_SYNC.station!)).body.advanced).toBe(false);
     expect(await heads()).toEqual(SEED_NAMES);
+  });
+});
+
+describe('capLocklessSyncAdvance — 단위 (#3083 PR-2)', () => {
+  const NOW_MS = FIRST_SYNC.ts;
+
+  it('요청 0이면 0, transfer 전 intermediate만이면 0, 첫 transfer/destination 포함이면 그 index+1, 너머는 거기까지', () => {
+    const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
+    expect(capLocklessSyncAdvance({ shiftedCount: 0 }, makeTrip(), NOW_MS)).toEqual({ shiftedCount: 0 });
+    expect(capLocklessSyncAdvance({ shiftedCount: transferIdx }, makeTrip(), NOW_MS)).toEqual({ shiftedCount: 0 });
+    expect(capLocklessSyncAdvance({ shiftedCount: transferIdx + 1 }, makeTrip(), NOW_MS)).toEqual({
+      shiftedCount: transferIdx + 1,
+    });
+    expect(capLocklessSyncAdvance({ shiftedCount: SEED_WAYPOINTS.length }, makeTrip(), NOW_MS)).toEqual({
+      shiftedCount: transferIdx + 1,
+    });
+  });
+
+  it('환승 없는 경로는 destination이 첫 상한이다', () => {
+    const noTransfer = SEED_WAYPOINTS.filter((w) => w.kind !== 'transfer');
+    const destIdx = noTransfer.findIndex((w) => w.kind === 'destination');
+    expect(
+      capLocklessSyncAdvance({ shiftedCount: noTransfer.length }, makeTrip({ waypoints: noTransfer }), NOW_MS),
+    ).toEqual({ shiftedCount: destIdx + 1 });
+  });
+
+  it('활성·비PENDING lock이면 그대로 통과한다', () => {
+    const requested = { shiftedCount: 2 };
+    expect(capLocklessSyncAdvance(requested, makeTrip({ boardingLock: makeLock() }), NOW_MS)).toBe(requested);
   });
 });
