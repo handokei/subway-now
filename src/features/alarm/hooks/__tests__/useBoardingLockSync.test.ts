@@ -89,6 +89,64 @@ describe('useBoardingLockSync (#901)', () => {
     expect(mockedSync).not.toHaveBeenCalled();
   });
 
+  describe('#3222 PR-0b — 정확도 탈락 skipped 관측(동작 무변경)', () => {
+    const skippedCalls = () => mockedLogLockSyncDelivery.mock.calls.filter(([a]) => a.outcome === 'skipped');
+    const lowAcc = GOOD_FIX_ACCURACY_MAX_M + 1;
+
+    it('정확도 탈락(lock 없음) → reason=low-accuracy 1회 기록, 송신은 여전히 0', () => {
+      renderSync({ accuracyMeters: lowAcc });
+      expect(skippedCalls()).toEqual([[{ outcome: 'skipped', reason: 'low-accuracy' }]]);
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      expect(mockedSync).not.toHaveBeenCalled();
+    });
+
+    it('같은 역에서 연속 탈락(accuracy 변동) → 추가 기록 0', () => {
+      const { rerender } = renderHook((p: Partial<SyncInputs>) => useBoardingLockSync({ ...defaults, ...p }), {
+        initialProps: { accuracyMeters: lowAcc },
+      });
+      rerender({ accuracyMeters: lowAcc + 10 });
+      rerender({ accuracyMeters: null });
+      expect(skippedCalls()).toHaveLength(1);
+    });
+
+    it('다른 역으로 바뀌어 다시 탈락 → 다시 1회', () => {
+      const { rerender } = renderHook((p: Partial<SyncInputs>) => useBoardingLockSync({ ...defaults, ...p }), {
+        initialProps: { accuracyMeters: lowAcc },
+      });
+      rerender({ accuracyMeters: lowAcc, currentStationName: '역삼' });
+      expect(skippedCalls()).toHaveLength(2);
+    });
+
+    it('송신 성공(good fix) → skipped 0', () => {
+      renderSync();
+      expect(skippedCalls()).toHaveLength(0);
+    });
+
+    it('탈락 후 good fix로 송신되고 같은 역에서 다시 탈락하면 다시 1회', () => {
+      const { rerender } = renderHook((p: Partial<SyncInputs>) => useBoardingLockSync({ ...defaults, ...p }), {
+        initialProps: { accuracyMeters: lowAcc },
+      });
+      rerender({ accuracyMeters: 10 });
+      rerender({ accuracyMeters: lowAcc });
+      expect(skippedCalls()).toHaveLength(2);
+    });
+
+    it('역 없음(currentStationName=null) / tripActive=false → 기록 0', () => {
+      renderSync({ currentStationName: null });
+      renderSync({ tripActive: false, accuracyMeters: lowAcc });
+      expect(skippedCalls()).toHaveLength(0);
+    });
+
+    it('trip 종료 후 같은 역으로 새 trip 탈락 → 다시 1회', () => {
+      const { rerender } = renderHook((p: Partial<SyncInputs>) => useBoardingLockSync({ ...defaults, ...p }), {
+        initialProps: { accuracyMeters: lowAcc },
+      });
+      rerender({ accuracyMeters: lowAcc, tripActive: false });
+      rerender({ accuracyMeters: lowAcc, tripActive: true });
+      expect(skippedCalls()).toHaveLength(2);
+    });
+  });
+
   it('좋은 fix + 새 station → debounce 후 1회 발사', async () => {
     renderHook(() =>
       useBoardingLockSync({
