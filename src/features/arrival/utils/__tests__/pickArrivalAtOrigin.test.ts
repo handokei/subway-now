@@ -22,7 +22,7 @@ function makeArrival(
 
 describe('pickArrivalAtOrigin', () => {
   it('arrival=null이면 undefined', () => {
-    expect(pickArrivalAtOrigin(null)).toBeUndefined();
+    expect(pickArrivalAtOrigin(null, 'up')).toBeUndefined();
   });
 
   it('isMock=true면 undefined (정책상 mock 명시 제외)', () => {
@@ -31,12 +31,12 @@ describe('pickArrivalAtOrigin', () => {
       down: [makeArrival(60, 1000)],
       isMock: true,
     };
-    expect(pickArrivalAtOrigin(arrival)).toBeUndefined();
+    expect(pickArrivalAtOrigin(arrival, 'up')).toBeUndefined();
   });
 
   it('up/down 모두 비어있으면 undefined', () => {
     const arrival: StationArrival = { up: [], down: [] };
-    expect(pickArrivalAtOrigin(arrival)).toBeUndefined();
+    expect(pickArrivalAtOrigin(arrival, 'up')).toBeUndefined();
   });
 
   it('up만 있고 정상 row면 그 값 반환', () => {
@@ -44,7 +44,7 @@ describe('pickArrivalAtOrigin', () => {
       up: [makeArrival(180, 1700_000_000_000)],
       down: [],
     };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({
+    expect(pickArrivalAtOrigin(arrival, 'up')).toEqual({
       arrivalSeconds: 180,
       receivedAtMs: 1700_000_000_000,
     });
@@ -55,32 +55,45 @@ describe('pickArrivalAtOrigin', () => {
       up: [],
       down: [makeArrival(240, 1700_000_000_500)],
     };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({
+    expect(pickArrivalAtOrigin(arrival, 'down')).toEqual({
       arrivalSeconds: 240,
       receivedAtMs: 1700_000_000_500,
     });
   });
 
-  it('up/down 둘 다 있으면 빠른 쪽 선택 (down이 빠른 케이스)', () => {
+  it('#1480 N8 — up=60초/down=480초, 내 방향 down이면 빠른 up이 아니라 down 값', () => {
     const arrival: StationArrival = {
-      up: [makeArrival(300, 1700_000_000_000)],
-      down: [makeArrival(120, 1700_000_000_500)],
+      up: [makeArrival(60, 1700_000_000_700)],
+      down: [makeArrival(480, 1700_000_000_500)],
     };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({
-      arrivalSeconds: 120,
+    expect(pickArrivalAtOrigin(arrival, 'down')).toEqual({
+      arrivalSeconds: 480,
       receivedAtMs: 1700_000_000_500,
     });
   });
 
-  it('up/down 둘 다 있으면 빠른 쪽 선택 (up이 빠른 케이스)', () => {
+  it('#1480 N8 — 내 방향 up이면 down이 더 빨라도 up 값', () => {
     const arrival: StationArrival = {
-      up: [makeArrival(90, 1700_000_000_700)],
-      down: [makeArrival(200, 1700_000_000_500)],
+      up: [makeArrival(480, 1700_000_000_700)],
+      down: [makeArrival(60, 1700_000_000_500)],
     };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({
-      arrivalSeconds: 90,
+    expect(pickArrivalAtOrigin(arrival, 'up')).toEqual({
+      arrivalSeconds: 480,
       receivedAtMs: 1700_000_000_700,
     });
+  });
+
+  it('#1480 D5 — 방향 판정 불가(null)면 양방향 최솟값 폐기, undefined(데이터 없음)', () => {
+    const arrival: StationArrival = {
+      up: [makeArrival(60, 1700_000_000_700)],
+      down: [makeArrival(480, 1700_000_000_500)],
+    };
+    expect(pickArrivalAtOrigin(arrival, null)).toBeUndefined();
+  });
+
+  it('#1480 N8 — 내 방향 목록이 비면 반대 방향 열차로 대체하지 않는다', () => {
+    const arrival: StationArrival = { up: [makeArrival(60, 1700_000_000_700)], down: [] };
+    expect(pickArrivalAtOrigin(arrival, 'down')).toBeUndefined();
   });
 
   it('receivedAtMs<=0인 row는 skip', () => {
@@ -88,7 +101,8 @@ describe('pickArrivalAtOrigin', () => {
       up: [makeArrival(60, 0)], // 0 → skip
       down: [makeArrival(120, 1700_000_000_000)],
     };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({
+    expect(pickArrivalAtOrigin(arrival, 'up')).toBeUndefined();
+    expect(pickArrivalAtOrigin(arrival, 'down')).toEqual({
       arrivalSeconds: 120,
       receivedAtMs: 1700_000_000_000,
     });
@@ -99,7 +113,8 @@ describe('pickArrivalAtOrigin', () => {
       up: [makeArrival(-1, 1700_000_000_000)],
       down: [makeArrival(180, 1700_000_000_500)],
     };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({
+    expect(pickArrivalAtOrigin(arrival, 'up')).toBeUndefined();
+    expect(pickArrivalAtOrigin(arrival, 'down')).toEqual({
       arrivalSeconds: 180,
       receivedAtMs: 1700_000_000_500,
     });
@@ -110,7 +125,7 @@ describe('pickArrivalAtOrigin', () => {
       up: [makeArrival(300, 1700_000_000_000), makeArrival(60, 1700_000_000_000)],
       down: [makeArrival(400, 1700_000_000_500)],
     };
-    expect(pickArrivalAtOrigin(arrival)).toEqual({
+    expect(pickArrivalAtOrigin(arrival, 'up')).toEqual({
       arrivalSeconds: 300,
       receivedAtMs: 1700_000_000_000,
     });
@@ -121,6 +136,6 @@ describe('pickArrivalAtOrigin', () => {
       up: [makeArrival(60, 0)],
       down: [makeArrival(-5, 1700_000_000_000)],
     };
-    expect(pickArrivalAtOrigin(arrival)).toBeUndefined();
+    expect(pickArrivalAtOrigin(arrival, 'up')).toBeUndefined();
   });
 });
