@@ -82,6 +82,21 @@ describe('useFgPositionUpload (#1280)', () => {
     );
   });
 
+  it('#3191 PR-2 - BG task fix가 주입된 L(fixFromBg=true)은 업로드하지 않는다 (BG task가 이미 업로드)', async () => {
+    renderUpload({ fixFromBg: true });
+    await flushAsyncStorage();
+    expect(mockedUpload).not.toHaveBeenCalled();
+  });
+
+  it('#3191 PR-2 - fixFromBg=false(기본)는 기존대로 업로드, BG->watch 전환 후 새 fix는 업로드', async () => {
+    const { rerender } = renderUpload({ fixFromBg: true });
+    await flushAsyncStorage();
+    expect(mockedUpload).not.toHaveBeenCalled();
+    rerender({ fixFromBg: false, userLocation: { lat: 37.51, lng: 127.01 } });
+    await flushAsyncStorage();
+    expect(mockedUpload).toHaveBeenCalledTimes(1);
+  });
+
   it('#2617 — appState는 항상 fg로 송신 (fallback implicit ACK 계약)', async () => {
     renderUpload();
     await flushAsyncStorage();
