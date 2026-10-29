@@ -1,7 +1,7 @@
 /**
  * #1719 — Backend leg-direction 추론.
  * #2943 (plan 2026-10-10 J1+J2, 방안 H-1) — 화이트리스트 분기(monotonic/closedLoop) 제거,
- * device `directionOnLine`(#2455, `src/features/route/utils/directionOnLine.ts`)과 **같은**
+ * device `directionOnLine`(#2455, `src/shared/utils/directionOnLine.ts`(#1480에서 features→shared 이동))과 **같은**
  * `shortestLinePathIndices` 기반 단일 알고리즘으로 교체. 전 노선 커버(1·5·경의중앙 포함).
  *
  * 배경

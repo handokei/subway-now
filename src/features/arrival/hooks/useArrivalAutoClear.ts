@@ -1,6 +1,6 @@
 /* eslint-disable import/no-restricted-paths --
  * #2768 (게이트 전수감사 C, ⑤) — 자동 종료 발동을 alarmLog로 stamp한다. cross-feature 적재는
- * computeBoardableWaitsForRoute.ts/useV1MismatchDetector.ts 등과 같은 기존 패턴 — 다른 feature
+ * useV1MismatchDetector.ts 등과 같은 기존 패턴 — 다른 feature
  * 슬라이스가 alarm feature의 alarmLog(관측 전용 ring buffer)에 직접 적재하는 것은 이미 여러
  * 곳에서 옵트인된 공용 관측 채널이다.
  */

@@ -99,8 +99,8 @@ export type AlarmLogSource =
   // 빈도(`leg_swap_prompt_fired` count)와 paradigm 1 회귀 점검(`autoLock_fired_count = 0`)을 같이 본다.
   | 'leg-transition'
   // #1503 (M3 Sub C wire) — boardable train ETA timetable lookup 결과 stamp.
-  // computeBoardableWaitsForRoute가 transfer leg마다 calculateBoardableTrainETA 호출 후
-  // status에 따라 outcome='received'(ok) 또는 outcome='suppressed'(miss) 적재. backend
+  // journeyTimeline 엔진(calculateStaticETA 위임, stationPipeline이 onBoardableLookup으로 연결)이
+  // 환승 leg마다 시간표를 조회한 결과를 status에 따라 outcome='received'(ok) 또는 outcome='suppressed'(miss) 적재. backend
   // alarmLogStats가 source='boardable-lookup' + outcome로 boardableMissRatio 산출.
   | 'boardable-lookup'
   // #1957 (#1503 잔여 1/3) — M2 사용자 정답지 응답 stamp. useTripGroundTruthStore.respond()가
@@ -3282,7 +3282,7 @@ export function _resetAccelPatternWindowForTests(): void {
 }
 
 // #1503 (M3 Sub C wire) — boardable lookup dedup: 같은 (status,line,stationName)
-// 연속 1s 이내 repeat 시 drop. computeBoardableWaitsForRoute는 stable 입력에 대해 idempotent
+// 연속 1s 이내 repeat 시 drop. journeyTimeline 엔진은 stable 입력에 대해 idempotent
 // 결과를 내므로 매 cycle마다 같은 leg 결과 반복 적재되는 burst를 차단.
 export const BOARDABLE_LOOKUP_DEDUP_MS = 1_000;
 const lastBoardableLookupTs = new Map<string, number>();
@@ -3290,7 +3290,7 @@ const lastBoardableLookupTs = new Map<string, number>();
 /**
  * #1503 (M3 Sub C wire) — boardable train timetable lookup 결과 1건 적재.
  *
- * `calculateBoardableTrainETA` 후 호출: status='ok' → outcome='received',
+ * journeyTimeline 시간표 조회 후 호출: status='ok' → outcome='received',
  * 그 외(no-timetable / station-missing / day-type-unknown / no-departures / direction-null)
  * → outcome='suppressed'. backend `alarmLogStats`가 boardableLookupCounts 누적,
  * `observabilityMetrics.boardableMissRatio`가 (miss / (ok + miss))로 계산.

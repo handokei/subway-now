@@ -132,6 +132,7 @@ describe('calculateETA / calculateEtaDetail — 엔진 위임', () => {
 
 describe('etaDisplayKind', () => {
   it.each([
+    [null, 'exact'],
     [{ waitUnknown: false, lastTrainEnded: false }, 'exact'],
     [{ waitUnknown: true, lastTrainEnded: false }, 'unknownWait'],
     [{ waitUnknown: false, lastTrainEnded: true }, 'lastTrainEnded'],

@@ -32,7 +32,8 @@ import { DestinationPicker } from '../features/route/components/DestinationPicke
 import { PausedNavigationBadge } from '../features/route/components/PausedNavigationBadge';
 import { setNavigationPausedAt } from '../features/alarm/utils/navigationPauseStorage';
 import { resumeNavigation } from '../features/alarm/store/tripBoundCleanups';
-import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateETA, calculateStaticETA, anchorRouteToCurrentStation, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
+import { etaDisplayKind } from '../shared/utils/journeyTimeline';
+import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateEtaDetail, calculateStaticEtaDetail, anchorRouteToCurrentStation, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { isInTripByEvidence } from '../shared/utils/boardingWait';
 import { getFiredAlarms } from '../features/alarm/utils/notificationState';
 import { pickNextTrainMinutes } from '../features/arrival/utils/nextTrainMinutes';
@@ -815,15 +816,18 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- id 기반 안정 deps(기존 파일 관례, 예: nextStationName useMemo)
     [route, effectiveOrigin?.id, destination?.id],
   );
-  const etaMinutes = remainingRoute && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
-    ? calculateETA(nextTrainMinutes, remainingRoute, { excludeOriginWait: isInTrip })
+  // #1480 PR-C — ETA는 journeyTimeline 엔진 결과(분 + "N분+"/"막차 종료" 플래그). 환승 대기는 시간표 →
+  // 배차간격/2 추정이라 시각(Date.now())에 의존하며 렌더마다 새로 구한다.
+  const etaDetail = remainingRoute && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
+    ? calculateEtaDetail(nextTrainMinutes, remainingRoute, { excludeOriginWait: isInTrip })
     : null;
+  const etaMinutes = etaDetail?.minutes ?? null;
   // #784: rawArrival(useArrivalInfo)을 직접 사용 — useArrivalCountdown(1Hz tick)은 receivedAtMs를
   // 원본으로 유지하면서 arrivalSeconds만 차감해 60s 후 항상 stale로 판정되는 회귀 회피(옵션 B).
   // 분 단위 정수 ETA라 tick 미반영 영향 없음. arrivalsAtTransfers는 환승역별 폴링 인프라가 없어
-  // undefined — leg당 DEFAULT_WAIT_MINUTES fallback 유지.
-  const staticEtaMinutes = remainingRoute
-    ? calculateStaticETA(remainingRoute, {
+  // undefined — 엔진이 환승 대기를 시간표 → 배차간격/2로 추정(실시간 주입은 후속 PR-D).
+  const staticEtaDetail = remainingRoute
+    ? calculateStaticEtaDetail(remainingRoute, {
         currentLocation: userLocation ?? undefined,
         originStation: effectiveOrigin
           ? { lat: effectiveOrigin.lat, lng: effectiveOrigin.lng }
@@ -832,8 +836,10 @@ export default function HomeScreen() {
         excludeOriginWait: isInTrip,
       })
     : null;
+  const staticEtaMinutes = staticEtaDetail?.minutes ?? null;
   const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
   const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
+  const displayEtaKind = etaDisplayKind(isRealtimeEta ? etaDetail : staticEtaDetail);
 
   const nextStationName = useMemo(
     () => (effectiveOrigin && destination && route ? getNextStationName(effectiveOrigin.id, destination.id, route) : null),
@@ -1767,10 +1773,14 @@ export default function HomeScreen() {
                     <View style={{ alignItems: 'flex-end' }}>
                       {displayEta != null && (
                         <>
-                          <Text style={[typography.etaBig, { color: colors.ink }]}>
-                            {displayEta}
-                            <Text style={[typography.bodyBase, { color: colors.muted, letterSpacing: 0 }]}> {t('home.minuteUnit')}</Text>
-                          </Text>
+                          {displayEtaKind === 'lastTrainEnded' ? (
+                            <Text style={[typography.etaBig, { color: colors.ink }]}>{t('home.lastTrainEnded')}</Text>
+                          ) : (
+                            <Text style={[typography.etaBig, { color: colors.ink }]}>
+                              {displayEta}
+                              <Text style={[typography.bodyBase, { color: colors.muted, letterSpacing: 0 }]}> {t(displayEtaKind === 'unknownWait' ? 'home.minuteUnitPlus' : 'home.minuteUnit')}</Text>
+                            </Text>
+                          )}
                           <Text style={[typography.micro, { color: colors.muted, marginTop: 2 }]}>
                             {isRealtimeEta ? 'EST' : t('home.estimatedSuffix')} · {journey?.totalStops ?? 0} STOPS
                           </Text>

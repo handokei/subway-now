@@ -16,6 +16,7 @@ import {
   calculateStaticETA,
   findStationByNameAndLine,
   getIntermediateStationNames,
+  getRouteRemainingSeconds,
   isSameStationName,
 } from '../../../shared/utils/stationRoute';
 import type { AlarmWaypoint } from '../../../shared/types/alarm';
@@ -113,6 +114,7 @@ function buildMultiTransfer(route: MultiTransferRoute, ctx: Context): AlarmWaypo
 }
 
 const SECONDS_PER_MINUTE = 60;
+const MS_PER_SECOND = 1000;
 
 /**
  * #2747 PR-6 (C1') — waypoint마다 "그 역에 정차해 있다고 볼 때 목적지까지 남은 초"를 stamp한다.
@@ -120,24 +122,40 @@ const SECONDS_PER_MINUTE = 60;
  * (`calculateStaticETA(anchorRouteToCurrentStation(route, 그 역, 목적지), {excludeOriginWait:true})`)이라
  * backend가 합산한 LA etaMinutes와 device mirror의 etaMinutes가 같은 의미(목적지까지)를 갖는다.
  * 도착 waypoint는 0초. 앵커링 불가(역 조회 실패·ETA null)면 필드를 생략한다 — backend는 생략 시 etaMinutes를 내지 않는다.
+ *
+ * #1480 PR-C — 환승 대기는 시간표(시각 의존)라 "지금 그 역에 있다"가 아니라 **그 역에 도달할 예상 시각**
+ * 기준으로 평가해야 한다(이 PR 전엔 고정 3분이라 시각이 무관했다). 도달 시각 = nowMs + (현재역 기준 잔여 주행·도보
+ * - 해당 역 기준 잔여 주행·도보). 지연으로 어긋나는 한계(plan B1)는 PR-E(B2)가 푼다.
+ * `nowMs`는 등록 시각(미지정 시 Date.now()) — 계약 fixture는 실측 등록 시각을 고정 주입한다.
  */
 function stampRemainingSecToDest(
   route: NonNullable<Route>,
   waypoints: AlarmWaypoint[],
   destinationName: string,
+  currentStation: Station | null,
+  nowMs: number | undefined,
 ): AlarmWaypoint[] {
   const { line: destLine } = waypoints[waypoints.length - 1];
   const destStation = findStationByNameAndLine(destinationName, destLine as LineNumber);
+  const baseNowMs = nowMs ?? Date.now();
+  // route가 non-null이면 anchorRouteToCurrentStation도 non-null (앵커링 불가 시 원본 route 반환).
+  const anchorOf = (station: Station, destId: string): NonNullable<Route> =>
+    anchorRouteToCurrentStation(route, station, destId) as NonNullable<Route>;
+  const remainingFromCurrent = getRouteRemainingSeconds(
+    currentStation && destStation ? anchorOf(currentStation, destStation.id) : route,
+  );
   return waypoints.map((waypoint) => {
     if (waypoint.kind === 'destination') return { ...waypoint, remainingSecToDest: 0 };
     const station = findStationByNameAndLine(waypoint.stationName, waypoint.line as LineNumber);
-    const minutes =
-      station && destStation
-        ? calculateStaticETA(anchorRouteToCurrentStation(route, station, destStation.id), {
-            excludeOriginWait: true,
-          })
-        : null;
-    return minutes === null ? waypoint : { ...waypoint, remainingSecToDest: minutes * SECONDS_PER_MINUTE };
+    if (!station || !destStation) return waypoint;
+    const anchored = anchorOf(station, destStation.id);
+    const secondsToWaypoint = Math.max(remainingFromCurrent - getRouteRemainingSeconds(anchored), 0);
+    // anchored는 non-null route라 ETA도 항상 숫자.
+    const minutes = calculateStaticETA(anchored, {
+      excludeOriginWait: true,
+      nowMs: baseNowMs + secondsToWaypoint * MS_PER_SECOND,
+    }) as number;
+    return { ...waypoint, remainingSecToDest: minutes * SECONDS_PER_MINUTE };
   });
 }
 
@@ -145,6 +163,7 @@ export function routeToWaypoints(
   route: NonNullable<Route>,
   destinationName: string,
   currentStation: Station | null = null,
+  nowMs?: number,
 ): AlarmWaypoint[] {
   // currentStation이 없으면 legacy 동작(transfer/destination만) — 하위 호환.
   const ctx: Context = {
@@ -158,5 +177,5 @@ export function routeToWaypoints(
       : route.type === 'transfer'
         ? buildTransfer(route, ctx)
         : buildMultiTransfer(route, ctx);
-  return stampRemainingSecToDest(route, waypoints, destinationName);
+  return stampRemainingSecToDest(route, waypoints, destinationName, currentStation, nowMs);
 }

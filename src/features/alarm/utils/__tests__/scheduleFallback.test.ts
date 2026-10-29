@@ -1,6 +1,5 @@
+import { classifyDayType, classifyPeriod } from '../../../../shared/utils/lineHeadway';
 import {
-  classifyDayType,
-  classifyPeriod,
   buildScheduleArrival,
   hasHeadwayData,
   hasTerminalData,

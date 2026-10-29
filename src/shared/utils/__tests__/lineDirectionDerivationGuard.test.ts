@@ -41,7 +41,7 @@ const ALLOWED_CLOSED_LOOP_IMPORTERS = new Set([
   join(REPO_ROOT, 'src', 'shared', 'utils', 'lineLoopPath.ts'), // 단일 primitive 구현체 — #2949 C-1
   join(REPO_ROOT, 'src', 'shared', 'utils', 'stationRoute.ts'), // 경로/다음역 조회(방향 판정 아님, 기존)
   join(REPO_ROOT, 'src', 'features', 'route', 'utils', 'tripDirection.ts'),
-  join(REPO_ROOT, 'src', 'features', 'route', 'utils', 'directionOnLine.ts'),
+  join(REPO_ROOT, 'src', 'shared', 'utils', 'directionOnLine.ts'), // #1480 N1 — features에서 shared로 이동
   join(REPO_ROOT, 'backend', 'alarm-worker', 'src', 'legDirection.ts'),
 ]);
 

@@ -1,5 +1,16 @@
 import { findBoardableDeparture } from '../timetableShared';
 
+// 정적 mock 시간표로 전날 꼬리 데이터 이상(파싱 불가/미운행 슬롯)을 시뮬레이션 — 실 timetable과 격리.
+function withMockedLine1(stations: Record<string, unknown>, call: (fn: typeof findBoardableDeparture) => void): void {
+  jest.isolateModules(() => {
+    jest.doMock('../../../data/timetables/line-1.json', () => ({ stations }));
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { findBoardableDeparture: build } = require('../timetableShared');
+    call(build);
+  });
+  jest.resetModules();
+}
+
 // #1480 PR-C — 환승 대기 시간표 조회 결함 N2(역명 정규화) / N4(다음 운행일) / N5(자정 이후 전날 24xx 꼬리).
 // 모든 시각은 KST 고정 주입(결정적). 기대값은 src/data/timetables 실데이터에서 읽은 값이다.
 
@@ -117,5 +128,16 @@ describe('초 단위 정밀 대기', () => {
       from: kst(2026, 10, 28, 6, 39, 29),
     });
     expect(result.status === 'ok' && result.departure.waitSeconds).toBe(91);
+  });
+});
+
+describe('N5 — 전날 꼬리의 비정상 엔트리는 건너뛴다', () => {
+  it('미운행 슬롯·파싱 불가·24시 이전 엔트리를 무시하고 유효한 꼬리만 고른다', () => {
+    const day = { up: ['0600', '2300', '0000', 'xx', '2430'], down: ['0610'] };
+    const stations = { 테스트역: { weekday: day, saturday: day, sunday: day } };
+    withMockedLine1(stations, (fn) => {
+      const result = fn({ stationName: '테스트역', line: '1', direction: 'up', from: kst(2026, 10, 29, 0, 20) });
+      expect(result.status === 'ok' && result.departure.departureMinutes).toBe(24 * 60 + 30);
+    });
   });
 });

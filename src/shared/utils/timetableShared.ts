@@ -1,5 +1,6 @@
 import type { LineNumber } from '../types/station';
 import { getWeekdayShort } from './intlDateParts';
+import { normalizeStationName } from './normalizeStationName';
 import line1Timetable from '../../data/timetables/line-1.json';
 import line2Timetable from '../../data/timetables/line-2.json';
 import line3Timetable from '../../data/timetables/line-3.json';
@@ -61,11 +62,30 @@ const TIMETABLES: Partial<Record<LineNumber, LineTimetable>> = {
 };
 
 const SUBWAY_TIMEZONE = 'Asia/Seoul';
+const SECONDS_PER_MINUTE = 60;
 const HOURS_PER_DAY = 24;
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = 1440;
 /** timetable JSON의 미운행 슬롯 표기 (앞쪽 padding). */
 const NON_OPERATING_SLOT = '0000';
+
+/**
+ * 역명 → 시간표 행. 정확일치 → 괄호 부제 제거 정규화 순으로 조회한다 (#1480 N2).
+ * stations.json 표기("군자(능동)", "왕십리(성동구청)")와 시간표 키("군자", "왕십리")가 달라
+ * 정확일치만으로는 67/392역이 miss였다. 노선별 정규화 인덱스는 최초 조회 때 한 번 만든다.
+ */
+const normalizedStationIndex = new Map<LineNumber, Map<string, StationTimetable>>();
+
+function lookupStationTimetable(line: LineNumber, lineData: LineTimetable, name: string): StationTimetable | undefined {
+  const exact = lineData.stations[name];
+  if (exact) return exact;
+  let index = normalizedStationIndex.get(line);
+  if (!index) {
+    index = new Map(Object.entries(lineData.stations).map(([key, value]) => [normalizeStationName(key), value]));
+    normalizedStationIndex.set(line, index);
+  }
+  return index.get(normalizeStationName(name));
+}
 
 /**
  * KST 기준 요일을 weekday/saturday/sunday로 분류.
@@ -79,14 +99,17 @@ export function classifyDayTypeKst(date: Date): DayType | null {
   return 'weekday';
 }
 
+const MS_PER_DAY = 86_400_000;
+/** 자정 이후 전날 24xx 꼬리를 먼저 조회할 KST 분 상한 (24xx 최대 ≈ 02:00). */
+const OVERNIGHT_TAIL_WINDOW_MINUTES = 360;
+
 /**
- * 다음 DayType (overnight tail이 막차 후 → 다음 운행일 첫차로 넘어갈 때 사용).
- * weekday → 다음 평일(금요일 다음은 saturday, 토요일 다음은 sunday, 일요일 다음은 weekday).
+ * `date`를 기준으로 하루 이동한 날의 DayType. 요일 순환 가정(weekday→saturday 고정)이 아니라
+ * 실제 달력 날짜로 분류한다 — 목요일 막차 후 다음 운행일은 금요일(weekday)이다 (#1480 N4).
  */
-export function nextDayType(dayType: DayType): DayType {
-  if (dayType === 'weekday') return 'saturday';
-  if (dayType === 'saturday') return 'sunday';
-  return 'weekday';
+function dayTypeShiftedByDays(date: Date, days: number): DayType {
+  // 호출자는 같은 Date에서 classifyDayTypeKst가 이미 성공한 경우(±1일도 같은 Intl로 성공)만 부른다.
+  return classifyDayTypeKst(new Date(date.getTime() + days * MS_PER_DAY)) as DayType;
 }
 
 /**
@@ -175,19 +198,20 @@ export type DepartureLookupResult =
 /**
  * `from` 시각 이후 (>=) 가장 빠른 boardable 열차를 lookup.
  *
- * - 막차 후 → 다음 운행일 첫차 fallback ({@link nextDayType}로 진행).
+ * - 자정 직후(KST 06:00 이전)에는 전날 시간표의 24xx 꼬리를 먼저 본다 (#1480 N5).
+ * - 막차 후 → 실제 다음 날의 요일 시간표 첫차 fallback (#1480 N4).
  * - 환승역 도착 시각 + 도보/플랫폼 buffer 같은 입력이 from에 들어간다고 가정.
  *
- * 시간 비교는 분 단위로 수행한다. 같은 분 (예: 12:30 도착, 12:30 발차)도 boardable로 본다
- * — 사용자가 lock 활성 시에도 정확히 같은 분을 허용하는 ADR-010 첫 줄 원칙과 동일하게,
- * 환승역에서도 같은 분을 miss로 정의하지 않는다.
+ * 열차 비교는 분 단위(같은 분은 boardable — ADR-010 첫 줄과 같은 원칙으로 miss로 정의하지 않는다),
+ * 대기 시간은 `from`의 초까지 반영해 정밀 계산한다(분 경계 오차 최대 59초 제거). 같은 분 안에서
+ * 이미 지난 열차는 대기 0으로 clamp.
  */
 export function findBoardableDeparture(params: DepartureLookupParams): DepartureLookupResult {
   const { stationName, line, direction, from } = params;
   const lineData = TIMETABLES[line];
   if (!lineData) return { status: 'no-timetable' };
 
-  const station = lineData.stations[stationName];
+  const station = lookupStationTimetable(line, lineData, stationName);
   if (!station) return { status: 'station-missing' };
 
   const dayType = classifyDayTypeKst(from);
@@ -198,24 +222,43 @@ export function findBoardableDeparture(params: DepartureLookupParams): Departure
      part도 추출 가능 (Intl 동일 구현 — partial part 누락은 weekday에서만 관측됨, #1088). 본 분기는 안전망. */
   if (fromMinutes === null) return { status: 'day-type-unknown' };
 
+  // KST는 분 경계 오프셋이라 UTC epoch 초의 mod 60이 곧 KST 초.
+  const referenceSeconds = fromMinutes * SECONDS_PER_MINUTE + positiveMod(Math.floor(from.getTime() / 1000), SECONDS_PER_MINUTE);
+
+  if (fromMinutes < OVERNIGHT_TAIL_WINDOW_MINUTES) {
+    const tail = scanOvernightTail({
+      station,
+      dayType: dayTypeShiftedByDays(from, -1),
+      direction,
+      referenceMinutes: fromMinutes,
+      referenceSeconds,
+    });
+    if (tail !== null) return { status: 'ok', departure: tail };
+  }
+
   const result = scanForBoardable({
     station,
     dayType,
     direction,
     referenceMinutes: fromMinutes,
+    referenceSeconds,
   });
 
   if (result === null) {
     // 현재 운행일에 boardable 없음 → 다음 운행일 첫차 fallback.
     return scanNextDayFirstDeparture({
       station,
-      currentDayType: dayType,
+      upcomingDayType: dayTypeShiftedByDays(from, 1),
       direction,
-      referenceMinutes: fromMinutes,
+      referenceSeconds,
     });
   }
 
   return { status: 'ok', departure: result };
+}
+
+function positiveMod(value: number, modulus: number): number {
+  return ((value % modulus) + modulus) % modulus;
 }
 
 interface ScanParams {
@@ -224,10 +267,12 @@ interface ScanParams {
   direction: Direction;
   /** KST minutes-of-day (0~1439). overnight tail은 raw-minutes(>=1440)와 비교. */
   referenceMinutes: number;
+  /** KST seconds-of-day (referenceMinutes*60 + 초). 대기 시간 정밀 계산용. */
+  referenceSeconds: number;
 }
 
 function scanForBoardable(params: ScanParams): BoardableDeparture | null {
-  const { station, dayType, direction, referenceMinutes } = params;
+  const { station, dayType, direction, referenceMinutes, referenceSeconds } = params;
   const entries = station[dayType][direction];
 
   let missedCount = 0;
@@ -236,11 +281,10 @@ function scanForBoardable(params: ScanParams): BoardableDeparture | null {
     const minutes = rawToMinutes(entry);
     if (minutes === null) continue;
     if (minutes >= referenceMinutes) {
-      const waitMinutes = minutes - referenceMinutes;
       return {
         departureMinutes: minutes,
         departureLabel: formatMinutesAsHHmm(minutes),
-        waitSeconds: waitMinutes * MINUTES_PER_HOUR,
+        waitSeconds: Math.max(0, minutes * SECONDS_PER_MINUTE - referenceSeconds),
         missedCount,
         isNextDayFallback: false,
       };
@@ -250,17 +294,40 @@ function scanForBoardable(params: ScanParams): BoardableDeparture | null {
   return null;
 }
 
+/**
+ * 자정 이후 새벽: 전날 운행일 시간표의 24h+ 꼬리(예: "2436" = 익일 00:36) 중 아직 안 지난 첫 열차.
+ * departureMinutes는 전날 기준 raw(>=1440) 그대로 둔다 (표기는 formatMinutesAsHHmm이 % 1440).
+ */
+function scanOvernightTail(params: ScanParams): BoardableDeparture | null {
+  const { station, dayType, direction, referenceMinutes, referenceSeconds } = params;
+  for (const entry of station[dayType][direction]) {
+    if (entry === NON_OPERATING_SLOT) continue;
+    const minutes = rawToMinutes(entry);
+    if (minutes === null || minutes < MINUTES_PER_DAY) continue;
+    const minutesToday = minutes - MINUTES_PER_DAY;
+    if (minutesToday >= referenceMinutes) {
+      return {
+        departureMinutes: minutes,
+        departureLabel: formatMinutesAsHHmm(minutes),
+        waitSeconds: Math.max(0, minutesToday * SECONDS_PER_MINUTE - referenceSeconds),
+        missedCount: 0,
+        isNextDayFallback: false,
+      };
+    }
+  }
+  return null;
+}
+
 interface NextDayScanParams {
   station: StationTimetable;
-  currentDayType: DayType;
+  upcomingDayType: DayType;
   direction: Direction;
-  /** 현재 운행일의 referenceMinutes (대기 시간 계산용 — 익일은 +1440). */
-  referenceMinutes: number;
+  /** 현재 운행일의 KST seconds-of-day (대기 시간 계산용 — 익일은 +86400초). */
+  referenceSeconds: number;
 }
 
 function scanNextDayFirstDeparture(params: NextDayScanParams): DepartureLookupResult {
-  const { station, currentDayType, direction, referenceMinutes } = params;
-  const upcomingDayType = nextDayType(currentDayType);
+  const { station, upcomingDayType, direction, referenceSeconds } = params;
   const entries = station[upcomingDayType][direction];
 
   for (const entry of entries) {
@@ -274,7 +341,7 @@ function scanNextDayFirstDeparture(params: NextDayScanParams): DepartureLookupRe
       departure: {
         departureMinutes: minutes,
         departureLabel: formatMinutesAsHHmm(minutes),
-        waitSeconds: (minutesAcrossDay - referenceMinutes) * MINUTES_PER_HOUR,
+        waitSeconds: minutesAcrossDay * SECONDS_PER_MINUTE - referenceSeconds,
         missedCount: 0,
         isNextDayFallback: true,
       },

@@ -3,7 +3,7 @@
 export const WALKING_SPEED_M_PER_S = 1.2;
 
 // arrival API freshness TTL(ms). 60s 이상 지난 도착 정보는 stale로 간주하고
-// DEFAULT_WAIT_MINUTES fallback을 사용한다. silentPushTask의 POSITION_TRAIN_TTL_MS와 정렬 — Strategy
+// 환승·출발 대기를 시간표 → 배차간격/2 순으로 추정한다 (journeyTimeline). silentPushTask의 POSITION_TRAIN_TTL_MS와 정렬 — Strategy
 // ①(LivePosition) 신선도와 같은 임계를 사용해 사용자에 노출되는 ETA 채택 경계가 자연스럽게 흐른다.
 export const ARRIVAL_FRESHNESS_MS = 60_000;
 
@@ -56,3 +56,18 @@ export const ETA_POLLING_WINDOW_SEC = 5 * 60;
 // 앞서감"(ADR-008 §②) 증상의 한 축이 바로 이 정차시간 누락이었다. 즉 본 상수는 경로 표시와
 // estimator 양쪽을 "도착간격" 기준으로 정렬시키는 단일 가산점이다.
 export const DWELL_SECONDS = 30;
+
+// #1480 PR-C — 환승 도보 시간(초) → 승강장/문 buffer(초). 짧으면 작게, 길면 크게(사용자 명시 정정).
+// 환승 대기는 "도보 + buffer 이후" 시각 기준으로 다음 열차를 고른다 — buffer를 ETA에서 빼먹으면
+// 10~60초 일찍 도착한다고 표시된다(N3). breakpoint는 오름차순.
+export const TRANSFER_BUFFER_BREAKPOINTS = [
+  { maxWalkingSeconds: 60, bufferSeconds: 10 },
+  { maxWalkingSeconds: 180, bufferSeconds: 20 },
+  { maxWalkingSeconds: 300, bufferSeconds: 30 },
+] as const;
+/** 마지막 breakpoint(300s)를 넘는 긴 환승 도보의 buffer(초). */
+export const TRANSFER_BUFFER_LONG_WALK_SECONDS = 60;
+
+// #1480 PR-C (D1=U3 → U2) — 시간표·배차간격 어느 쪽도 없을 때(심야 closed 등) 대기 하한(초).
+// 이 값이 쓰이면 ETA는 "N분+"로 표시한다 (실제 대기는 이보다 길 수 있음).
+export const UNKNOWN_WAIT_FLOOR_SECONDS = 60;
