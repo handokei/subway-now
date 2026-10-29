@@ -1798,6 +1798,28 @@ describe('stationNotification', () => {
     });
   });
 
+  describe('buildLiveActivityData 갈아탈 노선 필드 (#3221 PR-5 시안 일치)', () => {
+    it('transfer route: nextLineName/nextLineColorHex = toLine 노선', () => {
+      const data = buildLiveActivityData(mockStation, 154, mockDestination, transferRoute);
+      expect(data.nextLineName).toBe('4호선');
+      expect(data.nextLineColorHex).toBe('#00A2D1');
+    });
+
+    it('multi-transfer: 첫 환승의 toLine', () => {
+      const data = buildLiveActivityData(mockStation, 154, mockDestination, multiTransferRoute);
+      expect(data.nextLineName).toBe('2호선');
+      expect(data.nextLineColorHex).toBe('#009D3E');
+    });
+
+    it('direct route / route 없음: 생략 (다음 역·방면은 앵커 route로 알 수 없어 생략)', () => {
+      const direct = buildLiveActivityData(mockStation, 154, mockDestination, directRoute);
+      expect(direct.nextLineName).toBeUndefined();
+      expect(direct.nextLineColorHex).toBeUndefined();
+      expect(direct.nextStationName).toBeUndefined();
+      expect(buildLiveActivityData(mockStation, 154).nextLineName).toBeUndefined();
+    });
+  });
+
   describe('buildLiveActivityData boardingPrompt 필드 (#2434 — LA interactive piece ①)', () => {
     it('boardingPrompt 미전달 시 boarding* 필드가 undefined (기존 동작 그대로)', () => {
       const data = buildLiveActivityData(mockStation, 154);

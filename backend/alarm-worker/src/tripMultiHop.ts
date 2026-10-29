@@ -22,7 +22,8 @@
  * require deriving "remaining" from cross-referencing waypoints anyway, which is what we already do.
  */
 
-import type { Trip } from './types';
+import { LINE_META } from './lineAlias';
+import type { Route, Trip, Waypoint } from './types';
 
 /** Multi-hop snapshot derived from a trip's remaining waypoints. */
 export interface MultiHopContext {
@@ -96,4 +97,86 @@ export function computeMultiHopContext(trip: Trip): MultiHopContext {
   }
 
   return ctx;
+}
+
+/**
+ * `waypoint` 바로 뒤의 waypoint — 환승 waypoint의 경우 "갈아탈 노선(line)/방면(stationName)"의 출처.
+ * 매역/환승 알림(`deriveTransferNextLeg`, scheduled.ts)과 LA(`computeNextStopContext`)가 공유한다.
+ * waypoint가 trip에 없거나(indexOf -1) 뒤따르는 waypoint가 없으면 undefined. 새 KV 읽기 없음.
+ */
+export function waypointAfter(trip: Trip, waypoint: Waypoint): Waypoint | undefined {
+  const idx = trip.waypoints.indexOf(waypoint);
+  return idx === -1 ? undefined : trip.waypoints[idx + 1];
+}
+
+/** #3221 PR-5 — 여정 LA의 "다음 {역}" 라벨 / 환승 카드 "{노선} {방면} 방면" 입력. 전부 optional. */
+export interface NextStopContext {
+  /** 다음에 지나갈 역 (`trip.waypoints[0]`). */
+  nextStationName?: string;
+  /** 앞으로 처음 만나는 환승 후 노선의 정식명 ("2호선"). */
+  nextLineName?: string;
+  /** 그 환승 직후 waypoint 역명 — "성수 방면". */
+  nextLineDirection?: string;
+}
+
+export function computeNextStopContext(trip: Trip): NextStopContext {
+  const [head] = trip.waypoints;
+  if (head === undefined) return {};
+  const transfer = trip.waypoints.find((w) => w.kind === 'transfer');
+  const after = transfer === undefined ? undefined : waypointAfter(trip, transfer);
+  const lineName = after === undefined ? undefined : LINE_META[after.line]?.canonical;
+  return {
+    nextStationName: head.stationName,
+    ...(lineName === undefined ? {} : { nextLineName: lineName }),
+    ...(after === undefined ? {} : { nextLineDirection: after.stationName }),
+  };
+}
+
+/** #3221 PR-5 — 여정 LA 진행 막대용 leg 정거장 수. 전부 optional(없으면 위젯이 막대를 숨긴다). */
+export interface LegProgressContext {
+  /** 현재 leg 전체 정거장 수(원본 route 기준 — waypoint shift와 무관하게 고정). */
+  legStopsTotal?: number;
+  /** 환승 후 다음 leg 전체 정거장 수. 마지막 leg면 생략. */
+  nextLegStopsTotal?: number;
+  /** 다음 leg 노선색(#RRGGBB). 노선을 모르면 생략. */
+  nextLineColorHex?: string;
+}
+
+/** route를 leg별 { 정거장 수, 이 leg 다음에 갈아탈 노선 } 목록으로 편다 — 환승 횟수에 의존하지 않는다. */
+function routeLegs(route: Route): Array<{ stops: number; nextLine?: string }> {
+  if (route.type === 'direct') return [{ stops: route.stops }];
+  if (route.type === 'transfer') {
+    return [{ stops: route.stopsToTransfer, nextLine: route.toLine }, { stops: route.stopsFromTransfer }];
+  }
+  return [
+    ...route.transfers.map((t) => ({ stops: t.stopsToTransfer, nextLine: t.toLine })),
+    { stops: route.stopsAfterLastTransfer },
+  ];
+}
+
+/**
+ * 현재 leg 인덱스 = (원본 route의 leg 수 - 1) - (남은 환승 waypoint 수). `trip.route`는 shift되지 않는
+ * 원본이라 leg 길이가 고정이고, `trip.waypoints`는 지나간 역이 pop되므로 남은 환승 수만 줄어든다.
+ * route와 waypoints가 모순돼 인덱스가 범위 밖이면 거짓 막대 대신 빈 객체를 돌려준다.
+ */
+export function computeLegProgressContext(trip: Trip): LegProgressContext {
+  // 남은 waypoint가 없으면(사실상 도착) computeMultiHopContext와 동일하게 빈 객체.
+  if (trip.waypoints.length === 0) return {};
+  // 막대는 장식이다 — route 없는 레거시/부분 레코드(타입상 필수지만 KV·테스트 fixture에 실재)가 LA push
+  // 전체를 throw로 죽이면 안 된다(첫 구현이 scheduled 프롬프트 LA alert 14건을 죽였다). 없으면 생략.
+  const route = trip.route as Route | undefined;
+  if (route === undefined) return {};
+  const legs = routeLegs(route);
+  const remainingTransfers = trip.waypoints.filter((w) => w.kind === 'transfer').length;
+  const legIndex = legs.length - 1 - remainingTransfers;
+  if (legIndex < 0) return {};
+
+  const { stops, nextLine } = legs[legIndex];
+  const next = legs[legIndex + 1];
+  const nextLineColor = nextLine === undefined ? undefined : LINE_META[nextLine]?.color;
+  return {
+    legStopsTotal: stops,
+    ...(next === undefined ? {} : { nextLegStopsTotal: next.stops }),
+    ...(nextLineColor === undefined ? {} : { nextLineColorHex: nextLineColor }),
+  };
 }
