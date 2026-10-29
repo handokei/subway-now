@@ -61,7 +61,7 @@ describe('t() — boardingPromptBody nextStation+ETA 분기 (#1895)', () => {
   it('locale=en → "originStation [line] → nextStation bound HH:MM arrival"', () => {
     expect(
       t('en').boardingPromptBody({ ...ARGS, originStation: 'City Hall', nextStation: 'Gangnam' }),
-    ).toBe('City Hall line 2 · 07:15 train toward Gangnam');
+    ).toBe('City Hall line 2 · 07:15 toward Gangnam');
   });
 
   it('locale=ja → "originStation [line] → nextStation方面 HH:MM進入"', () => {
@@ -108,7 +108,7 @@ describe('t() — boardingPromptBody nextStation 있고 etaTimeStr null (#1895)'
   });
 
   it('locale=en → 시간 없이 bound만', () => {
-    expect(t('en').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 line 6 · train toward 마포구청');
+    expect(t('en').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 line 6 · toward 마포구청');
   });
 
   it('locale=ja → 시간 없이 方面만', () => {
@@ -131,7 +131,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
 
   it('locale=ko → "종착역행 · 출발역 [호선] → 다음역 방면 HH:MM 진입"', () => {
     expect(t('ko').boardingPromptBody(ARGS_WITH_DEST)).toBe(
-      '뚝섬 2호선 · 06:46 성수 방면 열차 (목적지 성수)',
+      '뚝섬 2호선 · 06:46 성수 방면 성수행 열차',
     );
   });
 
@@ -143,7 +143,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
         nextStation: 'Seongsu',
         destinationStation: 'Seongsu',
       }),
-    ).toBe('Ttukseom line 2 · 06:46 train toward Seongsu (destination Seongsu)');
+    ).toBe('Ttukseom line 2 · 06:46 toward Seongsu, bound for Seongsu');
   });
 
   it('locale=ja → "종착역行き · ..."', () => {
@@ -154,7 +154,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
         nextStation: 'seongsu',
         destinationStation: 'seongsu',
       }),
-    ).toBe('ttukseom 2号線 · 06:46 seongsu方面の列車 (目的地 seongsu)');
+    ).toBe('ttukseom 2号線 · 06:46 seongsu方面 seongsu行きの列車');
   });
 
   it('locale=zh → "开往종착역 · ..."', () => {
@@ -165,7 +165,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
         nextStation: 'seongsu',
         destinationStation: 'seongsu',
       }),
-    ).toBe('ttukseom 2号线 · 06:46 开往seongsu方向的列车 (目的地 seongsu)');
+    ).toBe('ttukseom 2号线 · 06:46 seongsu方向,开往seongsu的列车');
   });
 
   it.each([

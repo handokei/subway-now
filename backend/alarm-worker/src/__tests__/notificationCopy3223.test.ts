@@ -133,24 +133,24 @@ describe('탑승 질문(boardingPrompt)', () => {
     line: '7',
     nextStation: '중곡',
     etaTimeStr: '06:27',
-    destinationStation: '뚝섬',
+    destinationStation: '장암',
   };
 
   it('ko: 전체', () => {
     expect(t('ko').boardingPromptTitle).toBe('탑승하셨나요?');
-    expect(t('ko').boardingPromptBody(ARGS)).toBe('용마산 7호선 · 06:27 중곡 방면 열차 (목적지 뚝섬)');
+    expect(t('ko').boardingPromptBody(ARGS)).toBe('용마산 7호선 · 06:27 중곡 방면 장암행 열차');
   });
 
-  it('ko: 시각/목적지 없음 폴백은 해당 조각만 생략', () => {
-    expect(t('ko').boardingPromptBody({ ...ARGS, etaTimeStr: null })).toBe('용마산 7호선 · 중곡 방면 열차 (목적지 뚝섬)');
+  it('ko: 시각/종착역 없음 폴백은 해당 조각만 생략', () => {
+    expect(t('ko').boardingPromptBody({ ...ARGS, etaTimeStr: null })).toBe('용마산 7호선 · 중곡 방면 장암행 열차');
     expect(t('ko').boardingPromptBody({ ...ARGS, destinationStation: null })).toBe('용마산 7호선 · 06:27 중곡 방면 열차');
     expect(t('ko').boardingPromptBody({ ...ARGS, nextStation: null })).toBe('7 · 용마산');
   });
 
   it.each([
-    ['en', '용마산 line 7 · 06:27 train toward 중곡 (destination 뚝섬)'],
-    ['ja', '용마산 7号線 · 06:27 중곡方面の列車 (目的地 뚝섬)'],
-    ['zh', '용마산 7号线 · 06:27 开往중곡方向的列车 (目的地 뚝섬)'],
+    ['en', '용마산 line 7 · 06:27 toward 중곡, bound for 장암'],
+    ['ja', '용마산 7号線 · 06:27 중곡方面 장암行きの列車'],
+    ['zh', '용마산 7号线 · 06:27 중곡方向,开往장암的列车'],
   ] as const)('%s', (lc, expected) => {
     expect(t(lc).boardingPromptBody(ARGS)).toBe(expected);
   });
