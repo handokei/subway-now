@@ -834,6 +834,65 @@ export async function sendLiveActivityUpdate(
 }
 
 /**
+ * #3221 (PR-2, 정의만 — 호출 배선은 PR-3) — Live Activity **push-to-start** (iOS 17.2+).
+ *
+ * 앱이 꺼져 있거나 BG여도 APNs가 새 Live Activity를 시작시킨다(기기는 BG에서 LA를 시작할 수 없다).
+ * `sendLiveActivityUpdate`와 topic/push-type/헤더는 동일하고, aps만 다르다:
+ * `event:'start'` + `attributes-type`(Swift ActivityAttributes 타입명) + `attributes`(static) +
+ * `content-state` + `alert`(시작 시 표시 필수). 대상 token은 update token이 아니라 기기 단위
+ * push-to-start token이다(`Trip.boardingPushToStartToken`).
+ */
+export interface SendLiveActivityStartOptions {
+  pushToStartToken: string;
+  attributesType: string;
+  attributes: Record<string, unknown>;
+  contentState: LiveActivityContentState;
+  alert: { title: string; body: string; sound?: string };
+  /** epoch seconds — 누락 시 now. */
+  timestamp?: number;
+  /** epoch seconds — 이 시각 이후 content-state는 stale 표시. */
+  staleDate?: number;
+  priority?: 5 | 10;
+  config: ApnsConfig;
+  host: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}
+
+export async function sendLiveActivityStart(options: SendLiveActivityStartOptions): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.pushToStartToken}`;
+  const nowSec = Math.floor((options.now ?? Date.now()) / 1000);
+  const { title, body, sound } = options.alert;
+
+  const aps: Record<string, unknown> = {
+    timestamp: options.timestamp ?? nowSec,
+    event: 'start',
+    'attributes-type': options.attributesType,
+    attributes: options.attributes,
+    'content-state': options.contentState,
+    alert: { title, body, ...(sound !== undefined ? { sound } : {}) },
+  };
+  if (options.staleDate !== undefined) aps['stale-date'] = options.staleDate;
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': `${options.config.bundleId}.push-type.liveactivity`,
+      'apns-push-type': 'liveactivity',
+      'apns-priority': String(options.priority ?? 10),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ aps }),
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
+/**
  * "탑승했냐?" 푸시 발사 (#819 B 슬라이스).
  *
  * iOS UNNotificationCategory "BOARDING_PROMPT" 액션 [탑승]/[미탑승]을 노출하려면 alert push

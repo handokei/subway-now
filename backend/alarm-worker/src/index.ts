@@ -220,14 +220,16 @@ import {
 } from './positionKvSample';
 import { subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
-import type {
-  AccelSummary,
-  BoardingLockMeta,
-  Env,
-  PositionPoint,
-  PromptDisplay,
-  PromptGeoContext,
-  Trip,
+import {
+  LA_BOARDING_START_MODES,
+  type AccelSummary,
+  type BoardingLockMeta,
+  type Env,
+  type LaClientCapability,
+  type PositionPoint,
+  type PromptDisplay,
+  type PromptGeoContext,
+  type Trip,
 } from './types';
 
 /**
@@ -1455,6 +1457,10 @@ app.post('/trips', async (c) => {
           // `...incoming`이 항상 undefined로 덮는다(위 lockEverAttached/legResolveStreak 계열과 같은 클래스).
           // 소실되면 D3 resolver 게이트가 영구히 닫힌다.
           boardingResponse: existing.boardingResponse,
+          // #3221 — LA 분리 capability / push-to-start token. device가 재등록에 안 실어도(incoming 부재) 보존,
+          // 실으면 incoming 채택(token rotation). putTrip 횟수는 불변(KV +0).
+          laClient: incoming.laClient ?? existing.laClient,
+          boardingPushToStartToken: incoming.boardingPushToStartToken ?? existing.boardingPushToStartToken,
         }
       : {
           ...incoming,
@@ -4816,7 +4822,21 @@ export function validateTrip(
     // 자연스럽게 최신 값으로 갱신). 미송신/비string이면 undefined — trip-ended payload에서
     // 필드 생략으로 이어져 구버전 client 호환 유지.
     corrId: typeof obj.corrId === 'string' && obj.corrId.length > 0 ? obj.corrId : undefined,
+    // #3221 — LA 2개 분리 capability. 잘못된 값은 제거(등록 거부 아님) -> 구 클라이언트 현행 동작.
+    laClient: parseLaClient(obj.laClient),
+    boardingPushToStartToken:
+      typeof obj.boardingPushToStartToken === 'string' && obj.boardingPushToStartToken.length > 0
+        ? obj.boardingPushToStartToken
+        : undefined,
   };
+}
+
+function parseLaClient(raw: unknown): LaClientCapability | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { split, boardingStart } = raw as Record<string, unknown>;
+  if (split !== true) return undefined;
+  const mode = LA_BOARDING_START_MODES.find((m) => m === boardingStart);
+  return mode === undefined ? undefined : { split: true, boardingStart: mode };
 }
 
 function parsePromptGeoContext(raw: unknown): PromptGeoContext | undefined {

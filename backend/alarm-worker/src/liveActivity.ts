@@ -216,6 +216,10 @@ export function buildLiveActivityContentState(
   // #3007 S4-c — end-prompt는 `computeBoardingContext`(pre-boarding) **뒤에** spread해
   // `boardingPhase`를 override한다. 단일 필드이므로 둘은 상호배타이고, 정지 15분 상태에서는
   // "탑승하셨나요?"보다 "종료할까요?"가 맞다(정지 중이면 탑승하지 않았을 개연성이 높다).
+  // #3221 — 탑승여부 LA와 여정 LA를 분리한 클라이언트(`laClient.split`)는 질문(pre-boarding/end-prompt)을
+  // 별도 탑승 LA가 맡는다. 여정 content에 같이 실으면 한 카드에 질문 행이 쌓여 잘린다(10/28 179·180).
+  // 구 클라이언트(laClient 없음)는 현행 byte 동일.
+  if (trip.laClient?.split === true) return { ...base, ...multiHop, ...withTrainCode };
   return {
     ...base,
     ...multiHop,
