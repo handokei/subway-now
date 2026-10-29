@@ -72,7 +72,12 @@ import {
   registerHeldLiveActivityTokenForCurrentTrip,
   startAmbientLiveActivityTokenRegistration,
 } from '../liveActivityPushChannel';
-import { ACTIVE_TRIP_KEY, LA_DISMISSED_AT_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  ACTIVE_TRIP_KEY,
+  BOARDING_LOCK_KEY,
+  LA_DISMISSED_AT_KEY,
+  LAST_SILENT_PUSH_RECEIVED_AT_KEY,
+} from '../../../../shared/constants/storageKeys';
 
 type TokenListener = (e: { token: string }) => void;
 let emitToken: (token: string) => void = () => undefined;
@@ -84,6 +89,22 @@ const DATA = { stationName: '뚝섬', lineName: '2호선', lineColorHex: '#00A84
 function setActiveTrip(trip: string | null): void {
   if (trip === null) mockStorage.delete(ACTIVE_TRIP_KEY);
   else mockStorage.set(ACTIVE_TRIP_KEY, trip);
+}
+
+/** #2735 PR-4 — 권위 활성 판정의 나머지 입력(lock + 신선한 silent push 수신)을 갖춘다. */
+function armBackendAuthorityInputs(): void {
+  mockStorage.set(
+    BOARDING_LOCK_KEY,
+    JSON.stringify({
+      destinationId: 'd',
+      trainCode: '7123',
+      boardingStationId: 's',
+      boardingLine: '2',
+      boardedAt: Date.now() - 90_000,
+      expectedDurationMs: 600_000,
+    }),
+  );
+  mockStorage.set(LAST_SILENT_PUSH_RECEIVED_AT_KEY, String(Date.now()));
 }
 
 function setAppState(state: 'active' | 'background'): void {
@@ -421,12 +442,14 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
       await startLiveActivityWithRegistration(SAME, DATA);
       emitToken('T-sess');
       await jest.advanceTimersByTimeAsync(0);
-      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
+      armBackendAuthorityInputs();
+      expect(await shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
       mockHasActiveLiveActivity.mockReturnValue(false); // 재등록은 안 일어나게 — 권위 해제만 본다
 
       markBackendLiveActivityTokenMissing();
+      await jest.advanceTimersByTimeAsync(0);
 
-      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
+      expect(await shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
     });
 
     it('[거부] trip이 이미 끝났으면(ACTIVE_TRIP 없음) 재등록하지 않는다', async () => {
@@ -479,7 +502,8 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
       await startLiveActivityWithRegistration(SAME, DATA);
       emitToken('T-old');
       await jest.advanceTimersByTimeAsync(0);
-      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
+      armBackendAuthorityInputs();
+      expect(await shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
       mockRequestLiveActivityPushToken.mockResolvedValue(null);
 
       await ensureLiveActivityRegistered(SAME, DATA);
@@ -488,7 +512,7 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
       await jest.advanceTimersByTimeAsync(0);
 
       expect(mockStartLiveActivity).toHaveBeenCalled(); // 재생성 발생
-      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
+      expect(await shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
     });
 
     it('cleanup 경로의 native 종료(외부 종료)도 backend 권위 상태/세션을 정리한다', async () => {
@@ -496,11 +520,13 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
       await startLiveActivityWithRegistration(SAME, DATA);
       emitToken('T-old');
       await jest.advanceTimersByTimeAsync(0);
-      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
+      armBackendAuthorityInputs();
+      expect(await shouldSkipDeviceLiveActivityWrite(SAME)).toBe(true);
 
       resetLiveActivityChannelAfterExternalEnd();
+      await jest.advanceTimersByTimeAsync(0);
 
-      expect(shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
+      expect(await shouldSkipDeviceLiveActivityWrite(SAME)).toBe(false);
     });
 
     it('외부 종료로 끝난 LA의 등록된 토큰은 폐기되어 다음 복구 때 다시 붙지 않는다', async () => {

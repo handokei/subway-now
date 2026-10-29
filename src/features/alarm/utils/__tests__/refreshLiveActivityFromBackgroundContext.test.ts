@@ -39,9 +39,12 @@ jest.mock('../laDismissSentinel', () => ({
 const mockShouldSkipDeviceLiveActivityWrite = jest.fn((..._args: unknown[]) => false);
 // #3163 후속 P1-b — FG 복귀 없는 BG-only trip에서도 LA 토큰 불변식을 복구하는 진입점.
 const mockReconcileLiveActivityToken = jest.fn((..._args: unknown[]) => Promise.resolve());
+// #2735 PR-4 — 침묵 판정 뒤 device 쓰기에 붙일 출처(ADR-041 결정 4). 기본 undefined(=붙이지 않음).
+const mockResolveDeviceFallbackSource = jest.fn(async (..._args: unknown[]) => undefined as string | undefined);
 jest.mock('../liveActivityPushChannel', () => ({
   shouldSkipDeviceLiveActivityWrite: (...args: unknown[]) =>
     mockShouldSkipDeviceLiveActivityWrite(...args),
+  resolveDeviceFallbackSource: (...args: unknown[]) => mockResolveDeviceFallbackSource(...args),
   reconcileLiveActivityToken: (...args: unknown[]) => mockReconcileLiveActivityToken(...args),
 }));
 
@@ -628,7 +631,9 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       });
     });
 
-    it('#2659 backend-authority 활성이어도 mirror 분기는 진행된다 (LA writer가 push 단일 채널로 좁혀지지 않도록)', async () => {
+    // #2735 PR-4 (U3) — #2659를 좁힌다: backend가 LA를 갱신 중(권위 active)이면 mirror 전체 교체도 skip.
+    // 면제 근거(채널 0/0)는 silent push 공백이 T를 넘으면 권위가 풀려 계속 충족된다.
+    it('#2735 backend-authority 활성이면 mirror 분기도 쓰지 않는다 (D2 게이트)', async () => {
       mockReadBackendSsotMirror.mockResolvedValue(freshMirrorCorrectLine);
       setupStorage({
         [DESTINATION_KEY]: JSON.stringify(destination),
@@ -636,9 +641,46 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
         [ROUTE_KEY]: JSON.stringify(directRoute),
         [ACTIVE_TRIP_KEY]: 'apns-token-abc',
       });
-      mockShouldSkipDeviceLiveActivityWrite.mockReturnValueOnce(true);
+      mockShouldSkipDeviceLiveActivityWrite.mockReturnValue(true);
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      expect(mockLogLaRefreshDecision).toHaveBeenCalledWith('backend-authority-skip', expect.any(String));
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('[거부] 권위가 active가 아니면 mirror 분기는 그대로 쓴다', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(freshMirrorCorrectLine);
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+        [ACTIVE_TRIP_KEY]: 'apns-token-abc',
+      });
+      mockShouldSkipDeviceLiveActivityWrite.mockReturnValue(false);
       await refreshLiveActivityFromBackgroundContext();
       expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+    });
+
+    it('#2735 침묵 뒤 gps-bg 쓰기는 출처(deviceFallback)를 buildLiveActivityData에 싣는다', async () => {
+      mockResolveDeviceFallbackSource.mockResolvedValueOnce('deviceFallback');
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+        [ACTIVE_TRIP_KEY]: 'apns-token-abc',
+      });
+      await refreshLiveActivityFromBackgroundContext();
+      expect(mockResolveDeviceFallbackSource).toHaveBeenCalledWith('apns-token-abc');
+      expect(mockBuild).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        null,
+        false,
+        null,
+        'deviceFallback',
+      );
     });
 
     // #2589 code review 3번 (P1 #1 클래스) — mirror-sourced 경로는 update-only.
@@ -815,6 +857,9 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       expect(mockBuild).not.toHaveBeenCalled();
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
       expect(mockLoggerInfo).toHaveBeenCalledWith(expect.stringContaining('stale-bg'));
+      // #2735 PR-1 연결 — 결정 행(la-refresh-decision)에도 stale-bg가 정확히 1건 남는다(나이 detail 포함).
+      expect(mockLogLaRefreshDecision).toHaveBeenCalledTimes(1);
+      expect(mockLogLaRefreshDecision).toHaveBeenCalledWith('stale-bg', expect.stringContaining('61000'));
     });
 
     it('59s 전 fix → 기존대로 gps-bg 쓰기', async () => {

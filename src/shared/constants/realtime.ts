@@ -259,6 +259,18 @@ export const TRIP_GONE_GRACE_MS = 5 * 60_000;
 export const TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS = 10 * 60_000;
 
 /**
+ * #2735 PR-4 (U1) — backend가 LA를 갱신 중이라고 믿는 마지막 유효 silent push 수신 공백 상한 T.
+ * 이 시간 안에 수신이 있으면 device writer(D1/D2/D3/D4/D6)는 LA content를 덮어쓰지 않고, 넘기면 재개한다.
+ *
+ * 10분 근거: ① 기존 상수(TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS)라 "침묵 판정"과 "생존 재확인(status pull
+ * 쿨다운)"이 같은 시계로 묶인다. ② 실측 수신 간격 N=233(p50 60s / p90 185s / max 748s) 중 600s 초과 3건
+ * (653·668·748s)=1.3%만 오판(그 간격 동안 device가 쓸 뿐 — 현행 "등록 5분 뒤 영구 device"보다 나빠지지 않음).
+ * 180s(BACKEND_SSOT_MIRROR_MAX_AGE_MS)는 12% 오판, 30분(SIGNAL_4_SILENT_PUSH_TIMEOUT_MS)은 backend 사망 시
+ * 30분 동결이라 기각. 상한은 backend가 실제로 죽었을 때의 동결 시간이기도 하다.
+ */
+export const LA_BACKEND_AUTHORITY_SILENCE_MS = TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS;
+
+/**
  * #1922 (M2) — lockless route-hop / re-anchored time-integration "stuck" 가드.
  *
  * `tryLocklessRouteHop`은 실측 신호(lastObserved) 없이 `tripStartedAt`만으로 시간 적분을 진행한다.

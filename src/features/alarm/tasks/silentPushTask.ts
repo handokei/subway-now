@@ -66,6 +66,7 @@ import {
   setLastSilentPushReceivedAt,
   getLastSilentPushReceivedAt,
 } from '../utils/lastSilentPushReceivedAt';
+import { getBoardingLock } from '../utils/boardingLockStorage';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import {
   checkTripDeathByPull,
@@ -1547,12 +1548,15 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
         const payloadTripToken =
           payload !== null && 'tripToken' in payload ? payload.tripToken : undefined;
+        // #2735 PR-4 V1-a(a) — lock 활성이면 token 소실 감지를 위해 (쿨다운 안에서) status를 확인한다.
+        const lockActive = Boolean(await getBoardingLock());
         if (
           shouldCheckTripDeathOnSilentPush({
             activeTripToken,
             payloadTripToken,
             priorLastReceivedAt,
             now: Date.now(),
+            lockActive,
           })
         ) {
           await checkTripDeathByPull(baseUrl, 'silent-push');

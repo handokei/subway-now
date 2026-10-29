@@ -233,6 +233,12 @@ export const USER_INTENT_TRACKING_OPT_IN_KEY = 'subway-now:user-intent-tracking-
 // trip 종료 시 runTripBoundCleanups에서 제거 — 이전 trip의 수신 시각이 새 trip 판정 오염 차단.
 // 형식: 숫자 (epoch ms) 문자열. 키 부재 = silent push 미수신(첫 launch or 새 trip 시작 직후).
 export const LAST_SILENT_PUSH_RECEIVED_AT_KEY = 'subway-now:last-silent-push-received-at';
+// #2735 PR-4 — backend가 이 trip의 LA push token을 "확인 등록"했다는 사실(register 응답 ok)을 영속한다.
+// 값 = 확인된 tripToken. BG silent push 핸들러는 JS가 매번 재기동돼 모듈 메모리가 비므로, 메모리만으로는
+// device 권위 게이트가 BG에서 항상 "미등록"으로 판정돼 무력해진다. 해제(removeItem) 시점 = status 응답
+// `hasLiveActivityToken === false`(token-missing 플래그) / LA 종료 / 채널 외부 종료. 등록 성공 시 재설정.
+// tripToken 값 비교라 다른 trip의 잔재는 판정에 쓰이지 않는다.
+export const LA_BACKEND_CONFIRMED_TRIP_KEY = 'subway-now:la-backend-confirmed-trip';
 // #2093 (A) — BG task(`backgroundLocationTask`)가 마지막으로 POST /position을 발사한 시각(epoch ms).
 // TaskManager invocation마다 새 컨텍스트라 in-memory ref 쓰로틀(FG hook의 `useFgPositionUpload`
 // 패턴)을 쓸 수 없다 — AsyncStorage로 invocation 간 상태를 공유해 POSITION_UPLOAD_MIN_INTERVAL_MS

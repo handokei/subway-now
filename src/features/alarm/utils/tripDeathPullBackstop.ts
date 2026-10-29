@@ -75,13 +75,20 @@ async function stampCheckedAt(now: number): Promise<void> {
  *
  * 로컬 active trip이 있고, (a) 수신 payload가 trip 신원(tripToken)을 담고 있는데 로컬
  * ACTIVE_TRIP_KEY와 불일치하거나, (b) 마지막 backend 접촉(직전 silent push 수신 시각)이
- * threshold 이상 지났으면 true.
+ * threshold 이상 지났거나, (c) lock이 활성이면 true.
+ *
+ * (c) #2735 PR-4 V1-a(a) — device 권위 게이트는 "backend가 LA token을 지웠다"를 status 응답
+ * (`hasLiveActivityToken`)으로만 알 수 있다. 다른 두 호출 사이트(bg-location-tick은 Always 권한만,
+ * fg-tick은 FG만)는 WhileInUse + BG + push가 계속 오는 사용자에게 호출되지 않아, token 소실을 못 잡고
+ * 권위가 무기한 backend-active로 남는다(동결). lock 활성 trip은 silent push마다 이 사이트에 들어오되
+ * 호출 자체는 사이트 공통 쿨다운(10분)이 막으므로 status GET은 최대 10분에 1회다(KV read만, write 0).
  */
 export function shouldCheckTripDeathOnSilentPush(input: {
   activeTripToken: string | null;
   payloadTripToken: string | undefined;
   priorLastReceivedAt: number | null;
   now: number;
+  lockActive: boolean;
 }): boolean {
   if (input.activeTripToken === null) return false;
   const identityMismatch =
@@ -89,7 +96,7 @@ export function shouldCheckTripDeathOnSilentPush(input: {
   const contactStale =
     input.priorLastReceivedAt !== null &&
     input.now - input.priorLastReceivedAt >= TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS;
-  return identityMismatch || contactStale;
+  return identityMismatch || contactStale || input.lockActive;
 }
 
 export type TripDeathPullCheckSite = 'silent-push' | 'bg-location-tick' | 'fg-tick';

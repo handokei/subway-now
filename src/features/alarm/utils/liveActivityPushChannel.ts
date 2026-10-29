@@ -31,9 +31,13 @@ import {
   clearLiveActivityToken,
   registerLiveActivityToken,
 } from '../api/alarmBackend';
-import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
+import { ACTIVE_TRIP_KEY, LA_BACKEND_CONFIRMED_TRIP_KEY } from '../../../shared/constants/storageKeys';
+import { LA_BACKEND_AUTHORITY_SILENCE_MS } from '../../../shared/constants/realtime';
 import { createLogger } from '../../../shared/utils/logger';
 import { isLaDismissed } from './laDismissSentinel';
+import { getBoardingLock } from './boardingLockStorage';
+import { getLastSilentPushReceivedAt } from './lastSilentPushReceivedAt';
+import type { NotificationSource } from './notificationSource';
 import {
   logLiveActivityAuthorityState,
   logLiveActivityLifecycle,
@@ -61,32 +65,43 @@ const REGISTER_RETRY_BASE_DELAY_MS = 500;
  */
 const REGISTER_RETRY_404_BASE_DELAY_MS = 2000;
 
-/**
- * #2735 — backend가 이 trip의 LA push 채널을 "확인 등록"했다고 신뢰하는 최대 시간(backstop).
- *
- * device는 native ActivityKit content-state push의 실제 도달 여부를 관찰할 방법이 없다 — APNs가
- * OS 레벨에서 Activity로 직접 전달하며 JS 레이어(silent push 핸들러 등)를 거치지 않는다. 반면
- * backend는 이미 같은 클래스의 backstop을 갖고 있다(`LA_STALE_AUTO_END_MS`,
- * backend/alarm-worker/src/scheduled.ts:217, 5분 — `trip.lastLaPushAt` 기준). backend 코드는
- * 이 PR 범위에서 변경 금지이고 그 값도 device에 노출되지 않으므로, device 쪽에서는 "등록 성공
- * 시점으로부터 이 시간이 지나도록 재확인이 없으면 신뢰를 거둔다"는 동일 클래스의 시간 기반
- * backstop을 독립적으로 둔다 — 값은 backend와 동일하게 맞춰 두 시스템의 "이 정도 침묵이면
- * 이상하다" 판단 기준을 통일한다.
- */
-const LA_BACKEND_AUTHORITY_STALE_MS = 5 * 60 * 1000;
-
 /** 현재 LA 세션의 teardown 함수. 단일 LA만 동시 운영한다는 전제. */
 let activeTeardown: (() => void) | null = null;
 /** 현재 활성 LA 세션의 tripToken. ensureLiveActivityRegistered가 start vs update 판정에 사용. */
 let activeTripToken: string | null = null;
 /**
- * #2735 — backend가 실제로 register 응답 `ok === true`를 준 (tripToken, 시각) 쌍(세션 "시작"이
- * 아니라 "확인 등록"). `activeTripToken`은 LA 세션 부트스트랩 시점에 즉시 세팅돼 등록 성공 여부와
- * 무관했던 것이 결함의 핵심이었다 — 권위 이양 판정은 반드시 이 값을 봐야 한다. 두 필드를 하나의
- * nullable record로 묶어 "tripToken만 있고 시각이 없는" 불가능한 중간 상태를 타입으로 배제한다
- * (별도 nullable 변수 2개였다면 `at ?? 0` 같은 도달 불가능한 fallback 분기가 생겼을 것).
+ * #2735 — backend가 실제로 register 응답 `ok === true`를 준 tripToken(세션 "시작"이 아니라 "확인 등록").
+ * `activeTripToken`은 LA 세션 부트스트랩 시점에 즉시 세팅돼 등록 성공 여부와 무관했던 것이 결함의 핵심이었다
+ * — 권위 이양 판정은 반드시 이 값을 봐야 한다.
+ *
+ * #2735 PR-4 — AsyncStorage에 영속한다(`LA_BACKEND_CONFIRMED_TRIP_KEY`). BG silent push 핸들러는 JS가 매번
+ * 재기동돼 모듈 메모리가 비므로 메모리 변수로는 BG에서 항상 "미등록"이 된다. 저장소 쓰기는 한 줄 체인으로
+ * 직렬화해, `markBackendLiveActivityTokenMissing` 같은 동기 호출 직후의 판정이 지움을 항상 본다.
+ * 이 키의 해제가 곧 V1-a (b)의 token-missing 플래그다(등록 성공 시 재설정 = 플래그 해제).
  */
-let backendConfirmed: { tripToken: string; at: number } | null = null;
+let confirmationStorageOp: Promise<unknown> = Promise.resolve();
+
+function enqueueConfirmationStorageOp(op: () => Promise<unknown>): void {
+  confirmationStorageOp = confirmationStorageOp.then(op).catch(() => undefined);
+}
+
+function persistBackendConfirmed(tripToken: string): void {
+  enqueueConfirmationStorageOp(() => AsyncStorage.setItem(LA_BACKEND_CONFIRMED_TRIP_KEY, tripToken));
+}
+
+function clearBackendConfirmed(): void {
+  enqueueConfirmationStorageOp(() => AsyncStorage.removeItem(LA_BACKEND_CONFIRMED_TRIP_KEY));
+}
+
+async function readBackendConfirmedTripToken(): Promise<string | null> {
+  await confirmationStorageOp;
+  try {
+    return (await AsyncStorage.getItem(LA_BACKEND_CONFIRMED_TRIP_KEY)) ?? null;
+  } catch {
+    // 읽기 실패 = 확인 불가 = device가 계속 쓴다(게이트가 쓰기를 막는 쪽으로 실패하지 않는다).
+    return null;
+  }
+}
 /** #2735 — 3-state LA 권위 판정 결과 타입. shouldSkip과 계측 dedup이 공유한다. */
 type LiveActivityAuthorityState =
   | 'live-activity-authority-device-write'
@@ -131,7 +146,7 @@ async function registerWithRetry(
         // #2735 — 이 시점이 유일하게 신뢰 가능한 "backend가 실제로 받았다" 신호(ok === true).
         // 세션 경로(startLiveActivityWithRegistration)와 ambient 경로(registerAmbientToken)가
         // 모두 이 함수를 거치므로 한 곳만 세팅하면 두 경로 다 반영된다.
-        backendConfirmed = { tripToken, at: Date.now() };
+        persistBackendConfirmed(tripToken);
         return true;
       }
       lastStatus = result.status;
@@ -381,8 +396,8 @@ async function recreateLiveActivityWithoutToken(data?: LiveActivityData): Promis
   lastRecreateAt = now;
   tokenMissingSince = null;
   // 토큰 없는 LA를 끝내는 순간 "backend가 이 trip의 LA push를 쥐고 있다"는 확인은 거짓이다 — 남겨두면
-  // device 쓰기가 최대 LA_BACKEND_AUTHORITY_STALE_MS(5분) 침묵한다.
-  backendConfirmed = null;
+  // device 쓰기가 최대 LA_BACKEND_AUTHORITY_SILENCE_MS(10분) 침묵한다.
+  clearBackendConfirmed();
   await endLiveActivity();
   await startLiveActivity(data);
   // #2735 PR-1 — D8 writer(토큰 없는 LA 재생성).
@@ -407,19 +422,19 @@ export function acknowledgeTripRegistration(): void {
  */
 export function markBackendLiveActivityTokenMissing(): void {
   lastRegisteredAmbientKey = null;
-  backendConfirmed = null;
+  clearBackendConfirmed();
   void reconcileLiveActivityToken();
 }
 
 /**
  * 채널을 거치지 않은 native LA 종료(`tripBoundCleanups.endLiveActivityCleanup`)가 끝난 뒤 호출 —
  * `endLiveActivityWithDeregister`와 대칭인 ambient/권위 상태 정리. 같은 기기 토큰으로 새 trip이 곧바로
- * 시작되면 옛 `backendConfirmed`(최대 5분 유효)가 새 trip의 device 쓰기를 막기 때문이다.
+ * 시작되면 옛 `backendConfirmed`(영속, 같은 tripToken이면 계속 유효)가 새 trip의 device 쓰기를 막기 때문이다.
  * 단, 종료와 동시에 시작된 **새 LA의 대기 토큰**(이 정리에 의해 등록된 적 없는 보관 토큰)과 새 채널 세션은
  * 건드리지 않는다(173: 3초 겹침) — 등록돼 있던 토큰(=종료된 LA 것)만 폐기한다.
  */
 export function resetLiveActivityChannelAfterExternalEnd(): void {
-  backendConfirmed = null;
+  clearBackendConfirmed();
   if (lastRegisteredAmbientKey !== null && lastRegisteredAmbientKey.endsWith(`:${lastEmittedPushToken}`)) {
     lastEmittedPushToken = null;
   }
@@ -544,41 +559,74 @@ async function adoptLiveActivitySession(
  * true(스킵, backend가 저자)는 다음이 모두 성립할 때만:
  *   - tripToken이 존재하고, backend가 실제로 이 tripToken의 LA push 등록에 성공함
  *     (`backendConfirmed?.tripToken === tripToken`)
- *   - 그 확인이 `LA_BACKEND_AUTHORITY_STALE_MS` 이내로 신선함(요구사항 3 backstop — 등록에
- *     성공했더라도 그 이후 재확인이 오래 없으면 device가 다시 쓴다. device는 실제 push 도달을
- *     관찰할 수 없으므로 "재확인(재등록) 신선도"를 그 대리 신호로 쓴다).
+ *   - lock이 있고, 마지막 유효 silent push 수신이 `LA_BACKEND_AUTHORITY_SILENCE_MS`(T=10분) 이내
+ *     (#2735 PR-4 — 요구사항 3 "push가 없으면 재개"의 입력은 "등록 시각"이 아니라 "수신 공백"이다.
+ *     device는 LA push 도달을 직접 관찰할 수 없어 같은 backend 채널의 silent push 수신을 대리 신호로 쓴다).
  *
  * false(계속 device가 쓴다)는 blank/frozen LA 회귀를 막는 3개 케이스를 모두 커버한다:
  *   - backend-tracked trip 자체가 없음(tripToken null) — pre-boarding 등 lock 전 구간.
  *   - trip은 있지만 backend 등록이 아직 성공하지 못한 상태(시도 중/실패/재시도 소진 전부 포함) —
  *     blank/frozen LA보다 GPS 추정치라도 갱신되는 편이 낫다(#2735 요구사항 2).
- *   - trip은 있고 한때 등록에 성공했지만 그 확인이 stale해진 상태(#2735 요구사항 3).
+ *   - trip은 있고 등록에 성공했지만 lock이 없거나(lockless) 수신 공백이 T를 넘은 상태(#2735 요구사항 3).
  *
- * #2481의 우려("device 추정치가 backend 정확값을 덮어쓴다")는 `backendConfirmed`이
- * 신선한 동안에는 그대로 보존된다 — 이 함수는 그 판정 조건만 정확하게 만들 뿐, device가 backend
+ * #2481의 우려("device 추정치가 backend 정확값을 덮어쓴다")는 수신이 신선한 동안에는 그대로 보존된다 — 이 함수는 그 판정 조건만 정확하게 만들 뿐, device가 backend
  * 등록 확인 없이도 쓰기를 억제하던 구멍은 만들지 않는다.
  */
-export function shouldSkipDeviceLiveActivityWrite(tripToken: string | null): boolean {
-  const state = resolveLiveActivityAuthorityState(tripToken);
+export async function shouldSkipDeviceLiveActivityWrite(tripToken: string | null): Promise<boolean> {
+  const { state } = await judgeDeviceWriteAuthority(tripToken);
   logAuthorityStateTransition(state);
   return state === 'live-activity-authority-backend-active';
 }
 
-/** #2735 — 3-state 권위 판정 코어. shouldSkip과 계측이 같은 판정을 공유한다(drift 방지). */
-function resolveLiveActivityAuthorityState(
+/**
+ * #2735 PR-4 (ADR-041 결정 4) — backend 침묵 판정 뒤 device가 쓰는 LA에 붙일 출처. 등록 확인 + lock 상태인데
+ * 마지막 유효 silent push 수신 공백이 T를 넘었을 때만 `deviceFallback`. 미등록/lockless/token-missing은
+ * "침묵 판정"이 아니라 원래 device writer이므로 붙이지 않는다. 표시는 기존 `sourceLabel` 표면
+ * (`shouldDiscloseNotificationSource`, debug 게이트 포함)을 그대로 쓴다 — Swift 무변경.
+ */
+export async function resolveDeviceFallbackSource(
   tripToken: string | null,
-): LiveActivityAuthorityState {
+): Promise<NotificationSource | undefined> {
+  const { silentFallback } = await judgeDeviceWriteAuthority(tripToken);
+  return silentFallback ? 'deviceFallback' : undefined;
+}
+
+interface DeviceWriteJudgement {
+  state: LiveActivityAuthorityState;
+  /** 등록 확인 + lock 상태에서 수신 공백이 T를 넘겨 device가 재개한 경우. */
+  silentFallback: boolean;
+}
+
+/**
+ * #2735 — 3-state LA 권위 판정 코어. shouldSkip과 출처 판정이 같은 판정을 공유한다(drift 방지).
+ *
+ * #2735 PR-4 — 입력 교체: "등록 시각 + 5분" -> "등록 확인(영속) + lock + 마지막 유효 silent push 수신 공백 <= T".
+ * 등록 확인은 한 번의 사실이고 만료 시계가 아니다. 만료는 backend가 실제로 침묵한 시간(수신 공백)으로만 판정한다.
+ * lockless trip은 station-passed/reschedule이 없어 수신 신호의 운반체가 없으므로 이중 writer를 허용한다
+ * (lock 없는 trip의 표시는 정확성 보장 대상이 아니다 #3083).
+ *
+ * 알려진 한계(U6) — 별도 stamp 키를 만들지 않고 기존 `LAST_SILENT_PUSH_RECEIVED_AT_KEY`만 쓴다(ADR-041
+ * "새 신호 금지" 해석 논쟁 회피). 이 stamp는 payload tripToken 비교 전에 갱신되므로 다른 trip의 push(zombie)가
+ * 와도 갱신된다 -> backend가 이 trip의 LA를 실제로는 안 쓰는데 zombie push 때문에 device가 최대 T 동안 침묵할 수
+ * 있다. 상한은 T(10분)다.
+ */
+async function judgeDeviceWriteAuthority(tripToken: string | null): Promise<DeviceWriteJudgement> {
   if (!tripToken) {
-    return 'live-activity-authority-device-write';
+    return { state: 'live-activity-authority-device-write', silentFallback: false };
   }
-  if (backendConfirmed === null || backendConfirmed.tripToken !== tripToken) {
-    return 'live-activity-authority-backend-pending';
+  const confirmedTripToken = await readBackendConfirmedTripToken();
+  if (confirmedTripToken !== tripToken) {
+    return { state: 'live-activity-authority-backend-pending', silentFallback: false };
   }
-  const confirmedAgo = Date.now() - backendConfirmed.at;
-  if (confirmedAgo > LA_BACKEND_AUTHORITY_STALE_MS) {
-    return 'live-activity-authority-backend-pending';
+  const [lock, lastReceivedAt] = await Promise.all([getBoardingLock(), getLastSilentPushReceivedAt()]);
+  if (lock === null) {
+    return { state: 'live-activity-authority-backend-pending', silentFallback: false };
   }
-  return 'live-activity-authority-backend-active';
+  const silent = lastReceivedAt === null || Date.now() - lastReceivedAt > LA_BACKEND_AUTHORITY_SILENCE_MS;
+  if (silent) {
+    return { state: 'live-activity-authority-backend-pending', silentFallback: true };
+  }
+  return { state: 'live-activity-authority-backend-active', silentFallback: false };
 }
 
 /** #2735 요구사항 4 — 상태가 바뀔 때만 alarmLog에 적재(호출 빈도가 높아 dedup 필수). */
@@ -645,7 +693,7 @@ export async function endLiveActivityWithDeregister(
   // #2735 — trip 종료 시 backend 확인 상태도 함께 정리. 남겨두면 같은 tripToken이 재사용될 일은
   // 없지만(UUID), 다음 trip이 아직 등록도 안 됐는데 상태 계측이 이전 trip의 stale confirmed
   // 값을 근거로 잘못된 전이를 판정할 여지를 원천 차단한다.
-  backendConfirmed = null;
+  clearBackendConfirmed();
   // #2667 (코드리뷰 P1-2/P2-2) — "trip 종료 = LA push 관련 모듈 상태 전부 정리"를 세션/ambient
   // 양쪽에 동일하게 적용한다. in-flight ambient 재시도가 DELETE 뒤에 POST를 흘리면 backend가
   // 방금 지운 token을 되살린다. #3162 — 단, 정리 범위는 **종료되는 trip 한정**이다.
@@ -669,8 +717,9 @@ export function __resetLiveActivityPushChannelForTests(): void {
     activeTeardown = null;
   }
   activeTripToken = null;
-  // #2735 — backend 확인 상태 + 계측 dedup도 테스트 간 초기화.
-  backendConfirmed = null;
+  // #2735 — 저장소 쓰기 체인 + 계측 dedup도 테스트 간 초기화. 영속 키 자체는 지우지 않는다 —
+  // 이 함수는 "BG JS 재기동(메모리 소실)"을 흉내내는 용도로도 쓰이며 저장소는 재기동을 넘어 살아남는다.
+  confirmationStorageOp = Promise.resolve();
   lastLoggedAuthorityState = null;
   // #2667 — ambient 구독/보관 token도 함께 초기화. 테스트 간 누수 시 "이미 등록됨" dedup이
   // 다음 케이스를 조용히 통과시켜 위양성 green을 만든다.

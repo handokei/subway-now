@@ -43,7 +43,11 @@ import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { logLaRefreshDecision, logLaWrite } from './alarmLog';
-import { reconcileLiveActivityToken, shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
+import {
+  reconcileLiveActivityToken,
+  resolveDeviceFallbackSource,
+  shouldSkipDeviceLiveActivityWrite,
+} from './liveActivityPushChannel';
 import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
 import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
 import { computeRouteArc } from '../../route/utils/routeProgress';
@@ -159,7 +163,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // early return이 두 분기를 한꺼번에 막아 LA writer가 backend LA push 하나만 남아 있었다
     // (2026-09-16 라이드: `laPushDelivery=0/0` → LA 13분 정체). read 낭비(route/bg/mirror)는
     // GPS-only로 skip되는 trip에서만 발생하며, mirror 채널을 살리는 값에 비해 무시할 수준이다.
-    const backendAuthoritySkipsGpsWrite = shouldSkipDeviceLiveActivityWrite(tripToken);
+    const backendAuthoritySkipsGpsWrite = await shouldSkipDeviceLiveActivityWrite(tripToken);
 
     // #2589 — currentStation SSoT 결정 순서 (확정 아키텍처: backend추적 → LA 표시).
     // 1순위: backend SSoT mirror (fresh ≤180s — cascade picker와 동일 상한,
@@ -239,9 +243,17 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // (`useForegroundLaMirrorSync`)와 동일 함수를 공유해 backend-ssot 소스의 LA 갱신 동작이
     // BG/FG 양쪽에서 drift하지 않는다(순수 추출, 동작 100% 동일).
     if (mirrorStation) {
-      // #2735 PR-1 — D2 writer. mirror 분기는 권위 게이트를 받지 않으므로(#2659) 판정값만 싣는다.
+      // #2735 PR-4 (U3) — #2659를 좁힌다: backend가 LA를 갱신 중(권위 active)이면 mirror 전체 교체도 하지 않는다.
+      // 전체 교체는 backend LA push가 실은 trainCode/boardingPhase/ETA를 지운다. #2659의 면제 근거(LA push
+      // 채널 0/0이면 LA가 얼어붙는다)는 silent push 공백이 T를 넘으면 권위가 풀려 계속 충족된다.
+      if (backendAuthoritySkipsGpsWrite) {
+        logger.info('backend-authority active trip — skip BG LA refresh write (mirror 분기, #2735 PR-4)');
+        logLaRefreshDecision('backend-authority-skip', mirrorStation.name);
+        return;
+      }
+      // #2735 PR-1 — D2 writer. 위 게이트를 통과한 쓰기라 권위는 항상 not-active다.
       const mirrorWritten = await updateLiveActivityFromMirrorStation(mirrorStation, destination, route, {
-        authority: backendAuthoritySkipsGpsWrite ? 'backend-active' : 'not-active',
+        authority: 'not-active',
       });
       logLaRefreshDecision(mirrorWritten ? 'mirror-write' : 'mirror-skip', mirrorStation.name);
       return;
@@ -269,6 +281,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       logger.info(
         `la-refresh source=gps-bg stale-bg: age=${bgAgeMs}ms > ${BACKEND_SSOT_ADVANCE_STALE_GPS_MS}ms — skip (preserve last LA state)`,
       );
+      logLaRefreshDecision('stale-bg', `age=${bgAgeMs}ms;${bg.station.name}`);
       return;
     }
     // #2806 — GPS-BG 분기(BG_LAST_STATION)도 update-only여야 한다. 활성 LA가 없을 때 native
@@ -295,6 +308,8 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // 동일 wrapper로 재앵커링해 정거장 수도 currentStation 기준으로 정정한다. 이 경로는 ETA/alarm
     // 계산과 무관한 순수 표시 갱신이라 anchoring이 알람 타이밍에 영향을 주지 않는다.
     const remainingRoute = anchorRouteToCurrentStation(route, currentStation, destination.id);
+    // #2735 PR-4 (ADR-041 결정 4) — backend 침묵 판정 뒤의 device 쓰기에는 출처를 붙인다.
+    const fallbackSource = await resolveDeviceFallbackSource(tripToken);
     const data = buildLiveActivityData(
       currentStation,
       distanceM,
@@ -303,6 +318,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       null,
       false,
       null,
+      fallbackSource,
     );
     await LiveActivity.updateLiveActivity(data);
     // #2735 PR-1 — D3 writer. 이 분기는 권위 게이트(backendAuthoritySkipsGpsWrite=false)를 통과한 쓰기다.

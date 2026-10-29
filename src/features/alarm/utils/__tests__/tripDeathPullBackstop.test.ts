@@ -72,6 +72,7 @@ describe('shouldCheckTripDeathOnSilentPush', () => {
         payloadTripToken: 'other',
         priorLastReceivedAt: null,
         now: 1000,
+        lockActive: false,
       }),
     ).toBe(false);
   });
@@ -83,6 +84,7 @@ describe('shouldCheckTripDeathOnSilentPush', () => {
         payloadTripToken: 'other',
         priorLastReceivedAt: null,
         now: 1000,
+        lockActive: false,
       }),
     ).toBe(true);
   });
@@ -94,6 +96,7 @@ describe('shouldCheckTripDeathOnSilentPush', () => {
         payloadTripToken: 'tk',
         priorLastReceivedAt: null,
         now: 1000,
+        lockActive: false,
       }),
     ).toBe(false);
   });
@@ -105,6 +108,7 @@ describe('shouldCheckTripDeathOnSilentPush', () => {
         payloadTripToken: undefined,
         priorLastReceivedAt: null,
         now: 1000,
+        lockActive: false,
       }),
     ).toBe(false);
   });
@@ -116,6 +120,7 @@ describe('shouldCheckTripDeathOnSilentPush', () => {
         payloadTripToken: 'tk',
         priorLastReceivedAt: 0,
         now: TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS,
+        lockActive: false,
       }),
     ).toBe(true);
   });
@@ -127,6 +132,7 @@ describe('shouldCheckTripDeathOnSilentPush', () => {
         payloadTripToken: 'tk',
         priorLastReceivedAt: 0,
         now: TRIP_DEATH_PULL_BACKSTOP_THRESHOLD_MS - 1,
+        lockActive: false,
       }),
     ).toBe(false);
   });
@@ -138,6 +144,33 @@ describe('shouldCheckTripDeathOnSilentPush', () => {
         payloadTripToken: 'tk',
         priorLastReceivedAt: null,
         now: 999_999_999,
+        lockActive: false,
+      }),
+    ).toBe(false);
+  });
+
+  // #2735 PR-4 V1-a(a) — lock 활성 trip은 계속 오는 silent push가 token 소실을 가리므로 신원/공백과 무관하게
+  // (쿨다운 10분 안에서) status를 확인한다. WhileInUse BG는 다른 두 사이트가 호출되지 않는다.
+  it('lock 활성 + 신선한 접촉 + 신원 일치여도 true — token 소실 감지용', () => {
+    expect(
+      shouldCheckTripDeathOnSilentPush({
+        activeTripToken: 'tk',
+        payloadTripToken: 'tk',
+        priorLastReceivedAt: 0,
+        now: 1000,
+        lockActive: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('[거부] lock 활성이어도 active trip이 없으면 false', () => {
+    expect(
+      shouldCheckTripDeathOnSilentPush({
+        activeTripToken: null,
+        payloadTripToken: undefined,
+        priorLastReceivedAt: 0,
+        now: 1000,
+        lockActive: true,
       }),
     ).toBe(false);
   });

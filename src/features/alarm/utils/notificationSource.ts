@@ -9,12 +9,15 @@ import { isDebugModalEnabled } from '../../../shared/constants/debugFlags';
  * - routeProgress: 경로 진행 추정
  * - gpsOnly: GPS 거리 기반 추정
  * - uncertain: 위치 확인 중 (locationUncertain 우선)
+ * - deviceFallback: backend 침묵(silent push 수신 공백 > T) 뒤 device가 쓴 LA (#2735 PR-4, ADR-041 결정 4).
+ *   FusionSource에서 오지 않는다 — 쓰기 시점의 권위 판정(`resolveDeviceFallbackSource`)이 직접 붙인다.
  */
 export type NotificationSource =
   | 'positionTrain'
   | 'routeProgress'
   | 'gpsOnly'
-  | 'uncertain';
+  | 'uncertain'
+  | 'deviceFallback';
 
 /**
  * FusionSource + locationUncertain → 사용자 노출 그룹 매핑.
@@ -69,5 +72,5 @@ export function notificationSourceI18nKey(key: NotificationSource): SourceI18nKe
  */
 export function shouldDiscloseNotificationSource(key: NotificationSource): boolean {
   if (!isDebugModalEnabled()) return false;
-  return key === 'gpsOnly' || key === 'uncertain';
+  return key === 'gpsOnly' || key === 'uncertain' || key === 'deviceFallback';
 }

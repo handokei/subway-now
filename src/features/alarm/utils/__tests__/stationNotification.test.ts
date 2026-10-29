@@ -69,7 +69,10 @@ const mockEndLiveActivityWithDeregister = jest.fn().mockResolvedValue(undefined)
 // wire-up 검증한다.
 const mockShouldSkipDeviceLiveActivityWrite = jest.fn().mockReturnValue(false);
 const mockStartAmbientLiveActivityTokenRegistration = jest.fn(() => () => undefined);
+// #2735 PR-4 — 침묵 판정 뒤 device 쓰기에 붙일 출처(ADR-041 결정 4). 기본 undefined(붙이지 않음).
+const mockResolveDeviceFallbackSource = jest.fn(async (..._args: unknown[]) => undefined as string | undefined);
 jest.mock('../liveActivityPushChannel', () => ({
+  resolveDeviceFallbackSource: (...args: unknown[]) => mockResolveDeviceFallbackSource(...args),
   ensureLiveActivityRegistered: (...args: unknown[]) =>
     mockEnsureLiveActivityRegistered(...args),
   endLiveActivityWithDeregister: (...args: unknown[]) =>
@@ -665,6 +668,35 @@ describe('stationNotification', () => {
         expect(mockEnsureLiveActivityRegistered).not.toHaveBeenCalled();
         expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
         expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      // #2735 PR-4 — FG D1도 같은 게이트를 받는다. 이 케이스는 판정이 async(storage 읽기)여도 await로 존중된다.
+      it('게이트가 비동기로 true를 resolve해도 쓰기를 막는다 (await 누락 회귀 방지)', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        mockShouldSkipDeviceLiveActivityWrite.mockResolvedValueOnce(true);
+        await updateStationNotification(mockStation, 154);
+        expect(mockEnsureLiveActivityRegistered).not.toHaveBeenCalled();
+        expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      });
+
+      it('침묵 뒤 device 쓰기(deviceFallback)는 sourceLabel을 싣는다 (ADR-041 결정 4)', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        mockResolveDeviceFallbackSource.mockResolvedValueOnce('deviceFallback');
+        await updateStationNotification(mockStation, 154);
+        expect(mockResolveDeviceFallbackSource).toHaveBeenCalledWith('apns-token-abc');
+        expect(mockEnsureLiveActivityRegistered).toHaveBeenCalledWith(
+          'apns-token-abc',
+          expect.objectContaining({ sourceLabel: '기기 추정' }),
+        );
+      });
+
+      it('[거부] 출처 판정이 없으면 sourceLabel을 붙이지 않는다', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        await updateStationNotification(mockStation, 154);
+        expect(mockEnsureLiveActivityRegistered).toHaveBeenCalledWith(
+          'apns-token-abc',
+          expect.not.objectContaining({ sourceLabel: expect.anything() }),
+        );
       });
 
       it('게이트가 false면(기본값) 기존처럼 ensureLiveActivityRegistered 경로로 진행한다', async () => {

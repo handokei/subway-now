@@ -39,7 +39,7 @@ describe('resolveNotificationSource', () => {
 });
 
 describe('notificationSourceI18nKey', () => {
-  it.each<NotificationSource>(['positionTrain', 'routeProgress', 'gpsOnly', 'uncertain'])(
+  it.each<NotificationSource>(['positionTrain', 'routeProgress', 'gpsOnly', 'uncertain', 'deviceFallback'])(
     '%s → source.%s prefix 부착',
     (key) => {
       expect(notificationSourceI18nKey(key)).toBe(`source.${key}`);
@@ -53,6 +53,7 @@ describe('shouldDiscloseNotificationSource', () => {
     it.each<[NotificationSource, boolean]>([
       ['gpsOnly', true],
       ['uncertain', true],
+      ['deviceFallback', true],
       ['positionTrain', false],
       ['routeProgress', false],
     ])('%s → %s (사용자 자백 대상 여부)', (key, expected) => {
@@ -62,11 +63,21 @@ describe('shouldDiscloseNotificationSource', () => {
 
   describe('production 빌드(isDebugModalEnabled=false) — #1327', () => {
     beforeEach(() => mockIsDebugModalEnabled.mockReturnValue(false));
-    it.each<NotificationSource>(['gpsOnly', 'uncertain', 'positionTrain', 'routeProgress'])(
+    it.each<NotificationSource>(['gpsOnly', 'uncertain', 'deviceFallback', 'positionTrain', 'routeProgress'])(
       '%s → false (추정-근거 debug 문구 미노출)',
       (key) => {
         expect(shouldDiscloseNotificationSource(key)).toBe(false);
       },
     );
+  });
+});
+
+// #2735 PR-4 — deviceFallback(backend 침묵 뒤 device 쓰기 출처)는 4개 언어에 모두 있어야 한다.
+describe('source.deviceFallback i18n', () => {
+  it.each(['ko', 'en', 'ja', 'zh'])('%s locale에 라벨이 있다', (lng) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const locale = require(`../../../../shared/i18n/locales/${lng}.json`) as { source: Record<string, string> };
+    expect(typeof locale.source.deviceFallback).toBe('string');
+    expect(locale.source.deviceFallback.length).toBeGreaterThan(0);
   });
 });
