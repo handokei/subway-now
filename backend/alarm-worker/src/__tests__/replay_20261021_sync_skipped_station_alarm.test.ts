@@ -95,8 +95,8 @@ type HttpPush = Record<string, unknown>;
 /** sync(HTTP 핸들러)가 보낸 "곧 뚝섬" 알람 alert (취침·준비 공통: sound alarm.wav + 타깃 역명 본문). */
 const alarmAlerts = (pushes: readonly HttpPush[]) =>
   pushes.filter((p) => {
-    const aps = p.aps as { alert?: { body?: string }; sound?: string } | undefined;
-    return aps?.sound === 'alarm.wav' && (aps.alert?.body ?? '').includes(TARGET);
+    const aps = p.aps as { alert?: { title?: string; body?: string }; sound?: string } | undefined;
+    return aps?.sound === 'alarm.wav' && `${aps.alert?.title ?? ''} ${aps.alert?.body ?? ''}`.includes(TARGET);
   });
 
 /** 취침 알람 companion silent push (취침 전용 — 준비 알람은 없음). */

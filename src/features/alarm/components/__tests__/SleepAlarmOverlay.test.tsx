@@ -145,15 +145,15 @@ describe('SleepAlarmOverlay', () => {
       return render(<SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} />);
     }
 
-    it('환승 band 3: 제목 "환승 3정거장 전", 본문은 남은 정거장 수를 담는다', () => {
+    it('환승 band 3: 제목 "시청 환승까지 3정거장", 본문은 남은 정거장 수를 담는다', () => {
       const { getByTestId } = renderBand('transfer', '시청', 3);
-      expect(getByTestId('alarm-overlay-title').props.children).toBe('환승 3정거장 전');
+      expect(getByTestId('alarm-overlay-title').props.children).toBe('시청 환승까지 3정거장');
       expect(getByTestId('alarm-overlay-message').props.children).toBe('시청까지\n3정거장');
     });
 
-    it('도착 band 2: 제목 "도착 2정거장 전"', () => {
+    it('도착 band 2: 제목 "강남 도착까지 2정거장"', () => {
       const { getByTestId } = renderBand('destination', '강남', 2);
-      expect(getByTestId('alarm-overlay-title').props.children).toBe('도착 2정거장 전');
+      expect(getByTestId('alarm-overlay-title').props.children).toBe('강남 도착까지 2정거장');
       expect(getByTestId('alarm-overlay-message').props.children).toBe('강남까지\n2정거장');
     });
 

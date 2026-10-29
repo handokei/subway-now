@@ -1034,6 +1034,49 @@ describe('cleanupTripWithLa', () => {
     expect(await kv.get('trip:devtoken')).toBeNull();
   });
 
+  it('#3223 — destination-arrived 종료 alert push는 "{목적지} 도착 · 안내 종료" 문구로 발사된다 (wire: trip.destination/locale → APNs aps.alert)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ destination: '뚝섬', locale: 'ko', activityPushToken: undefined });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+      { reason: 'destination-arrived' },
+    );
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert).toEqual({
+      title: '뚝섬 도착 · 안내 종료',
+      body: '목적지에 도착해 경로 안내를 마쳤어요',
+    });
+  });
+
+  it('#3223 — 도착이 아닌 종료 사유(expired)는 기존 "안내 종료" 문구 유지', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ destination: '뚝섬', activityPushToken: undefined });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+      { reason: 'expired' },
+    );
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert).toEqual({ title: '안내 종료', body: '경로 안내를 종료했어요' });
+  });
+
   it('still deletes trip when no LA token (no push fired)', async () => {
     const kv = new InMemoryKV();
     const trip = makeTrip({ activityPushToken: undefined });

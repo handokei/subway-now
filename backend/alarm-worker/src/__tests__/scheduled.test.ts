@@ -3772,8 +3772,8 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(alertCall).toBeDefined();
       const alertBody = JSON.parse(alertCall![1].body as string);
       expect(alertBody.aps['interruption-level']).toBe('time-sensitive');
-      expect(alertBody.aps.alert.title).toBe('환승 임박');
-      expect(alertBody.aps.alert.body).toBe('곧 군자에 도착합니다. 환승 준비하세요!');
+      expect(alertBody.aps.alert.title).toBe('군자 환승');
+      expect(alertBody.aps.alert.body).toBe('이번 역에서 내려 5호선 아차산 방면으로 갈아타세요');
     });
 
     it('sleepModeEnabled=true → 준비 진동은 스킵 (sleepAlarm이 대신 발사, 상호 배타 중복 없음)', async () => {
@@ -8655,7 +8655,7 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
       const parsed = JSON.parse(call[1].body as string) as {
         aps: { alert: { title: string; body: string } };
       };
-      expect(parsed.aps.alert.title).toBe('환승 임박');
+      expect(parsed.aps.alert.title).toBe('중곡 환승');
     });
   });
 
@@ -11904,7 +11904,7 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 �
     // BASE_NOW + 120s → KST 07:15:20 → HH:MM = 07:15
     const { title, body } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW);
     expect(title).toBe('탑승하셨나요?');
-    expect(body).toBe('시청 [2] → 강남 방면 07:15 진입');
+    expect(body).toBe('시청 2호선 · 07:15 강남 방면 열차');
   });
 
   it('nextStation 없음 (null) → 기존 포맷 fallback "${line} · ${originStation}"', () => {
@@ -11916,20 +11916,20 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 �
   it('nextStation 있지만 etaSeconds null → 시간 없이 방면만 표시', () => {
     const { title, body } = buildBoardingPromptMessage('합정', '6', '마포구청', null, BASE_NOW);
     expect(title).toBe('탑승하셨나요?');
-    expect(body).toBe('합정 [6] → 마포구청 방면');
+    expect(body).toBe('합정 6호선 · 마포구청 방면 열차');
   });
 
   it('환승 leg — 다른 호선 nextStation + ETA', () => {
     // BASE_NOW + 180s → KST 07:16:20 → HH:MM = 07:16
     const { title, body } = buildBoardingPromptMessage('왕십리', '5', '마장', 180, BASE_NOW);
     expect(title).toBe('탑승하셨나요?');
-    expect(body).toBe('왕십리 [5] → 마장 방면 07:16 진입');
+    expect(body).toBe('왕십리 5호선 · 07:16 마장 방면 열차');
   });
 
   it('etaSeconds=0 → now 시각 그대로 표시 (즉시 진입)', () => {
     const { title, body } = buildBoardingPromptMessage('시청', '2', '을지로입구', 0, BASE_NOW);
     expect(title).toBe('탑승하셨나요?');
-    expect(body).toBe('시청 [2] → 을지로입구 방면 07:13 진입');
+    expect(body).toBe('시청 2호선 · 07:13 을지로입구 방면 열차');
   });
 
   it('자정 경계 넘어가는 ETA — HH:MM 포맷 정상', () => {
@@ -11937,7 +11937,7 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 �
     // +120s → 2023-11-15 00:01 KST
     const midnight = 1_699_973_940_000; // 2023-11-14 23:59 KST
     const { body } = buildBoardingPromptMessage('시청', '2', '강남', 120, midnight);
-    expect(body).toBe('시청 [2] → 강남 방면 00:01 진입');
+    expect(body).toBe('시청 2호선 · 00:01 강남 방면 열차');
   });
 
   it('non-numeric line name (gyeongui) — fallback 포맷 정상', () => {
@@ -11948,25 +11948,25 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 �
   it('#1895 — locale=en → 영어 본문 ("Are you on board?" / "bound" suffix)', () => {
     const { title, body } = buildBoardingPromptMessage('City Hall', '2', 'Gangnam', 120, BASE_NOW, 'en');
     expect(title).toBe('Are you on board?');
-    expect(body).toBe('City Hall [2] → Gangnam bound 07:15 arrival');
+    expect(body).toBe('City Hall line 2 · 07:15 train toward Gangnam');
   });
 
   it('#1895 — locale=ja → 일본어 본문', () => {
     const { title, body } = buildBoardingPromptMessage('市庁', '2', '江南', 120, BASE_NOW, 'ja');
     expect(title).toBe('ご乗車されましたか?');
-    expect(body).toBe('市庁 [2] → 江南方面 07:15進入');
+    expect(body).toBe('市庁 2号線 · 07:15 江南方面の列車');
   });
 
   it('#1895 — locale=zh → 중국어 본문', () => {
     const { title, body } = buildBoardingPromptMessage('市厅', '2', '江南', 120, BASE_NOW, 'zh');
     expect(title).toBe('您已乘车了吗?');
-    expect(body).toBe('市厅 [2] → 江南方向 07:15到达');
+    expect(body).toBe('市厅 2号线 · 07:15 开往江南方向的列车');
   });
 
   it('#1895 — locale=ko 명시 → 한국어 본문 (DEFAULT_LOCALE과 동일)', () => {
     const { title, body } = buildBoardingPromptMessage('시청', '2', '강남', 120, BASE_NOW, 'ko');
     expect(title).toBe('탑승하셨나요?');
-    expect(body).toBe('시청 [2] → 강남 방면 07:15 진입');
+    expect(body).toBe('시청 2호선 · 07:15 강남 방면 열차');
   });
 
   it('#1895 — locale 미지정 → ko fallback', () => {
@@ -11983,13 +11983,13 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 �
 describe('buildHopEndPromptMessage (#2034 — 환승역 하차 4언어)', () => {
   it('ko 기본 — nextLine + nextStation 모두 있음', () => {
     const { title, body } = buildHopEndPromptMessage('성수', '2', 'K', '왕십리');
-    expect(title).toBe('성수에서 하차하셨나요?');
-    expect(body).toBe('2호선 성수에서 내려주세요. 다음은 K호선 왕십리 방면입니다.');
+    expect(title).toBe('성수에서 내리셨나요?');
+    expect(body).toBe('K호선 왕십리 방면으로 갈아타세요');
   });
 
   it('ko — nextLine 있고 nextStation 없음 → line 만 노출', () => {
     const { body } = buildHopEndPromptMessage('성수', '2', 'K', null);
-    expect(body).toBe('2호선 성수에서 내려주세요. 다음은 K호선 방면입니다.');
+    expect(body).toBe('K호선으로 갈아타세요');
   });
 
   it('ko — nextLine null → 다음 leg 안내 생략', () => {
@@ -11999,40 +11999,40 @@ describe('buildHopEndPromptMessage (#2034 — 환승역 하차 4언어)', () => 
 
   it('en locale', () => {
     const { title, body } = buildHopEndPromptMessage('Seongsu', '2', 'K', 'Wangsimni', 'en');
-    expect(title).toBe('Getting off at Seongsu?');
-    expect(body).toBe('Please transfer from line 2 at Seongsu. Next: line K toward Wangsimni.');
+    expect(title).toBe('Did you get off at Seongsu?');
+    expect(body).toBe('Transfer to line K toward Wangsimni');
   });
 
   it('en — nextStation null', () => {
     const { body } = buildHopEndPromptMessage('Seongsu', '2', 'K', null, 'en');
-    expect(body).toBe('Please transfer from line 2 at Seongsu. Next: line K.');
+    expect(body).toBe('Transfer to line K');
   });
 
   it('ja locale', () => {
     const { title, body } = buildHopEndPromptMessage('聖水', '2', 'K', '往十里', 'ja');
-    expect(title).toBe('聖水で降りますか?');
-    expect(body).toBe('2号線 聖水で降車してください。 次はK号線 往十里方面です。');
+    expect(title).toBe('聖水で降りましたか?');
+    expect(body).toBe('K号線 往十里方面に乗り換えてください');
   });
 
   it('ja — nextStation null', () => {
     const { body } = buildHopEndPromptMessage('聖水', '2', 'K', null, 'ja');
-    expect(body).toBe('2号線 聖水で降車してください。 次はK号線です。');
+    expect(body).toBe('K号線に乗り換えてください');
   });
 
   it('zh locale', () => {
     const { title, body } = buildHopEndPromptMessage('圣水', '2', 'K', '往十里', 'zh');
     expect(title).toBe('您在圣水下车了吗?');
-    expect(body).toBe('请在2号线 圣水下车。 下一段: K号线 往十里方向。');
+    expect(body).toBe('请换乘K号线 往十里方向');
   });
 
   it('zh — nextStation null', () => {
     const { body } = buildHopEndPromptMessage('圣水', '2', 'K', null, 'zh');
-    expect(body).toBe('请在2号线 圣水下车。 下一段: K号线。');
+    expect(body).toBe('请换乘K号线');
   });
 
   it('locale 미지정 → ko fallback', () => {
     const { title } = buildHopEndPromptMessage('성수', '2', null, null, undefined);
-    expect(title).toBe('성수에서 하차하셨나요?');
+    expect(title).toBe('성수에서 내리셨나요?');
   });
 });
 
@@ -14865,7 +14865,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       // payload.body.trainCode (#2819) — 발사 시점 단일 확정 trainCode.
       expect(payload.body.trainCode).toBe('7246');
       // 본문(aps.alert.body)에는 선택된 trainCode(7246)의 종착역("성수")만 실린다.
-      expect(payload.aps.alert.body).toContain('성수행');
+      expect(payload.aps.alert.body).toContain('(목적지 성수)');
       expect(payload.aps.alert.body).not.toContain('신도림');
     });
   });
@@ -15928,7 +15928,7 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     ).toBeDefined();
     const [, init] = disembarkCall as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.aps.alert.title).toBe('용마산에서 하차하셨나요?');
+    expect(body.aps.alert.title).toBe('용마산에서 내리셨나요?');
     expect(body.aps.category).toBe(DISEMBARK_PROMPT_CATEGORY);
     // 목적지는 다음 leg가 없다 — 환승 hop-end와 달리 nextLine/nextStation을 전달하지 않는다.
     expect(body.body.nextLine).toBeUndefined();
