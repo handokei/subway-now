@@ -11948,7 +11948,7 @@ describe('buildBoardingPromptMessage (#1739 — 방면 + 시간 명시, #1895 �
   it('#1895 — locale=en → 영어 본문 ("Are you on board?" / "bound" suffix)', () => {
     const { title, body } = buildBoardingPromptMessage('City Hall', '2', 'Gangnam', 120, BASE_NOW, 'en');
     expect(title).toBe('Are you on board?');
-    expect(body).toBe('City Hall line 2 · 07:15 train toward Gangnam');
+    expect(body).toBe('City Hall line 2 · 07:15 toward Gangnam');
   });
 
   it('#1895 — locale=ja → 일본어 본문', () => {
@@ -14865,7 +14865,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       // payload.body.trainCode (#2819) — 발사 시점 단일 확정 trainCode.
       expect(payload.body.trainCode).toBe('7246');
       // 본문(aps.alert.body)에는 선택된 trainCode(7246)의 종착역("성수")만 실린다.
-      expect(payload.aps.alert.body).toContain('(목적지 성수)');
+      expect(payload.aps.alert.body).toContain('방면 성수행 열차');
       expect(payload.aps.alert.body).not.toContain('신도림');
     });
   });
