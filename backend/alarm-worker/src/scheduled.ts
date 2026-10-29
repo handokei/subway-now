@@ -4768,8 +4768,8 @@ export interface SyncSkippedFireStats {
  * arvlCd 확증 cron 경로에 맡긴다 — 여기서 함께 쏘면 조기 도착 오탐 + 그 dedup stamp가 뒤이은
  * 정확한 cron 발사를 억제해버린다(정확한 발사를 부정확한 발사로 대체하는 역효과).
  *
- * `kind==='intermediate'`(station-passed)만 발사한다 — transfer/destination은 기존 전용 fire
- * 경로를 그대로 유지(스코프 밖, 이슈 "하지 말 것" 명시)하되, "발사 여부와 무관 전량 계측"
+ * `kind==='intermediate'`(station-passed)만 발사한다 — transfer/destination은 이 함수의 소관이 아니다
+ * (#2645 PR-3 — 관측 transfer/destination은 `fireSyncObservedTransferDestination`이 전용 발사, 건너뛴 쪽은 아래 skip 계측만), "발사 여부와 무관 전량 계측"
  * 약속을 지키기 위해 skip 자체는 D1에 남긴다(코드리뷰 P2-7).
  *
  * 사용자가 직접 관측(GPS 확정 sync)해 이 역들을 이미 지나쳤음이 확정된 상태이므로 arvlCd
@@ -4809,7 +4809,7 @@ export async function fireSyncSkippedStationPasses(
   const orderedNewestFirst = [...skippedWaypoints].reverse();
 
   for (const waypoint of orderedNewestFirst) {
-    // transfer/destination kind의 기존 전용 발사 경로는 변경하지 않는다(이슈 "하지 말 것") —
+    // transfer/destination kind는 이 루프의 소관이 아니다(관측 waypoint는 #2645 PR-3 `fireSyncObservedTransferDestination`) —
     // 단 코드리뷰 P2-7: skip 자체는 계측한다("전량 계측" 약속이 가장 손실 큰 지점에서
     // 깨지지 않도록).
     if (waypoint.kind !== 'intermediate') {
@@ -4895,6 +4895,73 @@ export async function fireSyncSkippedStationPasses(
   }
 
   return stats;
+}
+
+/**
+ * #2645 PR-3 — lock 활성 `/boarding-lock/sync`가 소비한 transfer/destination waypoint 1건의 visible(alert) 발사.
+ *
+ * 혼합 분기는 `advanceBoardingLockWaypoint(evidence=undefined)`로 환승은 silent push(transfer-release)·하차 프롬프트만,
+ * 목적지는 종료 안내만 보냈다 — 환승/도착 visible push는 cron `fireArvlCdStationPush`(+ #3223 진입 발사)에만 있어, sync가
+ * 먼저 소비하면 영구 유실됐다(10/28 180 17:17:06 건대입구). 발송은 매역 공용 `sendStationPassedAlertPush`(origin 'device-sync'),
+ * dedup은 경로-무관 `stationPassedFiredKey`(진입/도착 발사가 이미 stamp했으면 push 0) — 키는 발사 **성공 후** put.
+ * 호출자는 lock 활성 시점(소비 직전)의 `lock`을 넘긴다 — lockless/PENDING은 알림 없음(#3140)이라 발사 0.
+ * 취침 mute 대상이 아니다(`isSleepMutedStationNotif`는 intermediate만). skipped intermediate cap(`SYNC_SKIPPED_STATION_FIRE_CAP`)과 별도 예산.
+ * #2625가 `fireSyncSkippedStationPasses`에서 transfer/destination을 금지한 것은 "관측역 약신호 조기 발사"(P1-1) 때문이었고,
+ * 이 함수는 소비가 확정된(`advanceBoardingLockWaypoint` consumed) 관측 waypoint에만 호출돼 그 위임을 이어받는다.
+ */
+export async function fireSyncObservedTransferDestination(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  lock: BoardingLockMeta | undefined,
+  deps: SyncSkippedFireDeps,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  if (!isTransferOrDestination(waypoint)) return;
+  if (lock === undefined || lock.trainCode === PENDING_TRAIN_CODE_SENTINEL) return;
+
+  let alreadyFired = false;
+  try {
+    alreadyFired = await isStationPassedFired(env, trip, lock, waypoint.stationName);
+  } catch {
+    // read 실패는 보수적으로 계속 진행(발사 시도) — fireSyncSkippedStationPasses와 동일 정책.
+  }
+  if (alreadyFired) {
+    await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, 'sync-station-passed-dedup');
+    return;
+  }
+
+  const pushId = generatePushId();
+  try {
+    const heal = await sendStationPassedAlertPush({ env, trip, waypoint, lock, deps, now, log, pushId, origin: 'device-sync' });
+    if (!heal.result.ok) {
+      log('sync-observed-fire: push failed', {
+        status: heal.result.status,
+        reason: heal.result.reason,
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+      });
+      await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId);
+      return;
+    }
+    try {
+      await env.TRIPS.put(stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName), '1', {
+        expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC,
+      });
+    } catch (e) {
+      // best-effort 힌트 — 실패해도 correctness는 device collapse-id가 보장.
+      log('sync-observed-fire: dedup marker put failed (best-effort, swallowed)', {
+        error: String(e),
+        token: trip.token.slice(0, 8),
+      });
+    }
+    await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId);
+  } catch (e) {
+    log('sync-observed-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, String(e));
+  }
 }
 
 /**
@@ -6350,6 +6417,9 @@ export async function advanceBoardingLockWaypoint(
   // #2066 (Phase 2-backend) — 취침 알람 visible/companion push 발사용 pushId 발급자.
   // optional — legacy 테스트 호출자는 미전달 시 `crypto.randomUUID` fallback.
   generatePushId: () => string = () => crypto.randomUUID(),
+  // #2645 PR-3 — destination 소비가 확정되어 cleanup(종료 안내 push)에 들어가기 **직전** 호출. gps-far 유예(consumed=false)
+  // 에서는 호출되지 않는다. sync가 도착 alert를 종료 안내보다 먼저 보내기 위한 훅(그 외 호출자는 미전달).
+  beforeDestinationEnd?: () => Promise<void>,
 ): Promise<AdvanceBoardingLockWaypointResult> {
   // ADR-017 T5 (#1558) — SSoT 통합 게이트.
   // evidence 가 제공되면 `advanceTripPosition`이 동의해야만 trip.waypoints / cleanup 이 진행된다.
@@ -6507,6 +6577,7 @@ export async function advanceBoardingLockWaypoint(
           kind: waypoint.kind,
           backstopElapsedMs,
         });
+        await beforeDestinationEnd?.();
         await cleanupTripWithLa(trip, env, deps, stats, now, log, {
           reason: 'destination-arrived',
           endPath: 'lock-active-destination-gps-far-backstop',
@@ -6529,6 +6600,7 @@ export async function advanceBoardingLockWaypoint(
 
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
+    await beforeDestinationEnd?.();
     await cleanupTripWithLa(trip, env, deps, stats, now, log, {
       reason: 'destination-arrived',
       endPath: 'lock-active-destination',

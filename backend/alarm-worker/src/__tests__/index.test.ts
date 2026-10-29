@@ -6182,15 +6182,14 @@ describe('POST /boarding-lock/sync (#901)', () => {
       expect(meta(gangnam!).outcome).toBe('skipped-reason');
     });
 
-    it('destination(선릉) 일치(전체 소진) — newest-first(역삼→강남) 순서로 intermediate 2건만 계측된다', async () => {
+    it('destination(선릉) 일치(전체 소진) — newest-first(역삼→강남) intermediate 2건 계측 + 관측 destination(선릉) 전용 발사 1건(#2645 PR-3)', async () => {
       const { db, inserts } = captureEventInserts();
       const env = makeKvEnv();
       env.DB = db;
       await post('/trips', tripWithLock(), env);
 
-      // 강남(intermediate)/역삼(intermediate)/선릉(destination) 전체 소진 — 관측역(선릉) 자신은
-      // destination kind이자 기존 전용 경로 스코프이므로 제외, 그 이전 intermediate 2건만
-      // newest-first(역삼 먼저)로 계측돼야 한다.
+      // 강남(intermediate)/역삼(intermediate)/선릉(destination) 전체 소진 — 건너뛴 intermediate 2건은
+      // newest-first(역삼 먼저)로 계측되고, 소비된 관측 destination(선릉)은 #2645 PR-3 전용 함수가 그 뒤에 발사·계측한다.
       await post(
         '/boarding-lock/sync',
         { token: 'tok-sync', observedStationName: '선릉', observedAtMs: 1, accuracy: 5 },
@@ -6199,7 +6198,7 @@ describe('POST /boarding-lock/sync (#901)', () => {
       await new Promise((r) => setTimeout(r, 0));
 
       const fireEvents = inserts.filter((args) => args[2] === 'cron-fire-attempt');
-      expect(fireEvents.map((args) => args[3])).toEqual(['역삼', '강남']);
+      expect(fireEvents.map((args) => args[3])).toEqual(['역삼', '강남', '선릉']);
     });
   });
 

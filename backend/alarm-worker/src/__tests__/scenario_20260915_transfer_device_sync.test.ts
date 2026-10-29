@@ -157,9 +157,23 @@ describe('#2645 환승역 하차 확정 — /boarding-lock/sync가 slice하는 �
     expect(body.advanced).toBe(true);
     expect(body.currentWaypoint).toBe('성수');
 
-    // push가 실제로 발사됐는지 — transfer-release(환승 alert) + hop-end 프롬프트(하차했나요?) 2건.
-    expect(fetchSpy).toHaveBeenCalled();
-    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // push 종류까지 검사한다(#2645 PR-3) — transfer-release는 silent(기기 상태 전환용)이고, visible 환승 알림은
+    // 전용 발사(origin device-sync, data.kind transfer) 정확히 1건, 이어서 hop-end 프롬프트. (구)`calls ≥ 2`는 종류를 안 봐서
+    // silent만 나가는 결함을 green으로 통과시켰다.
+    const sent = fetchSpy.mock.calls.map(([, init]) => {
+      const { headers, body } = init as RequestInit;
+      return {
+        pushType: (headers as Record<string, string>)['apns-push-type'],
+        data: (JSON.parse(String(body)) as { data?: Record<string, unknown> }).data ?? {},
+      };
+    });
+    const transferAlerts = sent.filter(
+      (p) => p.pushType === 'alert' && p.data.nextWaypoint === '건대입구' && p.data.kind === 'transfer',
+    );
+    expect(transferAlerts).toHaveLength(1);
+    expect(transferAlerts[0].data.origin).toBe('device-sync');
+    expect(sent.some((p) => p.pushType === 'background' && p.data.origin === 'transfer-release')).toBe(true);
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
 
     const after = await getTrip(kv as unknown as KVNamespace, trip.token);
     // isRealLineChange(7→2) → 6분간 떠난 열차를 계속 추적하던 회귀를 lock 해제로 차단.
