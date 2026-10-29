@@ -2,7 +2,7 @@
  * #3223 — 매역 알림을 열차 위치(realtimePosition) 진입(trainSttus 0) 시점에 1회 발사.
  *
  * 스펙(이슈 #3223 + plan v2/v2.1, 결정 U1~U3): 발사 시점만 앞당긴다.
- *  - intermediate 매역만(transfer/destination 은 현행 도착 시점 유지, U1)
+ *  - intermediate + transfer + destination 모두 진입 발사(U1 포함으로 개정, 10/29 사용자 결정 — 초안 v2 는 intermediate 한정이었다)
  *  - 번호 변경역(2호선 성수)은 진입 트리거 제외(U3)
  *  - advance(waypoint shift)·취침 알람·준비 진동은 도착 확정 그대로(U2) — 진입 발사는 trip/SSoT를 mutate하지 않는다
  *  - 역당 1회 — `stationPassedFiredKey` 공용 dedup, 진입 창을 건너뛰면 도착 시점에 1회 폴백
@@ -319,21 +319,61 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     expect(sent(tick.events, RENUMBER_STATION)).toEqual([]);
   });
 
-  it('거부 — transfer waypoint 진입은 발사하지 않는다 (U1)', async () => {
+  it('transfer 진입(0) tick: 알림 1건(path=position-entering), waypoint 불변(advance 0); 도착 tick: 알림 0 + advance 그대로 (U1 포함, 10/29)', async () => {
     const world = makeWorld();
     await world.seed(tripOf([GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' }]));
-    const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(tick.events.filter((e) => e.kind === 'cron-fire-attempt' && e.meta.outcome === 'sent')).toEqual([]);
-    expect(tick.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
-    expect((await world.trip()).waypoints).toHaveLength(2);
+    const entering = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    const rows = sent(entering.events, '건대입구');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].meta).toMatchObject({ waypointKind: 'station-passed', path: 'position-entering' });
+    expect(entering.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toHaveLength(1);
+    expect((await world.trip()).waypoints.map((w) => w.stationName)).toEqual(['건대입구', '성수']);
+
+    const arrived = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);
+    expect(sent(arrived.events, '건대입구')).toEqual([]);
+    expect(arrived.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
+    expect((await world.trip()).waypoints.map((w) => w.stationName)).toEqual(['성수']);
   });
 
-  it('거부 — destination waypoint 진입은 발사하지 않는다 (U1)', async () => {
+  it('destination 진입(0) tick: 알림 1건, trip 유지; 도착 tick: 알림 0 + trip 종료(삭제) 그대로 (U1 포함, 10/29)', async () => {
     const world = makeWorld();
     await world.seed(tripOf([GEONDAE_DEST]));
-    const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(tick.events.filter((e) => e.kind === 'cron-fire-attempt' && e.meta.outcome === 'sent')).toEqual([]);
-    expect(tick.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
+    const entering = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    const rows = sent(entering.events, '건대입구');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].meta).toMatchObject({ waypointKind: 'station-passed', path: 'position-entering' });
+    expect((await world.trip()).waypoints).toHaveLength(1);
+
+    const arrived = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);
+    expect(sent(arrived.events, '건대입구')).toEqual([]);
+    expect(arrived.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toEqual([]);
+    expect(await world.kv.get(`trip:${TOKEN}`)).toBeNull();
+  });
+
+  it('transfer·destination 도 진입 창을 건너뛰면 도착 시점 1회 폴백 (진입 경로 표식 없음)', async () => {
+    for (const waypoints of [
+      [GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' } as Waypoint],
+      [GEONDAE_DEST],
+    ]) {
+      const world = makeWorld();
+      await world.seed(tripOf(waypoints));
+      const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);
+      const rows = sent(tick.events, '건대입구');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].meta.path).not.toBe('position-entering');
+    }
+  });
+
+  it('취침 모드여도 transfer·destination 은 mute 대상이 아니다 — 진입 발사 (isSleepMutedStationNotif intermediate 한정)', async () => {
+    for (const waypoints of [
+      [GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' } as Waypoint],
+      [GEONDAE_DEST],
+    ]) {
+      const world = makeWorld();
+      await world.seed(tripOf(waypoints, { sleepModeEnabled: true }));
+      const tick = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+      expect(sent(tick.events, '건대입구')).toHaveLength(1);
+    }
   });
 
   it('거부 — 취침 모드 intermediate 는 진입 발사도 무음 skip (isSleepMutedStationNotif 공유)', async () => {
@@ -370,11 +410,15 @@ describe('runMidCycleFireOnly — 진입 발사 (mid pass)', () => {
     expect(second.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
   });
 
-  it('거부 — transfer·destination 진입은 발사 0 (U1)', async () => {
+  it('transfer·destination 진입 → 각 1건 발사 (U1 포함, 10/29), 같은 키 재실행은 dedup으로 0', async () => {
     const transfer = await runMid(tripOf([GEONDAE_TRANSFER, AEDAE]), [{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(transfer.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
-    const destination = await runMid(tripOf([GEONDAE_DEST]), [{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
-    expect(destination.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+    expect(transfer.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(sent(transfer.world.events, '건대입구')[0].meta).toMatchObject({ midCycle: true, path: 'position-entering' });
+    const destTrip = tripOf([GEONDAE_DEST]);
+    const destination = await runMid(destTrip, [{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
+    expect(destination.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    const again = await runMid(destTrip, [{ stationName: '건대입구', sttus: STATUS.ARRIVED }], destination.world);
+    expect(again.stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
   });
 
   it('거부 — 번호 변경역·취침 intermediate 는 발사 0', async () => {
