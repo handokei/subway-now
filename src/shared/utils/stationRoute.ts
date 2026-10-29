@@ -132,7 +132,19 @@ export interface DirectRoute {
   destinationStationId?: string;
 }
 
-export interface TransferRoute {
+/**
+ * #1480 N7 — 앵커링으로 이미 지난 환승 표시. toLine/마지막 환승 이후 구간에 앵커된 route에만 stamp된다
+ * (환승 전·원본 route는 필드 없음 = 0). ETA 합산(`calculateStaticETA`/`calculateETA`)만 소비하며,
+ * `getRouteRemainingSeconds`(알람 clamp, ADR-042)는 이 필드를 보지 않는다.
+ */
+export interface CompletedTransferState {
+  /** 도보까지 끝난 환승 수(transfers 배열 앞에서부터). */
+  completedTransfers?: number;
+  /** true면 마지막으로 완료된 환승의 도보는 끝났으나 toLine 열차 대기는 남음(환승역 toLine 위). */
+  transferWaitPending?: boolean;
+}
+
+export interface TransferRoute extends CompletedTransferState {
   type: 'transfer';
   transferName: string;
   /** #3177: 환승역에서 실제로 내리는 fromLine 승강장의 역 id. */
@@ -160,7 +172,7 @@ export interface TransferSegment {
   secondsToTransfer: number;
 }
 
-export interface MultiTransferRoute {
+export interface MultiTransferRoute extends CompletedTransferState {
   type: 'multi-transfer';
   transfers: TransferSegment[];
   stopsAfterLastTransfer: number;
@@ -319,6 +331,15 @@ export function findStationByNameAndLine(name: string, line: LineNumber): Statio
   return stations.find((s) => normalizeStationName(s.name) === normalized);
 }
 
+// #1480 N7 — 현재역이 해당 환승의 toLine 승강장(= 환승역 자체)인가. 판정은 앵커링 결과(station 노선·id)만
+// 신뢰하며 GPS 승강장 구별은 하지 않는다.
+function isTransferStationOnToLine(
+  segment: { transferName: string; toLine: LineNumber },
+  station: Station,
+): boolean {
+  return findStationByNameAndLine(segment.transferName, segment.toLine)?.id === station.id;
+}
+
 export function updateRouteFromPosition(
   storedRoute: NonNullable<Route>,
   nearestStation: Station,
@@ -370,6 +391,8 @@ export function updateRouteFromPosition(
         stopsFromTransfer,
         secondsToTransfer: 0,
         secondsFromTransfer: computeSegmentSeconds(storedRoute.toLine, nIdx, dIdx, lineStations),
+        completedTransfers: 1,
+        transferWaitPending: isTransferStationOnToLine(storedRoute, nearestStation),
       };
     }
     return null;
@@ -396,7 +419,12 @@ export function updateRouteFromPosition(
             ? { ...t, stopsToTransfer: stops, secondsToTransfer: secondsToCurrent }
             : t,
       );
-      return { ...storedRoute, transfers: updatedTransfers };
+      return {
+        ...storedRoute,
+        transfers: updatedTransfers,
+        completedTransfers: i,
+        transferWaitPending: i > 0 && isTransferStationOnToLine(transfers[i - 1], nearestStation),
+      };
     }
   }
 
@@ -419,6 +447,8 @@ export function updateRouteFromPosition(
       transfers: updatedTransfers,
       stopsAfterLastTransfer: stops,
       secondsAfterLastTransfer: lastSegSeconds,
+      completedTransfers: transfers.length,
+      transferWaitPending: isTransferStationOnToLine(lastTransfer, nearestStation),
     };
   }
 
@@ -987,6 +1017,31 @@ function getTravelMinutes(route: NonNullable<Route>): number {
   return Math.round(getRouteRemainingSeconds(route) / 60);
 }
 
+// #1480 N7 — 환승 도보 완료 수 / 대기 완료 수. 원본·환승 전 route는 둘 다 0.
+// 환승역 toLine 위(transferWaitPending)면 도보만 끝났고 마지막 환승의 대기는 남는다.
+function getCompletedTransferCounts(route: NonNullable<Route>): { walkDone: number; waitDone: number } {
+  if (route.type === 'direct') return { walkDone: 0, waitDone: 0 };
+  const walkDone = route.completedTransfers ?? 0;
+  const waitDone = route.transferWaitPending ? Math.max(walkDone - 1, 0) : walkDone;
+  return { walkDone, waitDone };
+}
+
+// ETA 합산용 잔여 초: getRouteRemainingSeconds에서 완료 환승의 도보(transferTimes)만 뺀 값.
+// getRouteRemainingSeconds 자체는 알람 clamp(ADR-042) 면제를 위해 건드리지 않는다.
+function getEtaRemainingSeconds(route: NonNullable<Route>): number {
+  const { walkDone } = getCompletedTransferCounts(route);
+  if (route.type === 'direct') return route.travelSeconds;
+  if (route.type === 'transfer') {
+    const walk = walkDone >= 1 ? 0 : getTransferSeconds(route.fromLine, route.toLine, route.transferName);
+    return route.secondsToTransfer + route.secondsFromTransfer + walk;
+  }
+  const segmentSecondsSum = route.transfers.reduce((sum, t) => sum + t.secondsToTransfer, 0);
+  const walkSum = route.transfers
+    .slice(walkDone)
+    .reduce((sum, t) => sum + getTransferSeconds(t.fromLine, t.toLine, t.transferName), 0);
+  return segmentSecondsSum + route.secondsAfterLastTransfer + walkSum;
+}
+
 /** lat/lng만 추출한 좌표 — Station 전체를 넘기지 않아 결합도를 낮춘다. */
 export interface LatLng {
   lat: number;
@@ -1095,9 +1150,10 @@ function resolveTransferWaitMinutes(
   timetableBoardableWaitSecondsByLeg: StaticEtaOptions['timetableBoardableWaitSecondsByLeg'],
   transferCount: number,
   nowMs: number,
+  firstPendingWaitIdx = 0,
 ): number {
   let total = 0;
-  for (let i = 0; i < transferCount; i++) {
+  for (let i = firstPendingWaitIdx; i < transferCount; i++) {
     const arrival = arrivalsAtTransfers?.[i] ?? undefined;
     if (isFreshArrival(arrival, nowMs)) {
       total += arrival.arrivalSeconds / 60;
@@ -1156,9 +1212,10 @@ export function calculateStaticETA(
     options.timetableBoardableWaitSecondsByLeg,
     getTransferCount(route),
     nowMs,
+    getCompletedTransferCounts(route).waitDone,
   );
   const totalWaitMinutes = originWaitMinutes + transferWaitMinutes;
-  return Math.round(totalWaitMinutes) + getTravelMinutes(route) + Math.round(walkingMinutes);
+  return Math.round(totalWaitMinutes) + Math.round(getEtaRemainingSeconds(route) / 60) + Math.round(walkingMinutes);
 }
 
 /**
@@ -1278,8 +1335,8 @@ export function calculateETA(
 ): number {
   const originWait = options.excludeOriginWait ? 0 : nextTrainMinutes;
   if (!route) return originWait;
-  const transferWait = getTransferCount(route) * DEFAULT_WAIT_MINUTES;
-  return originWait + getTravelMinutes(route) + transferWait;
+  const transferWait = (getTransferCount(route) - getCompletedTransferCounts(route).waitDone) * DEFAULT_WAIT_MINUTES;
+  return originWait + Math.round(getEtaRemainingSeconds(route) / 60) + transferWait;
 }
 
 export function getNextStationOnLine(
