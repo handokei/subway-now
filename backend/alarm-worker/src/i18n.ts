@@ -72,6 +72,18 @@ export type StationNotifKind = 'intermediate' | 'transfer' | 'destination';
 export interface StationNotifCounts {
   targetName?: string;
   count?: number;
+  /**
+   * #3223 후속 — intermediate target 종류. 'transfer'면 "{역} 환승까지 N정거장", 그 외(미지정 포함)는
+   * 기존 "{역}까지 N정거장 남음". 데이터는 `deriveStationNotifCounts`가 채운다.
+   */
+  targetKind?: 'transfer' | 'destination';
+  /**
+   * #3223 후속 — transfer waypoint 알림용 "갈아탈 노선/방면". `trip.waypoints[idx+1]`의
+   * `line`/`stationName`(hop-end `maybeFireHopEndPrompt`의 nextLine/nextStation과 동일 출처).
+   * 없으면 노선만 → 그것도 없으면 "이번 역에서 내려 갈아타세요"로 폴백한다.
+   */
+  nextLine?: string;
+  nextStation?: string;
 }
 
 /** #3100 — 취침 알람 타깃 종류. intermediate는 알람 타깃이 될 수 없다. */
@@ -113,7 +125,7 @@ interface I18nStrings {
    * #3100 — 취침 알람 N역 전 title/body (`count` = 타깃까지 실제 남은 정거장, 기본 칸 1역 전 제외).
    * 기본 칸은 `stationNotifTitle`/`stationNotifBody` 그대로 쓰므로(`sleepAlarmContent`) 여기 오지 않는다.
    */
-  sleepAlarmTitle: (kind: SleepAlarmKind, count: number) => string;
+  sleepAlarmTitle: (kind: SleepAlarmKind, stationName: string, count: number) => string;
   sleepAlarmBody: (kind: SleepAlarmKind, stationName: string, count: number) => string;
   /** #3100 — 취침 알람 1역 전(SLEEP_ALARM_MIN_STOPS_BEFORE) 문구. device `*EarlyTitle`/`alarms.early*Body`와 byte-identical. */
   sleepAlarmOneStopTitle: (kind: SleepAlarmKind) => string;
@@ -125,6 +137,12 @@ interface I18nStrings {
   trainReconfirmTitle: string;
   /** #2157 — 재확인 alert push body. */
   trainReconfirmBody: string;
+  /**
+   * #3223 후속 — 목적지 도착으로 trip이 끝났을 때의 종료 alert push(`destination-arrived`).
+   * 목적지명이 없거나 다른 종료 사유면 `alertContent.ts`의 기존 "안내 종료" 상수를 유지한다.
+   */
+  tripArrivedEndedTitle: (destinationStation: string) => string;
+  tripArrivedEndedBody: string;
 }
 
 /**
@@ -142,50 +160,60 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
   ko: {
     endPromptTitle: '안내를 종료할까요?',
     endPromptBody: ({ destinationStation }) =>
-      destinationStation ? `15분 동안 이동이 없었어요 · ${destinationStation}까지 안내 중` : '15분 동안 이동이 없었어요',
+      destinationStation ? `15분째 움직임이 없어요 · ${destinationStation}까지 안내 중` : '15분째 움직임이 없어요',
     boardingPromptTitle: '탑승하셨나요?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
-      const time = etaTimeStr ? ` ${etaTimeStr} 진입` : '';
-      const destPrefix = destinationStation ? `${destinationStation}행 · ` : '';
-      return `${destPrefix}${originStation} [${line}] → ${nextStation} 방면${time}`;
+      // #3223 후속 — "{출발} {노선}호선 · {HH:MM} {다음역} 방면 열차 (목적지 {종착})". 시각/목적지는 없으면 그 조각만 생략.
+      const time = etaTimeStr ? `${etaTimeStr} ` : '';
+      const dest = destinationStation ? ` (목적지 ${destinationStation})` : '';
+      return `${originStation} ${line}호선 · ${time}${nextStation} 방면 열차${dest}`;
     },
-    hopEndPromptTitle: ({ transferStation }) => `${transferStation}에서 하차하셨나요?`,
+    hopEndPromptTitle: ({ transferStation }) => `${transferStation}에서 내리셨나요?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
-      const from = `${line}호선 ${transferStation}에서 내려주세요.`;
-      if (!nextLine) return from;
-      const next = nextStation ? `${nextLine}호선 ${nextStation}` : `${nextLine}호선`;
-      return `${from} 다음은 ${next} 방면입니다.`;
+      // 다음 노선이 없으면(목적지 하차 확인 — fireDestinationDisembarkPrompt) 갈아탈 곳이 없으므로 기존 문장 유지.
+      if (!nextLine) return `${line}호선 ${transferStation}에서 내려주세요.`;
+      return nextStation ? `${nextLine}호선 ${nextStation} 방면으로 갈아타세요` : `${nextLine}호선으로 갈아타세요`;
     },
     // #2506 — intermediate는 device ko.json route.stationPassed와 byte-identical.
     // transfer/destination은 기존 #2063 문구 유지(notifications.arrivalImminentTitle/
     // transferImminentTitle).
     stationNotifTitle: (kind, stationName) => {
       if (kind === 'intermediate') return `${stationName}역 도착`;
-      if (kind === 'transfer') return '환승 임박';
-      return '도착 임박';
+      if (kind === 'transfer') return `${stationName} 환승`;
+      return `${stationName} 도착`;
     },
     // #2506 — intermediate는 device ko.json route.stopsRemainingToDestination과 byte-identical
     // (target=환승역/도착역 실명). transfer/destination은 기존 alarms.imminent*Body 유지.
-    stationNotifBody: (kind, stationName, counts) => {
+    stationNotifBody: (kind, _stationName, counts) => {
       if (kind === 'intermediate') {
         if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
-          return `${counts.targetName}까지 ${counts.count}정거장 남음`;
+          return counts.targetKind === 'transfer'
+            ? `${counts.targetName} 환승까지 ${counts.count}정거장`
+            : `${counts.targetName}까지 ${counts.count}정거장 남음`;
         }
         return '도착';
       }
-      if (kind === 'transfer') return `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
-      return `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
+      if (kind === 'transfer') {
+        const { nextLine, nextStation } = counts ?? {};
+        if (!nextLine) return '이번 역에서 내려 갈아타세요';
+        return nextStation
+          ? `이번 역에서 내려 ${nextLine}호선 ${nextStation} 방면으로 갈아타세요`
+          : `이번 역에서 내려 ${nextLine}호선으로 갈아타세요`;
+      }
+      return '이번 역에서 내리세요';
     },
     // #3100 — 취침 알람 N역 전(기본 칸 1역 전이 아닌 칸) 문구. 실제 남은 정거장 수를 담는다.
-    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `환승 ${count}정거장 전` : `도착 ${count}정거장 전`),
-    sleepAlarmBody: (kind, stationName, count) =>
-      `${stationName}까지 ${count}정거장 남았습니다. ${kind === 'transfer' ? '환승' : '하차'} 준비하세요!`,
+    sleepAlarmTitle: (kind, stationName, count) =>
+      kind === 'transfer' ? `${stationName} 환승까지 ${count}정거장` : `${stationName} 도착까지 ${count}정거장`,
+    sleepAlarmBody: (kind) => `일어나서 ${kind === 'transfer' ? '환승' : '하차'} 준비하세요`,
     sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? '환승 알림' : '하차 알림'),
     sleepAlarmOneStopBody: (kind, stationName) =>
       `다음 역 ${stationName}에서 ${kind === 'transfer' ? '환승' : '하차'}하세요!`,
     trainReconfirmTitle: '탑승 열차를 찾을 수 없어요',
     trainReconfirmBody: '다시 확인해주세요',
+    tripArrivedEndedTitle: (destinationStation) => `${destinationStation} 도착 · 안내 종료`,
+    tripArrivedEndedBody: '목적지에 도착해 경로 안내를 마쳤어요',
   },
   en: {
     endPromptTitle: 'End guidance?',
@@ -196,143 +224,169 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     boardingPromptTitle: 'Are you on board?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
-      const time = etaTimeStr ? ` ${etaTimeStr} arrival` : '';
-      const destPrefix = destinationStation ? `Bound for ${destinationStation} · ` : '';
-      return `${destPrefix}${originStation} [${line}] → ${nextStation} bound${time}`;
+      const time = etaTimeStr ? `${etaTimeStr} ` : '';
+      const dest = destinationStation ? ` (destination ${destinationStation})` : '';
+      return `${originStation} line ${line} · ${time}train toward ${nextStation}${dest}`;
     },
-    hopEndPromptTitle: ({ transferStation }) => `Getting off at ${transferStation}?`,
+    hopEndPromptTitle: ({ transferStation }) => `Did you get off at ${transferStation}?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
-      const from = `Please transfer from line ${line} at ${transferStation}.`;
-      if (!nextLine) return from;
-      const next = nextStation ? `line ${nextLine} toward ${nextStation}` : `line ${nextLine}`;
-      return `${from} Next: ${next}.`;
+      if (!nextLine) return `Please transfer from line ${line} at ${transferStation}.`;
+      return nextStation ? `Transfer to line ${nextLine} toward ${nextStation}` : `Transfer to line ${nextLine}`;
     },
     // #2506 — intermediate is byte-identical to device en.json route.stationPassed.
     // transfer/destination keep the #2063 wording (notifications.arrivalImminentTitle/
     // transferImminentTitle).
     stationNotifTitle: (kind, stationName) => {
       if (kind === 'intermediate') return `Arrived at ${stationName}`;
-      if (kind === 'transfer') return 'Transfer imminent';
-      return 'Arrival imminent';
+      if (kind === 'transfer') return `Transfer at ${stationName}`;
+      return `Arriving at ${stationName}`;
     },
     // #2506 — intermediate is byte-identical to device en.json
     // route.stopsRemainingToDestination (target = actual transfer/destination station name).
-    stationNotifBody: (kind, stationName, counts) => {
+    stationNotifBody: (kind, _stationName, counts) => {
       if (kind === 'intermediate') {
         if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
           const unit = counts.count === 1 ? 'stop' : 'stops';
-          return `${counts.count} ${unit} to ${counts.targetName}`;
+          return counts.targetKind === 'transfer'
+            ? `${counts.count} ${unit} to transfer at ${counts.targetName}`
+            : `${counts.count} ${unit} to ${counts.targetName}`;
         }
         return 'Arrived';
       }
-      if (kind === 'transfer') return `Arriving at ${stationName} — transfer soon!`;
-      return `Arriving at ${stationName} — exit soon!`;
+      if (kind === 'transfer') {
+        const { nextLine, nextStation } = counts ?? {};
+        if (!nextLine) return 'Get off here and transfer';
+        return nextStation
+          ? `Get off here and take line ${nextLine} toward ${nextStation}`
+          : `Get off here and take line ${nextLine}`;
+      }
+      return 'Get off at this stop';
     },
     // #3100 — sleep alarm N-stops-before wording (every slot except the default one-stop-before).
-    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `Transfer in ${count} stops` : `Arrival in ${count} stops`),
-    sleepAlarmBody: (kind, stationName, count) =>
-      `${count} stops to ${stationName} — get ready to ${kind === 'transfer' ? 'transfer' : 'exit'}!`,
+    sleepAlarmTitle: (kind, stationName, count) =>
+      kind === 'transfer'
+        ? `${count} stops until transfer at ${stationName}`
+        : `${count} stops until arrival at ${stationName}`,
+    sleepAlarmBody: (kind) => `Wake up and get ready to ${kind === 'transfer' ? 'transfer' : 'exit'}`,
     sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? 'Transfer alert' : 'Arrival alert'),
     sleepAlarmOneStopBody: (kind, stationName) =>
       kind === 'transfer' ? `Transfer at ${stationName} (next stop)!` : `Exit at ${stationName} (next stop)!`,
     trainReconfirmTitle: "We couldn't find your train",
     trainReconfirmBody: 'Please check again',
+    tripArrivedEndedTitle: (destinationStation) => `Arrived at ${destinationStation} · Guidance ended`,
+    tripArrivedEndedBody: 'You reached your destination and guidance has ended',
   },
   ja: {
     endPromptTitle: '案内を終了しますか?',
     endPromptBody: ({ destinationStation }) =>
       destinationStation
-        ? `15分間、移動がありませんでした · ${destinationStation}まで案内中`
-        : '15分間、移動がありませんでした',
+        ? `15分間動きがありません · ${destinationStation}まで案内中`
+        : '15分間動きがありません',
     boardingPromptTitle: 'ご乗車されましたか?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
-      const time = etaTimeStr ? ` ${etaTimeStr}進入` : '';
-      const destPrefix = destinationStation ? `${destinationStation}行き · ` : '';
-      return `${destPrefix}${originStation} [${line}] → ${nextStation}方面${time}`;
+      const time = etaTimeStr ? `${etaTimeStr} ` : '';
+      const dest = destinationStation ? ` (目的地 ${destinationStation})` : '';
+      return `${originStation} ${line}号線 · ${time}${nextStation}方面の列車${dest}`;
     },
-    hopEndPromptTitle: ({ transferStation }) => `${transferStation}で降りますか?`,
+    hopEndPromptTitle: ({ transferStation }) => `${transferStation}で降りましたか?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
-      const from = `${line}号線 ${transferStation}で降車してください。`;
-      if (!nextLine) return from;
-      const next = nextStation ? `${nextLine}号線 ${nextStation}方面` : `${nextLine}号線`;
-      return `${from} 次は${next}です。`;
+      if (!nextLine) return `${line}号線 ${transferStation}で降車してください。`;
+      return nextStation ? `${nextLine}号線 ${nextStation}方面に乗り換えてください` : `${nextLine}号線に乗り換えてください`;
     },
     // #2506 — intermediateは device ja.json route.stationPassedと byte-identical。
     // transfer/destinationは既存 #2063 文言を維持。
     stationNotifTitle: (kind, stationName) => {
       if (kind === 'intermediate') return `${stationName}駅に到着`;
-      if (kind === 'transfer') return 'まもなく乗換';
-      return 'まもなく到着';
+      if (kind === 'transfer') return `${stationName}で乗換`;
+      return `${stationName}に到着`;
     },
     // #2506 — intermediateは device ja.json route.stopsRemainingToDestinationと byte-identical
     // (target=実際の乗換駅/到着駅名)。
-    stationNotifBody: (kind, stationName, counts) => {
+    stationNotifBody: (kind, _stationName, counts) => {
       if (kind === 'intermediate') {
         if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
-          return `${counts.targetName}まで残り${counts.count}駅`;
+          return counts.targetKind === 'transfer'
+            ? `${counts.targetName}乗換まで残り${counts.count}駅`
+            : `${counts.targetName}まで残り${counts.count}駅`;
         }
         return '到着';
       }
-      if (kind === 'transfer') return `まもなく${stationName}に到着します。乗換の準備をしてください!`;
-      return `まもなく${stationName}に到着します。下車の準備をしてください!`;
+      if (kind === 'transfer') {
+        const { nextLine, nextStation } = counts ?? {};
+        if (!nextLine) return 'この駅で降りて乗り換えてください';
+        return nextStation
+          ? `この駅で降りて${nextLine}号線 ${nextStation}方面に乗り換えてください`
+          : `この駅で降りて${nextLine}号線に乗り換えてください`;
+      }
+      return 'この駅で降りてください';
     },
     // #3100 — 就寝アラーム N駅前(既定の1駅前以外)の文言。
-    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `乗換まであと${count}駅` : `到着まであと${count}駅`),
-    sleepAlarmBody: (kind, stationName, count) =>
-      `${stationName}まであと${count}駅です。${kind === 'transfer' ? '乗換' : '下車'}の準備をしてください!`,
+    sleepAlarmTitle: (kind, stationName, count) =>
+      kind === 'transfer' ? `${stationName}乗換まであと${count}駅` : `${stationName}到着まであと${count}駅`,
+    sleepAlarmBody: (kind) => `起きて${kind === 'transfer' ? '乗換' : '下車'}の準備をしてください`,
     sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? '乗換アラーム' : '到着アラーム'),
     sleepAlarmOneStopBody: (kind, stationName) =>
       kind === 'transfer' ? `次の駅 ${stationName}で乗り換えてください!` : `次の駅 ${stationName}で下車してください!`,
     trainReconfirmTitle: '乗車列車が見つかりません',
     trainReconfirmBody: 'もう一度ご確認ください',
+    tripArrivedEndedTitle: (destinationStation) => `${destinationStation}に到着 · 案内終了`,
+    tripArrivedEndedBody: '目的地に到着したため、ルート案内を終了しました',
   },
   zh: {
     endPromptTitle: '要结束导航吗?',
     endPromptBody: ({ destinationStation }) =>
-      destinationStation ? `15 分钟内没有移动 · 导航至 ${destinationStation}` : '15 分钟内没有移动',
+      destinationStation ? `已 15 分钟未移动 · 导航至 ${destinationStation}` : '已 15 分钟未移动',
     boardingPromptTitle: '您已乘车了吗?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
-      const time = etaTimeStr ? ` ${etaTimeStr}到达` : '';
-      const destPrefix = destinationStation ? `开往${destinationStation} · ` : '';
-      return `${destPrefix}${originStation} [${line}] → ${nextStation}方向${time}`;
+      const time = etaTimeStr ? `${etaTimeStr} ` : '';
+      const dest = destinationStation ? ` (目的地 ${destinationStation})` : '';
+      return `${originStation} ${line}号线 · ${time}开往${nextStation}方向的列车${dest}`;
     },
     hopEndPromptTitle: ({ transferStation }) => `您在${transferStation}下车了吗?`,
     hopEndPromptBody: ({ transferStation, line, nextLine, nextStation }) => {
-      const from = `请在${line}号线 ${transferStation}下车。`;
-      if (!nextLine) return from;
-      const next = nextStation ? `${nextLine}号线 ${nextStation}方向` : `${nextLine}号线`;
-      return `${from} 下一段: ${next}。`;
+      if (!nextLine) return `请在${line}号线 ${transferStation}下车。`;
+      return nextStation ? `请换乘${nextLine}号线 ${nextStation}方向` : `请换乘${nextLine}号线`;
     },
     // #2506 — intermediate 与 device zh.json route.stationPassed byte-identical。
     // transfer/destination 维持既有 #2063 文案。
     stationNotifTitle: (kind, stationName) => {
       if (kind === 'intermediate') return `已到达${stationName}`;
-      if (kind === 'transfer') return '即将换乘';
-      return '即将到达';
+      if (kind === 'transfer') return `在${stationName}换乘`;
+      return `到达${stationName}`;
     },
     // #2506 — intermediate 与 device zh.json route.stopsRemainingToDestination byte-identical
     // (target=实际换乘站/到达站名称)。
-    stationNotifBody: (kind, stationName, counts) => {
+    stationNotifBody: (kind, _stationName, counts) => {
       if (kind === 'intermediate') {
         if (counts?.targetName !== undefined && counts.count !== undefined && counts.count > 0) {
-          return `距${counts.targetName}还有${counts.count}站`;
+          return counts.targetKind === 'transfer'
+            ? `距换乘站${counts.targetName}还有${counts.count}站`
+            : `距${counts.targetName}还有${counts.count}站`;
         }
         return '到达';
       }
-      if (kind === 'transfer') return `即将到达${stationName}。请准备换乘!`;
-      return `即将到达${stationName}。请准备下车!`;
+      if (kind === 'transfer') {
+        const { nextLine, nextStation } = counts ?? {};
+        if (!nextLine) return '请在本站下车换乘';
+        return nextStation
+          ? `请在本站下车,换乘${nextLine}号线 ${nextStation}方向`
+          : `请在本站下车,换乘${nextLine}号线`;
+      }
+      return '请在本站下车';
     },
     // #3100 — 睡眠闹钟 N 站前(默认的前 1 站以外)文案。
-    sleepAlarmTitle: (kind, count) => (kind === 'transfer' ? `距换乘还有${count}站` : `距到达还有${count}站`),
-    sleepAlarmBody: (kind, stationName, count) =>
-      `距${stationName}还有${count}站。请准备${kind === 'transfer' ? '换乘' : '下车'}!`,
+    sleepAlarmTitle: (kind, stationName, count) =>
+      kind === 'transfer' ? `距${stationName}换乘还有${count}站` : `距${stationName}到达还有${count}站`,
+    sleepAlarmBody: (kind) => `请醒来准备${kind === 'transfer' ? '换乘' : '下车'}`,
     sleepAlarmOneStopTitle: (kind) => (kind === 'transfer' ? '换乘提醒' : '到达提醒'),
     sleepAlarmOneStopBody: (kind, stationName) =>
       `下一站 ${stationName} ${kind === 'transfer' ? '请换乘' : '请下车'}!`,
     trainReconfirmTitle: '未能找到您的乘车列车',
     trainReconfirmBody: '请重新确认',
+    tripArrivedEndedTitle: (destinationStation) => `已到达${destinationStation} · 导航结束`,
+    tripArrivedEndedBody: '已到达目的地,路线导航已结束',
   },
 };
 
@@ -350,7 +404,7 @@ export function sleepAlarmContent(
   if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) {
     return { title: strings.sleepAlarmOneStopTitle(kind), body: strings.sleepAlarmOneStopBody(kind, stationName) };
   }
-  return { title: strings.sleepAlarmTitle(kind, remaining), body: strings.sleepAlarmBody(kind, stationName, remaining) };
+  return { title: strings.sleepAlarmTitle(kind, stationName, remaining), body: strings.sleepAlarmBody(kind, stationName, remaining) };
 }
 
 /**

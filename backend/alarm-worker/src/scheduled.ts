@@ -2982,8 +2982,20 @@ function deriveStationNotifCounts(trip: Trip, waypoint: Waypoint): StationNotifC
   const multiHop = computeMultiHopContext({ ...trip, waypoints: remaining });
   const transferAhead = multiHop.stopsToTransfer !== undefined && multiHop.stopsToTransfer > 0;
   return transferAhead
-    ? { targetName: multiHop.transferStationName, count: multiHop.stopsToTransfer }
-    : { targetName: multiHop.destinationName, count: remaining.length };
+    ? { targetName: multiHop.transferStationName, count: multiHop.stopsToTransfer, targetKind: 'transfer' }
+    : { targetName: multiHop.destinationName, count: remaining.length, targetKind: 'destination' };
+}
+
+/**
+ * #3223 후속 — transfer waypoint 알림의 "갈아탈 노선/방면". 환승 직후 waypoint(`trip.waypoints[idx+1]`)의
+ * `line`/`stationName` — hop-end prompt(`maybeFireHopEndPrompt`)가 nextLine/nextStation을 얻는 출처와 같다.
+ * waypoint가 trip에 없거나(indexOf -1) 뒤따르는 waypoint가 없으면 빈 객체 → i18n 폴백("이번 역에서 내려 갈아타세요").
+ * 새 KV 읽기 없음(이미 로드된 trip.waypoints만 사용).
+ */
+function deriveTransferNextLeg(trip: Trip, waypoint: Waypoint): StationNotifCounts {
+  const idx = trip.waypoints.indexOf(waypoint);
+  const next = idx === -1 ? undefined : trip.waypoints[idx + 1];
+  return next ? { nextLine: next.line, nextStation: next.stationName } : {};
 }
 
 /**
@@ -3003,18 +3015,24 @@ function deriveStationNotifCounts(trip: Trip, waypoint: Waypoint): StationNotifC
  * N정거장 남음"을 렌더한다. `fireArvlCdStationPush`가 ENTERING을 이 함수 호출 전에 skip하므로
  * 본 함수는 더 이상 arvlCd를 인자로 받지 않는다.
  */
-function buildStationNotifContent(
+export function buildStationNotifContent(
   trip: Trip,
   waypoint: Waypoint,
   locale: SupportedLocale | undefined,
 ): { title: string; body: string } {
   const strings = t(locale);
-  const counts =
-    waypoint.kind === 'intermediate' ? deriveStationNotifCounts(trip, waypoint) : undefined;
+  const counts = deriveStationNotifContext(trip, waypoint);
   return {
     title: strings.stationNotifTitle(waypoint.kind, waypoint.stationName),
     body: strings.stationNotifBody(waypoint.kind, waypoint.stationName, counts),
   };
+}
+
+/** kind별 i18n 입력: intermediate=남은 정거장+target, transfer=갈아탈 노선/방면, destination=없음. */
+function deriveStationNotifContext(trip: Trip, waypoint: Waypoint): StationNotifCounts | undefined {
+  if (waypoint.kind === 'intermediate') return deriveStationNotifCounts(trip, waypoint);
+  if (waypoint.kind === 'transfer') return deriveTransferNextLeg(trip, waypoint);
+  return undefined;
 }
 
 /**

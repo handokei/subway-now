@@ -146,8 +146,8 @@ export function registerSleepAlarmNTable(): void {
                 );
               } else {
                 expect(data.remainingStops).toBe(r);
-                expect(aps.alert.body).toContain(`${r}정거장`);
-                expect(aps.alert.body).toContain(TARGET);
+                expect(aps.alert.title).toContain(`${r}정거장`);
+                expect(aps.alert.title).toContain(TARGET);
               }
             });
 

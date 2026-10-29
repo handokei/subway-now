@@ -174,8 +174,8 @@ export function registerSleepAlarmSyncTable(): void {
               if (fire === MIN) expect(data).not.toHaveProperty('remainingStops');
               else {
                 expect(data.remainingStops).toBe(fire);
-                const aps = alerts[0].body.aps as { alert: { body: string } };
-                expect(aps.alert.body).toContain(`${fire}정거장`);
+                const aps = alerts[0].body.aps as { alert: { title: string } };
+                expect(aps.alert.title).toContain(`${fire}정거장`);
               }
             });
           }

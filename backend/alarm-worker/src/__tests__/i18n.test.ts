@@ -55,25 +55,25 @@ describe('t() — boardingPromptBody nextStation+ETA 분기 (#1895)', () => {
   };
 
   it('locale=ko → "출발역 [호선] → 다음역 방면 HH:MM 진입"', () => {
-    expect(t('ko').boardingPromptBody(ARGS)).toBe('시청 [2] → 강남 방면 07:15 진입');
+    expect(t('ko').boardingPromptBody(ARGS)).toBe('시청 2호선 · 07:15 강남 방면 열차');
   });
 
   it('locale=en → "originStation [line] → nextStation bound HH:MM arrival"', () => {
     expect(
       t('en').boardingPromptBody({ ...ARGS, originStation: 'City Hall', nextStation: 'Gangnam' }),
-    ).toBe('City Hall [2] → Gangnam bound 07:15 arrival');
+    ).toBe('City Hall line 2 · 07:15 train toward Gangnam');
   });
 
   it('locale=ja → "originStation [line] → nextStation方面 HH:MM進入"', () => {
     expect(
       t('ja').boardingPromptBody({ ...ARGS, originStation: '市庁', nextStation: '江南' }),
-    ).toBe('市庁 [2] → 江南方面 07:15進入');
+    ).toBe('市庁 2号線 · 07:15 江南方面の列車');
   });
 
   it('locale=zh → "originStation [line] → nextStation方向 HH:MM到达"', () => {
     expect(
       t('zh').boardingPromptBody({ ...ARGS, originStation: '市厅', nextStation: '江南' }),
-    ).toBe('市厅 [2] → 江南方向 07:15到达');
+    ).toBe('市厅 2号线 · 07:15 开往江南方向的列车');
   });
 });
 
@@ -104,19 +104,19 @@ describe('t() — boardingPromptBody nextStation 있고 etaTimeStr null (#1895)'
   };
 
   it('locale=ko → 시간 없이 방면만', () => {
-    expect(t('ko').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 [6] → 마포구청 방면');
+    expect(t('ko').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 6호선 · 마포구청 방면 열차');
   });
 
   it('locale=en → 시간 없이 bound만', () => {
-    expect(t('en').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 [6] → 마포구청 bound');
+    expect(t('en').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 line 6 · train toward 마포구청');
   });
 
   it('locale=ja → 시간 없이 方面만', () => {
-    expect(t('ja').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 [6] → 마포구청方面');
+    expect(t('ja').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 6号線 · 마포구청方面の列車');
   });
 
   it('locale=zh → 시간 없이 方向만', () => {
-    expect(t('zh').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 [6] → 마포구청方向');
+    expect(t('zh').boardingPromptBody(ARGS_NO_TIME)).toBe('합정 6号线 · 开往마포구청方向的列车');
   });
 });
 
@@ -131,7 +131,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
 
   it('locale=ko → "종착역행 · 출발역 [호선] → 다음역 방면 HH:MM 진입"', () => {
     expect(t('ko').boardingPromptBody(ARGS_WITH_DEST)).toBe(
-      '성수행 · 뚝섬 [2] → 성수 방면 06:46 진입',
+      '뚝섬 2호선 · 06:46 성수 방면 열차 (목적지 성수)',
     );
   });
 
@@ -143,7 +143,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
         nextStation: 'Seongsu',
         destinationStation: 'Seongsu',
       }),
-    ).toBe('Bound for Seongsu · Ttukseom [2] → Seongsu bound 06:46 arrival');
+    ).toBe('Ttukseom line 2 · 06:46 train toward Seongsu (destination Seongsu)');
   });
 
   it('locale=ja → "종착역行き · ..."', () => {
@@ -154,7 +154,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
         nextStation: 'seongsu',
         destinationStation: 'seongsu',
       }),
-    ).toBe('seongsu行き · ttukseom [2] → seongsu方面 06:46進入');
+    ).toBe('ttukseom 2号線 · 06:46 seongsu方面の列車 (目的地 seongsu)');
   });
 
   it('locale=zh → "开往종착역 · ..."', () => {
@@ -165,7 +165,7 @@ describe('t() — boardingPromptBody destinationStation (#2904 — 열차 식별
         nextStation: 'seongsu',
         destinationStation: 'seongsu',
       }),
-    ).toBe('开往seongsu · ttukseom [2] → seongsu方向 06:46到达');
+    ).toBe('ttukseom 2号线 · 06:46 开往seongsu方向的列车 (目的地 seongsu)');
   });
 
   it.each([
@@ -257,28 +257,28 @@ describe('sleepAlarmContent (#3100) — 취침 알람 N역 전 문구', () => {
   );
 
   it('ko stationNotif 도착 push 원문 고정 (공유 문구 불변)', () => {
-    expect(t('ko').stationNotifTitle('transfer', STATION)).toBe('환승 임박');
-    expect(t('ko').stationNotifBody('transfer', STATION)).toBe(`곧 ${STATION}에 도착합니다. 환승 준비하세요!`);
-    expect(t('ko').stationNotifTitle('destination', STATION)).toBe('도착 임박');
-    expect(t('ko').stationNotifBody('destination', STATION)).toBe(`곧 ${STATION}에 도착합니다. 하차 준비하세요!`);
+    expect(t('ko').stationNotifTitle('transfer', STATION)).toBe(`${STATION} 환승`);
+    expect(t('ko').stationNotifBody('transfer', STATION)).toBe('이번 역에서 내려 갈아타세요');
+    expect(t('ko').stationNotifTitle('destination', STATION)).toBe(`${STATION} 도착`);
+    expect(t('ko').stationNotifBody('destination', STATION)).toBe('이번 역에서 내리세요');
   });
 
   const EXPECTED: Record<SupportedLocale, Record<'transfer' | 'destination', (n: number) => { title: string; body: string }>> = {
     ko: {
-      transfer: (n) => ({ title: `환승 ${n}정거장 전`, body: `${STATION}까지 ${n}정거장 남았습니다. 환승 준비하세요!` }),
-      destination: (n) => ({ title: `도착 ${n}정거장 전`, body: `${STATION}까지 ${n}정거장 남았습니다. 하차 준비하세요!` }),
+      transfer: (n) => ({ title: `${STATION} 환승까지 ${n}정거장`, body: '일어나서 환승 준비하세요' }),
+      destination: (n) => ({ title: `${STATION} 도착까지 ${n}정거장`, body: '일어나서 하차 준비하세요' }),
     },
     en: {
-      transfer: (n) => ({ title: `Transfer in ${n} stops`, body: `${n} stops to ${STATION} — get ready to transfer!` }),
-      destination: (n) => ({ title: `Arrival in ${n} stops`, body: `${n} stops to ${STATION} — get ready to exit!` }),
+      transfer: (n) => ({ title: `${n} stops until transfer at ${STATION}`, body: 'Wake up and get ready to transfer' }),
+      destination: (n) => ({ title: `${n} stops until arrival at ${STATION}`, body: 'Wake up and get ready to exit' }),
     },
     ja: {
-      transfer: (n) => ({ title: `乗換まであと${n}駅`, body: `${STATION}まであと${n}駅です。乗換の準備をしてください!` }),
-      destination: (n) => ({ title: `到着まであと${n}駅`, body: `${STATION}まであと${n}駅です。下車の準備をしてください!` }),
+      transfer: (n) => ({ title: `${STATION}乗換まであと${n}駅`, body: '起きて乗換の準備をしてください' }),
+      destination: (n) => ({ title: `${STATION}到着まであと${n}駅`, body: '起きて下車の準備をしてください' }),
     },
     zh: {
-      transfer: (n) => ({ title: `距换乘还有${n}站`, body: `距${STATION}还有${n}站。请准备换乘!` }),
-      destination: (n) => ({ title: `距到达还有${n}站`, body: `距${STATION}还有${n}站。请准备下车!` }),
+      transfer: (n) => ({ title: `距${STATION}换乘还有${n}站`, body: '请醒来准备换乘' }),
+      destination: (n) => ({ title: `距${STATION}到达还有${n}站`, body: '请醒来准备下车' }),
     },
   };
 

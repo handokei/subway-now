@@ -956,7 +956,7 @@ describe('stationNotification', () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', band: 3 });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
-          alarmBody: '강남까지 3정거장 남았습니다. 하차 준비하세요!',
+          alarmBody: '일어나서 하차 준비하세요',
           alarmShortLabel: '하차',
         })
       );
@@ -1297,33 +1297,33 @@ describe('stationNotification', () => {
       });
     });
 
-    it('imminent destination이면 도착 임박 문구를 만든다', () => {
+    it('imminent destination이면 "{역} 도착" 문구를 만든다', () => {
       expect(buildAlarmContent(imminentDest)).toEqual({
-        title: '도착 임박',
-        body: '곧 강남에 도착합니다. 하차 준비하세요!',
+        title: '강남 도착',
+        body: '이번 역에서 내리세요',
       });
     });
 
-    it('imminent transfer이면 환승 임박 문구를 만든다', () => {
+    it('imminent transfer이면 "{역} 환승" 문구를 만든다', () => {
       expect(buildAlarmContent(imminentTransfer)).toEqual({
-        title: '환승 임박',
-        body: '곧 시청에 도착합니다. 환승 준비하세요!',
+        title: '시청 환승',
+        body: '이번 역에서 내려 갈아타세요',
       });
     });
 
     // #3100 — N역 전 칸(band = 실제 남은 정거장 수). 백엔드 sleepAlarmContent와 같은 문구.
     describe('N역 전 band 문구 (#3100)', () => {
-      it('early destination + band 3 → 도착 3정거장 전', () => {
+      it('early destination + band 3 → 강남 도착까지 3정거장', () => {
         expect(buildAlarmContent({ ...earlyDest, band: 3 })).toEqual({
-          title: '도착 3정거장 전',
-          body: '강남까지 3정거장 남았습니다. 하차 준비하세요!',
+          title: '강남 도착까지 3정거장',
+          body: '일어나서 하차 준비하세요',
         });
       });
 
-      it('early transfer + band 2 → 환승 2정거장 전', () => {
+      it('early transfer + band 2 → 시청 환승까지 2정거장', () => {
         expect(buildAlarmContent({ ...earlyTransfer, band: 2 })).toEqual({
-          title: '환승 2정거장 전',
-          body: '시청까지 2정거장 남았습니다. 환승 준비하세요!',
+          title: '시청 환승까지 2정거장',
+          body: '일어나서 환승 준비하세요',
         });
       });
 
@@ -1340,14 +1340,14 @@ describe('stationNotification', () => {
           direction: 'up',
           band: 2,
         });
-        expect(body.startsWith('잠실까지 2정거장 남았습니다. 하차 준비하세요!')).toBe(true);
+        expect(body.startsWith('일어나서 하차 준비하세요')).toBe(true);
         expect(body).toContain('오른쪽 문으로 하차하세요');
       });
 
       it('imminent는 band와 무관하게 현행 문구 (band는 early 전용)', () => {
         expect(buildAlarmContent({ ...imminentDest, band: 3 })).toEqual({
-          title: '도착 임박',
-          body: '곧 강남에 도착합니다. 하차 준비하세요!',
+          title: '강남 도착',
+          body: '이번 역에서 내리세요',
         });
       });
     });
@@ -1496,7 +1496,7 @@ describe('stationNotification', () => {
         [
           '정규화 fallback — 괄호 부제가 붙은 이름이어도 매칭된다',
           'imminent', 'destination', '잠실',
-          '도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
+          '잠실 도착', '이번 역에서 내리세요\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
           '2-016',
         ],
       ] as const)('%s', (_label, phaseId, type, stationName, title, body, stationId) => {
@@ -1663,7 +1663,7 @@ describe('stationNotification', () => {
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.objectContaining({
-            body: '홍대입구까지 2정거장 남음',
+            body: '홍대입구 환승까지 2정거장',
           }),
         }),
       );
@@ -1731,10 +1731,10 @@ describe('stationNotification', () => {
       expect(body).toBe(expectedBody);
     });
 
-    // 환승 전(targetKind='transfer')도 동일 템플릿 — 대상만 환승역명으로 바뀐다.
+    // 환승 전(targetKind='transfer')도 환승 전용 템플릿(#3223 후속) — 대상만 환승역명으로 바뀐다.
     it.each([
-      ['ko', '홍대입구까지 2정거장 남음'],
-      ['en', '2 stops to Hongik Univ.'],
+      ['ko', '홍대입구 환승까지 2정거장'],
+      ['en', '2 stops to transfer at Hongik Univ.'],
     ])('locale=%s, 환승 전(targetKind=transfer) → %s', async (lang, expectedBody) => {
       await i18next.changeLanguage(lang);
       const { body } = buildStationPassedContent('중곡', 2, 'transfer', '홍대입구');

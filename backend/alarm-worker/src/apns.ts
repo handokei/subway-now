@@ -701,6 +701,8 @@ export interface SendTripEndedAlertPushOptions {
   host: string;
   fetchImpl?: typeof fetch;
   now?: number;
+  /** #3223 후속 — 표시 문구 override. 생략하면 기존 "안내 종료" 상수. */
+  alert?: { title: string; body: string };
 }
 
 export async function sendTripEndedAlertPush(
@@ -722,7 +724,7 @@ export async function sendTripEndedAlertPush(
 
   const body = JSON.stringify({
     aps: {
-      alert: { title: TRIP_ENDED_ALERT_TITLE, body: TRIP_ENDED_ALERT_BODY },
+      alert: options.alert ?? { title: TRIP_ENDED_ALERT_TITLE, body: TRIP_ENDED_ALERT_BODY },
     },
     // #2552 — data(레거시/BG raw 경로) + body(expo FG content.data: userInfo["body"], #2549 기전)
     // 둘 다 병기. trip-ended 응답 핸들러가 content.data로 읽는 경로가 top-level `data`만으론 null.

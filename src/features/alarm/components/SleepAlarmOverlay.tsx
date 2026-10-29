@@ -59,7 +59,7 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
   const title =
     band === undefined
       ? t(isTransfer ? 'alarmOverlay.transferTitle' : 'alarmOverlay.arrivalTitle')
-      : t(isTransfer ? 'alarms.bandTransferTitle' : 'alarms.bandArrivalTitle', { stops: band });
+      : t(isTransfer ? 'alarms.bandTransferTitle' : 'alarms.bandArrivalTitle', { station, stops: band });
   const message =
     band === undefined
       ? t(isTransfer ? 'alarmOverlay.transferMessage' : 'alarmOverlay.arrivalMessage', { station })

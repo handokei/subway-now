@@ -26,8 +26,8 @@ describe('buildAlertContent (#570 P2d)', () => {
       kind: 'destination',
       phase: 'imminent',
       station: '시청',
-      title: '도착 임박',
-      body: '곧 시청에 도착합니다. 하차 준비하세요!',
+      title: '시청 도착',
+      body: '이번 역에서 내리세요',
     },
     {
       kind: 'transfer',
@@ -40,8 +40,8 @@ describe('buildAlertContent (#570 P2d)', () => {
       kind: 'transfer',
       phase: 'imminent',
       station: '왕십리',
-      title: '환승 임박',
-      body: '곧 왕십리에 도착합니다. 환승 준비하세요!',
+      title: '왕십리 환승',
+      body: '이번 역에서 내려 갈아타세요',
     },
   ])('$kind/$phase → $title', ({ kind, phase, station, title, body }) => {
     expect(buildAlertContent({ kind, phase, stationName: station })).toEqual({ title, body });
@@ -58,8 +58,8 @@ describe('buildAlertContent (#570 P2d)', () => {
     expect(
       buildAlertContent({ kind: 'destination', phase: 'imminent', stationName: 'Apgujeong' }),
     ).toEqual({
-      title: '도착 임박',
-      body: '곧 Apgujeong에 도착합니다. 하차 준비하세요!',
+      title: 'Apgujeong 도착',
+      body: '이번 역에서 내리세요',
     });
   });
 });

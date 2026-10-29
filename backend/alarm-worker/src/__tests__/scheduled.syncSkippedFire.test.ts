@@ -396,7 +396,7 @@ describe('#2625 — fireSyncSkippedStationPasses', () => {
       aps: { alert: { body: string } };
     };
     // remaining(건대입구 이후) = [아차산, 군자(transfer), 어린이대공원] → 환승(군자)까지 2정거장.
-    expect(correctBody.aps.alert.body).toBe('군자까지 2정거장 남음');
+    expect(correctBody.aps.alert.body).toBe('군자 환승까지 2정거장');
 
     // 버그 재현 대조군 — post-slice(건대입구·아차산·군자가 전부 빠진, 즉 caller가 `working`을
     // 넘기던 구현) waypoints를 넘기면 indexOf가 -1이 돼 환승 대신 destination을 잘못
