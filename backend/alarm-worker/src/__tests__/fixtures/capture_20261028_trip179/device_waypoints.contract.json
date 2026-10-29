@@ -16,7 +16,7 @@
     { "stationName": "군자(능동)", "line": "7", "kind": "intermediate", "remainingSecToDest": 900 },
     { "stationName": "어린이대공원(세종대)", "line": "7", "kind": "intermediate", "remainingSecToDest": 780 },
     { "stationName": "건대입구", "line": "7", "kind": "transfer", "remainingSecToDest": 660 },
-    { "stationName": "성수", "line": "2", "kind": "intermediate", "remainingSecToDest": 540 },
+    { "stationName": "성수", "line": "2", "kind": "intermediate", "remainingSecToDest": 120 },
     { "stationName": "뚝섬", "line": "2", "kind": "destination", "remainingSecToDest": 0 }
   ]
 }

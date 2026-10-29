@@ -1,5 +1,5 @@
 import lineTopology from '../../../data/lineTopology.json';
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, getRouteRemainingSeconds, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -2398,6 +2398,93 @@ describe('terminusReachesTarget (#2696)', () => {
 
     it('종착역===목표역 → true', () => {
       expect(terminusReachesTarget('2', 'down', '건대입구', '건대입구')).toBe(true);
+    });
+  });
+});
+
+// #1480 PR-A (N7) — 지난 환승 도보+대기 중복 합산 제거.
+// root: toLine 앵커링 후에도 route.type이 transfer/multi-transfer로 남아 ETA가 지난 환승의 도보(transferTimes)와
+// 대기(DEFAULT_WAIT 3분)를 계속 더했다(10/28 trip 179 성수->뚝섬 1정거장인데 9분).
+describe('ETA — 완료 환승 제외 (#1480 N7)', () => {
+  const NOW = 1_000_000;
+  const opts = { excludeOriginWait: true, nowMs: NOW } as const;
+  const st = (line: LineNumber, name: string) => getStationsOnLine(line).find((s) => s.name === name)!;
+
+  describe('transfer (2 교대 -> 3 양재)', () => {
+    const stored: TransferRoute = makeTransferRoute({
+      transferName: '교대(법원.검찰청)',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 2,
+    });
+    const walkSec = getTransferSeconds('2', '3', '교대');
+
+    it('환승 전(fromLine 앵커)은 무변경: 주행 + 도보 + 대기 3분 (거부 케이스)', () => {
+      const anchored = anchorRouteToCurrentStation(stored, st('2', '강남'), '3-034') as TransferRoute;
+      const secs = anchored.secondsToTransfer + anchored.secondsFromTransfer + walkSec;
+      expect(calculateStaticETA(anchored, opts)).toBe(3 + Math.round(secs / 60));
+      expect(calculateETA(0, anchored, { excludeOriginWait: true })).toBe(3 + Math.round(secs / 60));
+    });
+
+    it('환승 후(toLine 남부터미널 앵커)는 남은 주행만: 지난 환승 도보·대기 3분 제외', () => {
+      const anchored = anchorRouteToCurrentStation(stored, st('3', '남부터미널(예술의전당)'), '3-034') as TransferRoute;
+      expect(anchored.completedTransfers).toBe(1);
+      const expected = Math.round(anchored.secondsFromTransfer / 60);
+      expect(calculateStaticETA(anchored, opts)).toBe(expected);
+      expect(calculateETA(0, anchored, { excludeOriginWait: true })).toBe(expected);
+    });
+
+    it('환승역 자체 toLine 앵커는 도보 완료·대기 남음: 주행 + 대기 3분 (도보 제외)', () => {
+      const anchored = anchorRouteToCurrentStation(stored, st('3', '교대(법원.검찰청)'), '3-034') as TransferRoute;
+      const expected = 3 + Math.round(anchored.secondsFromTransfer / 60);
+      expect(calculateStaticETA(anchored, opts)).toBe(expected);
+      expect(calculateETA(0, anchored, { excludeOriginWait: true })).toBe(expected);
+    });
+
+    it('getRouteRemainingSeconds는 완료 환승이어도 무변경 (알람 clamp 면제, ADR-042)', () => {
+      const anchored = anchorRouteToCurrentStation(stored, st('3', '남부터미널(예술의전당)'), '3-034') as TransferRoute;
+      expect(getRouteRemainingSeconds(anchored)).toBe(anchored.secondsFromTransfer + walkSec);
+    });
+  });
+
+  describe('multi-transfer (8 -> 잠실 2 -> 시청 1)', () => {
+    const stored: MultiTransferRoute = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 4 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 10 },
+      ],
+      stopsAfterLastTransfer: 5,
+    });
+    const walk0 = getTransferSeconds('8', '2', '잠실');
+    const walk1 = getTransferSeconds('2', '1', '시청');
+    const anchor = (s: Station) => anchorRouteToCurrentStation(stored, s, '1-001') as MultiTransferRoute;
+
+    it('첫 환승 전(8호선 앵커)은 무변경: 도보 2개 + 대기 2x3분 (거부 케이스)', () => {
+      const a = anchor(st('8', '암사'));
+      const secs = a.transfers[0].secondsToTransfer + a.transfers[1].secondsToTransfer + a.secondsAfterLastTransfer + walk0 + walk1;
+      expect(calculateStaticETA(a, opts)).toBe(6 + Math.round(secs / 60));
+    });
+
+    it('첫 환승 후(2호선 앵커)는 첫 환승 도보·대기만 제외, 두 번째 환승은 유지', () => {
+      const a = anchor(st('2', '강남'));
+      expect(a.completedTransfers).toBe(1);
+      const secs = a.transfers[1].secondsToTransfer + a.secondsAfterLastTransfer + walk1;
+      expect(calculateStaticETA(a, opts)).toBe(3 + Math.round(secs / 60));
+      expect(calculateETA(0, a, { excludeOriginWait: true })).toBe(3 + Math.round(secs / 60));
+    });
+
+    it('모든 환승 후(1호선 종각 앵커)는 남은 주행만', () => {
+      const a = anchor(st('1', '종각'));
+      expect(a.completedTransfers).toBe(2);
+      expect(calculateStaticETA(a, opts)).toBe(Math.round(a.secondsAfterLastTransfer / 60));
+      expect(calculateETA(0, a, { excludeOriginWait: true })).toBe(Math.round(a.secondsAfterLastTransfer / 60));
+    });
+
+    it('마지막 환승역 자체의 toLine 앵커(시청)는 도보 완료·대기 남음', () => {
+      const a = anchor(st('1', '시청'));
+      expect(a.completedTransfers).toBe(2);
+      expect(calculateStaticETA(a, opts)).toBe(3 + Math.round(a.secondsAfterLastTransfer / 60));
     });
   });
 });
