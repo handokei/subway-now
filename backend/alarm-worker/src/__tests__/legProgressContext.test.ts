@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { LINE_META } from '../lineAlias';
 import { buildLiveActivityContentState } from '../liveActivity';
-import { computeLegProgressContext } from '../tripMultiHop';
+import { computeLegProgressContext, computeNextStopContext } from '../tripMultiHop';
 import type { Trip, Waypoint } from '../types';
 import { makeRide20261028EveningTrip, makeRide20261028MorningTrip } from './helpers/ride20261028Trips';
 
@@ -115,6 +115,53 @@ describe('computeLegProgressContext (#3221 PR-5)', () => {
     if (trip.route.type !== 'transfer') throw new Error('fixture');
     trip.route = { ...trip.route, toLine: 'ZZ' };
     expect(computeLegProgressContext(trip)).toEqual({ legStopsTotal: 4, nextLegStopsTotal: 2 });
+  });
+});
+
+describe('computeNextStopContext (#3221 PR-5 시안 일치)', () => {
+  it('trip 179: 다음 역=군자, 갈아탈 노선=2호선, 방면=환승 직후 waypoint(성수)', () => {
+    const trip = makeRide20261028MorningTrip('t179', NOW);
+    expect(computeNextStopContext(trip)).toEqual({
+      nextStationName: '군자(능동)',
+      nextLineName: LINE_META['2'].canonical,
+      nextLineDirection: '성수',
+    });
+  });
+
+  it('환승이 남지 않은 trip 180: 다음 역만', () => {
+    const trip = makeRide20261028EveningTrip('t180', NOW);
+    expect(computeNextStopContext(trip)).toEqual({ nextStationName: '어린이대공원(세종대)' });
+  });
+
+  it('환승 waypoint 뒤에 waypoint가 없으면 노선/방면 생략 (다음 역은 유지)', () => {
+    const trip: Trip = {
+      ...makeRide20261028MorningTrip('t', NOW),
+      waypoints: [{ stationName: '건대입구', line: '7', kind: 'transfer' }],
+    };
+    expect(computeNextStopContext(trip)).toEqual({ nextStationName: '건대입구' });
+  });
+
+  it('waypoint가 없으면 빈 객체', () => {
+    const trip = makeRide20261028MorningTrip('t', NOW);
+    trip.waypoints = [];
+    expect(computeNextStopContext(trip)).toEqual({});
+  });
+
+  it('알 수 없는 노선이면 nextLineName 생략, 방면은 유지', () => {
+    const trip = makeRide20261028MorningTrip('t', NOW);
+    trip.waypoints = [
+      { stationName: 'A', line: '7', kind: 'transfer' },
+      { stationName: 'B', line: 'ZZ', kind: 'destination' },
+    ];
+    expect(computeNextStopContext(trip)).toEqual({ nextStationName: 'A', nextLineDirection: 'B' });
+  });
+
+  it('buildLiveActivityContentState(일반·split)에 실린다', () => {
+    const trip = makeRide20261028MorningTrip('t179', NOW);
+    const expected = { nextStationName: '군자(능동)', nextLineName: LINE_META['2'].canonical, nextLineDirection: '성수' };
+    expect(buildLiveActivityContentState(trip.waypoints[0], 60, 5, trip)).toMatchObject(expected);
+    const split: Trip = { ...trip, laClient: { split: true, boardingStart: 'push-to-start' } };
+    expect(buildLiveActivityContentState(trip.waypoints[0], 60, 5, split)).toMatchObject(expected);
   });
 });
 

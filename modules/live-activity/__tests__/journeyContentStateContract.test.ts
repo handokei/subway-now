@@ -15,6 +15,9 @@ const FIELDS: Array<[string, string, string]> = [
   ['legStopsTotal', 'Int', 'number'],
   ['nextLegStopsTotal', 'Int', 'number'],
   ['nextLineColorHex', 'String', 'string'],
+  ['nextStationName', 'String', 'string'],
+  ['nextLineName', 'String', 'string'],
+  ['nextLineDirection', 'String', 'string'],
 ];
 
 const stripComments = (s: string) => s.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
@@ -47,6 +50,14 @@ describe('여정 LA 진행 막대 필드 계약 (#3221 PR-5)', () => {
     expect(code).toContain('widget.la.journey.transferBadge');
     expect(code).toContain('widget.la.journey.alightBadge');
     expect(code).toMatch(/inkStrong/);
+  });
+
+  it('위젯: "다음 {역}" 라벨 + 환승 카드 "지금 내려서 {노선} {방면} 방면으로" 키를 쓴다 (없으면 기존 폴백 유지)', () => {
+    const code = stripComments(WIDGET);
+    expect(code).toContain('widget.la.journey.nextStation');
+    expect(code).toContain('widget.la.journey.transferHintTo');
+    expect(code).toContain('widget.la.journey.currentStation'); // nextStationName 없을 때 폴백
+    expect(code).toContain('widget.la.journey.transferHint'); // nextLineName 없을 때 폴백
   });
 
   it('위젯: deviceFallback 칩을 만들지 않는다 (U6 — sourceLabel은 기존 텍스트 그대로)', () => {
