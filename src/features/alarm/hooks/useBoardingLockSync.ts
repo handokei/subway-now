@@ -223,6 +223,8 @@ export function useBoardingLockSync({
   const lastSentTrainCodeRef = useRef<string | null>(null);
   // forceTriggerKey 이전 값 — 같은 key 재전달 시 no-op 판정용.
   const lastForceKeyRef = useRef<string | null>(null);
+  // #3222 PR-0b — 정확도 탈락을 이미 기록한 관측역. 같은 역의 반복 탈락 중복 기록 방지(역 변경 전이당 1회).
+  const lastSkippedStationRef = useRef<string | null>(null);
   // #2709 — lock 신원(trainCode|boardingLine) 실패 재시도 상태. 두 트리거(station-change/
   // force-trigger)가 공유 — 어느 쪽이 실패해도 동일 backoff 큐로 재시도한다.
   const lockRetryRef = useRef<{
@@ -267,6 +269,7 @@ export function useBoardingLockSync({
       lastSentStationRef.current = null;
       lastSentTrainCodeRef.current = null;
       lastForceKeyRef.current = null;
+      lastSkippedStationRef.current = null;
       clearLockRetry();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -285,7 +288,15 @@ export function useBoardingLockSync({
       boardingLockBoardingStationId,
       boardingLockBoardedAt,
     });
-    if (!anchor) return;
+    if (!anchor) {
+      // #3222 PR-0b — 관측성만(동작 무변경): 역은 있는데 정확도 탈락으로 미송신 → 역 변경 전이당 1회 기록.
+      if (currentStationName != null && lastSkippedStationRef.current !== currentStationName) {
+        lastSkippedStationRef.current = currentStationName;
+        logLockSyncDelivery({ outcome: 'skipped', reason: 'low-accuracy' });
+      }
+      return;
+    }
+    lastSkippedStationRef.current = null;
     const trainCodeForFire = anchor.lockIdentity?.trainCode ?? null;
     const stationUnchanged = lastSentStationRef.current === anchor.observedStationName;
     const trainCodeUnchanged = lastSentTrainCodeRef.current === trainCodeForFire;

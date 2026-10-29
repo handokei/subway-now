@@ -1486,6 +1486,19 @@ describe('alarmLog', () => {
       expect(saved[0].delaySeconds).toBeUndefined();
     });
 
+    it('#3222 logLockSyncDelivery: outcome=skipped + reason → outcome=suppressed / reason 그대로 적재', async () => {
+      logLockSyncDelivery({ outcome: 'skipped', reason: 'low-accuracy' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'lock-sync-delivery',
+        outcome: 'suppressed',
+        reason: 'low-accuracy',
+      });
+    });
+
     it('#2709 logLockSyncDelivery: outcome=success + delaySeconds → outcome=fired + delaySeconds 적재', async () => {
       logLockSyncDelivery({ outcome: 'success', delaySeconds: 42 });
       await flushAlarmLog();

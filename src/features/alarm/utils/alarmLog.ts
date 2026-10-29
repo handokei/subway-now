@@ -555,6 +555,9 @@ export type AlarmLogReason =
   // boardingStationId station lookup도 실패해 backend에 보낼 observedStationName 앵커가
   // 전혀 없는 경우 — 시도 자체가 불가능해 attempt/success 어느 쪽도 적재되지 않는다.
   | 'lock-sync-blocked-no-anchor'
+  // #3222 PR-0b — lock-sync-delivery(outcome='suppressed') 전용. 현재역은 있으나 GPS 정확도
+  // 게이트 탈락(lock 신원 fallback도 없음)으로 backend sync를 보내지 않은 관측역 변경 전이 1건.
+  | 'low-accuracy'
   // #2728 (ADR-039 §5 3단계) — lock 활성 trip의 destination phase ETA 산출 출처 관측.
   //   'eta-source-train-feed'  : Seoul 열차 피드(trainCode 일치 arrivalSeconds)를 사용(1순위).
   //   'eta-source-gps-fallback': 피드 매칭 실패(장애/미도달/미확정)로 GPS 거리 계산으로 강등.
@@ -1576,9 +1579,13 @@ export function logArrivalAutoClearFired(stationName: string): void {
  *   - 'blocked'  → outcome='suppressed', reason='lock-sync-blocked-no-anchor' — 좋은 GPS fix도
  *     lock의 boardingStationId station lookup도 없어 backend에 보낼 observedStationName 자체가
  *     없는 경우(시도조차 불가능).
+ *   - 'skipped'  → outcome='suppressed', reason=입력 reason(#3222: 'low-accuracy') — 정확도
+ *     탈락으로 sync를 보내지 않음. 호출부가 관측역 변경 전이당 1회만 호출한다.
  */
 export function logLockSyncDelivery(input: {
-  outcome: 'attempt' | 'success' | 'blocked';
+  outcome: 'attempt' | 'success' | 'blocked' | 'skipped';
+  /** 'skipped'에서만 의미 — 미송신 사유. */
+  reason?: 'low-accuracy';
   /** 'success'에서만 의미 — lock.boardedAt(생성 시각)으로부터 경과 초. */
   delaySeconds?: number;
 }): void {
@@ -1588,6 +1595,15 @@ export function logLockSyncDelivery(input: {
       source: 'lock-sync-delivery',
       outcome: 'suppressed',
       reason: 'lock-sync-blocked-no-anchor',
+    });
+    return;
+  }
+  if (input.outcome === 'skipped') {
+    appendAlarmLog({
+      ts: Date.now(),
+      source: 'lock-sync-delivery',
+      outcome: 'suppressed',
+      reason: input.reason,
     });
     return;
   }
