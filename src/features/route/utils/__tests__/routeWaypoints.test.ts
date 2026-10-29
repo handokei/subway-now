@@ -1,6 +1,14 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { routeToWaypoints } from '../routeWaypoints';
 import type { Route } from '../../../../shared/utils/stationRoute';
-import { getStationsOnLine } from '../../../../shared/utils/stationRoute';
+import {
+  anchorRouteToCurrentStation,
+  calculateStaticETA,
+  findRoutes,
+  findStationByNameAndLine,
+  getStationsOnLine,
+} from '../../../../shared/utils/stationRoute';
 import type { AlarmWaypoint } from '../../../../shared/types/alarm';
 import type { LineNumber, Station } from '../../../../shared/types/station';
 import {
@@ -197,5 +205,49 @@ describe('routeToWaypoints', () => {
       });
       expect(routeToWaypoints(route, '강남', null)).toEqual(routeToWaypoints(route, '강남'));
     });
+  });
+});
+
+// #2747 PR-6 (C1') — waypoint마다 "그 역에 정차해 있다고 볼 때 목적지까지 남은 초"를 stamp한다.
+// backend LA push etaMinutes = (다음 waypoint ETA + wp.remainingSecToDest).
+describe('routeToWaypoints — remainingSecToDest (#2747 PR-6)', () => {
+  // backend `replay_20261028_trip179_la_eta_destination.test.ts`가 같은 파일을 읽는다(device<->backend 계약).
+  const contract = JSON.parse(
+    readFileSync(
+      join(
+        __dirname,
+        '../../../../../backend/alarm-worker/src/__tests__/fixtures/capture_20261028_trip179/device_waypoints.contract.json',
+      ),
+      'utf8',
+    ),
+  ) as { route: NonNullable<Route>; waypoints: AlarmWaypoint[] };
+
+  const origin = findStationByNameAndLine('중곡', '7');
+  const dest = findStationByNameAndLine('뚝섬', '2');
+
+  it('계약: 10/28 trip 179 경로(중곡->건대입구 환승->뚝섬)의 등록 payload가 backend fixture와 일치한다', () => {
+    const route = findRoutes(origin!.id, dest!.id)[0].route!;
+    expect(route).toEqual(contract.route);
+    expect(routeToWaypoints(route, '뚝섬', origin!)).toEqual(contract.waypoints);
+  });
+
+  it('값 = mirror writer와 같은 함수·같은 입력: calculateStaticETA(anchor(route, 그 역), {excludeOriginWait:true}) 분 x 60', () => {
+    const route = findRoutes(origin!.id, dest!.id)[0].route!;
+    const result = routeToWaypoints(route, '뚝섬', origin!);
+    for (const { stationName, line, kind, remainingSecToDest } of result) {
+      if (kind === 'destination') continue;
+      const station = findStationByNameAndLine(stationName, line as LineNumber)!;
+      const minutes = calculateStaticETA(anchorRouteToCurrentStation(route, station, dest!.id), {
+        excludeOriginWait: true,
+      });
+      expect(remainingSecToDest).toBe(minutes! * 60);
+    }
+  });
+
+  it('도착 waypoint는 0초, 앞 waypoint일수록 같거나 크다 (목적지에 가까울수록 감소)', () => {
+    const route = findRoutes(origin!.id, dest!.id)[0].route!;
+    const secs = routeToWaypoints(route, '뚝섬', origin!).map((w) => w.remainingSecToDest!);
+    expect(secs[secs.length - 1]).toBe(0);
+    for (let i = 1; i < secs.length; i++) expect(secs[i]).toBeLessThanOrEqual(secs[i - 1]);
   });
 });
