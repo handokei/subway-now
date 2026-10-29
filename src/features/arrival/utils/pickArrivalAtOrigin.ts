@@ -6,7 +6,8 @@ import type { StaticEtaOptions } from '../../../shared/utils/stationRoute';
  *
  * 정책 (#784):
  * - mock 데이터는 skip — receivedAtMs=0이라 어차피 stale 판정되지만 명시적으로도 제외해 의도 명확화
- * - up/down 양 방향 첫 차 중 가장 빨리 오는 열차 선택 — 사용자가 둘 중 더 빠른 차를 탈 것이라는 가정
+ * - #1480 N8 — 사용자 진행 방향(`direction`) 쪽 첫 차만 본다. 반대 방향 열차는 탈 수 없으므로
+   양방향 최솟값은 폐기. direction=null(판정 불가, D5)이면 "데이터 없음"으로 undefined.
  * - `receivedAtMs <= 0` 또는 `arrivalSeconds < 0`은 비정상 row로 skip
  * - 후보가 없으면 undefined → 호출처는 `DEFAULT_WAIT_MINUTES` graceful fallback
  *
@@ -20,18 +21,13 @@ import type { StaticEtaOptions } from '../../../shared/utils/stationRoute';
  */
 export function pickArrivalAtOrigin(
   arrival: StationArrival | null,
+  direction: 'up' | 'down' | null,
 ): StaticEtaOptions['arrivalAtOrigin'] {
-  if (!arrival || arrival.isMock) return undefined;
-  let best: { arrivalSeconds: number; receivedAtMs: number } | undefined;
-  for (const list of [arrival.up, arrival.down]) {
-    const first = list[0];
-    if (!first) continue;
-    if (first.receivedAtMs <= 0) continue;
-    // #3132 — 시간 모름(null)은 "가장 빨리 오는 열차" 후보가 될 수 없다.
-    if (first.arrivalSeconds === null || first.arrivalSeconds < 0) continue;
-    if (!best || first.arrivalSeconds < best.arrivalSeconds) {
-      best = { arrivalSeconds: first.arrivalSeconds, receivedAtMs: first.receivedAtMs };
-    }
-  }
-  return best;
+  if (!arrival || arrival.isMock || !direction) return undefined;
+  const [first] = arrival[direction];
+  if (!first) return undefined;
+  if (first.receivedAtMs <= 0) return undefined;
+  // #3132 — 시간 모름(null)은 대기 시간 후보가 될 수 없다.
+  if (first.arrivalSeconds === null || first.arrivalSeconds < 0) return undefined;
+  return { arrivalSeconds: first.arrivalSeconds, receivedAtMs: first.receivedAtMs };
 }
