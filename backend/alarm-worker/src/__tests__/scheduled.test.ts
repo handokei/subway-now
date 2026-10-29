@@ -4485,7 +4485,8 @@ function makeLockedLaTrip(overrides: Partial<Trip> = {}): Trip {
   return makeTrip({
     token: 'la-tok',
     route: { type: 'direct', line: '2', stops: 1 },
-    waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+    // #2747 PR-6 — 도착 waypoint는 목적지까지 0초(device stamp). etaMinutes = waypoint ETA + 0.
+    waypoints: [{ stationName: '강남', line: '2', kind: 'destination', remainingSecToDest: 0 }],
     activityPushToken: 'la-token',
     activityState: 'live',
     apnsEnv: 'sandbox',
@@ -4595,7 +4596,7 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(contentState.lineName).toBe('2호선');
     expect(contentState.lineColorHex).toBe('#009D3E');
     expect(contentState.stopsRemaining).toBe(1);
-    expect(contentState.etaMinutes).toBe(2); // round(120/60) = 2
+    expect(contentState.etaMinutes).toBe(2); // 강남(도착) ETA 120s + 목적지까지 0s -> round(120/60) = 2
     // phase / etaSeconds / kind / arrivalAtSec / alarmType 모두 제거됨
     expect(contentState.phase).toBeUndefined();
     expect(contentState.etaSeconds).toBeUndefined();
@@ -5437,8 +5438,8 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       kv as unknown as KVNamespace,
       makeLockedLaTrip({
         waypoints: [
-          { stationName: '중곡', line: '2', kind: 'intermediate' },
-          { stationName: '강남', line: '2', kind: 'destination' },
+          { stationName: '중곡', line: '2', kind: 'intermediate', remainingSecToDest: 180 },
+          { stationName: '강남', line: '2', kind: 'destination', remainingSecToDest: 0 },
         ],
         boardingLock: {
           trainCode: 'T',
@@ -5468,7 +5469,8 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(contentState.stationName).toBe('중곡');
     expect(contentState.alarmType).toBeUndefined();
     expect(contentState.stopsRemaining).toBe(1);
-    expect(contentState.etaMinutes).toBe(0); // shift 시점은 ETA 0
+    // #2747 PR-6 — shift 시점은 방금 통과한 중곡에 정차 중 -> 목적지까지 = 중곡의 remainingSecToDest(180s) = 3분.
+    expect(contentState.etaMinutes).toBe(3);
     // shift 시 lastLaPushEpoch는 reset되어 다음 polling cycle의 첫 estimate가 임계 검사 없이 push되도록 보장.
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBeUndefined();

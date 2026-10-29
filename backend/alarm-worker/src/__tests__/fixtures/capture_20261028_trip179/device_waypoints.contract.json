@@ -1,0 +1,22 @@
+{
+  "_comment": "device routeToWaypoints(route 중곡(7)->뚝섬(2) via 건대입구, currentStation=중곡) 등록 payload 계약. remainingSecToDest = calculateStaticETA(anchorRouteToCurrentStation(route, 해당 역, 뚝섬), {excludeOriginWait:true}) 분 x 60, destination은 0. device(src/features/route/utils/__tests__/routeWaypoints.test.ts)와 backend(replay_20261028_trip179_la_eta_destination.test.ts)가 같은 파일을 읽는다.",
+  "route": {
+    "type": "transfer",
+    "transferName": "건대입구",
+    "transferStationId": "7-019",
+    "destinationStationId": "2-010",
+    "fromLine": "7",
+    "toLine": "2",
+    "stopsToTransfer": 3,
+    "stopsFromTransfer": 2,
+    "secondsToTransfer": 330,
+    "secondsFromTransfer": 210
+  },
+  "waypoints": [
+    { "stationName": "군자(능동)", "line": "7", "kind": "intermediate", "remainingSecToDest": 900 },
+    { "stationName": "어린이대공원(세종대)", "line": "7", "kind": "intermediate", "remainingSecToDest": 780 },
+    { "stationName": "건대입구", "line": "7", "kind": "transfer", "remainingSecToDest": 660 },
+    { "stationName": "성수", "line": "2", "kind": "intermediate", "remainingSecToDest": 540 },
+    { "stationName": "뚝섬", "line": "2", "kind": "destination", "remainingSecToDest": 0 }
+  ]
+}

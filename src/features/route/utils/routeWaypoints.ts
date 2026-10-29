@@ -12,6 +12,8 @@
 import type { LineNumber, Station } from '../../../shared/types/station';
 import type { DirectRoute, MultiTransferRoute, Route, TransferRoute } from '../../../shared/utils/stationRoute';
 import {
+  anchorRouteToCurrentStation,
+  calculateStaticETA,
   findStationByNameAndLine,
   getIntermediateStationNames,
   isSameStationName,
@@ -110,6 +112,35 @@ function buildMultiTransfer(route: MultiTransferRoute, ctx: Context): AlarmWaypo
   return result;
 }
 
+const SECONDS_PER_MINUTE = 60;
+
+/**
+ * #2747 PR-6 (C1') — waypoint마다 "그 역에 정차해 있다고 볼 때 목적지까지 남은 초"를 stamp한다.
+ * 값은 mirror writer(`liveActivityMirrorSync`)와 같은 함수·같은 입력
+ * (`calculateStaticETA(anchorRouteToCurrentStation(route, 그 역, 목적지), {excludeOriginWait:true})`)이라
+ * backend가 합산한 LA etaMinutes와 device mirror의 etaMinutes가 같은 의미(목적지까지)를 갖는다.
+ * 도착 waypoint는 0초. 앵커링 불가(역 조회 실패·ETA null)면 필드를 생략한다 — backend는 생략 시 etaMinutes를 내지 않는다.
+ */
+function stampRemainingSecToDest(
+  route: NonNullable<Route>,
+  waypoints: AlarmWaypoint[],
+  destinationName: string,
+): AlarmWaypoint[] {
+  const { line: destLine } = waypoints[waypoints.length - 1];
+  const destStation = findStationByNameAndLine(destinationName, destLine as LineNumber);
+  return waypoints.map((waypoint) => {
+    if (waypoint.kind === 'destination') return { ...waypoint, remainingSecToDest: 0 };
+    const station = findStationByNameAndLine(waypoint.stationName, waypoint.line as LineNumber);
+    const minutes =
+      station && destStation
+        ? calculateStaticETA(anchorRouteToCurrentStation(route, station, destStation.id), {
+            excludeOriginWait: true,
+          })
+        : null;
+    return minutes === null ? waypoint : { ...waypoint, remainingSecToDest: minutes * SECONDS_PER_MINUTE };
+  });
+}
+
 export function routeToWaypoints(
   route: NonNullable<Route>,
   destinationName: string,
@@ -121,7 +152,11 @@ export function routeToWaypoints(
     currentStation,
     enabled: currentStation !== null,
   };
-  if (route.type === 'direct') return buildDirect(route, ctx);
-  if (route.type === 'transfer') return buildTransfer(route, ctx);
-  return buildMultiTransfer(route, ctx);
+  const waypoints =
+    route.type === 'direct'
+      ? buildDirect(route, ctx)
+      : route.type === 'transfer'
+        ? buildTransfer(route, ctx)
+        : buildMultiTransfer(route, ctx);
+  return stampRemainingSecToDest(route, waypoints, destinationName);
 }

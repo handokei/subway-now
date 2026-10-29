@@ -73,6 +73,12 @@ export interface Waypoint {
    * 구 client 호환을 위해 optional — `occurrenceIdx`와 동일 패턴.
    */
   hopIndex?: number;
+  /**
+   * #2747 PR-6 (C1') — 이 waypoint에 정차해 있다고 볼 때 목적지까지 남은 초. device
+   * `routeToWaypoints`가 stamp하고 `validateTrip`이 유한 비음수 숫자만 채택한다. LA push
+   * etaMinutes = (다음 waypoint ETA + 이 값). 구 client·backend 추론 경로는 부재 -> etaMinutes 생략.
+   */
+  remainingSecToDest?: number;
 }
 
 export interface Trip {

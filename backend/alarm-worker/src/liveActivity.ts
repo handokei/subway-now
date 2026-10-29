@@ -161,6 +161,17 @@ function resolveDefaultTrainCode(trip: Trip): string | undefined {
   return trip.boardingLock?.trainCode;
 }
 
+/**
+ * #2747 PR-6 (C1') — LA etaMinutes의 입력: 목적지(하차역)까지 남은 초 = (waypoint까지 ETA) + (그 waypoint의
+ * 목적지까지 남은 초). waypoint ETA를 모르거나(null) waypoint에 `remainingSecToDest`가 없으면(구 trip·
+ * backend 추론 경로) null -> `buildLiveActivityContentState`가 etaMinutes를 생략한다.
+ */
+export function destinationEtaSeconds(waypoint: Waypoint, etaToWaypointSec: number | null): number | null {
+  const { remainingSecToDest } = waypoint;
+  if (etaToWaypointSec === null || remainingSecToDest === undefined) return null;
+  return etaToWaypointSec + remainingSecToDest;
+}
+
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
   /** #3132 — null = 도착 시간 모름(코레일 barvlDt=0). etaMinutes를 emit하지 않는다(Swift `etaMinutes: Int?`). */

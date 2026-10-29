@@ -4701,7 +4701,19 @@ export function validateTrip(
       typeof wp.hopIndex === 'number' && Number.isInteger(wp.hopIndex) && wp.hopIndex >= 0
         ? wp.hopIndex
         : idx;
-    return { ...wp, occurrenceIdx: existingOcc, hopIndex: existingHop } as Trip['waypoints'][number];
+    // #2747 PR-6 — device가 stamp한 "목적지까지 남은 초". 유한 비음수 숫자만 채택하고 그 외는 제거한다
+    // (등록 자체는 거부하지 않는다 — LA etaMinutes만 생략되는 graceful degrade).
+    const { remainingSecToDest, ...rest } = wp;
+    const validRemaining =
+      typeof remainingSecToDest === 'number' && Number.isFinite(remainingSecToDest) && remainingSecToDest >= 0
+        ? { remainingSecToDest }
+        : {};
+    return {
+      ...rest,
+      occurrenceIdx: existingOcc,
+      hopIndex: existingHop,
+      ...validRemaining,
+    } as Trip['waypoints'][number];
   });
 
   return {

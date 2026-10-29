@@ -41,4 +41,9 @@ export interface AlarmWaypoint {
   stationName: string;
   line: string;
   kind: 'transfer' | 'destination' | 'intermediate';
+  /**
+   * #2747 PR-6 — 이 역에 정차해 있다고 볼 때 목적지(하차역)까지 남은 초. backend가 LA push
+   * etaMinutes를 (다음 waypoint ETA + 이 값)으로 합산한다. 구 client·계산 불가 시 부재(optional).
+   */
+  remainingSecToDest?: number;
 }
