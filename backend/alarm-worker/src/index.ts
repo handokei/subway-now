@@ -97,6 +97,7 @@ import {
   selectConsumedPrecedingAlarmPairs,
   type SleepAlarmSyncSource,
   fireSyncSkippedStationPasses,
+  fireSyncObservedTransferDestination,
   isBoardingLockActive,
   isLockActiveForLeg,
   capLocklessSyncAdvance,
@@ -3542,9 +3543,11 @@ app.post('/boarding-lock/sync', async (c) => {
       }
 
       // #2645 — transfer/destination waypoint를 `advanceBoardingLockWaypoint`(scheduled.ts)로
-      // 순차 처리한다. cron의 arvlCd-확증 transfer advance와 **동일한 함수** — 환승 alert
-      // (transfer-release push) / 하차 프롬프트(hop-end) / lock 해제(isRealLineChange) / sleep·
-      // prepare 알람 / waypoints 전진을 전부 그 안에서 기존 로직 그대로 재사용한다(새 채널 없음).
+      // 순차 처리한다. cron의 arvlCd-확증 transfer advance와 **동일한 함수** — 환승 silent push
+      // (transfer-release, 기기 상태 전환용 — 사용자 visible 알림이 아니다) / 하차 프롬프트(hop-end) /
+      // lock 해제(isRealLineChange) / sleep·prepare 알람 / waypoints 전진을 전부 그 안에서 기존 로직
+      // 그대로 재사용한다. visible 환승/도착 알림은 소비가 확정된 뒤 `fireSyncObservedTransferDestination`
+      // (매역 공용 발송 헬퍼 + 공용 dedup 키, lock 활성 한정)이 따로 발사한다.
       // evidence를 넘기지 않아(undefined) `advanceTripPosition`의 6단 게이트를 건너뛴다 — 이
       // sync 관측 자체가 device GPS/WiFi 확증(ground truth)이므로 cron 전용 motion/environment
       // 합의 게이트를 다시 통과시킬 필요가 없다(기존 legacy-caller 계약과 동일 패턴).
@@ -3578,6 +3581,8 @@ app.post('/boarding-lock/sync', async (c) => {
             continue;
           }
           const stats = createEmptyScheduledStats(now);
+          // #2645 PR-3 — 소비 직전 시점의 lock(환승 소비가 lock을 해제하므로 advance 전에 잡는다). lockless면 undefined.
+          const lockBeforeAdvance = isBoardingLockActive(cursor, now) ? cursor.boardingLock : undefined;
           // #2645 PR 코드리뷰 HIGH-2 (코드리뷰 확정) — putTrip 직후 같은 요청 안에서 getTrip으로 재읽기하지
           // 않는다. 기본 cacheTtl(60s)에 이 요청 앞부분(2336 read)이 이미 colo 캐시를 옛 값으로
           // 덥혀놨을 수 있어, 재읽기가 stale을 반환하면 이 함수 끝의 무조건 `putTrip(working)`이
@@ -3598,6 +3603,17 @@ app.post('/boarding-lock/sync', async (c) => {
           );
           if (!result.consumed) break; // gps-far 유예 등 — trip 보존, 더 진행하지 않는다.
           appliedShiftedCount += 1;
+          // #2645 PR-3 — 소비가 확정된 transfer/destination의 visible 알림. 원본 `existing`을 넘겨야 남은 정거장 계산이 보존된다.
+          await fireSyncObservedTransferDestination(
+            c.env,
+            existing,
+            wp,
+            lockBeforeAdvance,
+            { apnsConfig, apnsHosts, archFlag },
+            now,
+            log,
+            () => crypto.randomUUID(),
+          );
           if (result.tripEnded) {
             tripEnded = true;
             break;
