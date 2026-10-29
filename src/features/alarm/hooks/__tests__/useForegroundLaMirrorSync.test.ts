@@ -111,6 +111,7 @@ describe('useForegroundLaMirrorSync', () => {
       yeoksam,
       destination,
       directRoute,
+      { writer: 'D4' },
     );
     // mirror가 가리키는 강남으로는 호출되지 않아야 한다 — 실패 사유를 명확히 구분.
     expect(mockUpdateLiveActivityFromMirrorStation).not.toHaveBeenCalledWith(
@@ -129,6 +130,7 @@ describe('useForegroundLaMirrorSync', () => {
       yeoksam,
       destination,
       directRoute,
+      { writer: 'D4' },
     );
   });
 
@@ -195,6 +197,7 @@ describe('useForegroundLaMirrorSync', () => {
       gangnam,
       destination,
       directRoute,
+      { writer: 'D4' },
     );
   });
 

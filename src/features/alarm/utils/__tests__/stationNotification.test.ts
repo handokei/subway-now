@@ -133,7 +133,9 @@ const mockLogFiredLaFallbackNotification = jest.fn();
 const mockLogSuppressedLaFallbackContentDedup = jest.fn();
 const mockLogLiveActivityUpdated = jest.fn();
 const mockLogExitSideUnknownStationId = jest.fn();
+const mockLogLaWrite = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logLaWrite: (...args: unknown[]) => mockLogLaWrite(...args),
   logExitSideUnknownStationId: (...args: unknown[]) => mockLogExitSideUnknownStationId(...args),
   logFiredLaFallbackNotification: (...args: unknown[]) =>
     mockLogFiredLaFallbackNotification(...args),
@@ -676,6 +678,57 @@ describe('stationNotification', () => {
         await updateStationNotification(mockStation, 154);
         expect(mockShouldSkipDeviceLiveActivityWrite).toHaveBeenCalledWith(null);
         expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // #2735 PR-1 — D1(GPS 파이프라인) 쓰기 관측. 성공한 쓰기만, 두 갈래(tripToken 유/무)를 구분한다.
+    describe('#2735 PR-1 la-write (D1)', () => {
+      it('tripToken 있음 — 채널 경유 쓰기 성공 후 source=gps-trip, 권위 not-active로 1건', async () => {
+        await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+        await updateStationNotification(mockStation, 154);
+        expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+        expect(mockLogLaWrite).toHaveBeenCalledWith({
+          writer: 'D1',
+          source: 'gps-trip',
+          data: expect.objectContaining({ stationName: '시청' }),
+          authority: 'not-active',
+        });
+      });
+
+      it('tripToken 없음(lockless) — source=gps-lockless, 권위 n/a로 1건', async () => {
+        await updateStationNotification(mockStation, 154);
+        expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+        expect(mockLogLaWrite).toHaveBeenCalledWith({
+          writer: 'D1',
+          source: 'gps-lockless',
+          data: expect.objectContaining({ stationName: '시청' }),
+          authority: 'n/a',
+        });
+      });
+
+      it.each([
+        ['권위 backend-active skip', async () => {
+          await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+          mockShouldSkipDeviceLiveActivityWrite.mockReturnValueOnce(true);
+        }],
+        ['tripToken 분기 활성 LA 없음', async () => {
+          await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+          mockHasActiveLiveActivity.mockReturnValue(false);
+        }],
+        ['lockless 분기 활성 LA 없음', async () => {
+          mockHasActiveLiveActivity.mockReturnValue(false);
+        }],
+        ['채널 쓰기 실패(fallback)', async () => {
+          await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+          mockEnsureLiveActivityRegistered.mockRejectedValueOnce(new Error('LA 등록 실패'));
+        }],
+        ['LA 비활성', async () => {
+          mockIsLiveActivityEnabled.mockReturnValue(false);
+        }],
+      ])('쓰기가 일어나지 않으면(%s) 적재하지 않는다', async (_label, arrange) => {
+        await arrange();
+        await updateStationNotification(mockStation, 154);
+        expect(mockLogLaWrite).not.toHaveBeenCalled();
       });
     });
 

@@ -38,6 +38,7 @@ import {
   logLiveActivityAuthorityState,
   logLiveActivityLifecycle,
   logLiveActivityTokenRegister,
+  logLaWrite,
   logLiveActivityUpdated,
 } from './alarmLog';
 
@@ -384,6 +385,8 @@ async function recreateLiveActivityWithoutToken(data?: LiveActivityData): Promis
   backendConfirmed = null;
   await endLiveActivity();
   await startLiveActivity(data);
+  // #2735 PR-1 — D8 writer(토큰 없는 LA 재생성).
+  logLaWrite({ writer: 'D8', source: 'session-recreate', data, authority: 'unknown' });
 }
 
 /**
@@ -442,6 +445,7 @@ async function registerLiveActivitySession(
   tripToken: string,
   data: LiveActivityData,
   nativeCall: (data: LiveActivityData) => Promise<void>,
+  writeSource: 'session-start' | 'session-adopt',
 ): Promise<void> {
   // 이전 세션이 살아 있으면 정리 — LA는 동시에 하나만.
   if (activeTeardown) {
@@ -487,6 +491,8 @@ async function registerLiveActivitySession(
 
   try {
     await nativeCall(data);
+    // #2735 PR-1 — D8 writer(채널 세션 start/adopt).
+    logLaWrite({ writer: 'D8', source: writeSource, data, authority: 'unknown' });
   } catch (e) {
     // native 호출이 실패하면 token은 발급될 일이 없다 — 정리 후 re-throw.
     // 다른 호출이 await 사이에 activeTeardown을 교체했을 수 있으므로 우리 teardown만 정리한다.
@@ -508,7 +514,7 @@ export async function startLiveActivityWithRegistration(
   tripToken: string,
   data: LiveActivityData,
 ): Promise<void> {
-  await registerLiveActivitySession(tripToken, data, startLiveActivity);
+  await registerLiveActivitySession(tripToken, data, startLiveActivity, 'session-start');
 }
 
 /**
@@ -520,7 +526,7 @@ async function adoptLiveActivitySession(
   tripToken: string,
   data: LiveActivityData,
 ): Promise<void> {
-  await registerLiveActivitySession(tripToken, data, updateLiveActivity);
+  await registerLiveActivitySession(tripToken, data, updateLiveActivity, 'session-adopt');
 }
 
 /**

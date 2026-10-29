@@ -27,6 +27,7 @@ import type { Station } from '../../../shared/types/station';
 import { anchorRouteToCurrentStation, type Route } from '../../../shared/utils/stationRoute';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import { buildLiveActivityData } from '../utils/stationNotification';
+import { logLaWrite } from '../utils/alarmLog';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('useEnsureLiveActivity');
@@ -58,9 +59,14 @@ export function useEnsureLiveActivity(
         ? anchorRouteToCurrentStation(route, currentStation, destination.id)
         : route;
       const data = buildLiveActivityData(currentStation, distanceM, destination, remainingRoute, etaMinutes);
-      LiveActivity.updateLiveActivity(data).catch((e) => {
-        log.warn('LA ensure 갱신 실패', e);
-      });
+      LiveActivity.updateLiveActivity(data)
+        .then(() => {
+          // #2735 PR-1 — D7 writer(LA 부재 시 FG 시작). lock 전/생성 경로라 권위 판정 대상 아님.
+          logLaWrite({ writer: 'D7', source: 'ensure-fg', data, authority: 'n/a' });
+        })
+        .catch((e) => {
+          log.warn('LA ensure 갱신 실패', e);
+        });
     };
 
     ensure();

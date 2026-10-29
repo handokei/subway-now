@@ -44,7 +44,9 @@ jest.mock('../../../../shared/utils/logger', () => ({
 const mockLogLiveActivityUpdated = jest.fn();
 const mockLogLiveActivityMirrorSkip = jest.fn();
 const mockResetLiveActivityMirrorSkipTracking = jest.fn();
+const mockLogLaWrite = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logLaWrite: (...args: unknown[]) => mockLogLaWrite(...args),
   logLiveActivityUpdated: () => mockLogLiveActivityUpdated(),
   logLiveActivityMirrorSkip: (...args: unknown[]) => mockLogLiveActivityMirrorSkip(...args),
   resetLiveActivityMirrorSkipTracking: () => mockResetLiveActivityMirrorSkipTracking(),
@@ -182,6 +184,65 @@ describe('updateLiveActivityFromMirrorStation', () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
+  });
+
+  // #2735 PR-1 — writer D2(BG)/D4(FG) 쓰기 관측.
+  describe('#2735 PR-1 la-write (D2/D4)', () => {
+    it('기본 writer는 D2 — source=backend-ssot, 빌드된 content의 역/eta/stops, 권위는 caller가 모르면 unknown', async () => {
+      mockBuild.mockReturnValueOnce({
+        stationName: '중곡',
+        lineName: 'L',
+        lineColorHex: '#000',
+        distanceM: 0,
+        etaMinutes: 7,
+        stopsRemaining: 3,
+      } as never);
+      await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).toHaveBeenCalledWith({
+        writer: 'D2',
+        source: 'backend-ssot',
+        data: expect.objectContaining({ stationName: '중곡', etaMinutes: 7, stopsRemaining: 3 }),
+        authority: 'unknown',
+      });
+    });
+
+    it('opts로 writer(D4)·권위를 넘기면 그대로 싣는다', async () => {
+      await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute, {
+        writer: 'D4',
+        authority: 'backend-active',
+      });
+      expect(mockLogLaWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ writer: 'D4', authority: 'backend-active' }),
+      );
+    });
+
+    it('opts 일부만 넘기면 나머지는 기본값(D2/unknown)', async () => {
+      await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute, {
+        authority: 'not-active',
+      });
+      expect(mockLogLaWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ writer: 'D2', authority: 'not-active' }),
+      );
+    });
+
+    it('쓰기가 일어나지 않은 경로(dismiss / GPS 양보 / LA 없음)에서는 적재하지 않는다', async () => {
+      mockIsLaDismissed.mockResolvedValueOnce(true);
+      await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+      markDeviceGpsLiveActivityWrite(Date.now());
+      await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+      mockHasActiveLiveActivity.mockReturnValue(false);
+      await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('native update가 throw하면 적재하지 않는다(실패 쓰기는 쓰기가 아니다)', async () => {
+      mockUpdateLiveActivity.mockRejectedValueOnce(new Error('native down'));
+      await expect(
+        updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute),
+      ).rejects.toThrow('native down');
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
   });
 
   // #2811 RED: route가 트립 시작 시점에 고정된 전체 경로라도, mirrorStation이 실제 stations.json

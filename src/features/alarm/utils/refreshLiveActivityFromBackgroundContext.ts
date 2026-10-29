@@ -42,6 +42,7 @@ import { anchorRouteToCurrentStation, type Route } from '../../../shared/utils/s
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
+import { logLaRefreshDecision, logLaWrite } from './alarmLog';
 import { reconcileLiveActivityToken, shouldSkipDeviceLiveActivityWrite } from './liveActivityPushChannel';
 import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
 import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
@@ -109,6 +110,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
   try {
     if (!LiveActivity.isLiveActivityEnabled()) {
       logger.info('LA disabled — skip refresh');
+      logLaRefreshDecision('la-disabled');
       return;
     }
     // #926 (Seam E3) — 사용자가 LA를 dismiss한 직후에는 silent push가 도착해도 LA를 다시
@@ -116,6 +118,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // TTL 경과 또는 명시적 clear 후에는 정상 refresh.
     if (await isLaDismissed()) {
       logger.info('LA dismiss sentinel active — skip refresh');
+      logLaRefreshDecision('dismissed');
       return;
     }
     // #3163 후속 P1-b — FG 복귀가 없는 BG-only trip(주머니 케이스)에서도 LA 토큰 불변식을 복구한다.
@@ -139,10 +142,12 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       // ACTIVE_TRIP_KEY 둘 다 없을 때만(정당한 trip 종료) 기존대로 end한다.
       if (tripToken) {
         logger.info('destination absent but active trip present — skip end (race guard, #2732 gap2)');
+        logLaRefreshDecision('dest-absent-active-trip');
         return;
       }
       logger.info('destination absent — end LA');
       await LiveActivity.endLiveActivity();
+      logLaRefreshDecision('dest-absent-end');
       return;
     }
 
@@ -234,12 +239,17 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // (`useForegroundLaMirrorSync`)와 동일 함수를 공유해 backend-ssot 소스의 LA 갱신 동작이
     // BG/FG 양쪽에서 drift하지 않는다(순수 추출, 동작 100% 동일).
     if (mirrorStation) {
-      await updateLiveActivityFromMirrorStation(mirrorStation, destination, route);
+      // #2735 PR-1 — D2 writer. mirror 분기는 권위 게이트를 받지 않으므로(#2659) 판정값만 싣는다.
+      const mirrorWritten = await updateLiveActivityFromMirrorStation(mirrorStation, destination, route, {
+        authority: backendAuthoritySkipsGpsWrite ? 'backend-active' : 'not-active',
+      });
+      logLaRefreshDecision(mirrorWritten ? 'mirror-write' : 'mirror-skip', mirrorStation.name);
       return;
     }
 
     if (backendAuthoritySkipsGpsWrite) {
       logger.info('backend-authority active trip — skip BG LA refresh write (gps 분기)');
+      logLaRefreshDecision('backend-authority-skip', bg?.station.name);
       return;
     }
 
@@ -247,6 +257,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       logger.info(
         'no currentStation source (mirror stale/absent/rejected + BG_LAST_STATION absent) — skip refresh (preserve last LA state)',
       );
+      logLaRefreshDecision('no-source');
       return;
     }
     // #2806 — GPS-BG 분기(BG_LAST_STATION)도 update-only여야 한다. 활성 LA가 없을 때 native
@@ -259,6 +270,7 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       logger.info(
         'la-refresh source=gps-bg but no active LA — skip (update-only, no create, #2806)',
       );
+      logLaRefreshDecision('no-active-la', bg.station.name);
       return;
     }
 
@@ -282,12 +294,16 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       null,
     );
     await LiveActivity.updateLiveActivity(data);
+    // #2735 PR-1 — D3 writer. 이 분기는 권위 게이트(backendAuthoritySkipsGpsWrite=false)를 통과한 쓰기다.
+    logLaWrite({ writer: 'D3', source: 'gps-bg', data, authority: 'not-active' });
+    logLaRefreshDecision('gps-bg-write', currentStation.name);
     // #2589 — V/X 대시보드(DebugModal alarm log)에서 currentStation SSoT 출처 관측용.
     logger.info(
       `la-refresh source=gps-bg: ${currentStation.name} → ${destination.name}`,
     );
   } catch (e) {
     logger.warn('refresh failed:', e);
+    logLaRefreshDecision('error', String(e));
   }
 }
 
@@ -329,7 +345,10 @@ export async function refreshLiveActivityOnMirrorAdvance(): Promise<void> {
       return;
     }
     const key = mirrorAdvanceKey(mirror);
-    if (key === lastMirrorAdvanceKey) return;
+    if (key === lastMirrorAdvanceKey) {
+      logLaRefreshDecision('mirror-advance-dedup', key);
+      return;
+    }
     lastMirrorAdvanceKey = key;
     await refreshLiveActivityFromBackgroundContext();
   } catch (e) {
