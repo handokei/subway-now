@@ -72,7 +72,7 @@ export function useForegroundLaMirrorSync(
     if (lastAppliedKeyRef.current === dedupKey) return;
 
     let cancelled = false;
-    updateLiveActivityFromMirrorStation(currentStation, destination, route)
+    updateLiveActivityFromMirrorStation(currentStation, destination, route, { writer: 'D4' })
       .then((applied) => {
         if (cancelled) return;
         if (applied) {

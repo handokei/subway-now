@@ -53,6 +53,7 @@ const mockLogLiveActivityAuthorityState = jest.fn();
 const mockLogFiredLaFallbackNotification = jest.fn();
 const mockLogSuppressedLaFallbackContentDedup = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logLaWrite: jest.fn(),
   logLiveActivityUpdated: () => mockLogLiveActivityUpdated(),
   logLiveActivityAuthorityState: (...args: unknown[]) =>
     mockLogLiveActivityAuthorityState(...args),

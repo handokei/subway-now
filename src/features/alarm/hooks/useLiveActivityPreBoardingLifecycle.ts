@@ -55,6 +55,7 @@ import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { clearStationNotification } from '../utils/stationNotification';
 import { startAmbientLiveActivityTokenRegistration } from '../utils/liveActivityPushChannel';
+import { logLaWrite } from '../utils/alarmLog';
 import { resolveGpsFreeOrigin } from '../utils/gpsFreeOrigin';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -197,9 +198,14 @@ export function useLiveActivityPreBoardingLifecycle(route: Route): void {
       if (preBoardingActiveRef.current && lock.boardingEvidence === true) {
         const tripToken = getCurrentTripCorrIdSync();
         const data = buildAutoLockedPreBoardingLiveActivityData(destination, resolvedOrigin, tripToken);
-        LiveActivity.updateLiveActivity(data).catch((e) => {
-          log.warn('auto-locked pre-boarding LA 갱신 실패', e);
-        });
+        LiveActivity.updateLiveActivity(data)
+          .then(() => {
+            // #2735 PR-1 — D6 writer(auto-locked pre-boarding). 권위 게이트를 받지 않는 경로.
+            logLaWrite({ writer: 'D6', source: 'auto-locked-pre-boarding', data, authority: 'n/a' });
+          })
+          .catch((e) => {
+            log.warn('auto-locked pre-boarding LA 갱신 실패', e);
+          });
       }
       // 탑승 확정 — 콘텐츠 소유권을 GPS-트리거 파이프라인에 넘긴다.
       preBoardingActiveRef.current = false;
@@ -214,8 +220,13 @@ export function useLiveActivityPreBoardingLifecycle(route: Route): void {
     // emit된다. 구독이 없으면 그 token이 버려져 backend가 LA push를 영영 못 보낸다(실측
     // laPushDelivery=0/0). 구독 시작은 멱등.
     startAmbientLiveActivityTokenRegistration();
-    LiveActivity.updateLiveActivity(data).catch((e) => {
-      log.warn('pre-boarding LA 갱신 실패', e);
-    });
+    LiveActivity.updateLiveActivity(data)
+      .then(() => {
+        // #2735 PR-1 — D5 writer(pre-boarding 시작/갱신). lock 전이라 권위 판정 대상 아님.
+        logLaWrite({ writer: 'D5', source: 'pre-boarding', data, authority: 'n/a' });
+      })
+      .catch((e) => {
+        log.warn('pre-boarding LA 갱신 실패', e);
+      });
   }, [destination, tripOrigin, customOrigin, lock, route]);
 }

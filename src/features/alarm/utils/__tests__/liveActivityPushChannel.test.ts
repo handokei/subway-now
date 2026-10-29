@@ -35,7 +35,9 @@ jest.mock('../../api/alarmBackend', () => ({
 const mockLogLiveActivityAuthorityState = jest.fn();
 const mockLogLaTokenRegister = jest.fn();
 const mockLogLaLifecycle = jest.fn();
+const mockLogLaWrite = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logLaWrite: (...args: unknown[]) => mockLogLaWrite(...args),
   logLiveActivityAuthorityState: (...args: unknown[]) =>
     mockLogLiveActivityAuthorityState(...args),
   logLiveActivityUpdated: jest.fn(),
@@ -463,6 +465,54 @@ describe('liveActivityPushChannel', () => {
   // #2806 잔여 절반 — 세션 미등록(activeTeardown===null) + native LA는 이미 활성(FG pre-boarding
   // 훅/useEnsureLiveActivity가 채널을 거치지 않고 직접 시작한 세션)일 때 kill-recreate가 아니라
   // adopt(native start 생략 + update만 + 채널 세션 상태만 채움)해야 한다.
+  // #2735 PR-1 — D8(채널 세션 start/adopt) 쓰기 관측. 동일 trip update(D1 경유)는 D1이 적재하므로 중복 금지.
+  describe('#2735 PR-1 la-write (D8)', () => {
+    beforeEach(() => {
+      mockLogLaWrite.mockClear();
+    });
+
+    it('세션 시작(native start) 성공 후 source=session-start로 1건', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(false);
+      setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).toHaveBeenCalledWith({
+        writer: 'D8',
+        source: 'session-start',
+        data: SAMPLE_DATA,
+        authority: 'unknown',
+      });
+    });
+
+    it('adopt(native update만) 성공 후 source=session-adopt로 1건', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(true);
+      setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ writer: 'D8', source: 'session-adopt' }),
+      );
+    });
+
+    it('세션 보존 update(동일 tripToken)는 D8로 적재하지 않는다 — D1 소관', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(false);
+      setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      mockLogLaWrite.mockClear();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('native start가 실패하면 적재하지 않는다', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(false);
+      mockStartLiveActivity.mockRejectedValueOnce(new Error('Activity.request throw'));
+      setupListener();
+      await expect(ensureLiveActivityRegistered('trip-1', SAMPLE_DATA)).rejects.toThrow();
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+  });
+
   describe('ensureLiveActivityRegistered — 세션 미등록 + 활성 LA 존재 시 adopt (#2806)', () => {
     it('kill(endLiveActivity) 미호출 + update만 호출 — 살아있는 LA를 죽이지 않는다', async () => {
       mockHasActiveLiveActivity.mockReturnValue(true);

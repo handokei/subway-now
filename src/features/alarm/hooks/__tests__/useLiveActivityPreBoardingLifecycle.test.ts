@@ -30,6 +30,12 @@ jest.mock('../../../observability/utils/tripCorrId', () => ({
   getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
 }));
 
+const mockLogLaWrite = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  ...jest.requireActual('../../utils/alarmLog'),
+  logLaWrite: (...args: unknown[]) => mockLogLaWrite(...args),
+}));
+
 const mockWarn = jest.fn();
 const mockInfo = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -94,6 +100,80 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     // GPS 미확정 — placeholder stationName ("감지 중" i18n)
     expect(data.stationName).toBe('감지 중');
     expect(data.boardingPromptOriginStation).toBeUndefined();
+  });
+
+  // #2735 PR-1 — D5(pre-boarding 시작/갱신)·D6(auto-locked pre-boarding) 쓰기 관측.
+  describe('#2735 PR-1 la-write (D5/D6)', () => {
+    const flush = () =>
+      act(async () => {
+        await Promise.resolve();
+      });
+
+    it('D5 — pre-boarding update 성공 후 source=pre-boarding, 권위 n/a로 1건', async () => {
+      useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+      renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+      await flush();
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).toHaveBeenCalledWith({
+        writer: 'D5',
+        source: 'pre-boarding',
+        data: expect.objectContaining({ stationName: gangnam.name }),
+        authority: 'n/a',
+      });
+    });
+
+    it('D5 — native update가 실패하면 적재하지 않는다', async () => {
+      mockUpdateLiveActivity.mockRejectedValueOnce(new Error('native down'));
+      useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+      renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+      await flush();
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('D6 — evidence 있는 lock 전환 시 auto-locked 갱신 성공 후 source=auto-locked-pre-boarding으로 1건 추가', async () => {
+      useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+      const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+      await flush();
+      mockLogLaWrite.mockClear();
+
+      act(() => {
+        useBoardingLockStore.setState({ lock: LOCK });
+      });
+      rerender({});
+      await flush();
+
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).toHaveBeenCalledWith({
+        writer: 'D6',
+        source: 'auto-locked-pre-boarding',
+        data: expect.objectContaining({ boardingAutoLocked: true }),
+        authority: 'n/a',
+      });
+    });
+
+    it('D6 — auto-locked 갱신이 실패하면 적재하지 않는다', async () => {
+      useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+      const { rerender } = renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+      await flush();
+      mockLogLaWrite.mockClear();
+      mockUpdateLiveActivity.mockRejectedValueOnce(new Error('native down'));
+
+      act(() => {
+        useBoardingLockStore.setState({ lock: LOCK });
+      });
+      rerender({});
+      await flush();
+
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('lock 전환이 evidence 없으면(native 호출 없음) 적재하지 않는다', async () => {
+      useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
+      useBoardingLockStore.setState({ lock: { ...LOCK, boardingEvidence: false } });
+      renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));
+      await flush();
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
   });
 
   it('tripOrigin 확보돼도 #2854 — boardingPhase 미설정이므로 #2434 버튼 컨텍스트 필드도 싣지 않는다', () => {

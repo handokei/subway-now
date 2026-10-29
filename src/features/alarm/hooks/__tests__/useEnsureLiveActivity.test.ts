@@ -26,6 +26,11 @@ jest.mock('../../utils/stationNotification', () => ({
   buildLiveActivityData: (...args: unknown[]) => mockBuildLiveActivityData(...args),
 }));
 
+const mockLogLaWrite = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logLaWrite: (...args: unknown[]) => mockLogLaWrite(...args),
+}));
+
 const mockWarn = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -79,6 +84,41 @@ describe('useEnsureLiveActivity', () => {
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, chungmuro, null, 5);
+  });
+
+  // #2735 PR-1 — D7(LA 부재 시 FG 시작) 쓰기 관측.
+  describe('#2735 PR-1 la-write (D7)', () => {
+    it('LA 시작 성공 후 writer=D7, source=ensure-fg, 권위 n/a로 1건', async () => {
+      renderHook(() => useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).toHaveBeenCalledWith({
+        writer: 'D7',
+        source: 'ensure-fg',
+        data: expect.objectContaining({ stationName: '강남' }),
+        authority: 'n/a',
+      });
+    });
+
+    it('native update가 실패하면 적재하지 않는다', async () => {
+      mockUpdateLiveActivity.mockRejectedValueOnce(new Error('native update 실패'));
+      renderHook(() => useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('호출하지 않는 경로(LA 이미 활성)에서는 적재하지 않는다', async () => {
+      mockHasActiveLiveActivity.mockReturnValue(true);
+      renderHook(() => useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
   });
 
   it('hasActiveLiveActivity=true → 호출하지 않는다 (멱등)', () => {

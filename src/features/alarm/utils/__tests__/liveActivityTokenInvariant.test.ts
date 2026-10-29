@@ -50,7 +50,9 @@ jest.mock('../../api/alarmBackend', () => ({
 
 const mockLogLaTokenRegister = jest.fn();
 const mockLogLaLifecycle = jest.fn();
+const mockLogLaWrite = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logLaWrite: (...args: unknown[]) => mockLogLaWrite(...args),
   logLiveActivityAuthorityState: jest.fn(),
   logLiveActivityUpdated: jest.fn(),
   logLiveActivityTokenRegister: (...args: unknown[]) => mockLogLaTokenRegister(...args),
@@ -109,6 +111,7 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
       mockClearLiveActivityToken,
       mockLogLaTokenRegister,
       mockLogLaLifecycle,
+      mockLogLaWrite,
     ].forEach((m) => m.mockReset());
     mockStartLiveActivity.mockResolvedValue(undefined);
     mockUpdateLiveActivity.mockResolvedValue(undefined);
@@ -207,6 +210,13 @@ describe('LA 토큰 불변식 (#3162, trip 173 재생)', () => {
 
       expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
       expect(mockStartLiveActivity).toHaveBeenCalledWith(DATA);
+      // #2735 PR-1 — 토큰 없는 LA 재생성은 D8(source=session-recreate)로 1건 적재된다.
+      expect(mockLogLaWrite).toHaveBeenCalledWith({
+        writer: 'D8',
+        source: 'session-recreate',
+        data: DATA,
+        authority: 'unknown',
+      });
     });
   });
 
