@@ -50,12 +50,21 @@ import { isLaDismissed } from './laDismissSentinel';
 import { reconcileLiveActivityToken } from './liveActivityPushChannel';
 import { isDeviceGpsLiveActivityWriteRecent } from './liveActivityGpsWriteArbitration';
 import {
+  logLaWrite,
+  type LaWriteAuthority,
+  type LaWriterId,
   logLiveActivityUpdated,
   logLiveActivityMirrorSkip,
   resetLiveActivityMirrorSkipTracking,
 } from './alarmLog';
 
 const logger = createLogger('LiveActivityMirrorSync');
+
+/** #2735 PR-1 — la-write 관측 옵션. BG refresh는 D2(기본), FG poll은 D4를 넘긴다. */
+export interface MirrorWriteObservability {
+  writer?: Extract<LaWriterId, 'D2' | 'D4'>;
+  authority?: LaWriteAuthority;
+}
 
 /**
  * mirror가 resolve한 station으로 Live Activity를 갱신한다.
@@ -71,6 +80,7 @@ export async function updateLiveActivityFromMirrorStation(
   mirrorStation: Station,
   destination: Station,
   route: Route,
+  { writer = 'D2', authority = 'unknown' }: MirrorWriteObservability = {},
 ): Promise<boolean> {
   if (await isLaDismissed()) {
     logger.info('LA dismiss sentinel active — skip mirror-sourced refresh');
@@ -128,6 +138,7 @@ export async function updateLiveActivityFromMirrorStation(
   await LiveActivity.updateLiveActivity(data);
   // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
   logLiveActivityUpdated();
+  logLaWrite({ writer, source: 'backend-ssot', data, authority });
   // #2768 — 성공 tick은 skip 상태 전이 tracker를 리셋해 다음 skip이 다시 적재되게 한다.
   resetLiveActivityMirrorSkipTracking();
   logger.info(`la-refresh source=backend-ssot: ${mirrorStation.name} → ${destination.name}`);

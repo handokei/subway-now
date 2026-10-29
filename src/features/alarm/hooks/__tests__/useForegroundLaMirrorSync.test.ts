@@ -197,6 +197,7 @@ describe('useForegroundLaMirrorSync', () => {
       gangnam,
       destination,
       directRoute,
+      { writer: 'D4' },
     );
   });
 

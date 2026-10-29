@@ -40,7 +40,7 @@ describe('#2735 PR-1 la-write / la-refresh-decision 관측', () => {
       const [entry] = await savedEntries();
       expect(entry).toMatchObject({
         source: 'la-write',
-        outcome: 'fired',
+        outcome: 'received',
         reason: 'la-write-D3',
         stationName: 'src=gps-bg;st=중곡;eta=7;stops=3;auth=not-active',
       });
@@ -87,7 +87,10 @@ describe('#2735 PR-1 la-write / la-refresh-decision 관측', () => {
       logLaWrite({ writer: 'D6', source: 'auto-locked', data, authority: 'n/a' });
       await clearAlarmLogWindows();
       logLaWrite({ writer: 'D6', source: 'auto-locked', data, authority: 'n/a' });
-      expect(await savedEntries()).toHaveLength(2);
+      // helper dedup이 풀려 두 번째가 appendAlarmLog에 도달 -> 직전 pending과 합산(count=2).
+      // dedup이 살아 있으면 count가 비어 있다(위 '연속 동일값' 케이스).
+      const [entry] = await savedEntries();
+      expect(entry.count).toBe(2);
     });
   });
 
@@ -138,7 +141,8 @@ describe('#2735 PR-1 la-write / la-refresh-decision 관측', () => {
       logLaRefreshDecision('mirror-advance-dedup', 'a');
       await clearAlarmLogWindows();
       logLaRefreshDecision('mirror-advance-dedup', 'a');
-      expect(await savedEntries()).toHaveLength(2);
+      const [entry] = await savedEntries();
+      expect(entry.count).toBe(2);
     });
   });
 });

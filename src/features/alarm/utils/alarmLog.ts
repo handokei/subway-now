@@ -12,6 +12,7 @@ import { findLineByStationName } from '../../../shared/utils/stationLookup';
 // #2861 (T2) — write 시점에 일별 영속 카운터를 같이 stamp. ring(alarmLog) 재집계만으로는
 // cap=200 회전으로 지난 일자 displayed/responded/boarded/dismissed가 증발한다.
 import { recordBoardingPromptDailyCount } from './boardingPromptDailyCounters';
+import type { LiveActivityData } from 'live-activity';
 import type { AlarmEvent } from './stationAlarm';
 import type { AlarmPhaseId } from './alarmPhases';
 import type { Station } from '../../../shared/types/station';
@@ -205,6 +206,12 @@ export type AlarmLogSource =
   // 아니라 이 helper 자신이 모듈 레벨 tracker로 직전 reason과 비교해 상태 전이 시에만 적재한다
   // (logLiveActivityMirrorSkip 주석 참고).
   | 'live-activity-mirror-skip'
+  // #2735 PR-1 — LA content 쓰기 1건(writer D1~D8, source, 역, etaMinutes, stopsRemaining, 권위 상태).
+  // 연속 동일값은 helper(logLaWrite)가 dedup. 관측 전용 — 정책 변경 없음.
+  | 'la-write'
+  // #2735 PR-1 — `refreshLiveActivityFromBackgroundContext` 반환 지점별 결정 1건(wake당 1행).
+  // "SSoT 없는 wake에서 gps-bg가 썼는지 / skip했는지"를 가르는 빠진 관측(plan B1·B9).
+  | 'la-refresh-decision'
   // #2768 — backend SSoT mirror 단조성 가드(persistBackendSsotMirror) stale-skip. 기존
   // logger.info만 있던 두 분기(lastAdvanceAt 역행 / sentAt tie-break 역행)를 적재.
   | 'backend-ssot-mirror-stale-skip'
@@ -239,6 +246,33 @@ export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'payload-missing-kind'는 구 백엔드 payload에 kind 필드가 없어 발사 본문 결정 불가 → skip.
 // 'lock-line-mismatch'는 BoardingLock 활성 시 nextWaypoint가 lock.boardingLine에 정차하지
 // 않는 다른 leg/노선의 silent push로 판정돼 차단된 케이스 (#707).
+/**
+ * #2735 PR-1 — device LA writer ID(plan §3-1). 새 writer가 생기면 이 표에 먼저 추가한다.
+ *   D1 updateStationNotification(GPS 파이프라인) / D2 BG refresh mirror 분기 / D3 BG refresh gps-bg 분기
+ *   D4 FG mirror poll / D5 pre-boarding 시작·갱신 / D6 auto-locked pre-boarding
+ *   D7 LA 부재 시 FG 시작 / D8 채널 세션 start·adopt
+ */
+export type LaWriterId = 'D1' | 'D2' | 'D3' | 'D4' | 'D5' | 'D6' | 'D7' | 'D8';
+
+/** #2735 PR-1 — `refreshLiveActivityFromBackgroundContext` 반환 지점 + mirror-advance dedup. */
+export type LaRefreshDecision =
+  | 'la-disabled'
+  | 'dismissed'
+  | 'dest-absent-active-trip'
+  | 'dest-absent-end'
+  | 'mirror-write'
+  | 'mirror-skip'
+  | 'backend-authority-skip'
+  | 'no-source'
+  | 'no-active-la'
+  | 'stale-bg'
+  | 'gps-bg-write'
+  | 'error'
+  | 'mirror-advance-dedup';
+
+/** #2735 PR-1 — 쓰기 시점 권위 상태. 판정 자체를 하지 않는 writer는 'unknown'/'n/a'. */
+export type LaWriteAuthority = 'backend-active' | 'not-active' | 'unknown' | 'n/a';
+
 export type AlarmLogReason =
   // #2977 — ambient LA push token 등록 결과. detail(status 등)은 stationName 슬롯에 싣는다
   // (`accel-pattern-observed`가 pattern을 같은 슬롯에 인코딩하는 선례와 동형).
@@ -582,6 +616,9 @@ export type AlarmLogReason =
   | 'la-mirror-skip-dismissed'
   | 'la-mirror-skip-gps-writer-recent'
   | 'la-mirror-skip-no-active-la'
+  // #2735 PR-1 — source='la-write'(writer별)·'la-refresh-decision'(반환 지점별) reason.
+  | `la-write-${LaWriterId}`
+  | `la-decision-${LaRefreshDecision}`
   // #2768 — backend SSoT mirror 단조성 가드(persistBackendSsotMirror) stale-skip 2 분기.
   //   'ssot-mirror-stale-skip-lastadvance' : incoming.lastAdvanceAt < existing.lastAdvanceAt.
   //   'ssot-mirror-stale-skip-tiebreak'    : lastAdvanceAt 동률 + incoming.sentAt < existing.sentAt.
@@ -1518,6 +1555,51 @@ export function resetLiveActivityMirrorSkipTracking(): void {
   lastLiveActivityMirrorSkipLoggedAt.clear();
 }
 
+// #2735 PR-1 — la-write 연속 동일값 dedup 키. 같은 writer·source·역·eta·stops·권위가 이어지면
+// 적재하지 않는다(ring 도배 방지). 값이 달라지면 즉시 적재. trip 경계(clearAlarmLogWindows)에서 리셋.
+let lastLaWriteKey: string | null = null;
+// mirror-advance-dedup은 BG tick(~10s)마다 발생하므로 연속 동일 결정만 접는다. 다른 결정은 wake마다 1행.
+let lastLaRefreshDecision: LaRefreshDecision | null = null;
+
+const formatLaNumber = (n: number | undefined): string => (n === undefined ? '-' : String(n));
+
+export interface LaWriteInput {
+  writer: LaWriterId;
+  /** 쓰기 출처(예: 'gps-bg', 'backend-ssot', 'pre-boarding'). */
+  source: string;
+  data: Pick<LiveActivityData, 'stationName' | 'etaMinutes' | 'stopsRemaining'>;
+  authority: LaWriteAuthority;
+}
+
+export function logLaWrite({ writer, source, data, authority }: LaWriteInput): void {
+  const { stationName, etaMinutes, stopsRemaining } = data;
+  const detail = `src=${source};st=${stationName};eta=${formatLaNumber(etaMinutes)};stops=${formatLaNumber(stopsRemaining)};auth=${authority}`;
+  const key = `${writer}|${detail}`;
+  if (key === lastLaWriteKey) return;
+  lastLaWriteKey = key;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'la-write',
+    // 'fired'는 사용자 노출 알람 KPI 분모와 섞일 수 있어 쓰지 않는다 — 진단 stamp는 'received'.
+    outcome: 'received',
+    reason: `la-write-${writer}`,
+    stationName: detail,
+  });
+}
+
+export function logLaRefreshDecision(decision: LaRefreshDecision, detail = ''): void {
+  const isRepeat = lastLaRefreshDecision === decision;
+  lastLaRefreshDecision = decision;
+  if (decision === 'mirror-advance-dedup' && isRepeat) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'la-refresh-decision',
+    outcome: 'received',
+    reason: `la-decision-${decision}`,
+    stationName: detail,
+  });
+}
+
 /**
  * #2768 — backend SSoT mirror 단조성 가드(`persistBackendSsotMirror`)가 stale write를 거부한
  * 1건 적재. 기존에는 `logger.info`만 있어 "왜 mirror가 멈췄나" RCA에서 재구성 불가했다
@@ -1699,6 +1781,8 @@ export function clearAlarmLogWindows(): Promise<void> {
   // 한 번도 뜨지 않은 trip이 끝나고 다음 trip이 같은 사유로 skip하면 전이가 없어 0건으로
   // 사라지는 회귀 차단 — trip 경계(runTripBoundCleanups → 이 함수)에서도 리셋한다.
   resetLiveActivityMirrorSkipTracking();
+  lastLaWriteKey = null;
+  lastLaRefreshDecision = null;
   return Promise.resolve();
 }
 
@@ -2029,6 +2113,9 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'live-activity-token-register': null,
   // #3107 — 진단 stamp.
   'live-activity-lifecycle': null,
+  // #2735 PR-1 — LA 쓰기/refresh 결정 진단 stamp. silent push 집계와 무관.
+  'la-write': null,
+  'la-refresh-decision': null,
   // PR-3a — 종료 알림 stamp. silent push 집계 대상 아님.
   'trip-end-notice': null,
   'silent-push-received': 'received',
@@ -2127,6 +2214,9 @@ export const FIRED_ALARM_SOURCES: Record<AlarmLogSource, boolean> = {
   'live-activity-token-register': false,
   // #3107 — 진단 stamp. KPI 분모 오염 금지.
   'live-activity-lifecycle': false,
+  // #2735 PR-1 — 진단 stamp. KPI 분모 오염 금지.
+  'la-write': false,
+  'la-refresh-decision': false,
   // PR-3a — 종료 통지는 매역/도착 안내 같은 "알람 fire"가 아니다. KPI 분모 오염 금지.
   'trip-end-notice': false,
   // #3006 PR-1 — register 억제 skip은 사용자 노출 알람이 아니라 진단 stamp다. KPI 분모 오염 금지.

@@ -40,7 +40,7 @@ import { buildStationNotifCollapseId } from './stationNotifCollapseId';
 import { markLocalStationFired, hasRecentLocalStationFire } from './recentLocalStationFires';
 import { markDeviceGpsLiveActivityWrite } from './liveActivityGpsWriteArbitration';
 import { isStationWaypointKind, type StationWaypointKind } from '../../../shared/types/pushContract';
-import { logExitSideUnknownStationId, logLiveActivityUpdated } from './alarmLog';
+import { logExitSideUnknownStationId, logLaWrite, logLiveActivityUpdated } from './alarmLog';
 import {
   BOARDING_PROMPT_CATEGORY,
   DISEMBARK_PROMPT_CATEGORY,
@@ -762,6 +762,8 @@ export async function updateStationNotification(
           return;
         }
         await ensureLiveActivityRegistered(tripToken, data);
+        // #2735 PR-1 — D1 writer(권위 게이트 통과 후 채널 경유 쓰기).
+        logLaWrite({ writer: 'D1', source: 'gps-trip', data, authority: 'not-active' });
       } else {
         // #2806 — tripToken이 없는 이 분기(lock 전 GPS 파이프라인)는 update-only여야 한다.
         // native `update()`는 활성 Activity가 없으면 내부적으로 `start()`로 fall-through하며
@@ -780,6 +782,8 @@ export async function updateStationNotification(
         await LiveActivity.updateLiveActivity(data);
         // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).
         logLiveActivityUpdated();
+        // #2735 PR-1 — D1 writer(lock 전 lockless 쓰기, 권위 판정 대상 아님).
+        logLaWrite({ writer: 'D1', source: 'gps-lockless', data, authority: 'n/a' });
       }
       // #2610 (code review 2번) — mirror-sourced writer(useForegroundLaMirrorSync)가 이 GPS
       // writer가 방금 쓴 ETA/알람 배지를 blank로 덮어쓰지 않도록 recency arbitration에 stamp.

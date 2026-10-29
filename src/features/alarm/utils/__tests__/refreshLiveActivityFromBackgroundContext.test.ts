@@ -800,6 +800,9 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
 
     beforeEach(() => {
       __test__.resetMirrorAdvanceDedup();
+      mockShouldSkipDeviceLiveActivityWrite.mockReset().mockReturnValue(false);
+      mockReadBackendSsotMirror.mockResolvedValue(null);
+      (AsyncStorage.getItem as jest.Mock).mockReset();
     });
 
     it.each([
