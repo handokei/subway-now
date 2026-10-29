@@ -23,7 +23,7 @@
  */
 
 import { LINE_META } from './lineAlias';
-import type { Route, Trip } from './types';
+import type { Route, Trip, Waypoint } from './types';
 
 /** Multi-hop snapshot derived from a trip's remaining waypoints. */
 export interface MultiHopContext {
@@ -97,6 +97,39 @@ export function computeMultiHopContext(trip: Trip): MultiHopContext {
   }
 
   return ctx;
+}
+
+/**
+ * `waypoint` 바로 뒤의 waypoint — 환승 waypoint의 경우 "갈아탈 노선(line)/방면(stationName)"의 출처.
+ * 매역/환승 알림(`deriveTransferNextLeg`, scheduled.ts)과 LA(`computeNextStopContext`)가 공유한다.
+ * waypoint가 trip에 없거나(indexOf -1) 뒤따르는 waypoint가 없으면 undefined. 새 KV 읽기 없음.
+ */
+export function waypointAfter(trip: Trip, waypoint: Waypoint): Waypoint | undefined {
+  const idx = trip.waypoints.indexOf(waypoint);
+  return idx === -1 ? undefined : trip.waypoints[idx + 1];
+}
+
+/** #3221 PR-5 — 여정 LA의 "다음 {역}" 라벨 / 환승 카드 "{노선} {방면} 방면" 입력. 전부 optional. */
+export interface NextStopContext {
+  /** 다음에 지나갈 역 (`trip.waypoints[0]`). */
+  nextStationName?: string;
+  /** 앞으로 처음 만나는 환승 후 노선의 정식명 ("2호선"). */
+  nextLineName?: string;
+  /** 그 환승 직후 waypoint 역명 — "성수 방면". */
+  nextLineDirection?: string;
+}
+
+export function computeNextStopContext(trip: Trip): NextStopContext {
+  const [head] = trip.waypoints;
+  if (head === undefined) return {};
+  const transfer = trip.waypoints.find((w) => w.kind === 'transfer');
+  const after = transfer === undefined ? undefined : waypointAfter(trip, transfer);
+  const lineName = after === undefined ? undefined : LINE_META[after.line]?.canonical;
+  return {
+    nextStationName: head.stationName,
+    ...(lineName === undefined ? {} : { nextLineName: lineName }),
+    ...(after === undefined ? {} : { nextLineDirection: after.stationName }),
+  };
 }
 
 /** #3221 PR-5 — 여정 LA 진행 막대용 leg 정거장 수. 전부 optional(없으면 위젯이 막대를 숨긴다). */

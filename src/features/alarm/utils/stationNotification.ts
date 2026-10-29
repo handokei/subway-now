@@ -603,8 +603,12 @@ export function buildLiveActivityData(
       data.stopsToTransfer = route.stopsToTransfer;
       data.transferStationName = getStationDisplayNameByName(route.transferName, allStations);
       data.stopsFromTransfer = route.stopsFromTransfer;
+      data.nextLineName = LINE_NAMES[route.toLine];
+      data.nextLineColorHex = LINE_COLORS[route.toLine];
     } else {
       const [first, second] = route.transfers;
+      data.nextLineName = LINE_NAMES[first.toLine];
+      data.nextLineColorHex = LINE_COLORS[first.toLine];
       data.stopsToTransfer = first.stopsToTransfer;
       data.transferStationName = getStationDisplayNameByName(first.transferName, allStations);
       data.stopsToSecondTransfer = second.stopsToTransfer;

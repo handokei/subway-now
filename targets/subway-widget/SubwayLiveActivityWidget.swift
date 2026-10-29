@@ -259,14 +259,18 @@ private struct LockScreenView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     LineGlassBadge(text: state.lineName, fill: tint.base)
-                    if state.nextLineColorHex != nil {
+                    if state.nextLineName != nil || state.nextLineColorHex != nil {
                         Text("→")
                             .font(.system(size: 13))
                             .foregroundColor(palette.muted.color)
-                        // 갈아탈 노선명은 ContentState에 없다 — 노선색 칩만 표시.
-                        Capsule()
-                            .fill(target.base)
-                            .frame(width: 28, height: 18)
+                        if let nextLineName = state.nextLineName {
+                            LineGlassBadge(text: nextLineName, fill: target.base)
+                        } else {
+                            // 노선명 필드가 없는 payload — 노선색 칩만 표시.
+                            Capsule()
+                                .fill(target.base)
+                                .frame(width: 28, height: 18)
+                        }
                     }
                 }
                 Text(state.alarmStationName ?? state.stationName)
@@ -275,7 +279,7 @@ private struct LockScreenView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .foregroundColor(palette.ink.color)
-                Text(state.alarmBody ?? NSLocalizedString("widget.la.journey.transferHint", comment: "Transfer hint under station name"))
+                Text(transferHintText)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(isLuminanceReduced ? palette.muted.color : target.text)
                     .lineLimit(2)
@@ -289,6 +293,25 @@ private struct LockScreenView: View {
         }
         .padding(16)
         .background(cardBackground(top: target.base.opacity(isDark ? 0.28 : 0.16)))
+    }
+
+    /// "지금 내려서 2호선 성수 방면으로" — 노선+방면이 모두 있을 때. 아니면 서버/기기 alarmBody, 그것도 없으면 기본 문구.
+    private var transferHintText: String {
+        if let line = state.nextLineName, let direction = state.nextLineDirection {
+            return String(
+                format: NSLocalizedString("widget.la.journey.transferHintTo", comment: "Transfer hint with next line and direction station"),
+                line, direction
+            )
+        }
+        return state.alarmBody ?? NSLocalizedString("widget.la.journey.transferHint", comment: "Transfer hint under station name")
+    }
+
+    /// "다음 군자" — 다음 역을 모르면 기존 "현재역".
+    private var stationCaption: String {
+        guard let next = state.nextStationName else {
+            return NSLocalizedString("widget.la.journey.currentStation", comment: "Label above current station")
+        }
+        return String(format: NSLocalizedString("widget.la.journey.nextStation", comment: "Label: next station"), next)
     }
 
     // MARK: 목적지 진입 — [하차] inkStrong 알약
@@ -348,7 +371,7 @@ private struct LockScreenView: View {
                             text: state.lineName,
                             fill: isLuminanceReduced ? tint.base.opacity(0.5) : tint.base
                         )
-                        Text(NSLocalizedString("widget.la.journey.currentStation", comment: "Label above current station"))
+                        Text(stationCaption)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(palette.muted.color)
                     }

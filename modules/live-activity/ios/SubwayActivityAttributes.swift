@@ -61,6 +61,11 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var legStopsTotal: Int?
         var nextLegStopsTotal: Int?
         var nextLineColorHex: String?
+        // #3221 PR-5 — 시안 일치: "다음 {역}" 라벨 / 환승 카드 "지금 내려서 {노선} {방면} 방면으로".
+        // 전부 optional — 없으면 위젯은 "현재역" 라벨 / 노선색 칩 + 기본 환승 문구로 폴백.
+        var nextStationName: String?
+        var nextLineName: String?
+        var nextLineDirection: String?
     }
 }
 

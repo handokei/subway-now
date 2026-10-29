@@ -57,6 +57,11 @@ export interface LiveActivityData {
   legStopsTotal?: number;
   nextLegStopsTotal?: number;
   nextLineColorHex?: string;
+  // #3221 PR-5 — "다음 {역}" 라벨 / 환승 카드 "{노선} {방면} 방면". backend가 trip.waypoints로 채운다.
+  // 기기는 앵커된 route에 역 목록이 없어 nextLineName/nextLineColorHex(환승 route의 toLine)만 채운다.
+  nextStationName?: string;
+  nextLineName?: string;
+  nextLineDirection?: string;
 }
 
 const LiveActivityModule =

@@ -870,6 +870,64 @@
           }
         }
       }
+    },
+    "widget.la.journey.nextStation" : {
+      "comment" : "Label above station: next station",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Next %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "次は%@"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "다음 %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一站 %@"
+          }
+        }
+      }
+    },
+    "widget.la.journey.transferHintTo" : {
+      "comment" : "Transfer hint: next line and direction station",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Get off and take %1$@ toward %2$@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ここで降りて%1$@ %2$@方面へ"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "지금 내려서 %1$@ %2$@ 방면으로"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在此站下车,换乘%1$@ 前往%2$@方向"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
