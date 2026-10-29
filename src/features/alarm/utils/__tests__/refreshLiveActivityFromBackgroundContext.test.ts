@@ -54,6 +54,15 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
+// #2735 PR-1 — 결정 행/writer 행 적재 관측. 나머지 alarmLog는 실제 구현 유지.
+const mockLogLaRefreshDecision = jest.fn();
+const mockLogLaWrite = jest.fn();
+jest.mock('../alarmLog', () => ({
+  ...jest.requireActual('../alarmLog'),
+  logLaRefreshDecision: (...args: unknown[]) => mockLogLaRefreshDecision(...args),
+  logLaWrite: (...args: unknown[]) => mockLogLaWrite(...args),
+}));
+
 // #2589 — backend SSoT mirror 채택 경로 mock. readBackendSsotMirror만 mock하고
 // resolveBackendSsotMirrorStation은 실제 구현(순수 함수, stationLookup 경유)을 그대로 사용 —
 // FG(useFusedNearestStation)와 동일 함수를 이 파일도 소비한다는 것 자체를 검증하려면 mock으로
@@ -774,6 +783,150 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       mockReadBackendSsotMirror.mockRejectedValueOnce(new Error('storage down'));
       await expect(refreshLiveActivityOnMirrorAdvance()).resolves.toBeUndefined();
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2735 PR-1 — 반환 지점마다 결정 행 1건. "SSoT 없는 wake에서 gps-bg가 썼는가 skip했는가"를 가른다(plan B1·B9).
+  describe('#2735 PR-1 la-refresh-decision / la-write(D3) 관측', () => {
+    const fullStorage = (extra: Partial<Record<string, string | null>> = {}) =>
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(destination),
+        [BG_LAST_STATION_KEY]: JSON.stringify({ ...bgStation, timestamp: Date.now() }),
+        [ROUTE_KEY]: JSON.stringify(directRoute),
+        [ACTIVE_TRIP_KEY]: 'apns-token-abc',
+        ...extra,
+      });
+    const decisions = () => mockLogLaRefreshDecision.mock.calls.map(([d]) => d);
+
+    beforeEach(() => {
+      __test__.resetMirrorAdvanceDedup();
+    });
+
+    it.each([
+      [
+        'la-disabled',
+        () => mockIsLiveActivityEnabled.mockReturnValue(false),
+      ],
+      [
+        'dismissed',
+        () => mockIsLaDismissed.mockResolvedValue(true),
+      ],
+      [
+        'dest-absent-active-trip',
+        () => setupStorage({ [DESTINATION_KEY]: null, [ACTIVE_TRIP_KEY]: 'tok' }),
+      ],
+      [
+        'dest-absent-end',
+        () => setupStorage({ [DESTINATION_KEY]: null, [ACTIVE_TRIP_KEY]: null }),
+      ],
+      [
+        'backend-authority-skip',
+        () => {
+          fullStorage();
+          mockShouldSkipDeviceLiveActivityWrite.mockReturnValueOnce(true);
+        },
+      ],
+      [
+        'no-source',
+        () => fullStorage({ [BG_LAST_STATION_KEY]: null }),
+      ],
+      [
+        'no-active-la',
+        () => {
+          fullStorage();
+          mockHasActiveLiveActivity.mockReturnValue(false);
+        },
+      ],
+      [
+        'error',
+        () => (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('storage down')),
+      ],
+    ])('결정 %s — 반환 지점에서 정확히 1건', async (decision, arrange) => {
+      arrange();
+      await refreshLiveActivityFromBackgroundContext();
+      expect(decisions()).toEqual([decision]);
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('gps-bg-write — 쓰기 후 결정 1건 + D3 la-write(역·권위 not-active) 1건', async () => {
+      fullStorage();
+      await refreshLiveActivityFromBackgroundContext();
+      expect(decisions()).toEqual(['gps-bg-write']);
+      expect(mockLogLaRefreshDecision).toHaveBeenCalledWith('gps-bg-write', bgStation.station.name);
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(1);
+      expect(mockLogLaWrite).toHaveBeenCalledWith({
+        writer: 'D3',
+        source: 'gps-bg',
+        data: expect.objectContaining({ stationName: 'STN' }),
+        authority: 'not-active',
+      });
+    });
+
+    it('mirror 분기 — 쓰기 성공이면 mirror-write, 가드 skip이면 mirror-skip', async () => {
+      fullStorage({ [BG_LAST_STATION_KEY]: null });
+      mockReadBackendSsotMirror.mockResolvedValue({
+        currentStationId: '성수',
+        currentStationLine: '2',
+        motionState: 'moving',
+        lastAdvanceEvidence: 'cron',
+        lastAdvanceAt: Date.now(),
+        passedStations: [],
+        receivedAt: Date.now(),
+      });
+      await refreshLiveActivityFromBackgroundContext();
+      expect(decisions()).toEqual(['mirror-write']);
+      expect(mockLogLaWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ writer: 'D2', source: 'backend-ssot', authority: 'not-active' }),
+      );
+
+      mockLogLaRefreshDecision.mockClear();
+      mockHasActiveLiveActivity.mockReturnValue(false);
+      await refreshLiveActivityFromBackgroundContext();
+      expect(decisions()).toEqual(['mirror-skip']);
+    });
+
+    it('trip 180 wake 시퀀스(SSoT 없는 reschedule/mid-cycle 5건) — wake당 결정 행 정확히 1건', async () => {
+      // 17:26:07·17:27:16·17:28:48·17:29:17·17:30:49 — lock 이후 SSoT 없는 wake 5건. 권위 active라 전부 skip.
+      fullStorage();
+      mockShouldSkipDeviceLiveActivityWrite.mockReturnValue(true);
+      for (let wake = 0; wake < 5; wake += 1) {
+        await refreshLiveActivityFromBackgroundContext();
+      }
+      expect(decisions()).toEqual(Array(5).fill('backend-authority-skip'));
+      expect(mockLogLaWrite).not.toHaveBeenCalled();
+    });
+
+    it('trip 180 wake 시퀀스(권위 pending) — wake 5건 = gps-bg-write 5건 + D3 la-write 5건', async () => {
+      fullStorage();
+      for (let wake = 0; wake < 5; wake += 1) {
+        await refreshLiveActivityFromBackgroundContext();
+      }
+      expect(decisions()).toEqual(Array(5).fill('gps-bg-write'));
+      expect(mockLogLaWrite).toHaveBeenCalledTimes(5);
+    });
+
+    it('refreshLiveActivityOnMirrorAdvance — dedup no-op이면 mirror-advance-dedup 결정(역:노선)을 남긴다', async () => {
+      fullStorage({ [BG_LAST_STATION_KEY]: null });
+      mockReadBackendSsotMirror.mockResolvedValue({
+        currentStationId: '성수',
+        currentStationLine: '2',
+        motionState: 'moving',
+        lastAdvanceEvidence: 'cron',
+        lastAdvanceAt: Date.now(),
+        passedStations: [],
+        receivedAt: Date.now(),
+      });
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(decisions()).toEqual(['mirror-write']);
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(decisions()).toEqual(['mirror-write', 'mirror-advance-dedup']);
+      expect(mockLogLaRefreshDecision).toHaveBeenLastCalledWith('mirror-advance-dedup', '성수:2');
+    });
+
+    it('refreshLiveActivityOnMirrorAdvance — mirror 부재/stale이면 결정 행 없음(refresh 미진입)', async () => {
+      mockReadBackendSsotMirror.mockResolvedValue(null);
+      await refreshLiveActivityOnMirrorAdvance();
+      expect(mockLogLaRefreshDecision).not.toHaveBeenCalled();
     });
   });
 
