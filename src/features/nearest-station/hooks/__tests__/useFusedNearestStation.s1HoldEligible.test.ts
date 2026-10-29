@@ -43,7 +43,8 @@ const mockUseAccelPattern = useAccelerometerFingerprint as jest.Mock;
 const mockPushRawSignal = pushRawSignal as jest.Mock;
 
 function gpsWith(extra: Record<string, unknown>) {
-  const station = { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 };
+  // G2(#3191 PR-2): 최근접역 거리 >= 150m 여야 hold. 집 실측 227m.
+  const station = { station: MOCK_STATIONS.gangnam, distanceKm: 0.227 };
   return {
     result: station,
     liveResult: station,
@@ -86,6 +87,9 @@ describe('useFusedNearestStation — #3191 PR-1 holdEligible 기록 (동작 불�
     jest.clearAllMocks();
     resetBarometerState();
     resetBarometerInstrumentationForTest();
+    // D2(b): 기압계 관측 가능 = 첫 reading 후 30초 경과 + 마지막 reading 30초 이내.
+    appendBarometerReading({ t: Date.now() - 600_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: Date.now() - 1_000, pressureHpa: 1013.0 });
     mockUseAccelPattern.mockReturnValue('unknown');
     mockUseArrival.mockReturnValue({ arrival: null, loading: false, isMock: false });
     mockUsePositions.mockReturnValue({ positions: null, loading: false, isMock: false });

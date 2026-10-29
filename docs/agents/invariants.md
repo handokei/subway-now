@@ -118,6 +118,11 @@
 | pickFusedStation.ts (`applyDirection`) / useFusedNearestStation.ts (`legDirections`) | 불변식 | fused 후보 점수는 route(arc)가 있을 때 leg 방향과 반대인 arrival/position을 쓰지 않는다. route 있는데 방향 미해결이면 점수 0(fail-closed), route 없음은 미적용(#3191 PR-2D, ADR-044) | **있음**(`useFusedNearestStation.directionFilter.test.ts` 10/28 R2 원문 replay, `pickFusedStation.direction.test.ts`, backend `legDirection.deviceParity.test.ts`) |
 | useFusedNearestStation.ts (lockless tier6, `trackTrainProgress` 호출) | 갭 | lockless tier6(position-train)는 방향 미필터 — `gps.userLocation` 최근접 역 선택에 가려져 출력 변화를 관측할 수 없어 PR-2D 범위에서 뺐다. 반대 방향 열차가 GPS 최근접역에 있어 tier6가 오채택하는 실측 행이 나오면 그때 판정 | **없음** |
 | verdictArrival (useFusedNearestStation.ts) | 함정(무해) | 이미 고른 역에 대한 vote일 뿐 역을 고르지 않는다 — 방향 필터 대상 아님 | 해당 없음 |
+| stationaryFixHold.ts / useFusedNearestStation.ts (`gateUserLocation`) | 불변식 | lock 없음 + 지상 + 정지(acc<=30, speed<0.5, 최근접역>=150m) + L 이후 이동 증거(새 fix/기압 하강/ΔP 이벤트) 없음이면 마지막 fix L을 나이와 무관하게 결정 tier 거리 게이트(pickCandidateTrains·positionTrain·fused/route gateOpts·WiFi)와 tier8 `goodGpsOverridesTier8`에 계속 쓴다. `usePositionStability`(#2713 자기강화 방지)·`lockGpsDrift`(lock 범위)는 일부러 `decisionUserLocation` 그대로(#3191 PR-2, ADR-044) | **있음**(`useFusedNearestStation.stationaryHoldWiring.test.ts` T/A 10/18~21 덤프 원문 행 + 거부 행, `stationaryHoldTier8.test.ts` D, `stationaryFixHold.test.ts` 경계값) |
+| barometerState.ts (`resetBarometerState`) | 불변식 | ring만 비우고 첫 reading / 마지막 reading 시각 / ΔP 이벤트 추적은 세션 동안 유지한다 — 기압계 관측 가능 판정(D2(b))이 이 값에 기댄다 | **있음**(`barometerState.lastReading.test.ts`) |
+| useNearestStation.ts (`applyLocation`) | 불변식 | 같거나 과거 timestamp fix는 표시 경로(좌표/시각/accuracy)에 반영하지 않는다(품질 게이트만 평가). 10/28 06:26:51→06:26:34, 17:25:08→17:24:46 역행 실측 | **있음**(`useNearestStation.bgFixInjection.test.ts`) |
+| useNearestStation.ts (BG fix 주입) / useFgPositionUpload.ts | 갭 | trip 없음 + BG + 평지 이동: BG task는 목적지(trip)가 없으면 `BG_LAST_FIX_KEY`를 쓰지 않아 주입할 fix 자체가 없다(알려진 갭, D3). lock 없는 표시는 보장 대상이 아니고 FG 복귀 refresh가 새 fix를 준다 | **없음**(ADR-044 기록) |
+| backgroundLocationTask.ts:175 | 함정 | "기압계는 BG에서 무용(FG-only)" 주석은 W 덤프 BG 행의 hpa·baroEvt 갱신과 어긋난다(JS가 살아 있는 BG에서는 reading이 들어온다) — #2345 proxy 전제 재검토 필요(후속) | 해당 없음 |
 
 ---
 

@@ -496,7 +496,11 @@ function formatRawSignalLine(entry: RawSignalEntry): string {
   const baroEvt = entry.baroEventAtMs != null ? formatTime(entry.baroEventAtMs) : '-';
   // #3191 PR-1 — 정지 fix 유지 술어 판정(1=유지 가능 / 0=불가 / -=판단 불가·구 entry).
   const hold = entry.holdEligible == null ? '-' : entry.holdEligible ? '1' : '0';
-  const base = `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt} | watch=${watch} | app=${appState} | baroEvt=${baroEvt} | hold=${hold}`;
+  // #3191 PR-2 — hold가 꺼진 첫 조건 / G2 입력 거리(m) / fix 좌표(임계 표본 수집용). 끝에 append.
+  const holdBlk = entry.holdBlock ?? '-';
+  const distM = entry.distM != null ? String(Math.round(entry.distM)) : '-';
+  const pos = entry.gps != null ? `${entry.gps.lat.toFixed(5)},${entry.gps.lng.toFixed(5)}` : '-';
+  const base = `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt} | watch=${watch} | app=${appState} | baroEvt=${baroEvt} | hold=${hold} | holdBlk=${holdBlk} | distM=${distM} | pos=${pos}`;
   if (!entry.launch) return base;
   const { coldStartAtMs, firstHpa, firstHpaAtMs } = entry.launch;
   return `${base} | launch=cold@${formatTime(coldStartAtMs)} hpa0=${firstHpa.toFixed(1)}@${formatTime(firstHpaAtMs)}`;

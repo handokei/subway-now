@@ -50,6 +50,11 @@ export interface UseFgPositionUploadOptions {
    * 진단 log가 `waypoint`(trip 다음 정거장)와 분리해 출력한다. 비어있으면 omit (graceful).
    */
   currentStationName?: string | null;
+  /**
+   * #3191 PR-2 — userLocation이 BG task fix 주입분(useNearestStation.lastFixFromBg)이면 true. BG task가
+   * 같은 fix를 이미 업로드했으므로(backgroundLocationTask) FG 업로드를 건너뛴다(KV 쓰기 이중화 방지).
+   */
+  fixFromBg?: boolean;
 }
 
 /**
@@ -67,6 +72,7 @@ export function useFgPositionUpload({
   tripActive,
   motionStationary,
   currentStationName,
+  fixFromBg = false,
 }: UseFgPositionUploadOptions): void {
   // 마지막 업로드 시각(epoch ms). throttle 판정용. null = 미발사(첫 fix 즉시 발사).
   const lastUploadedAtRef = useRef<number | null>(null);
@@ -80,6 +86,7 @@ export function useFgPositionUpload({
 
   useEffect(() => {
     if (!tripActive) return;
+    if (fixFromBg) return;
     if (!userLocation) return;
     if (accuracyMeters === null) return;
     if (accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
@@ -98,7 +105,7 @@ export function useFgPositionUpload({
       // #1363 — backend log 진단 이원화용. null/빈 문자열은 fireUpload에서 omit.
       currentStationName: currentStationName ?? undefined,
     });
-  }, [tripActive, userLocation, accuracyMeters, motionStationary, currentStationName]);
+  }, [tripActive, userLocation, accuracyMeters, motionStationary, currentStationName, fixFromBg]);
 }
 
 interface FireUploadInput {

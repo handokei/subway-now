@@ -4841,6 +4841,26 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
         contains: ['hold=-'],
       },
       {
+        // #3191 PR-2 - hold가 꺼진 첫 조건 / 최근접역 거리 / fix 좌표 (G2 임계 표본 수집용).
+        name: 'holdBlock/distM/gps 좌표 -> holdBlk=<조건> distM=<m> pos=<lat>,<lng>',
+        entry: makeRawEntry({
+          holdBlock: 'near-station',
+          distM: 63.6,
+          gps: { lat: 37.57565, lng: 127.08719, accM: 24, speedMps: null, fixAtMs: null },
+        }),
+        contains: ['holdBlk=near-station', 'distM=64', 'pos=37.57565,127.08719'],
+      },
+      {
+        name: 'holdBlock null(hold 통과) -> holdBlk=-',
+        entry: makeRawEntry({ holdBlock: null, distM: 227 }),
+        contains: ['holdBlk=-', 'distM=227'],
+      },
+      {
+        name: 'holdBlock/distM 미기록(구 entry), gps null -> holdBlk=- distM=- pos=-',
+        entry: makeRawEntry({ gps: null }),
+        contains: ['holdBlk=-', 'distM=-', 'pos=-'],
+      },
+      {
         name: 'launch 표식 부착 entry → launch=cold@<시각> hpa0=<값>@<시각>',
         entry: makeRawEntry({
           launch: {

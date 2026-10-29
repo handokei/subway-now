@@ -23,6 +23,8 @@ import type { LineNumber } from '../../../shared/types/station';
  *    GPS_QUALITY_GATE_MAX_AGE_MS(15s)를 넘어 거리 sanity 검사 자체를 건너뛴(=userLocation을
  *    null 취급한) 횟수. reject가 아니라 "GPS를 결정 입력에서 배제"한 사건이지만, 같은
  *    candidateRejectBuffer/DebugModal 채널을 재사용해 별도 인프라 없이 가시화한다.
+ *  - `gps-stale-held` (#3191 PR-2): `gps-stale`과 같은 상황이지만 정지 fix 유지(hold)로 마지막 fix를 결정 tier
+ *    거리 게이트에 계속 쓴 횟수. held 대 stale 비율이 hold 효과의 프로덕션 측정 지표다.
  *  - `candidate-arc` (#2728, ADR-039 2단계): boardingLock.trainCode와 일치하는 실측 열차
  *    신호가 GPS 거리 검사 대신 arc(경로) 정합성 검사에서 탈락한 횟수. `candidate-distance`와
  *    분리해 "GPS 거리로 거부됐는지" vs "arc 밖으로 판정됐는지"를 구분 관찰한다.
@@ -48,6 +50,7 @@ export type CandidateRejectReason =
   | 'candidate-line'
   | 'candidate-env'
   | 'gps-stale'
+  | 'gps-stale-held'
   | 'candidate-arc'
   | 'candidate-opposite-direction'
   | 'candidate-direction-unresolved'
