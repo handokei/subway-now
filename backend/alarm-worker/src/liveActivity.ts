@@ -35,7 +35,7 @@ import { deleteProgress } from './progress';
 import { resolvePromptAnchor } from './promptAnchor';
 import { logPushFailure } from './pushFailureLog';
 import { hashTripToken } from './sentry';
-import { computeMultiHopContext } from './tripMultiHop';
+import { computeLegProgressContext, computeMultiHopContext } from './tripMultiHop';
 import { deleteSsot, type TripPositionSSoT } from './tripPositionSsot';
 import { recordTripEvent } from './tripEventLog';
 import {
@@ -213,7 +213,8 @@ export function buildLiveActivityContentState(
   if (!trip) return { ...base, ...withTrainCode };
   // multi-hop optional 필드는 존재하는 것만 spread — undefined assignment를 피해 기존 5 필드
   // toEqual 단언과 ActivityKit content-state diff 모두 깔끔.
-  const multiHop = computeMultiHopContext(trip);
+  // #3221 PR-5 — 진행 막대 필드(legStopsTotal 등)는 multi-hop 필드와 같은 위치에서 같이 싣는다.
+  const multiHop = { ...computeMultiHopContext(trip), ...computeLegProgressContext(trip) };
   // #3007 S4-c — end-prompt는 `computeBoardingContext`(pre-boarding) **뒤에** spread해
   // `boardingPhase`를 override한다. 단일 필드이므로 둘은 상호배타이고, 정지 15분 상태에서는
   // "탑승하셨나요?"보다 "종료할까요?"가 맞다(정지 중이면 탑승하지 않았을 개연성이 높다).

@@ -51,6 +51,12 @@ export interface LiveActivityData {
   // 배너를 계속 노출할 때 true. native 위젯은 "탑승하셨나요?" 질문 대신 "추적중" 안내 +
   // [아니에요] 버튼만 렌더한다 — 이미 확정된 열차라 재확인 질문이 불필요하기 때문.
   boardingAutoLocked?: boolean;
+  // #3221 PR-5 — 여정 LA 진행 막대(Line Glass). backend `computeLegProgressContext`가 채운다
+  // (기기 buildLiveActivityData는 원본 route를 모르는 재앵커링된 remainingRoute만 받아 채우지 않는다).
+  // 전부 optional — 없으면 위젯은 막대를 숨긴다(구 payload 호환).
+  legStopsTotal?: number;
+  nextLegStopsTotal?: number;
+  nextLineColorHex?: string;
 }
 
 const LiveActivityModule =

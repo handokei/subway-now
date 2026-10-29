@@ -53,6 +53,17 @@ describe('여정 LA 진행 막대 필드 계약 (#3221 PR-5)', () => {
     expect(stripComments(WIDGET)).not.toMatch(/deviceFallback/);
   });
 
+  it('위젯이 쓰는 widget.la.journey.* 키가 Localizable.xcstrings에 4개 언어로 존재한다', () => {
+    const catalog = JSON.parse(
+      readFileSync(join(ROOT, 'targets/subway-widget/Localizable.xcstrings'), 'utf8'),
+    ) as { strings: Record<string, { localizations: Record<string, unknown> }> };
+    const used = Array.from(new Set(WIDGET.match(/widget\.la\.journey\.\w+/g) ?? []));
+    expect(used.length).toBeGreaterThan(0);
+    for (const key of used) {
+      expect(Object.keys(catalog.strings[key]?.localizations ?? {}).sort()).toEqual(['en', 'ja', 'ko', 'zh-Hans']);
+    }
+  });
+
   it('MIRROR 2벌의 코드(주석 제외)가 byte 동일하다', () => {
     expect(stripComments(POD_ATTRS)).toBe(stripComments(SHARED_ATTRS));
   });

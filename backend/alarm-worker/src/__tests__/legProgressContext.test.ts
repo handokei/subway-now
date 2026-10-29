@@ -97,6 +97,19 @@ describe('computeLegProgressContext (#3221 PR-5)', () => {
     expect(computeLegProgressContext(trip)).toEqual({});
   });
 
+  it('남은 waypoint가 없으면(도착) 빈 객체', () => {
+    const trip = makeRide20261028MorningTrip('t', NOW);
+    trip.waypoints = [];
+    expect(computeLegProgressContext(trip)).toEqual({});
+  });
+
+  it('route가 없는 레코드는 throw하지 않고 빈 객체 (LA push 전체가 죽으면 안 된다)', () => {
+    const trip = makeRide20261028MorningTrip('t', NOW);
+    const partial = { ...trip, route: undefined } as unknown as Trip;
+    expect(computeLegProgressContext(partial)).toEqual({});
+    expect(() => buildLiveActivityContentState(trip.waypoints[0], 60, 5, partial)).not.toThrow();
+  });
+
   it('알 수 없는 toLine이면 nextLineColorHex만 생략하고 정거장 수는 유지한다', () => {
     const trip = makeRide20261028MorningTrip('t', NOW);
     if (trip.route.type !== 'transfer') throw new Error('fixture');
