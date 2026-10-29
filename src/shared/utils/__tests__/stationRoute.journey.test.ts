@@ -77,6 +77,7 @@ describe('calculateStaticETA — 엔진 위임', () => {
 describe('calculateStaticEtaDetail — 표시 플래그', () => {
   it('route=null → null', () => {
     expect(calculateStaticEtaDetail(null, { nowMs: noon })).toBeNull();
+    expect(calculateStaticEtaDetail(null)).toBeNull(); // options 기본값
   });
 
   it('하한(U2)이면 waitUnknown, 막차 종료면 lastTrainEnded', () => {
