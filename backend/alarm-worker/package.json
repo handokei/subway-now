@@ -13,7 +13,7 @@
     "deploy": "bash scripts/deploy.sh",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc --noEmit && tsc --noEmit -p tsconfig.deviceParity.json",
     "db:migrate:local": "wrangler d1 migrations apply subway-now-db --local --config wrangler.toml",
     "db:migrate:remote": "wrangler d1 migrations apply subway-now-db --remote --config wrangler.toml",
     "check:trip-metrics-regression": "node scripts/checkTripMetricsRegression.mjs"

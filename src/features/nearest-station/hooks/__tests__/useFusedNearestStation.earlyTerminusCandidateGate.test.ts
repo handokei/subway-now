@@ -57,6 +57,7 @@ jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
 // "resolved(down)" / "resolution 실패(null)" 두 경로를 명시적으로 재현한다.
 const mockResolveTripDirection = jest.fn();
 jest.mock('../../../route/utils/tripDirection', () => ({
+  ...jest.requireActual('../../../route/utils/tripDirection'),
   resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
 }));
 
