@@ -4646,7 +4646,7 @@ export async function runMidCycleFireOnly(
       const estimate = await estimateBoardingLockArrival({ seoul: deps.seoul } as ScheduledDeps, lock, waypoint, now);
       // #3223 — 도착 확증 또는 intermediate 진입(position sttus0)이면 발사. 진입은 advance 없이 발사만(도착 tick 이 advance).
       if (!estimate) continue;
-      const entering = isPositionEnteringFire(estimate, waypoint);
+      const entering = isPositionEnteringFire(estimate);
       if (!estimate.arrived && !entering) continue;
 
       const outcome = await sendStationPassedFireOnly({
@@ -6119,9 +6119,9 @@ export async function runTrainCodeTracking(
     return;
   }
 
-  // #3223 — intermediate 매역은 position 진입(sttus0) 첫 tick 에 push 만 앞당겨 발사한다. advance 는 위 도착 분기가
+  // #3223 — 매역(intermediate·transfer·destination)은 position 진입(sttus0) 첫 tick 에 push 만 앞당겨 발사한다. advance 는 위 도착 분기가
   // 그대로 맡고(취침 알람·준비 진동·LA 불변), 도착 tick 의 발사는 공용 dedup 으로 건너뛴다. trip 은 mutate 하지 않는다.
-  if (isPositionEnteringFire(estimate, waypoint)) {
+  if (isPositionEnteringFire(estimate)) {
     await fireEnteringStationPush({ trip, waypoint, lock: activeLock, env, deps, now, log, generatePushId });
   }
 
@@ -6204,11 +6204,12 @@ export function isEnteringTarget(train: PositionEntry, targetStation: string, lo
 }
 
 /**
- * #3223 — 진입 신호로 매역 push 만 앞당겨 발사할 대상인가. intermediate 만(U1: transfer·destination 은 도착 시점 유지).
+ * #3223 — 진입 신호로 매역 push 만 앞당겨 발사할 대상인가. kind 무관(intermediate·transfer·destination, U1 포함 — 10/29 사용자 결정).
+ * 알림 push 만 앞당긴다: advance·transfer-release·hop-end·취침 알람·LA·trip 종료는 도착 확정 그대로(U2).
  * 호출자는 `estimate.arrived===false` 인 경우만 넘긴다(도착이면 기존 도착 발사 경로).
  */
-function isPositionEnteringFire(estimate: BoardingLockArrivalEstimate, waypoint: Waypoint): boolean {
-  return !estimate.arrived && estimate.entering === true && waypoint.kind === 'intermediate';
+function isPositionEnteringFire(estimate: BoardingLockArrivalEstimate): boolean {
+  return !estimate.arrived && estimate.entering === true;
 }
 
 export async function estimateBoardingLockArrival(

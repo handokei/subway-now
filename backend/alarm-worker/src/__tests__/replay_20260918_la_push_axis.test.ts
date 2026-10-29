@@ -113,7 +113,8 @@ describe('#2983 backend LA push 발사 축 (9/18 캡처)', () => {
     });
 
     const fired = firedStationOccurrences(result.pushes);
-    expect([...fired].sort()).toEqual(['군자(능동)', '어린이대공원(세종대)', '중곡'].sort());
+    // #3223 U1 포함(10/29): 목적지 용마산도 진입(sttus0) tick 에 알림이 발사된다 — 이전엔 3역만(목적지 도착 push 부재, #2991).
+    expect([...fired].sort()).toEqual(['군자(능동)', '어린이대공원(세종대)', '중곡', '용마산'].sort());
   });
 
   // 거부 ① — 토큰이 없으면 0건. 현재 라이브러리 엔트리가 전부 이 상태라 축이 비어 있었다.

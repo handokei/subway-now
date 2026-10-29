@@ -325,7 +325,7 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     const entering = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
     const rows = sent(entering.events, '건대입구');
     expect(rows).toHaveLength(1);
-    expect(rows[0].meta).toMatchObject({ waypointKind: 'station-passed', path: 'position-entering' });
+    expect(rows[0].meta).toMatchObject({ waypointKind: 'transfer', path: 'position-entering' });
     expect(entering.pushes.filter((p) => (p.collapseId ?? '').startsWith('station-'))).toHaveLength(1);
     expect((await world.trip()).waypoints.map((w) => w.stationName)).toEqual(['건대입구', '성수']);
 
@@ -341,7 +341,7 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     const entering = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ENTERING }]);
     const rows = sent(entering.events, '건대입구');
     expect(rows).toHaveLength(1);
-    expect(rows[0].meta).toMatchObject({ waypointKind: 'station-passed', path: 'position-entering' });
+    expect(rows[0].meta).toMatchObject({ waypointKind: 'destination', path: 'position-entering' });
     expect((await world.trip()).waypoints).toHaveLength(1);
 
     const arrived = await world.runTick([{ stationName: '건대입구', sttus: STATUS.ARRIVED }]);

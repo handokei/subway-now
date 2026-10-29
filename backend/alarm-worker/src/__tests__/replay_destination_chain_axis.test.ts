@@ -245,9 +245,9 @@ describe('#2991 목적지 사슬 축 — A) 합성 캡처(lock 7204, 중곡 dest
  * 차단). 도착 확정을 넣는 것이 옳다고 판단되면 그때 이 pin을 **같은 PR에서** 갱신한다.
  */
 describe('#2991 목적지 사슬 축 — B) 실캡처(lock 7256, 용마산 destination): 도착 push 부재를 pin', () => {
-  it('준비(1역 전) → 종료가 순서대로 1회씩 일어나지만 목적지 도착 확정 push는 0건이다', async () => {
+  it('준비(1역 전) → 목적지 알림(진입 tick, #3223 U1) → 종료가 순서대로 1회씩 일어난다', async () => {
     const seedTrip = makeRide20260918LockSeededTrip('dest-chain-ride20260918');
-    const { destinationStation } = resolveDestinationBoundary(seedTrip);
+    const { destinationStation, lockTrainCode } = resolveDestinationBoundary(seedTrip);
 
     const run = await runDestinationChain({
       fixture: ride20260918Fixture,
@@ -257,7 +257,12 @@ describe('#2991 목적지 사슬 축 — B) 실캡처(lock 7256, 용마산 desti
 
     expectSharedDestinationChain(run, destinationStation);
 
-    // 위 describe 주석 참고 — 부재를 pin한다(정상 선언이 아니라 드리프트 차단).
-    expect(run.destinationArrival).toBeUndefined();
+    // #3223 U1 포함(10/29) — 이전엔 이 pin 이 도착 push 부재를 고정했다(위 describe 주석: 도착 확정을 넣으면 같은 PR 에서 갱신).
+    // 이제 목적지는 진입(sttus0) tick 에 알림이 발사되고, lock 된 그 열차를 싣는다. 준비 < 알림 ≤ 종료 순서도 유지.
+    expect(run.destinationArrival).toBeDefined();
+    expect(run.destinationArrival?.station).toBe(destinationStation);
+    expect(run.destinationArrival?.trainCode).toBe(lockTrainCode);
+    expect(run.prepareAtMs!).toBeLessThan(run.destinationArrival!.atMs);
+    expect(run.destinationArrival!.atMs).toBeLessThanOrEqual(run.tripEndedAtMs[0]);
   }, 60_000);
 });

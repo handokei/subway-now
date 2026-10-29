@@ -123,7 +123,8 @@ describe('#2981 탭 → lock 생성 → 매역 발사 (9/18 캡처, position ser
     expect(confirmStatus).toBe(200);
 
     const fired = firedStationOccurrences(result.pushes);
-    expect([...fired].sort()).toEqual(['군자(능동)', '어린이대공원(세종대)', '중곡'].sort());
+    // #3223 U1 포함(10/29): 목적지 용마산도 진입(sttus0) tick 에 알림이 발사된다 — 이전엔 3역만(목적지 도착 push 부재, #2991).
+    expect([...fired].sort()).toEqual(['군자(능동)', '어린이대공원(세종대)', '중곡', '용마산'].sort());
     expect(destinationArrivedFired(result.pushes)).toBe(true);
   });
 });

@@ -258,7 +258,8 @@ describe('#3089 10/19 저녁 취침 트립 — 통과 가드 (의도 동작 고�
   it('매역 알림은 취침모드에서 억제된다 — station-passed alert 0건, cron sent 0건 (ADR-023: 알림 채널만 mute)', async () => {
     const r = await replaySleepTrip();
     // backend는 취침 trip의 매역 "alert"를 mute한다(`station-notif-sleep`). silent intermediate는 device 게이트 소관.
-    expect(firedStationOccurrences(r.pushes)).toEqual([]);
+    // #3223 U1 포함(10/29): 취침 mute 는 intermediate 한정(#3100) — 목적지 용마산은 mute 대상이 아니라 진입 tick 에 1건 발사된다.
+    expect(firedStationOccurrences(r.pushes)).toEqual(['용마산']);
     const sent = r.events.filter(
       (e) => e.kind === 'cron-fire-attempt' && e.meta.waypointKind === 'station-passed' && e.meta.outcome === 'sent',
     );
