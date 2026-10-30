@@ -44,6 +44,12 @@ export interface UseBoardingLockControllerInputs {
   arrival: StationArrival | null;
   currentStation: Station | null;
   /**
+   * #2696 — 여정의 현재 leg 노선(`getApproachLine`: lock > legAdvance > route 진행도). BoardingTrainList에
+   * 넘기는 `line`·arrival 조회 노선과 같은 기준이다. 환승역에서 fused `currentStation`이 다른 노선
+   * 엔트리(예: 건대입구 2호선)로 왕복해도 목록 방향을 이 노선 기준으로 계산한다. 미전달/null이면 기존 동작.
+   */
+  approachLine?: LineNumber | null;
+  /**
    * 정적 ETA(분). createLock 시 expectedDurationMs 계산에 사용된다.
    * null이면 fallback 30분 — 잘못된 Lock이라도 자동 만료(× 1.5)가 작동한다.
    */
@@ -191,6 +197,7 @@ export function useBoardingLockController({
   route,
   arrival,
   currentStation,
+  approachLine,
   expectedDurationMinutes,
   motionStationary,
   speedMps,
@@ -332,10 +339,20 @@ export function useBoardingLockController({
     legAdvanceStampedAt,
   ]);
 
+  // #2696 — 방향 앵커역. 환승역은 노선별 별도 Station이라 fused currentStation이 2호선 엔트리면
+  // resolveTripDirection이 2호선 구간(끝=환승역)을 골라 currIdx===nextIdx → null → 목록 공란이 된다
+  // (#2590은 useTransferTrainList에만 같은 보정을 적용한 편측 fix). 여정의 현재 leg 노선에 같은 이름의
+  // 역이 있으면 그 엔트리를 앵커로 쓴다. 없으면(환승역이 아님/조회 실패) currentStation 그대로.
+  const directionStation = useMemo(() => {
+    if (!currentStation) return null;
+    if (!approachLine || currentStation.line === approachLine) return currentStation;
+    return findStationByNameAndLine(currentStation.name, approachLine) ?? currentStation;
+  }, [currentStation, approachLine]);
+
   const direction = useMemo(() => {
-    if (!route || !destinationName || !currentStation) return null;
-    return resolveTripDirection(route, destinationName, currentStation.id);
-  }, [route, destinationName, currentStation]);
+    if (!route || !destinationName || !directionStation) return null;
+    return resolveTripDirection(route, destinationName, directionStation.id);
+  }, [route, destinationName, directionStation]);
 
   // #1449 (ADR-015 §9 frontend) — trip route에 포함된 노선 집합. lock 채택 시 line filter SSOT.
   // trip 비활성/route null이면 undefined — 두 진입점은 undefined를 "필터 미적용"으로 해석한다
@@ -355,9 +372,9 @@ export function useBoardingLockController({
   // 전에 종착) 판정에 쓰인다 — `isBoardableCandidate`의 BoardableCandidateContext.nextTargetStationName.
   // destinationId/route/currentStation 중 하나라도 없으면(free-trip, trip 비활성) null — 판정 skip.
   const nextTargetStationName = useMemo(() => {
-    if (!currentStation || !destinationId || !route) return null;
-    return getNextStationName(currentStation.id, destinationId, route);
-  }, [currentStation, destinationId, route]);
+    if (!directionStation || !destinationId || !route) return null;
+    return getNextStationName(directionStation.id, destinationId, route);
+  }, [directionStation, destinationId, route]);
 
   // #2696 (재발 reopen) — BoardingTrainList 직접 탭 경로의 탑승 범위(scope) 술어 배선.
   //

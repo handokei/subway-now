@@ -915,6 +915,7 @@ export default function HomeScreen() {
     route,
     arrival,
     currentStation: result?.station ?? null,
+    approachLine, // #2696 — origin 목록 방향을 BoardingTrainList line과 같은 여정 leg 기준으로
     expectedDurationMinutes: staticEtaMinutes,
     motionStationary,
     speedMps,
