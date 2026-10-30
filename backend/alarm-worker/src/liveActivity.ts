@@ -38,6 +38,7 @@ import { hashTripToken } from './sentry';
 import { computeLegProgressContext, computeMultiHopContext, computeNextStopContext } from './tripMultiHop';
 import { deleteSsot, type TripPositionSSoT } from './tripPositionSsot';
 import { recordTripEvent } from './tripEventLog';
+import { recordLaPushIfChanged, type LaPushPath } from './laPushLog';
 import {
   cleanupPendingPushesForToken,
   deleteDeviceTripIndexIfCurrent,
@@ -89,6 +90,8 @@ export interface LiveActivityDeps {
   apnsConfig: import('./apns').ApnsConfig;
   apnsHosts: Record<ApnsEnv, string>;
   fetchImpl?: typeof fetch;
+  /** #2747 PR-2 — `la-push` trip_events 관측용 D1. 미전달 시 기록 없음(KV write 0, D1만). */
+  db?: D1Database;
 }
 
 /**
@@ -449,6 +452,8 @@ export async function fireLiveActivityUpdate(
   // #2854 — 발사 순간을 OS 배너+소리로도 노출하는 "alert" LA update. 미전달 시 기존 동작
   // (무음 content-state 교체)과 동일 — 하위 호환.
   alert?: { title: string; body: string; sound?: string },
+  // #2747 PR-2 — 호출 경로 식별자. 지정 시 APNs 수락(2xx)된 push를 D1 `la-push`로 관측한다(중복 digest 생략).
+  laPushPath?: LaPushPath,
 ): Promise<LiveActivityFireResult> {
   if (!trip.activityPushToken || trip.activityState !== 'live') {
     return { dirty: false, sent: false };
@@ -476,6 +481,9 @@ export async function fireLiveActivityUpdate(
   const result = heal.result;
   if (result.ok) {
     stats.laPushSent += 1;
+    if (laPushPath) {
+      await recordLaPushIfChanged(deps.db, { token: trip.token, path: laPushPath, contentState }, now);
+    }
     if (heal.correctedEnv) {
       trip.apnsEnv = heal.correctedEnv;
       return { dirty: true, sent: true };
@@ -553,6 +561,7 @@ export async function fireLiveActivityDismissal(
   });
   if (result.ok) {
     stats.laPushSent += 1;
+    await recordLaPushIfChanged(deps.db, { token: trip.token, path: 'end', contentState: {} }, now);
   } else {
     stats.laPushFailed += 1;
     log('la dismissal failed', {
@@ -630,7 +639,7 @@ export async function cleanupTripWithLa(
   options?: { reason?: TripEndedReason; metricsReason?: string; endPath?: TripEndPath },
 ): Promise<void> {
   const { reason, metricsReason, endPath } = options ?? {};
-  await fireLiveActivityDismissal(trip, deps, stats, now, log);
+  await fireLiveActivityDismissal(trip, { ...deps, db: deps.db ?? env.DB }, stats, now, log);
   if (reason) {
     await fireTripEndedAlertPush(trip, reason, env, deps, now, log);
     // #1339 — launch reconciliation 백스톱. alert push가 APNs drop/디바이스 오프라인으로

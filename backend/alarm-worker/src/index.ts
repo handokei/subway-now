@@ -3367,6 +3367,7 @@ function buildSyncScheduledDeps(env: Env, archFlag: ArchFlagValue): ScheduledDep
     },
     apnsHosts: { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX },
     archFlag,
+    db: env.DB,
   };
 }
 
@@ -5134,6 +5135,7 @@ export const handler = {
         log,
         archFlag,
         killSwitchLocklessIntermediate,
+        db: env.DB,
       });
     } catch (err) {
       void captureBackendException(env, err, { path: 'scheduled/runScheduled' });
