@@ -25,6 +25,11 @@ struct LGColor {
     }
 }
 
+/// LA(잠금화면) 반투명 배경 투명도 — 여정·탑승 LA 공통, 이 1곳에서만 정의한다. (사용자 결정 10/30: 55%)
+enum LineGlassLA {
+    static let backgroundAlpha = 0.55
+}
+
 struct LineGlassPalette {
     let glassFallback: LGColor
     let glassBorder: LGColor
@@ -35,6 +40,10 @@ struct LineGlassPalette {
     let ink: LGColor
     let muted: LGColor
     let hair: LGColor
+    // LA 전용(theme.ts에 대응 값 없음) — 반투명 배경. lineGlassTranslucent.test.ts가 값을 고정한다.
+    let laBackground: LGColor
+    let laHighlight: LGColor
+    let laBorder: LGColor
 
     // theme.ts darkColors (Line Glass · Night)
     static let night = LineGlassPalette(
@@ -46,7 +55,10 @@ struct LineGlassPalette {
         onInkStrong: LGColor(hex: 0x07090A, alpha: 1),
         ink: LGColor(hex: 0xF2F5F3, alpha: 1),
         muted: LGColor(hex: 0x8C9A93, alpha: 1),
-        hair: LGColor(hex: 0xFFFFFF, alpha: 0.08)
+        hair: LGColor(hex: 0xFFFFFF, alpha: 0.08),
+        laBackground: LGColor(hex: 0x181C1A, alpha: LineGlassLA.backgroundAlpha),
+        laHighlight: LGColor(hex: 0xFFFFFF, alpha: 0.18),
+        laBorder: LGColor(hex: 0xFFFFFF, alpha: 0.12)
     )
 
     // theme.ts lightColors (Line Glass · Light)
@@ -59,7 +71,10 @@ struct LineGlassPalette {
         onInkStrong: LGColor(hex: 0xFFFFFF, alpha: 1),
         ink: LGColor(hex: 0x0E1512, alpha: 1),
         muted: LGColor(hex: 0x55605B, alpha: 1),
-        hair: LGColor(hex: 0x0E1512, alpha: 0.07)
+        hair: LGColor(hex: 0x0E1512, alpha: 0.07),
+        laBackground: LGColor(hex: 0xFFFFFF, alpha: LineGlassLA.backgroundAlpha),
+        laHighlight: LGColor(hex: 0xFFFFFF, alpha: 1),
+        laBorder: LGColor(hex: 0x0E1512, alpha: 0.08)
     )
 
     static func resolve(_ scheme: ColorScheme) -> LineGlassPalette {

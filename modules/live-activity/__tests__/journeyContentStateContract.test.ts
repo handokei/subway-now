@@ -36,12 +36,12 @@ describe('여정 LA 진행 막대 필드 계약 (#3221 PR-5)', () => {
     });
   }
 
-  it('위젯: Night/Light(colorScheme) + AOD(isLuminanceReduced) 분기, glassFallback 배경 tint, 구 주황/빨강 전체 배경 제거', () => {
+  it('위젯: Night/Light(colorScheme) + AOD(isLuminanceReduced) 분기, 반투명 laBackground 배경 tint(#3221), 구 주황/빨강 전체 배경 제거', () => {
     const code = stripComments(WIDGET);
     expect(code).toMatch(/@Environment\(\\\.colorScheme\)/);
     expect(code).toMatch(/@Environment\(\\\.isLuminanceReduced\)/);
     expect(code).toMatch(/\.activityBackgroundTint\(/);
-    expect(code).toMatch(/glassHighlight/);
+    expect(code).toMatch(/laHighlight/);
     expect(code).not.toMatch(/Color\.orange|Color\.red|\.orange\.opacity|\.red\.opacity/);
   });
 
