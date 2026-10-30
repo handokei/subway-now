@@ -96,6 +96,7 @@ jest.mock('../../../../data/stations.json', () => [
 
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { computeJourneyLaFields } from '../../../route/utils/journeyLaFields';
 import {
   refreshLiveActivityFromBackgroundContext,
   refreshLiveActivityOnMirrorAdvance,
@@ -336,6 +337,18 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     const [, , , route] = mockBuild.mock.calls[0] as [unknown, unknown, unknown, { stops: number }];
     // 회귀 상태(fix 전)라면 route === directRoute(stops:1)로 실패한다.
     expect(route.stops).toBe(0);
+  });
+
+  it('#3221 — gps-bg 분기: 원본(ROUTE_KEY) route 기준 여정 필드를 buildLiveActivityData 10번째 인자로 싣는다', async () => {
+    setupStorage({
+      [DESTINATION_KEY]: JSON.stringify(destination),
+      [BG_LAST_STATION_KEY]: JSON.stringify(bgStation),
+      [ROUTE_KEY]: JSON.stringify(directRoute),
+    });
+    await refreshLiveActivityFromBackgroundContext();
+    const journeyFields = mockBuild.mock.calls[0][9];
+    expect(journeyFields).toEqual(computeJourneyLaFields(directRoute, bgStation.station, destination));
+    expect(journeyFields.legStopsTotal).toBe(directRoute.stops);
   });
 
   it('route JSON 손상은 route=null로 진행 (LA 갱신 계속)', async () => {
