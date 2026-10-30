@@ -156,6 +156,43 @@ describe('useLiveActivityPreBoardingLifecycle', () => {
     });
   });
 
+  describe('#3221 — 기기 여정 LA 필드(남은 시간·진행 막대·다음 역)', () => {
+    const actual = jest.requireActual('../../../../shared/utils/stationRoute');
+    const yongmasan = actual.findStationByNameAndLine('용마산', '7');
+    const ttukseom = actual.findStationByNameAndLine('뚝섬', '2');
+    const route179 = actual.findRoutes(yongmasan.id, ttukseom.id).find((c: { route: { type: string } }) => c.route.type === 'transfer').route;
+
+    it('trip 179 출발 전 용마산: etaMinutes·legStopsTotal 4·nextStationName 중곡·nextLineName/Direction이 채워진다', () => {
+      useDestinationStore.setState({ destination: ttukseom, tripOrigin: yongmasan, customOrigin: null });
+      renderHook(() => useLiveActivityPreBoardingLifecycle(route179));
+      const data = mockUpdateLiveActivity.mock.calls[0][0];
+      expect(data.etaMinutes).toBeGreaterThan(0);
+      expect(data.legStopsTotal).toBe(4);
+      expect(data.nextLegStopsTotal).toBe(2);
+      expect(data.nextStationName).toBe('중곡');
+      expect(data.nextLineName).toBe('2호선');
+      expect(data.nextLineDirection).toBe('성수');
+      expect(data.nextLineColorHex).toBeTruthy();
+    });
+
+    it('출발역 미확정("감지 중")이면 산출 불가 — 필드를 싣지 않는다', () => {
+      useDestinationStore.setState({ destination: ttukseom, tripOrigin: null, customOrigin: null });
+      renderHook(() => useLiveActivityPreBoardingLifecycle(route179));
+      const data = mockUpdateLiveActivity.mock.calls[0][0];
+      expect(data.legStopsTotal).toBeUndefined();
+      expect(data.etaMinutes).toBeUndefined();
+      expect(data.nextStationName).toBeUndefined();
+    });
+
+    it('route 없음이면 필드를 싣지 않는다', () => {
+      useDestinationStore.setState({ destination: ttukseom, tripOrigin: yongmasan, customOrigin: null });
+      renderHook(() => useLiveActivityPreBoardingLifecycle(null));
+      const data = mockUpdateLiveActivity.mock.calls[0][0];
+      expect(data.legStopsTotal).toBeUndefined();
+      expect(data.nextStationName).toBeUndefined();
+    });
+  });
+
   it('tripOrigin 확보돼도 #2854 — boardingPhase 미설정이므로 #2434 버튼 컨텍스트 필드도 싣지 않는다', () => {
     useDestinationStore.setState({ destination: chungmuro, tripOrigin: gangnam, customOrigin: null });
     renderHook(() => useLiveActivityPreBoardingLifecycle(makeDirectRoute(5, gangnam.line)));

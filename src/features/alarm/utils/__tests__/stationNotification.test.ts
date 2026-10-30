@@ -1847,6 +1847,48 @@ describe('stationNotification', () => {
     });
   });
 
+  describe('buildLiveActivityData journeyFields (#3221 — 기기 여정 LA 진행 막대·다음 역)', () => {
+    const journeyFields = {
+      etaMinutes: 19,
+      legStopsTotal: 4,
+      nextLegStopsTotal: 2,
+      nextLineColorHex: '#009D3E',
+      nextStationName: '중곡',
+      nextLineName: '2호선',
+      nextLineDirection: '성수',
+    };
+
+    it('journeyFields를 content에 그대로 싣는다(etaMinutes 제외 필드)', () => {
+      const data = buildLiveActivityData(mockStation, 0, mockDestination, directRoute, undefined, false, null, undefined, null, journeyFields);
+      expect(data).toEqual(expect.objectContaining({
+        legStopsTotal: 4,
+        nextLegStopsTotal: 2,
+        nextLineColorHex: '#009D3E',
+        nextStationName: '중곡',
+        nextLineName: '2호선',
+        nextLineDirection: '성수',
+      }));
+    });
+
+    it('etaMinutes 인자가 없으면 journeyFields.etaMinutes로 etaMinutes/etaText를 채운다', () => {
+      const data = buildLiveActivityData(mockStation, 0, mockDestination, directRoute, null, false, null, undefined, null, journeyFields);
+      expect(data.etaMinutes).toBe(19);
+      expect(data.etaText).toBeTruthy();
+    });
+
+    it('etaMinutes 인자가 있으면(실시간 ETA) 그것이 이긴다', () => {
+      const data = buildLiveActivityData(mockStation, 0, mockDestination, directRoute, 7, false, null, undefined, null, journeyFields);
+      expect(data.etaMinutes).toBe(7);
+    });
+
+    it('journeyFields 미전달/null: 해당 필드를 만들지 않는다(구 동작)', () => {
+      const data = buildLiveActivityData(mockStation, 0, mockDestination, directRoute, null, false, null, undefined, null, null);
+      expect(data.legStopsTotal).toBeUndefined();
+      expect(data.nextStationName).toBeUndefined();
+      expect(data.etaMinutes).toBeUndefined();
+    });
+  });
+
   describe('buildLiveActivityData boardingPrompt 필드 (#2434 — LA interactive piece ①)', () => {
     it('boardingPrompt 미전달 시 boarding* 필드가 undefined (기존 동작 그대로)', () => {
       const data = buildLiveActivityData(mockStation, 154);

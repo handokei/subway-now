@@ -58,6 +58,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import { calculateStaticETA, findRoute, getStationsOnLine } from '../../../../shared/utils/stationRoute';
+import { computeJourneyLaFields } from '../../../route/utils/journeyLaFields';
 import { updateLiveActivityFromMirrorStation } from '../liveActivityMirrorSync';
 import {
   markDeviceGpsLiveActivityWrite,
@@ -107,12 +108,22 @@ describe('updateLiveActivityFromMirrorStation', () => {
       false,
       null,
       undefined,
+      null,
+      expect.objectContaining({ legStopsTotal: 1 }),
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
     // #2768 — 성공 tick은 skip 로그를 남기지 않고, 상태 전이 추적을 리셋해 다음 skip이 다시 적재되게 한다.
     expect(mockLogLiveActivityMirrorSkip).not.toHaveBeenCalled();
     expect(mockResetLiveActivityMirrorSkipTracking).toHaveBeenCalledTimes(1);
+  });
+
+  it('#3221 — 원본 route 기준 여정 필드(진행 막대·다음 역)를 buildLiveActivityData 10번째 인자로 싣는다', async () => {
+    await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
+    const journeyFields = mockBuild.mock.calls[0][9] as { legStopsTotal?: number; nextStationName?: string };
+    expect(journeyFields).toEqual(computeJourneyLaFields(directRoute, mirrorStation, destination));
+    expect(journeyFields.legStopsTotal).toBe(1);
+    expect(journeyFields.nextStationName).toBe(destination.name);
   });
 
   it('#3163 P1-b — mirror sync 진입 시 토큰 복구를 data 없이 호출한다(GPS writer 양보/활성 LA 없음이어도)', async () => {
@@ -130,7 +141,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
 
   it('route가 null이면 etaMinutes도 null(기존대로) — #2805 거부 케이스', async () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, null);
-    expect(mockBuild).toHaveBeenCalledWith(mirrorStation, 0, destination, null, null, false, null, undefined);
+    expect(mockBuild).toHaveBeenCalledWith(mirrorStation, 0, destination, null, null, false, null, undefined, null, {});
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
   });
@@ -196,6 +207,8 @@ describe('updateLiveActivityFromMirrorStation', () => {
       false,
       null,
       'deviceFallback',
+      null,
+      expect.any(Object),
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);

@@ -83,7 +83,7 @@ describe('useEnsureLiveActivity', () => {
       useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK),
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
-    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, chungmuro, null, 5);
+    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, chungmuro, null, 5, undefined, undefined, undefined, null, {});
   });
 
   // #2735 PR-1 — D7(LA 부재 시 FG 시작) 쓰기 관측.
@@ -226,9 +226,19 @@ describe('useEnsureLiveActivity', () => {
     expect(routeArg.stops).toBe(1);
   });
 
+  it('#3221 — 원본(고정) route 기준 여정 필드를 buildLiveActivityData 10번째 인자로 싣는다', () => {
+    const seongsu = getStationsOnLine('2').find((s) => s.id === '2-011')!;
+    const ddukseom = getStationsOnLine('2').find((s) => s.id === '2-010')!;
+    const staleRoute = { type: 'direct' as const, line: '2' as const, stops: 5, travelSeconds: 600 };
+    renderHook(() => useEnsureLiveActivity(seongsu, 50, ddukseom, staleRoute, 2, null));
+    const journeyFields = mockBuildLiveActivityData.mock.calls[0][9] as { legStopsTotal?: number };
+    // 재앵커링된 remainingRoute(stops 1)가 아니라 원본 leg 전체(5)여야 진행 막대 분모가 맞는다.
+    expect(journeyFields.legStopsTotal).toBe(5);
+  });
+
   it('#2811 편측 감사: destination이 없으면(lock만으로 트립 활성) route를 그대로 전달한다(anchor 대상 없음)', () => {
     const staleRoute = { type: 'direct' as const, line: '2' as const, stops: 5, travelSeconds: 600 };
     renderHook(() => useEnsureLiveActivity(gangnam, 120, null, staleRoute, 5, LOCK));
-    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, null, staleRoute, 5);
+    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, null, staleRoute, 5, undefined, undefined, undefined, null, null);
   });
 });

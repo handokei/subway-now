@@ -9,6 +9,7 @@
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
 import { findRoute, calculateStaticETA, getFirstLeg, getRouteRemainingSeconds, isSameStationName, isStationOnRoute, updateRouteFromPosition, getStationsOnLine, arcIndexOf, computeHopWindowSize, isStationWithinHopWindow, getStationById } from '../../../shared/utils/stationRoute';
 import { computeRouteArc } from '../../route/utils/routeProgress';
+import { computeJourneyLaFields } from '../../route/utils/journeyLaFields';
 import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import { isInTripByEvidence } from '../../../shared/utils/boardingWait';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
@@ -790,6 +791,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     undefined,
     sleepMode ? effectiveAlarmEvent : null,
     notificationSource,
+    // #3221 — route는 현재역 기준 재앵커링본이라 leg 전체 정거장 수를 모른다. 진행 막대/다음 역은 storedRoute(원본) 기준.
+    storedRoute ? computeJourneyLaFields(storedRoute, nearest.station, destination) : null,
   );
 
   return { alarmEvent: effectiveAlarmEvent, nearest };

@@ -51,6 +51,7 @@ import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { getStationById, type Route } from '../../../shared/utils/stationRoute';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { computeJourneyLaFields } from '../../route/utils/journeyLaFields';
 import { clearStationNotification } from '../utils/stationNotification';
 import { startAmbientLiveActivityTokenRegistration } from '../utils/liveActivityPushChannel';
 import { logLaWrite } from '../utils/alarmLog';
@@ -79,6 +80,7 @@ const PRE_BOARDING_UNKNOWN_LINE_COLOR_HEX = '#8E8E93';
 function buildPreBoardingLiveActivityData(
   destination: Station,
   origin: Station | null,
+  route: Route,
 ): LiveActivity.LiveActivityData {
   return {
     stationName: origin ? getStationDisplayName(origin) : i18next.t('widget.detecting'),
@@ -86,6 +88,8 @@ function buildPreBoardingLiveActivityData(
     lineColorHex: origin ? LINE_COLORS[origin.line] : PRE_BOARDING_UNKNOWN_LINE_COLOR_HEX,
     distanceM: 0,
     destinationName: getStationDisplayName(destination),
+    // #3221 — 탑승 전(서버 갱신 전)에도 남은 시간·진행 막대·다음 역을 채운다. 출발역이 미확정이면 산출 불가라 생략.
+    ...(origin ? computeJourneyLaFields(route, origin, destination) : {}),
   };
 }
 
@@ -158,7 +162,7 @@ export function useLiveActivityPreBoardingLifecycle(route: Route): void {
 
     if (!LiveActivity.isLiveActivityEnabled()) return;
 
-    const data = buildPreBoardingLiveActivityData(destination, resolvedOrigin);
+    const data = buildPreBoardingLiveActivityData(destination, resolvedOrigin, route);
     preBoardingActiveRef.current = true;
     // #2667 — 이 update가 native `start()`로 fall-through해 Activity를 만들면 push token이
     // emit된다. 구독이 없으면 그 token이 버려져 backend가 LA push를 영영 못 보낸다(실측

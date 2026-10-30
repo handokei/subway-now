@@ -31,6 +31,7 @@ import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { PlatformExitSide, TerminusRelation } from '../../../shared/types/platformExitSide';
 import { hasQuickExitData } from '../../route/utils/quickExit';
+import type { JourneyLaFields } from '../../route/utils/journeyLaFields';
 import { resolveExitSideForStation } from '../../../shared/utils/resolveExitSideForStation';
 import {
   notificationSourceI18nKey,
@@ -577,12 +578,16 @@ export function buildLiveActivityData(
   distanceM: number,
   destination?: Station | null,
   route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
-  etaMinutes?: number | null,
+  etaMinutesArg?: number | null,
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
   source?: NotificationSource,
   boardingPrompt?: BoardingPromptLiveActivityFields | null,
+  journeyFields?: JourneyLaFields | null,
 ): LiveActivity.LiveActivityData {
+  // #3221 — 실시간 ETA 인자가 없으면(BG 등) 원본 route 기준 static ETA로 채운다. 있으면 그것이 이긴다.
+  const { etaMinutes: journeyEtaMinutes, ...journeyRest } = journeyFields ?? {};
+  const etaMinutes = etaMinutesArg ?? journeyEtaMinutes;
   // station layer: 항상 포함. Live Activity는 사용자 노출이므로 현재 언어로 표시.
   const data: LiveActivity.LiveActivityData = {
     stationName: getStationDisplayName(currentStation),
@@ -617,6 +622,9 @@ export function buildLiveActivityData(
       data.stopsAfterLastTransfer = route.stopsAfterLastTransfer;
     }
   }
+
+  // #3221 — 여정 진행 필드(진행 막대·다음 역·환승 후 노선/방면). route layer 뒤라 원본 route 기준 값이 이긴다.
+  Object.assign(data, journeyRest);
 
   // eta layer: ETA가 있을 때만
   if (etaMinutes != null) {
@@ -719,6 +727,7 @@ export async function updateStationNotification(
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
   source?: NotificationSource,
+  journeyFields?: JourneyLaFields | null,
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
@@ -733,7 +742,7 @@ export async function updateStationNotification(
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
-    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent, source);
+    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent, source, null, journeyFields);
     try {
       liveActivityLogger.info('업데이트 요청');
       // #1288 — 활성 trip이 있으면 LA push 토큰 등록 채널을 거친다. 활성 trip이 없으면

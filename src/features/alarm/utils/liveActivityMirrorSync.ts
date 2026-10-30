@@ -55,6 +55,8 @@ import {
   shouldSkipDeviceLiveActivityWrite,
 } from './liveActivityPushChannel';
 import { isDeviceGpsLiveActivityWriteRecent } from './liveActivityGpsWriteArbitration';
+// eslint-disable-next-line import/no-restricted-paths -- #3221: LA writer는 route 슬라이스의 원본 route 산출(computeJourneyLaFields)을 소비하는 orchestrator (stationPipeline 등과 동일 옵트인).
+import { computeJourneyLaFields } from '../../route/utils/journeyLaFields';
 import {
   logLaWrite,
   type LaWriteAuthority,
@@ -156,6 +158,9 @@ export async function updateLiveActivityFromMirrorStation(
     false,
     null,
     fallbackSource,
+    null,
+    // #3221 — 진행 막대/다음 역은 freeze된 원본 route 기준(remainingRoute는 지나온 구간이 0이라 분모를 모른다).
+    computeJourneyLaFields(route, mirrorStation, destination),
   );
   await LiveActivity.updateLiveActivity(data);
   // #2686 — LA 갱신 횟수 계측(측정 목적, 정책 변경 없음).

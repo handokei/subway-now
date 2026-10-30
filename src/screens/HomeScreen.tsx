@@ -114,6 +114,7 @@ import {
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { ShareTripButton } from '../features/route/components/ShareTripButton';
 import { isDegenerateDestination } from '../features/route/utils/isDegenerateDestination';
+import { computeJourneyLaFields } from '../features/route/utils/journeyLaFields';
 import { Toast } from '../shared/ui/Toast';
 import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDetector';
 import { useTrainCodeMismatchDetector } from '../features/route/hooks/useTrainCodeMismatchDetector';
@@ -1524,6 +1525,8 @@ export default function HomeScreen() {
         // FG fusion 결과 source를 LA에 전달 (#327). FusionSource → NotificationSource로 매핑.
         // customOrigin 사용자가 직접 출발지 설정한 경우엔 라벨 부착 안 함.
         isCustomOrigin ? undefined : resolveNotificationSource(source, locationUncertain),
+        // #3221 — 진행 막대/다음 역은 freeze된 원본 route 기준(remainingRoute는 지나온 구간이 0).
+        computeJourneyLaFields(route, effectiveOrigin, destination),
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));
