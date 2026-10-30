@@ -1483,6 +1483,8 @@ export interface ScheduledDeps {
    * falsy → 기존 동작 100% 유지(dormant).
    */
   killSwitchLocklessIntermediate?: boolean;
+  /** #2747 PR-2 — `la-push` 관측용 D1. index.ts가 `env.DB`를 forward. 미전달(테스트) 시 기록 없음. */
+  db?: D1Database;
 }
 
 /**
@@ -4328,7 +4330,7 @@ export async function fireArvlCdStationPush(
   // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
   const stationNotifSound = stationNotifSoundFields(waypoint.kind);
   // #3221 PR-3 — split trip의 intermediate는 일반 alert 대신 여정 LA 무음 update(실패/비대상이면 null -> 아래 일반 alert).
-  const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, now, log, stats });
+  const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log, stats });
   const heal = laHeal ?? await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
@@ -4491,21 +4493,25 @@ async function trySendStationPassedAsLaUpdate(inputs: {
   trip: Trip;
   waypoint: Waypoint;
   deps: Pick<MidCycleFireDeps, 'apnsConfig' | 'apnsHosts' | 'fetchImpl'>;
+  /** #2747 PR-2 — `la-push` 관측용 D1. */
+  db?: D1Database;
   now: number;
   log: Logger;
   stats?: LiveActivityStats;
 }): Promise<EnvHealResult | null> {
-  const { trip, waypoint, deps, now, log } = inputs;
+  const { trip, waypoint, deps, db, now, log } = inputs;
   if (trip.laClient?.split !== true || waypoint.kind !== 'intermediate') return null;
   const stats = inputs.stats ?? { laPushSent: 0, laPushFailed: 0, laTokenCleared: 0 };
   const result = await fireLiveActivityUpdate(
     trip,
     buildStationArrivedContentState(trip, waypoint, now),
-    deps,
+    { ...deps, db },
     stats,
     now,
     log,
     waypoint.kind,
+    undefined,
+    'station-passed',
   );
   if (!result.sent) return null;
   trip.lastLaPushAt = now;
@@ -4533,7 +4539,7 @@ async function sendStationPassedAlertPush(inputs: {
 }) {
   const { env, trip, waypoint, lock, deps, now, log, pushId, origin } = inputs;
   // #3221 PR-3 — split trip의 intermediate는 여정 LA 무음 update(성공 시 일반 alert 생략).
-  const asLaUpdate = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, now, log });
+  const asLaUpdate = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log });
   if (asLaUpdate !== null) return asLaUpdate;
   const payload = buildStationPassedImminentPayload({
     trip,
@@ -5484,7 +5490,7 @@ export async function fireVanishFallbackStationPush(
   // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
   const vanishStationNotifSound = stationNotifSoundFields(waypoint.kind);
   // #3221 PR-3 — fireArvlCdStationPush와 같은 split intermediate 대체(편측 방지).
-  const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, now, log, stats });
+  const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log, stats });
   const heal = laHeal ?? await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
@@ -7178,7 +7184,7 @@ export async function completeWaypointAdvance(
       // 여전히 nextWaypoint 기준 — #1654/#1658 환승 display-line 로직 무변경.
       waypoint.stationName,
     );
-    await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, nextWaypoint.kind);
+    await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, nextWaypoint.kind, undefined, 'advance');
   }
   await putTrip(env.TRIPS, trip);
   // #705 — shift된 진행분을 progress KV에 +1 누적. 이후 POST /trips race가 trip.waypoints를
@@ -7276,7 +7282,7 @@ export async function maybeFireLiveActivityUpdate(
     undefined,
     { endPromptDue },
   );
-  const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind);
+  const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind, undefined, 'update');
   if (result.dirty) {
     // 410 분기 — token이 비워졌으므로 lastLaPushEpoch/lastLaPushAt은 갱신하지 않는다.
     return true;
@@ -8950,6 +8956,7 @@ async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaA
       undefined,
       // #3108 — 소리 없는 alert는 확장 표시/배너가 무음이라 인지 불가. 일반 알림 프롬프트와 동일 소리.
       { title, body, sound: BOARDING_PROMPT_SOUND },
+      'prompt-alert',
     );
     if (laResult.sent) {
       stats.boardingPromptLaAlertFired += 1;
