@@ -34,14 +34,43 @@ describe('routeToWaypoints — 환승 대기 재선택 재료 (#1480 PR-E)', () 
     }
   });
 
-  it('거부: 시간표 극성 불일치 노선(9호선)으로 갈아타는 환승은 새 필드를 내지 않는다 (backend는 remainingSecToDest 폴백)', () => {
-    const from = findStationByNameAndLine('교대', '3')!;
-    const to = findStationByNameAndLine('신논현', '9')!;
-    const route = findRoutes(from.id, to.id)
+  // 교대(3) → 신논현(9): 고속터미널에서 9호선으로 갈아타는 환승.
+  const line9TransferWaypoint = (
+    toWaypoints: typeof routeToWaypoints,
+    find: typeof findRoutes,
+    lookup: typeof findStationByNameAndLine,
+  ) => {
+    const from = lookup('교대', '3')!;
+    const to = lookup('신논현', '9')!;
+    const route = find(from.id, to.id)
       .map((r) => r.route!)
       .find((r) => r.type === 'transfer')!;
-    const transfer = routeToWaypoints(route, '신논현', from, REGISTERED_AT_MS).find((w) => w.kind === 'transfer')!;
-    expect(transfer).not.toHaveProperty('nextLegDeparturesEpochSec');
-    expect(transfer).not.toHaveProperty('rideSecToDest');
+    return toWaypoints(route, '신논현', from, REGISTERED_AT_MS).find((w) => w.kind === 'transfer')!;
+  };
+
+  it('9호선 환승도 시간표 극성 원천 수정(#3247) 후에는 재선택 재료를 낸다', () => {
+    const transfer = line9TransferWaypoint(routeToWaypoints, findRoutes, findStationByNameAndLine);
+    expect(transfer.nextLegDeparturesEpochSec).toHaveLength(6);
+    expect(transfer.rideSecToDest).toEqual(expect.any(Number));
+  });
+
+  it('거부: 시간표 극성 불일치 노선으로 갈아타는 환승은 새 필드를 내지 않는다 (backend는 remainingSecToDest 폴백)', () => {
+    jest.isolateModules(() => {
+      jest.doMock('../../../../shared/constants/timetableDirection', () => ({
+        ...jest.requireActual('../../../../shared/constants/timetableDirection'),
+        TIMETABLE_DIRECTION_MISMATCH_LINES: ['9'],
+      }));
+      /* eslint-disable @typescript-eslint/no-require-imports */
+      const { routeToWaypoints: isolatedToWaypoints } = require('../routeWaypoints');
+      const isolatedRoute = require('../../../../shared/utils/stationRoute');
+      /* eslint-enable @typescript-eslint/no-require-imports */
+      const transfer = line9TransferWaypoint(
+        isolatedToWaypoints,
+        isolatedRoute.findRoutes,
+        isolatedRoute.findStationByNameAndLine,
+      );
+      expect(transfer).not.toHaveProperty('nextLegDeparturesEpochSec');
+      expect(transfer).not.toHaveProperty('rideSecToDest');
+    });
   });
 });
