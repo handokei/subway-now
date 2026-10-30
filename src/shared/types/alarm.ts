@@ -42,6 +42,12 @@ export interface AlarmWaypoint {
   line: string;
   kind: 'transfer' | 'destination' | 'intermediate';
   /**
+   * #3177 — 실제로 내리는 승강장의 역 id(stations.json `id`). 환승 waypoint는 fromLine 쪽(사당 2호선 '2-026'),
+   * 환승역=목적지여도 fromLine 쪽이다. backend가 silent push `stationId`로 되돌려 보내 device가 하차문을 id로 조회한다.
+   * 경로(Route)에 id가 없는 구 저장 경로면 부재 — 이름으로 대체 조회하지 않는다(필수화는 경로 id 필수화 PR 이후).
+   */
+  stationId?: string;
+  /**
    * #2747 PR-6 — 이 역에 정차해 있다고 볼 때 목적지(하차역)까지 남은 초. backend가 LA push
    * etaMinutes를 (다음 waypoint ETA + 이 값)으로 합산한다. 구 client·계산 불가 시 부재(optional).
    */
