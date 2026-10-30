@@ -273,13 +273,20 @@ private struct LockScreenView: View {
                 }
             }
         }
-        // LA는 실제 blur를 쓸 수 없어 glassFallback 단색 tint + 상단 1px glassHighlight로 유리 질감을 낸다.
-        .activityBackgroundTint(palette.glassFallback.color)
+        // #3221 — 반투명 55%(배경화면이 비침). 테두리 + 상단 1px 하이라이트로 유리 질감을 낸다.
+        // 글자색은 iOS가 배경화면 밝기로 주는 colorScheme을 따른다. AOD는 hair만 쓰고 배경은 iOS 처리에 맡긴다.
+        .activityBackgroundTint(palette.laBackground.color)
         .activitySystemActionForegroundColor(palette.ink.color)
-        .overlay(alignment: .top) {
+        .overlay {
             Rectangle()
-                .fill(palette.glassHighlight.color)
-                .frame(height: 1)
+                .strokeBorder(isLuminanceReduced ? palette.hair.color : palette.laBorder.color, lineWidth: 1)
+        }
+        .overlay(alignment: .top) {
+            if !isLuminanceReduced {
+                Rectangle()
+                    .fill(palette.laHighlight.color)
+                    .frame(height: 1)
+            }
         }
     }
 
@@ -394,7 +401,7 @@ private struct LockScreenView: View {
             LinearGradient(
                 stops: [
                     .init(color: top, location: 0),
-                    .init(color: palette.glassFallback.color, location: 0.7),
+                    .init(color: Color.clear, location: 0.7),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
