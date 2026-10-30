@@ -312,6 +312,8 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
   sentAt: number;
   // Epic #1204 그룹 2 D3 (#1273) — 구 client 호환을 위해 optional.
   hopIndex?: number;
+  // #3177 — 구 device 등록은 부재.
+  stationId?: string;
 } {
   const body = JSON.parse(call[1].body as string) as {
     data: {
@@ -322,6 +324,7 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
       pushId: string;
       sentAt: number;
       hopIndex?: number;
+      stationId?: string;
     };
   };
   return body.data;

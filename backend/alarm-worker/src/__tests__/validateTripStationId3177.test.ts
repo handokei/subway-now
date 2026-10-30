@@ -73,6 +73,9 @@ describe('#3177 validateTrip — waypoint.stationId', () => {
       'waypoint-station-id-dropped',
       expect.objectContaining({ cause, stationName: '사당', line: '4' }),
     );
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('waypoint-station-id-dropped'));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('waypoint-station-id-dropped'),
+      expect.stringContaining(cause),
+    );
   });
 });
