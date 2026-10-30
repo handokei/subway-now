@@ -130,7 +130,7 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
     expect(eta.lastTrainEnded).toBe(false);
   });
 
-  it('9호선은 시간표 방향 극성이 directionOnLine과 달라 시간표를 쓰지 않고 배차간격/2 (평일 offPeak 480s → 240s)', () => {
+  it('9호선도 시간표를 쓴다 (극성 원천 교정, #1480) — headway 폴백이 아니라 timetable 소스', () => {
     const dangsan = findStationByNameAndLine('당산', '9');
     const yeouido = findStationByNameAndLine('여의도', '9');
     if (!dangsan || !yeouido) throw new Error('fixture station missing');
@@ -139,7 +139,8 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
       destinationStationId: yeouido.id,
     };
     const eta = computeJourneyEta({ route, nowMs: kstMs(2026, 10, 28, 12, 0), excludeOriginWait: true });
-    expect(eta.waits[0]).toMatchObject({ line: '9', source: 'headway', seconds: 240 });
+    expect(eta.waits[0]).toMatchObject({ line: '9', source: 'timetable' });
+    expect(eta.waits[0].seconds).toBeGreaterThanOrEqual(0);
   });
 
   it('막차 이후: 대기를 합산하지 않고 lastTrainEnded (목요일 23:50, 1호선 소요산 down 막차 2347)', () => {
