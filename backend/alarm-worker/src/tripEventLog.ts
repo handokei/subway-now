@@ -248,7 +248,11 @@ export type TripEventKind =
   // lock.segmentStations[0], `line`=lock.line. 목표(ADR-043): 사용자 행위 3경로(confirm/sync)와 그 파생(vanish-swap)
   // 외의 attach 0 — register/cron-leg1/cron-leg2는 hasResponseMarker=true일 때만 나타나야 한다.
   // 부착 시점 1회만 적재(tick 반복 아님) — KV write 추가 0.
-  | 'lock-attached';
+  | 'lock-attached'
+  // #3221 PR-3 — 탑승 LA push-to-start(`fireBoardingLaStart`) 발사 1건마다 1행. 질문(탑승/하차/종료 제안) 1건당 최대 1행이라
+  // D1 quota 영향 미미, KV write 0. meta={ path: 'boarding-prompt'|'hop-end-prompt'|'end-prompt-due', phase, status(APNs HTTP),
+  // ok, reason? }. "start 2xx면 일반 알림 무음"(#3146 기준) 판정의 사후 대조와 "split인데 start 0건" 감시용. 관측 전용.
+  | 'la-boarding-start';
 
 /** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
 export type LockAttachPath =

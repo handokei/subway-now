@@ -66,6 +66,11 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var nextStationName: String?
         var nextLineName: String?
         var nextLineDirection: String?
+        // #3221 PR-3 — 매역 도착 DI 축소 표시. split trip의 intermediate 매역 진입은 일반 알림 대신 backend가 이 두 필드를
+        // 실은 무음 update를 보낸다. 위젯 compact가 `arrivedUntilEpochSec`(epoch 초) 전이면 "{역}역 도착"을 보이고, 이후
+        // update(content-state 전체 교체)나 만료로 기존 표시로 복귀한다. 전부 optional — 구 payload는 nil.
+        var arrivedStationName: String?
+        var arrivedUntilEpochSec: Int?
     }
 }
 

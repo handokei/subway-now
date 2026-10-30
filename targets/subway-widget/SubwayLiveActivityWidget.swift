@@ -30,8 +30,43 @@ extension SubwayActivityAttributes.ContentState {
         )
     }
 
-    /// compact trailing: "역 · N분".
+    /// #3221 PR-3 — 매역 도착 표시가 유효한 역명. backend가 split trip의 intermediate 매역 진입 시 무음 update로
+    /// `arrivedStationName`/`arrivedUntilEpochSec`를 싣는다. 만료(epoch 초) 전이면 역명, 아니면 nil.
+    /// 다음 update는 content-state 전체 교체라 필드 자체가 사라져 자연히 기존 표시로 복귀한다.
+    var activeArrivedStationName: String? {
+        guard let name = arrivedStationName, let until = arrivedUntilEpochSec,
+              Double(until) > Date().timeIntervalSince1970 else { return nil }
+        return name
+    }
+
+    /// 도착 표시의 오른쪽: 환승이 남았으면 "N분·환승K역", 아니면 "N분·K역"(K = 환승/목적지까지 남은 정거장).
+    /// etaMinutes나 정거장 수가 없으면 nil -> 기존 오른쪽 표시로 폴백.
+    var arrivedTrailingText: String? {
+        guard let minutes = etaMinutes else { return nil }
+        if let stops = stopsToTransfer, transferStationName != nil {
+            return String(
+                format: NSLocalizedString("widget.la.journey.islandArrivedEtaTransfer", comment: "Arrived: minutes and stops to transfer"),
+                minutes, stops
+            )
+        }
+        guard let stops = stopsRemaining else { return nil }
+        return String(
+            format: NSLocalizedString("widget.la.journey.islandArrivedEtaDestination", comment: "Arrived: minutes and stops left"),
+            minutes, stops
+        )
+    }
+
+    /// compact leading 도착 문구: "{역}역 도착".
+    func arrivedLeadingText(_ station: String) -> String {
+        String(
+            format: NSLocalizedString("widget.la.journey.islandArrived", comment: "Arrived at station"),
+            station
+        )
+    }
+
+    /// compact trailing: "역 · N분". 도착 표시 중이면 "N분·환승K역"(정보가 모자라면 기존 표시).
     var compactTrailingText: String {
+        if activeArrivedStationName != nil, let arrived = arrivedTrailingText { return arrived }
         guard let eta = shortEtaText else { return stationName }
         return "\(stationName) · \(eta)"
     }
@@ -86,10 +121,19 @@ struct SubwayLiveActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                Circle()
-                    .fill(context.state.islandDotColor)
-                    .frame(width: 10, height: 10)
-                    .padding(.leading, 2)
+                if let arrived = context.state.activeArrivedStationName {
+                    // #3221 PR-3 — 매역 도착: 점 대신 "{역}역 도착" (소리·배너 없이 축소 표시만).
+                    Text(context.state.arrivedLeadingText(arrived))
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(context.state.islandDotColor)
+                        .lineLimit(1)
+                } else {
+                    Circle()
+                        .fill(context.state.islandDotColor)
+                        .frame(width: 10, height: 10)
+                        .padding(.leading, 2)
+                }
             } compactTrailing: {
                 Text(context.state.compactTrailingText)
                     .font(.caption2)

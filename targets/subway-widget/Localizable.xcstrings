@@ -1015,6 +1015,93 @@
           }
         }
       }
+    },
+    "widget.la.journey.islandArrived" : {
+      "comment" : "Dynamic Island compact leading when a station was just reached, e.g. arrived at Junggok",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrived %@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@駅に到着"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@역 도착"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "到达%@站"
+          }
+        }
+      }
+    },
+    "widget.la.journey.islandArrivedEtaTransfer" : {
+      "comment" : "Dynamic Island compact trailing after arrival: minutes to destination and stops to the next transfer",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%dm · %d to transfer"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d分·乗換まで%d駅"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d분·환승%d역"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d分钟·换乘%d站"
+          }
+        }
+      }
+    },
+    "widget.la.journey.islandArrivedEtaDestination" : {
+      "comment" : "Dynamic Island compact trailing after arrival: minutes to destination and stops left",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%dm · %d stops"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d分·%d駅"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d분·%d역"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d分钟·%d站"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
