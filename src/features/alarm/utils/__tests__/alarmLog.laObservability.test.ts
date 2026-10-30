@@ -10,6 +10,7 @@ jest.mock('../boardingPromptDailyCounters', () => ({
 import {
   clearAlarmLogWindows,
   flushAlarmLog,
+  logBoardingLaWrite,
   logLaRefreshDecision,
   logLaWrite,
   resetAlarmLogForTest,
@@ -91,6 +92,27 @@ describe('#2735 PR-1 la-write / la-refresh-decision 관측', () => {
       // dedup이 살아 있으면 count가 비어 있다(위 '연속 동일값' 케이스).
       const [entry] = await savedEntries();
       expect(entry.count).toBe(2);
+    });
+  });
+
+  // #3221 PR-4 — 탑승 LA writer B1~B4. la-write 체계에 얹히되 여정 쓰기(D1~D8)와 reason으로 구분된다.
+  describe('logBoardingLaWrite (B1~B4)', () => {
+    it.each(['B1', 'B2', 'B3', 'B4'] as const)('%s — reason=la-write-<writer>, source는 stationName 슬롯', async (writer) => {
+      logBoardingLaWrite({ writer, source: 'lock-created' });
+      const [entry] = await savedEntries();
+      expect(entry).toMatchObject({
+        source: 'la-write',
+        outcome: 'received',
+        reason: `la-write-${writer}`,
+        stationName: 'src=lock-created',
+      });
+    });
+
+    it('서로 다른 writer는 별개 행으로 적재된다', async () => {
+      logBoardingLaWrite({ writer: 'B3', source: 'lock-created' });
+      logBoardingLaWrite({ writer: 'B4', source: 'trip-cleanup' });
+      const entries = await savedEntries();
+      expect(entries.map((e) => e.reason)).toEqual(['la-write-B3', 'la-write-B4']);
     });
   });
 

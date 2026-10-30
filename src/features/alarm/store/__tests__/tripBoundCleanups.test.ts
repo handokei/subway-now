@@ -53,6 +53,11 @@ jest.mock('../../../widget/api/widgetStorage', () => ({
 jest.mock('live-activity', () => ({
   endLiveActivity: () => mockEndLiveActivity(),
 }));
+// #3221 PR-4 — 탑승 LA 종료 호출 검증용. 채널 자체는 boardingActivityChannel.test.ts에서 검증한다.
+const mockEndBoardingActivity = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/boardingActivityChannel', () => ({
+  endBoardingActivity: (...args: unknown[]) => mockEndBoardingActivity(...args),
+}));
 // #3163 후속 P2.2 — cleanup의 native 종료는 channel 상태(backendConfirmed/세션)도 정리해야 한다.
 const mockResetLaChannelAfterExternalEnd = jest.fn();
 jest.mock('../../utils/liveActivityPushChannel', () => ({
@@ -719,6 +724,22 @@ describe('tripBoundCleanups', () => {
     mockEndLiveActivity.mockClear();
     await runTripBoundCleanups('user-clear');
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
+  });
+
+  // #3221 PR-4 — 종료 3곳 중 1: trip 종료 cleanup은 여정 LA와 함께 탑승 LA(질문 카드)도 닫는다.
+  // 이 호출이 빠지면 안내 종료 후에도 "탑승하셨나요?" 카드가 고아로 남는다.
+  it('#3221 — runTripBoundCleanups 실행 시 탑승 LA도 종료한다 (B4 trip-cleanup)', async () => {
+    mockEndBoardingActivity.mockClear();
+    await runTripBoundCleanups('user-clear');
+    expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
+    expect(mockEndBoardingActivity).toHaveBeenCalledWith('trip-cleanup');
+  });
+
+  it('#3221 — 여정 LA end가 reject해도 탑승 LA end는 이미 호출됐다(서로 막지 않는다)', async () => {
+    mockEndBoardingActivity.mockClear();
+    mockEndLiveActivity.mockRejectedValueOnce(new Error('already-ended'));
+    await expect(runTripBoundCleanups('user-clear')).resolves.toBeUndefined();
+    expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
   });
 
   it('#3163 P2.2 — cleanup의 LA end 뒤 channel 상태(backend 권위/세션)를 정리한다 (end 실패해도 호출)', async () => {

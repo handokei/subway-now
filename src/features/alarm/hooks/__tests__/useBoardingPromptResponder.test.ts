@@ -48,6 +48,11 @@ const mockHandleAlarmEndTripResponse = jest.fn();
 jest.mock('../useAlarmEndTripResponder', () => ({
   handleAlarmEndTripResponse: (...args: unknown[]) => mockHandleAlarmEndTripResponse(...args),
 }));
+// #3221 PR-4 — 탑승 LA 종료 호출 검증용. 채널 자체는 boardingActivityChannel.test.ts에서 검증한다.
+const mockEndBoardingActivity = jest.fn();
+jest.mock('../../utils/boardingActivityChannel', () => ({
+  endBoardingActivity: (...args: unknown[]) => mockEndBoardingActivity(...args),
+}));
 jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByNameAndLine: jest.fn(),
 }));
@@ -2351,5 +2356,46 @@ describe('handleResponse — #2034 hop-end', () => {
       expect(positionUpload.dismissBoardingPrompt).toHaveBeenCalledWith('tok-dest');
       expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
     });
+  });
+});
+
+// #3221 PR-4 — 응답 handler는 탑승 LA(질문 카드)를 닫는다. [탑승] 응답은 lock primitive(createLock)가
+// 닫으므로 여기서 닫지 않는다(이중 호출 방지) — 미탑승/dismiss/hop-end 응답만 이 handler가 직접 닫는다.
+describe('handleResponse — #3221 탑승 LA 종료 wire', () => {
+  const HOP_END = {
+    kind: 'boarding-prompt' as const,
+    originStation: '성수',
+    line: '2',
+    tripToken: 'tok-hop',
+    hopEndKind: 'disembark' as const,
+    nextLine: 'K',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each<[string, string]>([
+    ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED],
+    ['dismiss(불명 액션)', 'SOME_OTHER_ACTION'],
+  ])('%s -> endBoardingActivity(not-boarded-response)', async (_label, action) => {
+    await handleResponse(action, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
+    expect(mockEndBoardingActivity).toHaveBeenCalledWith('not-boarded-response');
+  });
+
+  it.each<[string, string]>([
+    ['[하차함]', DISEMBARK_ACTION_DISEMBARKED],
+    ['[아직]', DISEMBARK_ACTION_NOT_YET],
+  ])('hop-end %s -> endBoardingActivity(hop-end-response)', async (_label, action) => {
+    await handleResponse(action, HOP_END, makeHandleResponseDeps());
+    expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
+    expect(mockEndBoardingActivity).toHaveBeenCalledWith('hop-end-response');
+  });
+
+  it('[탑승] 응답은 handler가 직접 닫지 않는다(lock primitive 소관)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, HANDLE_RESPONSE_PAYLOAD, makeHandleResponseDeps());
+    expect(mockEndBoardingActivity).not.toHaveBeenCalled();
   });
 });
