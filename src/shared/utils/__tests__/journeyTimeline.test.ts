@@ -213,3 +213,46 @@ describe('computeJourneyEta — 출발 대기 / 도보 / 직통', () => {
     expect(eta.waits[0].seconds).not.toBe(180);
   });
 });
+
+describe('computeJourneyEta — 환승 실시간 boardable 후보 (#1480 PR-D)', () => {
+  const arriveKun = kstMs(2026, 10, 28, 6, 34, 21);
+  const nowMs = nowForTransferArrival(arriveKun);
+  const platformMs = arriveKun + (278 + 30) * 1000; // 도보 278 + buffer 30
+  const base = { route: trip179Route, nowMs, excludeOriginWait: true } as const;
+
+  it('T_platform 이전 도착은 건너뛰고 첫 boardable 열차를 고른다', () => {
+    const eta = computeJourneyEta({
+      ...base,
+      transferBoardableArrivalsMs: [[platformMs - 60_000, platformMs + 240_000, platformMs + 600_000]],
+    });
+    expect(eta.waits).toEqual([
+      { kind: 'transfer', line: '2', stationName: '건대입구', source: 'realtime', seconds: 240 },
+    ]);
+    expect(eta.lookups).toEqual([]);
+  });
+
+  it('T_platform과 정확히 같은 도착은 탈 수 있다(경계 포함)', () => {
+    const eta = computeJourneyEta({ ...base, transferBoardableArrivalsMs: [[platformMs]] });
+    expect(eta.waits[0]).toMatchObject({ source: 'realtime', seconds: 0 });
+  });
+
+  it('후보 순서와 무관하게 가장 이른 boardable을 고른다', () => {
+    const eta = computeJourneyEta({
+      ...base,
+      transferBoardableArrivalsMs: [[platformMs + 600_000, platformMs + 120_000]],
+    });
+    expect(eta.waits[0]).toMatchObject({ source: 'realtime', seconds: 120 });
+  });
+
+  it('boardable 후보가 하나도 없으면(전부 platform 이전) 시간표로 폴백', () => {
+    const eta = computeJourneyEta({ ...base, transferBoardableArrivalsMs: [[platformMs - 1_000]] });
+    expect(eta.waits[0]).toMatchObject({ source: 'timetable', seconds: 91 });
+  });
+
+  it('슬롯이 null/빈 배열이면 입력 없음과 동치(시간표)', () => {
+    const plain = computeJourneyEta(base);
+    expect(computeJourneyEta({ ...base, transferBoardableArrivalsMs: [null] })).toEqual(plain);
+    expect(computeJourneyEta({ ...base, transferBoardableArrivalsMs: [[]] })).toEqual(plain);
+    expect(plain.waits[0].source).toBe('timetable');
+  });
+});
