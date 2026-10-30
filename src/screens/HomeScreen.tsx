@@ -33,7 +33,7 @@ import { PausedNavigationBadge } from '../features/route/components/PausedNaviga
 import { setNavigationPausedAt } from '../features/alarm/utils/navigationPauseStorage';
 import { resumeNavigation } from '../features/alarm/store/tripBoundCleanups';
 import { etaDisplayKind } from '../shared/utils/journeyTimeline';
-import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateEtaDetail, calculateStaticEtaDetail, anchorRouteToCurrentStation, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
+import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateEtaDetail, calculateStaticEtaDetail, anchorRouteToCurrentStation, getRouteTotalStops, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { isInTripByEvidence } from '../shared/utils/boardingWait';
 import { getFiredAlarms } from '../features/alarm/utils/notificationState';
 import { pickNextTrainMinutes } from '../features/arrival/utils/nextTrainMinutes';
@@ -1799,7 +1799,7 @@ export default function HomeScreen() {
                             </Text>
                           )}
                           <Text style={[typography.micro, { color: colors.muted, marginTop: 2 }]}>
-                            {isRealtimeEta ? 'EST' : t('home.estimatedSuffix')} · {journey?.totalStops ?? 0} STOPS
+                            {isRealtimeEta ? 'EST' : t('home.estimatedSuffix')} · {remainingRoute ? getRouteTotalStops(remainingRoute) : 0} STOPS
                           </Text>
                         </>
                       )}

@@ -684,18 +684,18 @@ function buildNameIndex(stations: Station[]): Map<string, number> {
   return index;
 }
 
+/** route가 가진 정거장 합(direct=stops, transfer=환승 전+후, multi=transfers 순회 + 마지막 환승 이후). 재앵커링된 route를 넘기면 남은 정거장. */
+export function getRouteTotalStops(route: NonNullable<Route>): number {
+  if (route.type === 'direct') return route.stops;
+  if (route.type === 'transfer') return route.stopsToTransfer + route.stopsFromTransfer;
+  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
+  return transferStops + route.stopsAfterLastTransfer;
+}
+
 function toCandidate(route: NonNullable<Route>): RouteCandidate {
   const travelMinutes = getTravelMinutes(route);
-  if (route.type === 'direct') {
-    return { route, totalStops: route.stops, transferCount: 0, travelMinutes };
-  }
-  if (route.type === 'transfer') {
-    const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
-    return { route, totalStops, transferCount: 1, travelMinutes };
-  }
-  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
-  const totalStops = transferStops + route.stopsAfterLastTransfer;
-  return { route, totalStops, transferCount: route.transfers.length, travelMinutes };
+  const transferCount = route.type === 'direct' ? 0 : route.type === 'transfer' ? 1 : route.transfers.length;
+  return { route, totalStops: getRouteTotalStops(route), transferCount, travelMinutes };
 }
 
 export function findRoutes(currentId: string, destinationId: string): RouteCandidate[] {

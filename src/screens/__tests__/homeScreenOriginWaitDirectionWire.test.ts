@@ -22,3 +22,10 @@ describe('HomeScreen — 출발 대기 방향 배선 (#1480 N8)', () => {
     expect(SOURCE).toMatch(/pickArrivalAtOrigin\(rawArrival,\s*originWaitDirection\)/);
   });
 });
+
+describe('HomeScreen — 상단 STOPS는 재앵커링 route 기준 (#1480)', () => {
+  it('"N STOPS"가 journey.totalStops(여정 전체)가 아니라 remainingRoute 기반 getRouteTotalStops', () => {
+    expect(SOURCE).not.toMatch(/journey\?\.totalStops \?\? 0\} STOPS/);
+    expect(SOURCE).toMatch(/getRouteTotalStops\(remainingRoute\)/);
+  });
+});
