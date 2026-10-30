@@ -54,7 +54,7 @@ const arrival7: StationArrival = { up: [up7250, up7252], down: [down7261] };
 const DEST = station('7-015'); // 용마산
 const route = findRoute('2-011', DEST.id); // 성수 → (건대입구) → 용마산
 
-function run(currentStation: Station, approachLine?: '2' | '7' | null, arrival: StationArrival = arrival7) {
+function run(currentStation: Station | null, approachLine?: '2' | '7' | null, arrival: StationArrival = arrival7) {
   return renderHook(() =>
     useBoardingLockController({
       destinationId: DEST.id,
@@ -91,6 +91,17 @@ describe('환승역 origin 목록 방향 — 여정 leg 노선 기준 (#2696 / #
 
   it('거부: leg 방향 미해결(현재역=목적지 용마산 7호선) → 공란 유지(#3029 양방향 병합 금지)', () => {
     const { result } = run(station('7-015'), '7');
+    expect(result.current.boardingListArrivals).toEqual([]);
+  });
+
+  it('거부: 현재역 없음(currentStation=null)이면 앵커를 만들지 않고 공란', () => {
+    const { result } = run(null, '7');
+    expect(result.current.boardingListArrivals).toEqual([]);
+  });
+
+  it('거부: approachLine 노선에 같은 이름 역이 없으면 앵커 보정 없이 currentStation 판정(여기선 목적지 위 -> 공란)', () => {
+    // 용마산은 7호선 전용 — 2호선 앵커를 만들 수 없어 currentStation(7-015) 그대로 → currIdx===nextIdx → null.
+    const { result } = run(station('7-015'), '2');
     expect(result.current.boardingListArrivals).toEqual([]);
   });
 });
