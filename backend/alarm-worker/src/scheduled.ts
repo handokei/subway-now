@@ -63,8 +63,10 @@ import {
   runKalmanStep,
   writeKalmanState,
 } from './kalmanFilter';
+import { fireBoardingLaStart, hasBoardingStartTarget } from './boardingLaStart';
 import {
   buildLiveActivityContentState,
+  buildStationArrivedContentState,
   destinationEtaSeconds,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
@@ -1878,6 +1880,26 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           motionState: stationarySsot.motionState,
         },
       });
+      // #3221 PR-3 — split + push-to-start token: 종료 제안을 탑승 LA(phase end-prompt)로 start한다. split의 여정 content는
+      // end-prompt 필드를 싣지 않으므로(`buildLiveActivityContentState`) 이 due tick이 유일한 발사 지점이다. `isEndPromptDue`는
+      // due tick 하나만 true라 중복 start는 없고, 기기 쪽 dedup은 static promptId(`end-prompt-{now}`).
+      if (hasBoardingStartTarget(trip)) {
+        const strings = t(trip.locale);
+        const started = await fireBoardingLaStart({
+          trip,
+          env,
+          deps,
+          now,
+          log,
+          path: 'end-prompt-due',
+          phase: 'end-prompt',
+          station: resolveCurrentStationName(trip, stationarySsot),
+          line: waypoint.line,
+          title: strings.endPromptTitle,
+          body: strings.endPromptBody({ destinationStation: trip.destination }),
+        });
+        if (started.dirty) await putTrip(env.TRIPS, trip);
+      }
     }
     if (
       stationarySsot !== null &&
@@ -4305,7 +4327,9 @@ export async function fireArvlCdStationPush(
   const stationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
   // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
   const stationNotifSound = stationNotifSoundFields(waypoint.kind);
-  const heal = await sendWithEnvHeal(
+  // #3221 PR-3 — split trip의 intermediate는 일반 alert 대신 여정 LA 무음 update(실패/비대상이면 null -> 아래 일반 alert).
+  const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, now, log, stats });
+  const heal = laHeal ?? await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
         // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
@@ -4454,6 +4478,45 @@ export interface MidCycleFireStats {
 }
 
 /**
+ * #3221 PR-3 (§13, ADR-051/ADR-050 개정) — split trip의 **intermediate** 매역 도착은 일반 alert 대신 여정 LA **무음 update**로 알린다.
+ * 위젯 다이내믹 아일랜드 축소 뷰가 `arrivedStationName`이 유효한 동안 "{역}역 도착 | N분·환승K역"을 그리고, 소리·배너·알림센터는 없다.
+ * transfer/destination은 지금처럼 일반 notification(소리)이라 이 대체의 대상이 아니다. 비split trip은 현행 그대로.
+ *
+ * 반환: LA update가 수락(2xx)되면 `EnvHealResult` 형태(호출부가 일반 push 결과와 같은 분기로 처리), 대체 대상이 아니거나
+ * 실패/LA 미live면 null — 호출부가 **일반 alert로 폴백**한다(역 알림 유실보다 LA 미표시 위험이 크다).
+ * `lastLaPushAt`을 stamp해 같은 tick의 ΔETA/heartbeat LA update(`maybeFireLiveActivityUpdate` 30s dedup)가 도착 표시를 즉시
+ * 덮어쓰지 않게 한다.
+ */
+async function trySendStationPassedAsLaUpdate(inputs: {
+  trip: Trip;
+  waypoint: Waypoint;
+  deps: Pick<MidCycleFireDeps, 'apnsConfig' | 'apnsHosts' | 'fetchImpl'>;
+  now: number;
+  log: Logger;
+  stats?: LiveActivityStats;
+}): Promise<EnvHealResult | null> {
+  const { trip, waypoint, deps, now, log } = inputs;
+  if (trip.laClient?.split !== true || waypoint.kind !== 'intermediate') return null;
+  const stats = inputs.stats ?? { laPushSent: 0, laPushFailed: 0, laTokenCleared: 0 };
+  const result = await fireLiveActivityUpdate(
+    trip,
+    buildStationArrivedContentState(trip, waypoint, now),
+    deps,
+    stats,
+    now,
+    log,
+    waypoint.kind,
+  );
+  if (!result.sent) return null;
+  trip.lastLaPushAt = now;
+  return {
+    result: { ok: true, status: 200 },
+    envMismatchExhausted: false,
+    ...(result.dirty && trip.apnsEnv !== undefined ? { correctedEnv: trip.apnsEnv } : {}),
+  };
+}
+
+/**
  * 매역 station-passed alert push 공용 발송 (mid-cycle/진입 발사 `sendStationPassedFireOnly` + sync-skipped 발사).
  * payload 빌드 + content/sound + env self-heal 전송까지만 하고 heal 결과를 반환한다 — dedup·D1 기록은 호출자 책임.
  */
@@ -4469,6 +4532,9 @@ async function sendStationPassedAlertPush(inputs: {
   origin: 'arvlcd' | 'device-sync';
 }) {
   const { env, trip, waypoint, lock, deps, now, log, pushId, origin } = inputs;
+  // #3221 PR-3 — split trip의 intermediate는 여정 LA 무음 update(성공 시 일반 alert 생략).
+  const asLaUpdate = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, now, log });
+  if (asLaUpdate !== null) return asLaUpdate;
   const payload = buildStationPassedImminentPayload({
     trip,
     waypoint,
@@ -5417,7 +5483,9 @@ export async function fireVanishFallbackStationPush(
   const vanishStationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
   // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
   const vanishStationNotifSound = stationNotifSoundFields(waypoint.kind);
-  const heal = await sendWithEnvHeal(
+  // #3221 PR-3 — fireArvlCdStationPush와 같은 split intermediate 대체(편측 방지).
+  const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, now, log, stats });
+  const heal = laHeal ?? await sendWithEnvHeal(
     (host) =>
       sendAlertPush({
         // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
@@ -8642,12 +8710,17 @@ async function fireBoardingPromptForAnchor(inputs: {
   // (`lastLaPushAt` waypoint shift reset → fail-closed) activityState!=='live'면 소리를 유지한다.
   // 한계(추정): swipe dismiss된 LA는 heartbeat가 200을 받는 한 이 가드를 통과한다.
   const laPushAgeMs = trip.lastLaPushAt === undefined ? null : now - trip.lastLaPushAt;
-  const laLive = Boolean(trip.activityPushToken) && trip.activityState === 'live';
+  // #3221 PR-3 — split trip(+push-to-start token)은 질문을 별도 탑승 LA로 start한다(`firePromptLaAlert`). 그 start는
+  // 여정 LA 상태와 무관(여정 LA가 없어도 start 가능)하고 heartbeat 신선도가 의미 없다 — 수락(2xx)이면 일반 알림 무음.
+  const startTarget = hasBoardingStartTarget(trip);
+  const laLive = startTarget || (Boolean(trip.activityPushToken) && trip.activityState === 'live');
   const soundGuard: PromptSoundGuard = !laLive
     ? 'not-live'
-    : laPushAgeMs === null || laPushAgeMs > LA_STALE_AUTO_END_MS
-      ? 'stale'
-      : 'none';
+    : startTarget
+      ? 'none'
+      : laPushAgeMs === null || laPushAgeMs > LA_STALE_AUTO_END_MS
+        ? 'stale'
+        : 'none';
   const laStartedAt = Date.now();
   const la: PromptLaAlertOutcome = laLive
     ? await firePromptLaAlertWithinBudget({ trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body })
@@ -8812,6 +8885,28 @@ async function firePromptLaAlertWithinBudget(inputs: PromptLaAlertInputs): Promi
  */
 async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaAlertOutcome> {
   const { trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body } = inputs;
+  // #3221 PR-3 — split + push-to-start token: 질문은 여정 LA update가 아니라 탑승 LA start로 보낸다(여정 push에 질문 필드 0).
+  if (hasBoardingStartTarget(trip)) {
+    try {
+      const started = await fireBoardingLaStart({
+        trip,
+        env,
+        deps,
+        now,
+        log,
+        path: 'boarding-prompt',
+        phase: 'pre-boarding',
+        station,
+        line,
+        title,
+        trainInfo: body,
+      });
+      return { sent: started.sent, dirty: started.dirty, budgetExceeded: false };
+    } catch (e) {
+      log(`${logPrefix}: boarding la start threw`, { token: trip.token.slice(0, 8), error: String(e) });
+      return { sent: false, dirty: false, budgetExceeded: false };
+    }
+  }
   try {
     const ssot = await readSsot(env.TRIPS, trip.token, {
       cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
@@ -9820,6 +9915,24 @@ export async function maybeFireHopEndPrompt(inputs: {
     trip.locale,
   );
   const pushId = generatePushId();
+  // #3221 PR-3 — split + push-to-start token: "하차했나요?"를 탑승 LA(phase hop-end)로 start한다. start가 수락(2xx)되면
+  // 같은 질문의 일반 알림은 무음(이중 울림 방지, #3146 "start 2xx" 기준과 동일). 실패하면 소리 그대로.
+  const start = hasBoardingStartTarget(trip)
+    ? await fireBoardingLaStart({
+        trip,
+        env,
+        deps,
+        now,
+        log,
+        path: 'hop-end-prompt',
+        phase: 'hop-end',
+        station: transferWaypoint.stationName,
+        line: transferWaypoint.line,
+        nextLine,
+        title,
+        body,
+      })
+    : null;
   const heal = await sendWithEnvHeal(
     (host) =>
       sendBoardingPromptPush({
@@ -9828,6 +9941,7 @@ export async function maybeFireHopEndPrompt(inputs: {
         pushId,
         title,
         body,
+        ...(start?.sent ? { sound: null } : {}),
         // originStation 필드는 hop-end 시 "하차 대상 역 (환승역)" 으로 재해석 — device 가
         // hopEndKind='disembark' 를 보고 이 의미로 파싱.
         originStation: transferWaypoint.stationName,
@@ -9853,7 +9967,8 @@ export async function maybeFireHopEndPrompt(inputs: {
     trip.apnsEnv = heal.correctedEnv;
     stats.envCorrected += 1;
   }
-  if (heal.result.ok) {
+  // #3221 PR-3 — 알림이 실패해도 탑승 LA start가 나갔으면 사용자는 질문을 받았다(재발사 시 소리 있는 start 중복 방지).
+  if (heal.result.ok || start?.sent === true) {
     stats.hopEndPromptFired += 1;
     stats.silentPushFiredByKind.boardingPrompt += 1;
     trip.hopEndPromptState = {

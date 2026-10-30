@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import app from '../index';
 import { stationNotifCollapseId } from '../collapseId';
 import { parseReplayFixture } from '../replayFixture';
+import type { Trip } from '../types';
 import { runCaptureReplay, type CapturedPush, type ReplayRunResult } from './helpers/replayHarness';
 import {
   makeRide20261028MorningPreBoardingTrip,
@@ -43,14 +44,16 @@ function kstOf(ms: number): string {
   return new Date(ms + KST_OFFSET_MS).toISOString().slice(11, 19);
 }
 
-async function replay(split: boolean): Promise<ReplayRunResult> {
+async function replay(split: boolean, mutateTrip?: (trip: Trip) => void): Promise<ReplayRunResult> {
   const fixture = parseReplayFixture(
     JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'replayLibrary', FIXTURE), 'utf8')),
   );
   const done = new Set<string>();
+  const seed = makeRide20261028MorningPreBoardingTrip(TRIP_TOKEN, fixture.window.fromMs, { split });
+  mutateTrip?.(seed);
   return runCaptureReplay({
     fixture,
-    seedTrips: [makeRide20261028MorningPreBoardingTrip(TRIP_TOKEN, fixture.window.fromMs, { split })],
+    seedTrips: [seed],
     apns: 'capture',
     twoPass: true,
     beforeTick: async ({ tick, env }) => {
@@ -92,6 +95,7 @@ const journeyUpdates = (r: ReplayRunResult) => r.pushes.filter((p) => p.url.ends
 const alertsWith = (r: ReplayRunResult, prefix: string) =>
   r.pushes.filter((p) => p.headers.pushType === 'alert' && (p.headers.collapseId ?? '').startsWith(prefix));
 
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 const INTERMEDIATE_STATIONS = ['중곡', '군자(능동)', '어린이대공원(세종대)'];
 
 describe('#3221 PR-3 — split trip: 탑승 LA push-to-start (trip 179 실측 replay)', () => {
@@ -190,9 +194,22 @@ describe('#3221 PR-3 — split trip: 매역(intermediate)은 일반 alert 대신
   });
 });
 
+describe('#3221 PR-3 — 여정 LA가 없으면 매역 알림을 잃지 않는다', () => {
+  it('split trip이어도 여정 LA token이 없으면(대체할 update 대상 없음) intermediate는 일반 alert 그대로, 탑승 start는 여정 LA와 무관하게 나간다', async () => {
+    const result = await replay(true, (trip) => {
+      trip.activityPushToken = undefined;
+      trip.activityState = undefined;
+    });
+    for (const station of INTERMEDIATE_STATIONS) {
+      expect(alertsWith(result, stationNotifCollapseId(TRIP_TOKEN, station))).toHaveLength(1);
+    }
+    expect(starts(result)).toHaveLength(4);
+  });
+});
+
 describe('#3221 PR-3 — 비split trip은 현행 byte 동일', () => {
-  /** 변경 전(dev 4f82953b) 코드로 계산한 push 전수(simNowMs/url/body/headers) sha256. 통과시키려 조정 금지. */
-  const BASELINE_PUSHES_SHA256 = '8e8ca7efa2ed846cb31e8b55fc68f496a1a747d4962aa531a3afe43ff49a3b23';
+  /** 변경 전(dev 4f82953b) 코드로 계산한 push 전수(simNowMs/url/body/headers, UUID 정규화) sha256. 통과시키려 조정 금지. */
+  const BASELINE_PUSHES_SHA256 = '361ff7cf703c194b289438d0ee4da7dce2d9a2a79bbc2d8f520804d6c6c23d66';
 
   it('start 0건, 질문 LA alert는 여정 update에 실리고, push 전수 해시가 변경 전과 같다', async () => {
     const result = await replay(false);
@@ -201,9 +218,9 @@ describe('#3221 PR-3 — 비split trip은 현행 byte 동일', () => {
     expect(questionUpdates).toHaveLength(3);
     const digest = createHash('sha256')
       .update(
-        JSON.stringify(
-          result.pushes.map(({ simNowMs, url, body, headers }) => ({ simNowMs, url, body, headers })),
-        ),
+        JSON.stringify(result.pushes.map(({ simNowMs, url, body, headers }) => ({ simNowMs, url, body, headers })))
+          // hop-end 호출부의 pushId는 `crypto.randomUUID()`(비결정) — 값만 정규화한다.
+          .replace(UUID_RE, '<uuid>'),
       )
       .digest('hex');
     expect(digest).toBe(BASELINE_PUSHES_SHA256);

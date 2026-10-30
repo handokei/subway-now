@@ -62,6 +62,10 @@ export interface LiveActivityData {
   nextStationName?: string;
   nextLineName?: string;
   nextLineDirection?: string;
+  // #3221 PR-3 — 매역 도착 DI 축소 표시. backend가 split trip의 intermediate 매역 진입 시 무음 update로 채운다
+  // (기기는 채우지 않음). 위젯은 arrivedUntilEpochSec(epoch 초) 전이면 compact에 "{역}역 도착"을 보인다.
+  arrivedStationName?: string;
+  arrivedUntilEpochSec?: number;
 }
 
 const LiveActivityModule =

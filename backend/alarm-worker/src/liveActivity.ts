@@ -236,6 +236,38 @@ export function buildLiveActivityContentState(
 }
 
 /**
+ * #3221 PR-3 (§13) — 매역 도착 표시가 유효한 시간(초). 이 시간이 지나면 위젯은 기존 "역 · N분"으로 돌아간다.
+ * 그 전에 다음 LA update(heartbeat/ΔETA)가 오면 content-state 전체 교체로 먼저 사라진다 — 의도된 "다음 갱신 시 복귀".
+ */
+export const STATION_ARRIVED_DISPLAY_SEC = 60;
+
+/**
+ * #3221 PR-3 (§13) — split trip의 intermediate 매역 도착을 일반 알림 대신 **여정 LA 무음 update**로 알릴 때의 content.
+ * 다이내믹 아일랜드 축소 뷰가 `arrivedStationName`(+만료 `arrivedUntilEpochSec`)이 유효한 동안 "{역}역 도착 | N분·환승K역"을 그린다.
+ *
+ * 남은 값(정거장 수/환승까지/ETA)은 **그 역을 지난 뒤** 기준이다 — `completeWaypointAdvance`의 advance 후 LA content와 같은 의미.
+ * 진입(position sttus0) 발사는 advance 전이라 `trip.waypoints[0]`이 아직 그 역이므로 head를 한 칸 뺀 view로 계산한다
+ * (sync-skipped처럼 이미 소비된 경우는 head가 다른 역이라 그대로 쓴다). trip은 변형하지 않는다.
+ */
+export function buildStationArrivedContentState(trip: Trip, waypoint: Waypoint, nowMs: number): LiveActivityContentState {
+  const [head] = trip.waypoints;
+  const remaining = head?.stationName === waypoint.stationName ? trip.waypoints.slice(1) : trip.waypoints;
+  const next = remaining[0] ?? waypoint;
+  return {
+    ...buildLiveActivityContentState(
+      next,
+      // 방금 도착한 waypoint에 정차 중이므로 목적지까지 = 그 waypoint의 remainingSecToDest (#2747 PR-6과 동일).
+      destinationEtaSeconds(waypoint, 0),
+      remaining.length,
+      { ...trip, waypoints: remaining },
+      waypoint.stationName,
+    ),
+    arrivedStationName: waypoint.stationName,
+    arrivedUntilEpochSec: Math.floor(nowMs / 1000) + STATION_ARRIVED_DISPLAY_SEC,
+  };
+}
+
+/**
  * #2997 S1 — LA 탑승 섹션 content를 **프롬프트 발사와 무관하게** 산출한다.
  *
  * ## 왜 backend가 소유자인가
