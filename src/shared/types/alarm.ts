@@ -46,4 +46,14 @@ export interface AlarmWaypoint {
    * etaMinutes를 (다음 waypoint ETA + 이 값)으로 합산한다. 구 client·계산 불가 시 부재(optional).
    */
   remainingSecToDest?: number;
+  /**
+   * #1480 PR-E (B2) — 환승 waypoint 전용. 환승 도보 이후 toLine·진행방향·요일 시간표의 다음 출발 K개(epoch 초, 오름차순).
+   * backend가 push마다 "lock 열차 실시간 환승역 도착 + transferWalkSec" 이후 첫 출발을 다시 골라 etaMinutes를 갱신한다.
+   * 셋(next/transferWalk/ride)은 함께 있거나 함께 없다. 시간표를 쓸 수 없으면 부재 -> backend는 remainingSecToDest로 폴백.
+   */
+  nextLegDeparturesEpochSec?: number[];
+  /** 환승역 도착 → 승강장 준비까지 도보 + buffer (초). */
+  transferWalkSec?: number;
+  /** 이 환승의 도보·대기를 제외한 나머지 주행 (초). etaMinutes = 선택 출발까지 + 이 값. */
+  rideSecToDest?: number;
 }

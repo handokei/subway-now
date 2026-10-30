@@ -4659,6 +4659,28 @@ export function resolveProgressWaypoints(
   return sliced.length > 0 ? sliced : baseWaypoints;
 }
 
+/** #1480 PR-E — device가 한 환승 waypoint에 stamp하는 시간표 다음 출발 개수 상한(payload 무한 증가 방지). device K=6의 2배. */
+const MAX_NEXT_LEG_DEPARTURES = 12;
+
+const isNonNegativeFinite = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+/** #1480 PR-E — 재선택 재료 3종 검증. 전부 유효하면 그대로, 아니면 `{}`(묶음 제거). */
+function validReselectFields(raw: {
+  nextLegDeparturesEpochSec: unknown;
+  transferWalkSec: unknown;
+  rideSecToDest: unknown;
+}): Pick<Trip['waypoints'][number], 'nextLegDeparturesEpochSec' | 'transferWalkSec' | 'rideSecToDest'> {
+  const { nextLegDeparturesEpochSec, transferWalkSec, rideSecToDest } = raw;
+  const departuresValid =
+    Array.isArray(nextLegDeparturesEpochSec) &&
+    nextLegDeparturesEpochSec.length > 0 &&
+    nextLegDeparturesEpochSec.length <= MAX_NEXT_LEG_DEPARTURES &&
+    nextLegDeparturesEpochSec.every(isNonNegativeFinite);
+  if (!departuresValid || !isNonNegativeFinite(transferWalkSec) || !isNonNegativeFinite(rideSecToDest)) return {};
+  return { nextLegDeparturesEpochSec: nextLegDeparturesEpochSec as number[], transferWalkSec, rideSecToDest };
+}
+
 export function validateTrip(
   input: unknown,
   // #2998 — 거부 사유 관측 훅. 종전에는 `console.warn` + Sentry breadcrumb만 남아
@@ -4735,11 +4757,15 @@ export function validateTrip(
       typeof remainingSecToDest === 'number' && Number.isFinite(remainingSecToDest) && remainingSecToDest >= 0
         ? { remainingSecToDest }
         : {};
+    // #1480 PR-E (B2) — 환승 대기 재선택 재료(등록 put에 얹힘, KV 쓰기 +0). 셋이 모두 유효할 때만 채택하고
+    // 하나라도 잘못되면 묶음째 제거한다(반쪽 재선택 금지; 등록은 거부하지 않음 — 구 동작으로 graceful degrade).
+    const { nextLegDeparturesEpochSec, transferWalkSec, rideSecToDest, ...restWithoutReselect } = rest;
     return {
-      ...rest,
+      ...restWithoutReselect,
       occurrenceIdx: existingOcc,
       hopIndex: existingHop,
       ...validRemaining,
+      ...validReselectFields({ nextLegDeparturesEpochSec, transferWalkSec, rideSecToDest }),
     } as Trip['waypoints'][number];
   });
 

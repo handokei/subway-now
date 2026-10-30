@@ -209,9 +209,11 @@ describe('#1480 PR-E — LA etaMinutes가 환승 대기를 push마다 재선택�
       route: unknown;
       waypoints: Record<string, unknown>[];
     };
-    const waypoints = contract.waypoints.map((wp) =>
-      wp.kind === 'transfer' ? { ...wp, ...extra } : wp,
-    );
+    // 계약 fixture(PR-E 이후)는 재료를 이미 담고 있다 — 이 헬퍼는 테스트가 고른 값만 얹도록 먼저 비운다.
+    const waypoints = contract.waypoints.map((wp) => {
+      const { nextLegDeparturesEpochSec: _d, transferWalkSec: _w, rideSecToDest: _r, ...base } = wp;
+      return wp.kind === 'transfer' ? { ...base, ...extra } : base;
+    });
     const trip = validateTrip({
       token: 'trip179',
       destination: '뚝섬',
@@ -258,7 +260,7 @@ describe('#1480 PR-E — LA etaMinutes가 환승 대기를 push마다 재선택�
 
   it('구 trip(새 필드 없음)은 무변경: 지연 입력에서도 eta + remainingSecToDest', async () => {
     const lateEtaSec = nextWaypointEtaSec() + 9 * 60;
-    const etaMinutes = await fireAndReadEtaMinutes(tripAtGunja(), undefined, lateEtaSec);
+    const etaMinutes = await fireAndReadEtaMinutes(tripWithTransferFields({}), undefined, lateEtaSec);
     expect(etaMinutes).toBe(legacyMinutes(lateEtaSec));
   });
 
