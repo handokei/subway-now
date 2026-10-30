@@ -55,6 +55,7 @@ import {
   shouldSkipDeviceLiveActivityWrite,
 } from './liveActivityPushChannel';
 import { isDeviceGpsLiveActivityWriteRecent } from './liveActivityGpsWriteArbitration';
+// eslint-disable-next-line import/no-restricted-paths -- #3221: LA writer는 route 슬라이스의 원본 route 산출(computeJourneyLaFields)을 소비하는 orchestrator (stationPipeline 등과 동일 옵트인).
 import { computeJourneyLaFields } from '../../route/utils/journeyLaFields';
 import {
   logLaWrite,
