@@ -33,7 +33,7 @@ interface Row {
   chip: string | null;
 }
 
-function text(testID: string): string | null {
+function text(testID: string | RegExp): string | null {
   const el = screen.queryByTestId(testID);
   if (!el) return null;
   const { children } = el.props;
@@ -45,7 +45,7 @@ function table(stops: Stop[]): Row[] {
   return stops.map((s, i) => ({
     station: s.station,
     note: text(`timeline-note-${i}`),
-    door: text(`boarding-door-text-${i}`),
+    door: text(new RegExp(`^boarding-door-${i}-`)),
     doorNote: text(`boarding-door-note-${i}`),
     chip: text(`timeline-segment-${i}`),
   }));

@@ -323,7 +323,8 @@ describe('buildJourneyDisplay', () => {
   });
 
   it('DirectRoute이면 세그먼트 1개를 반환한다', () => {
-    const route: DirectRoute = makeDirectRoute(3, '2');
+    // #3258 — 첫 구간 정거장 수는 표시되는 두 역 사이 실제 경로 길이(강남→잠실 = 6)로 산출된다.
+    const route: DirectRoute = makeDirectRoute(6, '2');
     const current = mockStation({ id: '2-022', name: '강남' });
     const dest = mockStation({ id: '2-025', name: '잠실(송파구청)' });
 
@@ -334,8 +335,8 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments[0].toName).toBe('잠실(송파구청)');
     expect(result!.segments[0].line).toBe('2');
     expect(result!.segments[0].lineColor).toBe('#009D3E');
-    expect(result!.segments[0].stops).toBe(3);
-    expect(result!.totalStops).toBe(3);
+    expect(result!.segments[0].stops).toBe(6);
+    expect(result!.totalStops).toBe(6);
   });
 
   it('DirectRoute 표시는 current.line이 아닌 route.line을 따른다 (환승역 출발)', () => {
@@ -364,7 +365,7 @@ describe('buildJourneyDisplay', () => {
   it('MultiTransferRoute이면 세그먼트 3개를 반환한다', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 4 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -379,7 +380,7 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments[0].fromName).toBe('암사');
     expect(result!.segments[0].toName).toBe('잠실(송파구청)');
     expect(result!.segments[0].line).toBe('8');
-    expect(result!.segments[0].stops).toBe(3);
+    expect(result!.segments[0].stops).toBe(4);
 
     expect(result!.segments[1].fromName).toBe('잠실(송파구청)');
     expect(result!.segments[1].toName).toBe('시청');
@@ -391,7 +392,80 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments[2].line).toBe('1');
     expect(result!.segments[2].stops).toBe(4);
 
-    expect(result!.totalStops).toBe(12);
+    expect(result!.totalStops).toBe(13);
+  });
+
+  describe('#3258 첫 구간 정거장 수 = 표시되는 출발역~환승역 경로 길이', () => {
+    it('route가 현재역 기준으로 재계산돼 stopsToTransfer가 줄어도(재마운트) 표시 출발역 기준 값을 쓴다', () => {
+      // 용마산(7) 표시 출발 → 건대입구 환승 = 4정거장. route는 어린이대공원 기준이라 1.
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '용마산', line: '7', lineColor: '#747F00' });
+      const dest = mockStation({ name: '뚝섬', line: '2', lineColor: '#009D3E' });
+
+      const result = buildJourneyDisplay(route, current, dest)!;
+      expect(result.segments[0].stops).toBe(4);
+      expect(result.segments[1].stops).toBe(2);
+    });
+
+    it('다중 환승: 첫 구간만 재계산하고 이후 구간은 route 값을 유지한다', () => {
+      const route: MultiTransferRoute = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 1 },
+          { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 9 },
+        ],
+        stopsAfterLastTransfer: 4,
+      });
+      const current = mockStation({ name: '용마산', line: '7', lineColor: '#747F00' });
+      const dest = mockStation({ name: '종각', line: '1', lineColor: '#0052A4' });
+
+      const result = buildJourneyDisplay(route, current, dest)!;
+      expect(result.segments.map((seg) => seg.stops)).toEqual([4, 9, 4]);
+    });
+
+    it('표시 출발역이 노선에서 해석되지 않으면 route 값으로 fallback', () => {
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '없는역', line: '7' });
+      const dest = mockStation({ name: '뚝섬', line: '2' });
+      expect(buildJourneyDisplay(route, current, dest)!.segments[0].stops).toBe(3);
+    });
+
+    it('환승역이 노선에서 해석되지 않으면 route 값으로 fallback', () => {
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '없는환승역',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '용마산', line: '7' });
+      const dest = mockStation({ name: '뚝섬', line: '2' });
+      expect(buildJourneyDisplay(route, current, dest)!.segments[0].stops).toBe(3);
+    });
+
+    it('출발역==환승역(환승 후 re-origin)이면 route 값(0) 유지', () => {
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 0,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '건대입구', line: '2' });
+      const dest = mockStation({ name: '뚝섬', line: '2' });
+      expect(buildJourneyDisplay(route, current, dest)!.segments[0].stops).toBe(0);
+    });
   });
 
   it('TransferRoute이면 세그먼트 2개를 반환한다', () => {

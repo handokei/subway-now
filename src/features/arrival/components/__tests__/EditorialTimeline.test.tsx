@@ -57,8 +57,8 @@ describe('EditorialTimeline', () => {
   it('should render transfer dot for transfer stop', () => {
     const stops: Stop[] = [
       { station: '서울역', line: '1', mark: 'filled' },
-      { station: '시청', line: '2', stopsFromPrev: '1정거장', mark: 'transfer', note: '환승' },
-      { station: '을지로입구', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
+      { station: '시청', line: '2', mark: 'transfer', note: '환승' },
+      { station: '을지로입구', line: '2', mark: 'dest', note: '도착' },
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByTestId('transfer-dot')).toBeTruthy();
@@ -74,9 +74,10 @@ describe('EditorialTimeline', () => {
     expect(screen.getByText('도착')).toBeTruthy();
   });
 
-  it('should render stopsFromPrev text', () => {
+  it('#3258 노드에는 정거장 수가 없고 구간 칩("{노선} N정거장")만 렌더된다', () => {
     render(<EditorialTimeline stops={MOCK_STOPS.twoStops} />);
-    expect(screen.getByText('1정거장')).toBeTruthy();
+    expect(screen.getByTestId('timeline-segment-0')).toHaveTextContent('2호선 1정거장');
+    expect(screen.queryByTestId('timeline-segment-1')).toBeNull();
   });
 
   it('should render line name for known lines', () => {
@@ -87,7 +88,7 @@ describe('EditorialTimeline', () => {
   it('should handle null line gracefully', () => {
     const stops: Stop[] = [
       { station: '출발역', line: null, mark: 'filled' },
-      { station: '종착역', line: null, stopsFromPrev: '5정거장', mark: 'dest', note: '도착' },
+      { station: '종착역', line: null, mark: 'dest', note: '도착' },
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByText('출발역')).toBeTruthy();
@@ -97,7 +98,7 @@ describe('EditorialTimeline', () => {
   it('should handle special line names (airport)', () => {
     const stops: Stop[] = [
       { station: '서울역', line: 'airport', mark: 'filled' },
-      { station: '인천공항', line: 'airport', stopsFromPrev: '5정거장', mark: 'dest', note: '도착' },
+      { station: '인천공항', line: 'airport', mark: 'dest', note: '도착' },
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getAllByText('공항철도').length).toBeGreaterThan(0);
@@ -106,7 +107,7 @@ describe('EditorialTimeline', () => {
   it('should fallback to LINE label and accent color for unknown line', () => {
     const stops: Stop[] = [
       { station: '출발역', line: 'unknown', mark: 'filled' },
-      { station: '종착역', line: 'unknown', stopsFromPrev: '3정거장', mark: 'dest', note: '도착' },
+      { station: '종착역', line: 'unknown', mark: 'dest', note: '도착' },
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getAllByText('LINE unknown').length).toBeGreaterThan(0);
@@ -151,7 +152,6 @@ describe('EditorialTimeline quickExit door label', () => {
     {
       station: '경복궁',
       line: '3',
-      stopsFromPrev: '5정거장',
       mark: 'dest',
       note: '도착',
       arrivalContext: { line: '3', fromName: '교대', toName: '경복궁' },
@@ -160,14 +160,14 @@ describe('EditorialTimeline quickExit door label', () => {
 
   it('단조 노선 + quickExit 데이터 있으면 stairs 우선(기본 모드)으로 문번호 라벨이 뜬다', () => {
     render(<EditorialTimeline stops={stopsWithQuickExit} />);
-    expect(screen.getByText('3-2번 문')).toBeTruthy();
+    expect(screen.getByText('탑승 3-2번 문')).toBeTruthy();
   });
 
   it('accessibilityMode ON 이면 elevator 우선으로 다른 문번호가 뜬다', () => {
     useSettingsStore.setState({ accessibilityMode: true });
     render(<EditorialTimeline stops={stopsWithQuickExit} />);
-    expect(screen.getByText('5-1번 문')).toBeTruthy();
-    expect(screen.queryByText('3-2번 문')).toBeNull();
+    expect(screen.getByText('탑승 5-1번 문')).toBeTruthy();
+    expect(screen.queryByText('탑승 3-2번 문')).toBeNull();
   });
 
   it('arrivalContext 없는 stop(filled) 단독이면 라벨이 안 뜬다', () => {
@@ -180,9 +180,10 @@ describe('EditorialTimeline quickExit door label', () => {
     render(<EditorialTimeline stops={stopsWithQuickExit} />);
     expect(screen.getByText('탑승 3-2번 문')).toBeTruthy();
     expect(screen.getByTestId('boarding-door-0-3-2')).toBeTruthy();
-    // 도착 stop은 원래 "3-2번 문"(탑승 prefix 없음) 그대로 유지.
-    // testID는 door 값을 suffix로 포함해 E2E flow에서 i18n 텍스트 대신 id 정규식으로 검증 가능 (#1230).
-    expect(screen.getByTestId('quick-exit-door-1-3-2')).toBeTruthy();
+    expect(screen.getByText('경복궁에서 나가기 빠른 칸')).toBeTruthy();
+    // #3258 — 도착 stop은 칸 정보를 갖지 않는다(출발 노드와 중복 제거).
+    expect(screen.queryByTestId(/^boarding-door-1-/)).toBeNull();
+    expect(screen.queryByTestId(/^quick-exit-door-/)).toBeNull();
   });
 
   it('#635 출발역만 있고 다음 stop 없으면 boarding-door 라벨 안 뜬다', () => {
@@ -198,7 +199,6 @@ describe('EditorialTimeline quickExit door label', () => {
       {
         station: '군자',
         line: '7',
-        stopsFromPrev: '20정거장',
         mark: 'transfer',
         note: '환승',
         arrivalContext: { line: '5', fromName: '방화', toName: '군자' },
@@ -219,7 +219,6 @@ describe('EditorialTimeline quickExit door label', () => {
       {
         station: '경복궁',
         line: '3',
-        stopsFromPrev: '5정거장',
         mark: 'dest',
         note: '도착',
         arrivalContext: { line: '3', fromName: '교대', toName: '경복궁' },
@@ -238,7 +237,6 @@ describe('EditorialTimeline quickExit door label', () => {
       {
         station: toName,
         line,
-        stopsFromPrev: '3정거장',
         mark: 'dest',
         note: '도착',
         arrivalContext: { line, fromName, toName },
@@ -260,14 +258,14 @@ describe('EditorialTimeline quickExit door label', () => {
   // #676 — 비단조 노선이라도 도착역 station_id에 quickExit 데이터가 있으면 도어 라벨 표시.
   it('#676 비단조 노선(1호선) + quickExit 데이터 있으면 direction 없이도 stairs 도어 라벨이 뜬다', () => {
     render(<EditorialTimeline stops={makeDestOnlyStops('1', '시청', '회기')} />);
-    expect(screen.getByText('7-3번 문')).toBeTruthy();
+    expect(screen.getByText('탑승 7-3번 문')).toBeTruthy();
   });
 
   it('#676 비단조 노선 fallback도 accessibilityMode ON 시 elevator 우선', () => {
     useSettingsStore.setState({ accessibilityMode: true });
     render(<EditorialTimeline stops={makeDestOnlyStops('1', '시청', '회기')} />);
-    expect(screen.getByText('4-2번 문')).toBeTruthy();
-    expect(screen.queryByText('7-3번 문')).toBeNull();
+    expect(screen.getByText('탑승 4-2번 문')).toBeTruthy();
+    expect(screen.queryByText('탑승 7-3번 문')).toBeNull();
   });
 
   it('환승 stop이고 transferExit 매칭이 있으면 transferDoor가 quickExit보다 우선 표시', () => {
@@ -277,7 +275,6 @@ describe('EditorialTimeline quickExit door label', () => {
       {
         station: '군자',
         line: '7',
-        stopsFromPrev: '20정거장',
         mark: 'transfer',
         note: '환승',
         arrivalContext: { line: '5', fromName: '방화', toName: '군자' },
@@ -286,14 +283,14 @@ describe('EditorialTimeline quickExit door label', () => {
       {
         station: '도봉산',
         line: '7',
-        stopsFromPrev: '15정거장',
         mark: 'dest',
         note: '도착',
         arrivalContext: { line: '7', fromName: '군자', toName: '도봉산' },
       },
     ];
     render(<EditorialTimeline stops={stops} />);
-    expect(screen.getByText('1-1번 문')).toBeTruthy();
+    expect(screen.getByText('탑승 1-1번 문')).toBeTruthy();
+    expect(screen.getByText('군자 환승 빠른 칸')).toBeTruthy();
   });
 
   // #788 단조 노선 환승에서 진행방면별로 transferExit row가 갈리는지 검증.
@@ -304,7 +301,6 @@ describe('EditorialTimeline quickExit door label', () => {
       {
         station: '건대입구',
         line: '2',
-        stopsFromPrev: '1정거장',
         mark: 'transfer',
         note: '환승',
         arrivalContext: { line: '7', fromName: origin, toName: '건대입구' },
@@ -330,7 +326,6 @@ describe('EditorialTimeline quickExit door label', () => {
       {
         station: '경복궁',
         line: 'unknown',
-        stopsFromPrev: '5정거장',
         mark: 'transfer',
         note: '환승',
         arrivalContext: { line: '3', fromName: '교대', toName: '경복궁' },
@@ -338,7 +333,7 @@ describe('EditorialTimeline quickExit door label', () => {
       },
     ];
     render(<EditorialTimeline stops={stops} />);
-    expect(screen.getByText('3-2번 문')).toBeTruthy();
+    expect(screen.getByText('탑승 3-2번 문')).toBeTruthy();
   });
 });
 
@@ -373,7 +368,7 @@ describe('#804 marker/connector 정렬', () => {
     const stops: Stop[] = [
       { station: '강남', line: '2', mark: 'filled' },
       { station: '교대', line: '2', mark: 'intermediate' },
-      { station: '서초', line: '2', stopsFromPrev: '2정거장', mark: 'dest', note: '도착' },
+      { station: '서초', line: '2', mark: 'dest', note: '도착' },
     ];
     render(<EditorialTimeline stops={stops} />);
     const intermediateDot = screen.getByTestId('intermediate-dot');
@@ -387,7 +382,7 @@ describe('intermediate stop 렌더링', () => {
     const stops: Stop[] = [
       { station: '강남', line: '2', mark: 'filled' },
       { station: '교대', line: '2', mark: 'intermediate' },
-      { station: '서초', line: '2', stopsFromPrev: '2정거장', mark: 'dest', note: '도착' },
+      { station: '서초', line: '2', mark: 'dest', note: '도착' },
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByTestId('intermediate-dot')).toBeTruthy();
@@ -398,7 +393,7 @@ describe('intermediate stop 렌더링', () => {
     const stops: Stop[] = [
       { station: '강남', line: '2', mark: 'filled' },
       { station: '교대', line: '2', mark: 'intermediate' },
-      { station: '서초', line: '2', stopsFromPrev: '2정거장', mark: 'dest', note: '도착' },
+      { station: '서초', line: '2', mark: 'dest', note: '도착' },
     ];
     render(<EditorialTimeline stops={stops} />);
     // 2호선 라벨은 출발/도착 stop 2개에서만 노출 (intermediate에서는 미노출)
@@ -422,12 +417,12 @@ describe('#3073 환승 경계 connector 색 = 탑승 노선(fromLine)', () => {
     const stops: Stop[] = [
       { station: hyochang, line: '6', mark: 'filled' },
       {
-        station: gongdeok, line: '5', mark: 'transfer', stopsFromPrev: '1정거장',
+        station: gongdeok, line: '5', mark: 'transfer',
         arrivalContext: { line: '6', fromName: hyochang, toName: gongdeok },
         connectorLine: '6',
         transferTarget: { toLine: '5' },
       },
-      { station: aeogae, line: '5', mark: 'dest', stopsFromPrev: '1정거장' },
+      { station: aeogae, line: '5', mark: 'dest' },
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(getLineColor('6')).not.toBe(getLineColor('5'));
