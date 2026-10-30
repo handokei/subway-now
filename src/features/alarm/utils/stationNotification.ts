@@ -55,6 +55,7 @@ import {
 } from '../../observability/utils/pushReceiptLog';
 import { TtlCache } from '../../../shared/utils/ttlCache';
 import { LA_FALLBACK_DEDUP_TTL_MS } from '../../../shared/constants/laFallbackDedup';
+import { endBoardingActivity } from './boardingActivityChannel';
 
 /** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
  *  - source 미지정 → 라벨 생략 (기존 caller 회귀 안전)
@@ -834,6 +835,8 @@ export async function clearStationNotification(): Promise<void> {
       await dismissStationPassedNotification();
       return;
     }
+    // #3221 PR-4 (B4) — 안내 종료는 탑승 LA(질문 카드)도 닫는다. 여정 LA 종료 실패와 무관하게 호출한다.
+    void endBoardingActivity('clear-station-notification');
     try {
       liveActivityLogger.info('종료 요청');
       // #1288 — 활성 trip이 있으면 backend deregister까지 함께 수행. 활성 trip이 없으면

@@ -203,6 +203,17 @@ export interface RegisterTripPayload {
    */
   sleepAlarm?: SleepAlarmConfig;
   /**
+   * #3221 PR-4 — LA 분리 capability(`Trip.laClient`, backend #3238). split 클라이언트는 여정 LA에 질문 행이 없고
+   * 탑승여부는 별도 LA(push-to-start 17.2+ / FG 시작 17.0~17.1)로 받는다. 미지정(Android/구 build)이면 필드
+   * 미송신 — backend는 구 클라이언트 경로(여정 LA에 질문 행)를 유지하고 body·hash가 바이트 동일하다.
+   */
+  laClient?: { split: true; boardingStart: 'push-to-start' | 'fg-only' | 'none' };
+  /**
+   * #3221 PR-4 — 탑승 LA 서버 시작용 기기 단위 push-to-start token(hex). `laClient.boardingStart==='push-to-start'`
+   * 이고 token이 발급됐을 때만. 여정 LA token(`registerLiveActivityToken`)과 별개다. 회전하면 hash가 바뀌어 재등록된다.
+   */
+  boardingPushToStartToken?: string;
+  /**
    * #2120 (#2114 근본 수리 Phase 2) — trip 인스턴스 corrId (`getCurrentTripCorrIdSync()`).
    * backend가 Trip에 저장했다가 trip-ended push payload에 echo — device가 대조해 같은
    * tripToken(기기 고정)의 옛 trip 종료 push가 새 trip 등록 후 도착하는 race를 차단한다.
@@ -323,6 +334,8 @@ function buildRegisterHash(body: {
   boardingCommitted?: boolean;
   sleepModeEnabled?: boolean;
   sleepAlarm?: SleepAlarmConfig;
+  laClient?: RegisterTripPayload['laClient'];
+  boardingPushToStartToken?: string;
 }): string {
   // #2699 (요구사항 2, RCA "원인 확정" 코멘트) — 필드별 hash 포함 여부 재검토 결과:
   //   - alarmBucket(제거됨): `alarmAtEpochMs` 유래 — register가 호출되는 매 순간의 시계에
@@ -389,6 +402,10 @@ function buildRegisterHash(body: {
     // #3100 — 설정 변경 시 즉시 재등록(재등록은 incoming이 이긴다). undefined는 JSON.stringify가 생략하므로
     // 기본 사용자의 hash 문자열은 변경 전과 바이트 동일.
     sleepAlarm: body.sleepAlarm,
+    // #3221 PR-4 — 탑승 LA capability/token 변경(token 회전·LA 설정 변경) 시 즉시 재등록. 회전은 드물어 putTrip은
+    // 회전당 1회. 미지정 사용자는 JSON.stringify가 undefined를 생략하므로 hash 문자열이 변경 전과 바이트 동일.
+    laClient: body.laClient,
+    boardingPushToStartToken: body.boardingPushToStartToken,
   });
 }
 
@@ -488,6 +505,11 @@ async function performRegisterFetch(
     ...(payload.sleepModeEnabled === true ? { sleepModeEnabled: true } : {}),
     // #3100 — 취침 알람 N역 전 설정. 기본(미설정)이면 필드 자체 생략.
     ...(payload.sleepAlarm ? { sleepAlarm: payload.sleepAlarm } : {}),
+    // #3221 PR-4 — 탑승 LA 분리 capability + push-to-start token. 미지정이면 필드 자체 생략.
+    ...(payload.laClient ? { laClient: payload.laClient } : {}),
+    ...(payload.boardingPushToStartToken
+      ? { boardingPushToStartToken: payload.boardingPushToStartToken }
+      : {}),
     // #2280 — SSOT 출발역명. trip 전체 수명 동안 불변이라 dedup hash에는 포함하지 않는다
     // (같은 trip 재등록마다 값이 같아 hash 갱신을 유발할 필요가 없다). 캡처 전(undefined)이면 생략.
     ...(payload.originStationName ? { originStationName: payload.originStationName } : {}),
@@ -633,6 +655,9 @@ export function registerActiveTrip(
     sleepModeEnabled: payload.sleepModeEnabled,
     // #3100 — 취침 알람 설정 변경 시 hash 갱신해 재등록 보장.
     sleepAlarm: payload.sleepAlarm,
+    // #3221 PR-4 — 탑승 LA token 회전/capability 변경 시 hash 갱신해 재등록 보장.
+    laClient: payload.laClient,
+    boardingPushToStartToken: payload.boardingPushToStartToken,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });

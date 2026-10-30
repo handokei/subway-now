@@ -61,6 +61,15 @@ jest.mock('../../utils/alarmLog', () => ({
   logSubsurfaceRegisterTransition: (...args: unknown[]) => mockLogSubsurfaceRegisterTransition(...args),
 }));
 
+// #3221 PR-4 — 탑승 LA 채널: register body 조각 + push-to-start token 캡처. 채널 자체는
+// boardingActivityChannel.test.ts가 검증하고, 여기서는 register 배선만 본다.
+const mockBuildBoardingRegisterFields = jest.fn();
+const mockStartBoardingCapture = jest.fn();
+jest.mock('../../utils/boardingActivityChannel', () => ({
+  buildBoardingRegisterFields: (...args: unknown[]) => mockBuildBoardingRegisterFields(...args),
+  startBoardingPushToStartTokenCapture: (...args: unknown[]) => mockStartBoardingCapture(...args),
+}));
+
 // #3162 — trip register ack(ACTIVE_TRIP_KEY 확정) 시점에 LA 토큰 불변식 복구를 트리거하는지만 본다.
 const mockRegisterHeldLaToken = jest.fn();
 jest.mock('../../utils/liveActivityPushChannel', () => ({
@@ -136,6 +145,8 @@ describe('useApnsTripRegistration', () => {
     mockGetDevicePushTokenAsync.mockResolvedValue({ data: 'token-abc' });
     mockRegister.mockResolvedValue({ ok: true });
     mockClear.mockResolvedValue({ ok: true });
+    mockBuildBoardingRegisterFields.mockResolvedValue({});
+    mockStartBoardingCapture.mockReturnValue(jest.fn());
     mockCancelTripBoundAlarms.mockResolvedValue(undefined);
     mockClearBackendSsotMirror.mockResolvedValue(undefined);
     mockRunTripBoundCleanups.mockResolvedValue(undefined);
@@ -201,6 +212,79 @@ describe('useApnsTripRegistration', () => {
   // #3043 — main effect run()의 `!token` 체크(cancelled 가드 無)부터 registerFromLatestInputs
   // 호출 직전까지 cancelled 가드가 빠져 있어, deps 변화로 cleanup→재실행돼도 선행 run이 멈추지
   // 않고 자기 POST까지 완주했다(10/18 18:37:30/31 1초 2연발 실측).
+  describe('#3221 — 탑승 LA 채널 배선 (laClient / push-to-start token)', () => {
+    const FIELDS = {
+      laClient: { split: true, boardingStart: 'push-to-start' },
+      boardingPushToStartToken: 'p2s-token-1',
+    };
+    const inputs = { route: directRoute, destination: station, nextStationEtaSeconds: 120 };
+
+    it('register payload에 채널이 만든 laClient + token이 실린다', async () => {
+      mockBuildBoardingRegisterFields.mockResolvedValue(FIELDS);
+      renderHook(() => useApnsTripRegistration(inputs));
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister).toHaveBeenCalledWith(expect.objectContaining(FIELDS));
+    });
+
+    it('채널이 빈 조각을 주면(Android) payload에 키가 없다', async () => {
+      renderHook(() => useApnsTripRegistration(inputs));
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const [payload] = mockRegister.mock.calls[0];
+      expect(Object.prototype.hasOwnProperty.call(payload, 'laClient')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(payload, 'boardingPushToStartToken')).toBe(false);
+    });
+
+    it('마운트 시 token 캡처를 시작하고 unmount 시 해제한다', async () => {
+      const stop = jest.fn();
+      mockStartBoardingCapture.mockReturnValue(stop);
+      const { unmount } = renderHook(() =>
+        useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
+      );
+      await waitFor(() => expect(mockStartBoardingCapture).toHaveBeenCalledTimes(1));
+      expect(stop).not.toHaveBeenCalled();
+      unmount();
+      expect(stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('token이 회전(캡처 onChange)하면 활성 trip을 새 token으로 재등록한다', async () => {
+      renderHook(() => useApnsTripRegistration(inputs));
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      const [onChange] = mockStartBoardingCapture.mock.calls[0];
+
+      mockBuildBoardingRegisterFields.mockResolvedValue({
+        ...FIELDS,
+        boardingPushToStartToken: 'p2s-token-ROTATED',
+      });
+      mockRegister.mockClear();
+      await act(async () => {
+        onChange();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await waitFor(() =>
+        expect(mockRegister).toHaveBeenCalledWith(
+          expect.objectContaining({ boardingPushToStartToken: 'p2s-token-ROTATED' }),
+        ),
+      );
+    });
+
+    it('token 회전 시 APNs 토큰이 없으면(미발급) 재등록하지 않는다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      renderHook(() =>
+        useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
+      );
+      await waitFor(() => expect(mockStartBoardingCapture).toHaveBeenCalled());
+      const [onChange] = mockStartBoardingCapture.mock.calls[0];
+      mockRegister.mockClear();
+      await act(async () => {
+        onChange();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
+    });
+  });
+
   describe('#3043 — register effect run() cancelled 가드 (선행 run이 cleanup 후 미완주)', () => {
     it('① red — run이 await 중 cleanup되면 선행 run은 registerFromLatestInputs를 호출하지 않는다 (총 1회)', async () => {
       // clearBackendSsotMirror를 선행 run의 await 지점으로 삼아 cleanup 시점을 제어한다 —
@@ -4833,10 +4917,15 @@ describe('useApnsTripRegistration', () => {
           await Promise.resolve();
         });
         expect(mockRegister).toHaveBeenCalledTimes(5); // 수렴 확정(1) + Tier 2 heal(1).
-        const healed = mockRegister.mock.calls[4][0] as {
-          promptGeoContext?: { origin: { lat: number; lng: number } };
-        };
-        expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+        // #3221 PR-4 — callRegister에 await 1개(탑승 LA 채널 조각)가 추가돼 수렴 확정 register와 Tier 2 heal의 도달
+        // 순서가 microtask 단위로 뒤바뀔 수 있다. "5번째 호출"이라는 순서 가정 대신 heal(스탬프 없는 promptGeoContext
+        // 포함) 호출을 내용으로 찾는다 — 검증 의도(heal이 raw=true origin으로 발동)는 동일.
+        const healed = (
+          mockRegister.mock.calls.map(([payload]) => payload) as Array<{
+            promptGeoContext?: { origin: { lat: number; lng: number } };
+          }>
+        ).find((payload) => payload.promptGeoContext !== undefined);
+        expect(healed?.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
       });
 
       it('60초 후 currentStation이 이미 해소돼 있으면 Tier 2 heal 미발동', async () => {

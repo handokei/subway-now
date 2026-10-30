@@ -72,6 +72,13 @@ const mockReadSleepMode = jest.fn(async () => {
   const raw = await (AsyncStorage.getItem as jest.Mock)(SLEEP_MODE_KEY);
   return raw === JSON.stringify(true);
 });
+// #3221 PR-4 — B1: 17.0~17.1 FG에서 boarding-prompt silent push로 탑승 LA를 시작한다. 모드/FG 판정은
+// boardingActivityChannel.test.ts가 검증하고, 여기서는 이 task가 payload를 그대로 넘기는지만 본다.
+const mockStartBoardingActivityFromPrompt = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/boardingActivityChannel', () => ({
+  startBoardingActivityFromPrompt: (...args: unknown[]) => mockStartBoardingActivityFromPrompt(...args),
+}));
+
 jest.mock('../../utils/alarmLocalAuthority', () => ({
   fireCompanionAlarm: (...args: unknown[]) => mockFireCompanionAlarm(...args),
   readSleepMode: () => mockReadSleepMode(),
@@ -3279,6 +3286,39 @@ describe('silentPushTask', () => {
       it('boarding-prompt 수신 후에도 refreshLiveActivityFromBackgroundContext 1회 호출', async () => {
         await handleSilentPush(boardingPromptPayload({ pushId: 'bp-1' }));
         expect(mockRefreshLa).toHaveBeenCalledTimes(1);
+      });
+
+      // #3221 PR-4 — B1. 로컬 알림은 만들지 않되 탑승 LA 시작 채널에 payload를 넘긴다(FG/버전 판정은 채널 소관).
+      it('#3221 — 수신 payload를 startBoardingActivityFromPrompt에 전달한다 (B1)', async () => {
+        await handleSilentPush(
+          boardingPromptPayload({ pushId: 'bp-1', title: '탑승하셨나요?', body: '2호선 강남' }),
+        );
+        expect(mockStartBoardingActivityFromPrompt).toHaveBeenCalledTimes(1);
+        expect(mockStartBoardingActivityFromPrompt).toHaveBeenCalledWith(
+          expect.objectContaining({
+            originStation: '강남',
+            line: '2',
+            tripToken: 'tok-bp',
+            pushId: 'bp-1',
+            title: '탑승하셨나요?',
+            body: '2호선 강남',
+          }),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('#3221 — hop-end 필드(hopEndKind/nextLine)도 그대로 전달', async () => {
+        await handleSilentPush(
+          boardingPromptPayload({ pushId: 'hop-1', hopEndKind: 'disembark', nextLine: 'K' }),
+        );
+        expect(mockStartBoardingActivityFromPrompt).toHaveBeenCalledWith(
+          expect.objectContaining({ hopEndKind: 'disembark', nextLine: 'K' }),
+        );
+      });
+
+      it('#3221 — 다른 kind(station waypoint)에서는 탑승 LA 시작을 시도하지 않는다', async () => {
+        await handleSilentPush(boardingPromptPayload({ kind: 'transfer' }));
+        expect(mockStartBoardingActivityFromPrompt).not.toHaveBeenCalled();
       });
 
       it('hopEndKind=disembark 수신도 동일하게 no-op (로컬 알림 미생성)', async () => {

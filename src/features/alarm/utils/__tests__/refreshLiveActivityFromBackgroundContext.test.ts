@@ -15,6 +15,12 @@ jest.mock('live-activity', () => ({
   hasActiveLiveActivity: () => mockHasActiveLiveActivity(),
 }));
 
+// #3221 PR-4 — 탑승 LA 종료 호출 검증용. 채널 자체는 boardingActivityChannel.test.ts에서 검증한다.
+const mockEndBoardingActivity = jest.fn().mockResolvedValue(undefined);
+jest.mock('../boardingActivityChannel', () => ({
+  endBoardingActivity: (...args: unknown[]) => mockEndBoardingActivity(...args),
+}));
+
 // buildLiveActivityData는 의존이 무거우므로 mock로 격리. 호출 시 인자 검증.
 const mockBuild = jest.fn((..._args: unknown[]) => ({
   stationName: 'STN',
@@ -178,6 +184,20 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     await refreshLiveActivityFromBackgroundContext();
     expect(mockEndLiveActivity).toHaveBeenCalledTimes(1);
     expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+  });
+
+  // #3221 PR-4 — 종료 3곳 중 3: BG refresh의 trip 종료(destination·활성 trip 모두 없음) 판정도 탑승 LA를 닫는다.
+  it('#3221 — destination·ACTIVE_TRIP 모두 없으면 탑승 LA도 종료 (B4 bg-refresh-dest-absent)', async () => {
+    setupStorage({ [DESTINATION_KEY]: null, [ACTIVE_TRIP_KEY]: null });
+    await refreshLiveActivityFromBackgroundContext();
+    expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
+    expect(mockEndBoardingActivity).toHaveBeenCalledWith('bg-refresh-dest-absent');
+  });
+
+  it('#3221 — 활성 trip 중 destination read 실패(#2732 gap2 race guard)에서는 탑승 LA를 닫지 않는다', async () => {
+    setupStorage({ [DESTINATION_KEY]: null, [ACTIVE_TRIP_KEY]: 'apns-token-abc' });
+    await refreshLiveActivityFromBackgroundContext();
+    expect(mockEndBoardingActivity).not.toHaveBeenCalled();
   });
 
   // #2732 gap2 — 2026-09-30 교차추적 감사. destination read가 비었다고 해서 활성 trip 중인

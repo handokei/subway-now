@@ -42,6 +42,7 @@ import {
 } from '../../../shared/constants/boardingLock';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { isDuplicateBoardingLock } from '../utils/duplicateBoardingLock';
+import { endBoardingActivity } from '../utils/boardingActivityChannel';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
@@ -210,6 +211,10 @@ async function processPendingBoardingIntent(deps: BridgeDeps, nowMs: number): Pr
     };
     await handleResponse(mapped.actionIdentifier, payload, deps);
   }
+
+  // #3221 PR-4 (B2) — LA 버튼 응답을 처리했다(중복 no-op 포함). native `BoardingIntents`가 낙관적으로 카드를
+  // 닫지만 앱이 JS로 처리한 시점에 한 번 더 닫아 두 경로 중 하나가 실패해도 카드가 남지 않게 한다(멱등).
+  void endBoardingActivity('intent-response');
 
   try {
     clearPendingBoardingIntent(intent.id);

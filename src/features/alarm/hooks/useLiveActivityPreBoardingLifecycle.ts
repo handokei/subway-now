@@ -18,9 +18,8 @@
  *   - lock 생성됨(탑승 확정) → 이 훅은 관여를 멈춘다. 이후 LA 콘텐츠는 기존 GPS-트리거 파이프라인
  *     (`stationPipeline.ts` / `HomeScreen`의 `updateStationNotification`)이 소유한다 — 그 경로는
  *     boardingPrompt 필드를 넘기지 않으므로 다음 정기 tick에서 boardingPhase가 자연히 비워진다
- *     ("or 미세팅" 허용, 스펙 명시). 단, lock이 device evidence로 자동 확정된 직후 한 번은
- *     이 훅이 "추적중" 배너로 갱신한다(#2528, 아래 `buildAutoLockedPreBoardingLiveActivityData`
- *     — 이 경로는 #2854 범위 밖, 무변경).
+ *     ("or 미세팅" 허용, 스펙 명시). (#3221 PR-4 — lock이 device evidence로 자동 확정된 직후의
+ *     "추적중" 배너 갱신(구 #2528 D6)은 폐기했다. 질문은 답해진 상태이고 탑승 LA는 응답 시 닫힌다.)
  *   - destination 해제(non-null→null) → 이 훅이 스스로 시작한 pre-boarding 세션만 종료.
  *     (lock 활성 중 destination이 해제되는 통상 trip 종료는 HomeScreen이 이미 `clearStationNotification`을
  *     호출하므로 중복 종료를 피한다 — `preBoardingActiveRef`로 소유권 구분.)
@@ -46,20 +45,14 @@ import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import i18next from 'i18next';
 import * as LiveActivity from 'live-activity';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
 import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { getStationById, type Route } from '../../../shared/utils/stationRoute';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
-import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { clearStationNotification } from '../utils/stationNotification';
-import {
-  shouldSkipDeviceLiveActivityWrite,
-  startAmbientLiveActivityTokenRegistration,
-} from '../utils/liveActivityPushChannel';
+import { startAmbientLiveActivityTokenRegistration } from '../utils/liveActivityPushChannel';
 import { logLaWrite } from '../utils/alarmLog';
 import { resolveGpsFreeOrigin } from '../utils/gpsFreeOrigin';
 import { createLogger } from '../../../shared/utils/logger';
@@ -97,42 +90,6 @@ function buildPreBoardingLiveActivityData(
 }
 
 /**
- * #2528 — leg-1 자동락(사용자 명시 응답 없이 device evidence로 확정된 lock, `boardingEvidence`)
- * 전환 시 pre-boarding 배너를 "추적중" 안내로 갱신하기 위한 content. 질문형 문구는 이미 확정된
- * 상태에 어울리지 않아 alert 필드는 채우지 않는다(native가 boardingAutoLocked=true를 보고
- * 알림 없이 조용히 처리) — [아니에요] 탈출구만 유지.
- *
- * #2782 (요구 2) — origin이 null(GPS 무관 후보 전부 null)이어도 boardingPhase/boardingAutoLocked
- * 버튼 필드는 생략하지 않는다. "어느 역인지 모름"과 "탑승을 물을 수 없음"은 다른 문제 — 역명은
- * widget.detecting placeholder로, boardingPromptOriginStation/boardingPromptLine은 생략(undefined)
- * 한다. Swift 위젯(`BoardingPromptButton`)은 두 필드 모두 `?? ""` 폴백을 이미 갖고 있어 버튼은
- * phase만 보고 그대로 렌더된다(네이티브 변경 불필요, PR 본문 "요구 2 검토" 참조).
- */
-function buildAutoLockedPreBoardingLiveActivityData(
-  destination: Station,
-  origin: Station | null,
-  tripToken: string | null,
-): LiveActivity.LiveActivityData {
-  const data: LiveActivity.LiveActivityData = {
-    stationName: origin ? getStationDisplayName(origin) : i18next.t('widget.detecting'),
-    lineName: origin ? LINE_NAMES[origin.line] : '',
-    lineColorHex: origin ? LINE_COLORS[origin.line] : PRE_BOARDING_UNKNOWN_LINE_COLOR_HEX,
-    distanceM: 0,
-    destinationName: getStationDisplayName(destination),
-    boardingPhase: 'pre-boarding',
-    boardingAutoLocked: true,
-  };
-  if (origin) {
-    data.boardingPromptOriginStation = getStationDisplayName(origin);
-    data.boardingPromptLine = origin.line;
-  }
-  if (tripToken) {
-    data.boardingPromptTripToken = tripToken;
-  }
-  return data;
-}
-
-/**
  * #2782 — origin 해석 결과의 출처(custom/lock/trip/none)를 관측용으로 라벨링한다.
  * `resolveGpsFreeOrigin`은 `[customOrigin, boardingLockStation, tripOrigin]` 우선순위 순으로
  * 첫 매치만 반환하므로, resolvedOrigin이 custom/lock 어느 쪽도 아니면 남은 유일한 가능성은
@@ -148,22 +105,6 @@ function describeOriginSource(
   if (customOrigin && customOrigin.id === resolvedOrigin.id) return 'custom';
   if (boardingLockStation && boardingLockStation.id === resolvedOrigin.id) return 'lock';
   return 'trip';
-}
-
-/**
- * #2735 PR-4 — D6(auto-locked pre-boarding) 쓰기. lock 직후 backend가 이미 이 trip의 LA를 갱신 중이면
- * (등록 확인 + lock + silent push 수신 공백 <= T) "추적중" 배너 전체 교체가 backend LA push 내용을 지우므로
- * 쓰지 않는다. 판정은 BG/FG 어디서든 같은 `shouldSkipDeviceLiveActivityWrite`다(tripToken = ACTIVE_TRIP_KEY).
- */
-async function updateAutoLockedPreBoarding(data: LiveActivity.LiveActivityData): Promise<void> {
-  const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
-  if (await shouldSkipDeviceLiveActivityWrite(activeTripToken)) {
-    log.info('backend-authority 활성 trip — auto-locked pre-boarding LA 쓰기 스킵(#2735 PR-4)');
-    return;
-  }
-  await LiveActivity.updateLiveActivity(data);
-  // #2735 PR-1 — D6 writer(auto-locked pre-boarding). 위 게이트를 통과한 쓰기.
-  logLaWrite({ writer: 'D6', source: 'auto-locked-pre-boarding', data, authority: 'not-active' });
 }
 
 /**
@@ -208,21 +149,8 @@ export function useLiveActivityPreBoardingLifecycle(route: Route): void {
     );
 
     if (lock) {
-      // #2528 — 이 훅이 이미 pre-boarding 배너를 노출 중이었고, 그 lock이 사용자 명시 응답 없이
-      // device evidence(`boardingEvidence`)로 자동 확정됐다면, 질문형 배너를 "추적중"으로 한 번
-      // 더 갱신해 사용자 혼란("확정됐는데 왜 아직도 물어봐?")을 막는다. evidence 없는 auto-lock
-      // (fallback 후보/boardingPrompt 응답)이나 사용자 tap 확정은 애초에 이 배너가 아닌 다른
-      // 채널(BoardingTrainList/알림 응답)로 confirm된 것이라 재알림이 불필요 — 조용히 넘긴다.
-      // #2782 (요구 2) — origin이 null이어도(GPS-free 후보 전부 미해소) boardingPhase/버튼은
-      // 유지한다(`&& tripOrigin` 가드 제거 — buildAutoLockedPreBoardingLiveActivityData가 null을
-      // placeholder로 흡수).
-      if (preBoardingActiveRef.current && lock.boardingEvidence === true) {
-        const tripToken = getCurrentTripCorrIdSync();
-        const data = buildAutoLockedPreBoardingLiveActivityData(destination, resolvedOrigin, tripToken);
-        updateAutoLockedPreBoarding(data).catch((e) => {
-          log.warn('auto-locked pre-boarding LA 갱신 실패', e);
-        });
-      }
+      // #3221 PR-4 (U3=A) — 자동락 "추적중" 배너(구 #2528 D6)는 폐기했다. lock은 사용자 응답/탭으로만 생기고
+      // (자동 lock 없음, 2026-10-24) 질문은 이미 답해진 상태이며 탑승 LA는 응답 시 닫힌다. 여기서는 소유권만 넘긴다.
       // 탑승 확정 — 콘텐츠 소유권을 GPS-트리거 파이프라인에 넘긴다.
       preBoardingActiveRef.current = false;
       return;

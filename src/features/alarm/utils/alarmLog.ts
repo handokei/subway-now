@@ -251,8 +251,12 @@ export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
  *   D1 updateStationNotification(GPS 파이프라인) / D2 BG refresh mirror 분기 / D3 BG refresh gps-bg 분기
  *   D4 FG mirror poll / D5 pre-boarding 시작·갱신 / D6 auto-locked pre-boarding
  *   D7 LA 부재 시 FG 시작 / D8 채널 세션 start·adopt
+ *   (D6은 #3221 PR-4에서 폐기 — 과거 덤프 해석용으로 타입만 남긴다.)
+ *
+ * #3221 PR-4 — 탑승여부 LA writer(여정 LA와 별도 타입, ADR-049 게이트 밖):
+ *   B1 FG 시작(17.0~17.1) / B2 LA 버튼 intent 응답 후 종료 / B3 lock 생성·응답 handler 종료 / B4 trip 종료 cleanup 종료
  */
-export type LaWriterId = 'D1' | 'D2' | 'D3' | 'D4' | 'D5' | 'D6' | 'D7' | 'D8';
+export type LaWriterId = 'D1' | 'D2' | 'D3' | 'D4' | 'D5' | 'D6' | 'D7' | 'D8' | 'B1' | 'B2' | 'B3' | 'B4';
 
 /** #2735 PR-1 — `refreshLiveActivityFromBackgroundContext` 반환 지점 + mirror-advance dedup. */
 export type LaRefreshDecision =
@@ -1589,6 +1593,17 @@ export function logLaWrite({ writer, source, data, authority }: LaWriteInput): v
     outcome: 'received',
     reason: `la-write-${writer}`,
     stationName: detail,
+  });
+}
+
+/** #3221 PR-4 — 탑승 LA writer(B1~B4) 1건. 여정 LA 쓰기와 달리 content가 없어 source만 싣는다(dedup 없음: 호출 자체가 드물다). */
+export function logBoardingLaWrite({ writer, source }: { writer: Extract<LaWriterId, `B${number}`>; source: string }): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'la-write',
+    outcome: 'received',
+    reason: `la-write-${writer}`,
+    stationName: `src=${source}`,
   });
 }
 

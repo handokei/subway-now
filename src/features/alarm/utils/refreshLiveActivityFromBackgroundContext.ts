@@ -50,6 +50,7 @@ import {
 } from './liveActivityPushChannel';
 import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
 import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
+import { endBoardingActivity } from './boardingActivityChannel';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import { arcIndexOfStation } from '../../route/utils/stationProgressEstimator';
 import {
@@ -150,6 +151,9 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
         return;
       }
       logger.info('destination absent — end LA');
+      // #3221 PR-4 (B4) — 정당한 trip 종료 판정이므로 탑승 LA(질문 카드)도 닫는다. 위 race guard(활성 trip 존재)로
+      // 조기 return한 경로에서는 닫지 않는다.
+      void endBoardingActivity('bg-refresh-dest-absent');
       await LiveActivity.endLiveActivity();
       logLaRefreshDecision('dest-absent-end');
       return;

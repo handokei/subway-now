@@ -27,6 +27,12 @@ jest.mock('../../utils/dismissSilenceStorage', () => ({
   clearDismissSilence: (...args: unknown[]) => mockClearDismissSilence(...args),
 }));
 
+// #3221 PR-4 — lock 생성 primitive가 탑승 LA를 닫는지 검증. 채널 자체는 boardingActivityChannel.test.ts.
+const mockEndBoardingActivity = jest.fn();
+jest.mock('../../utils/boardingActivityChannel', () => ({
+  endBoardingActivity: (...args: unknown[]) => mockEndBoardingActivity(...args),
+}));
+
 jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
   addLogBreadcrumb: jest.fn(),
   addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
@@ -161,6 +167,53 @@ describe('useBoardingLockStore', () => {
         });
         expect(getLockCorrectionMetrics().promoted).toBe(0);
       });
+    });
+  });
+
+  describe('#3221 — createLock이 탑승 LA를 닫는다 (F22 4개 호출처 공통 경로)', () => {
+    it('lock 생성 시 endBoardingActivity(lock-created) 1회', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().createLock(sample, false);
+      });
+      expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
+      expect(mockEndBoardingActivity).toHaveBeenCalledWith('lock-created');
+    });
+
+    it('PENDING sentinel lock도 사용자 응답의 결과이므로 닫는다', async () => {
+      await act(async () => {
+        await useBoardingLockStore
+          .getState()
+          .createLock({ ...sample, trainCode: PENDING_TRAIN_CODE }, false);
+      });
+      expect(mockEndBoardingActivity).toHaveBeenCalledWith('lock-created');
+    });
+
+    it('불변 가드로 lock 교체가 skip돼도 응답은 이뤄졌으므로 닫는다', async () => {
+      const ENV_KEY = 'EXPO_PUBLIC_SIMPLE_ARRIVAL_ARCH';
+      const original = process.env[ENV_KEY];
+      process.env[ENV_KEY] = 'true';
+      try {
+        await act(async () => {
+          await useBoardingLockStore.getState().createLock(sample, false);
+        });
+        mockEndBoardingActivity.mockClear();
+        await act(async () => {
+          await useBoardingLockStore
+            .getState()
+            .createLock({ ...sample, boardingStationId: 'stn-DIFFERENT' }, false);
+        });
+        expect(mockEndBoardingActivity).toHaveBeenCalledWith('lock-created');
+      } finally {
+        if (original === undefined) delete process.env[ENV_KEY];
+        else process.env[ENV_KEY] = original;
+      }
+    });
+
+    it('releaseLock은 탑승 LA를 건드리지 않는다(lock 해제 != 질문 응답)', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().releaseLock('user');
+      });
+      expect(mockEndBoardingActivity).not.toHaveBeenCalled();
     });
   });
 

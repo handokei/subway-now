@@ -14,6 +14,12 @@ jest.mock('live-activity', () => ({
     mockClearPendingBoardingIntent(...args),
 }));
 
+// #3221 PR-4 — B2: LA 버튼 응답 처리 후 탑승 LA를 닫는다(native 낙관 종료의 JS 안전망).
+const mockEndBoardingActivity = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/boardingActivityChannel', () => ({
+  endBoardingActivity: (...args: unknown[]) => mockEndBoardingActivity(...args),
+}));
+
 const mockHandleResponse = jest.fn();
 jest.mock('../useBoardingPromptResponder', () => ({
   handleResponse: (...args: unknown[]) => mockHandleResponse(...args),
@@ -349,6 +355,56 @@ describe('useLiveActivityIntentBridge', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(mockHandleResponse).toHaveBeenCalledTimes(1);
+  });
+
+  describe('#3221 — B2 intent 응답 후 탑승 LA 종료', () => {
+    const flushBridge = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    it.each([
+      ['BOARDING_BOARDED', validBoardedRaw, 100],
+      ['BOARDING_NOT_BOARDED', validNotBoardedRaw, 300],
+      ['DISEMBARK_DISEMBARKED', validDisembarkRaw, 200],
+      ['DISEMBARK_NOT_YET', validDisembarkNotYetRaw, 400],
+    ])('%s 처리 -> endBoardingActivity(intent-response)', async (_name, raw, atMs) => {
+      mockReadPendingBoardingIntent.mockReturnValue(raw);
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => atMs + 1000));
+      await flushBridge();
+      expect(mockHandleResponse).toHaveBeenCalledTimes(1);
+      expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
+      expect(mockEndBoardingActivity).toHaveBeenCalledWith('intent-response');
+    });
+
+    it('중복 BOARDED(이미 lock 있음, handleResponse skip)도 응답은 이뤄졌으므로 닫는다', async () => {
+      setMockLock({
+        destinationId: 'dest-1',
+        trainCode: 'T1',
+        boardingStationId: 'stn-군자-5',
+        boardingLine: '5',
+        boardedAt: Date.now(),
+        expectedDurationMs: 30 * 60_000,
+        boardingEvidence: false,
+      });
+      mockFindStationByNameAndLine.mockReturnValue({ id: 'stn-군자-5' });
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
+      await flushBridge();
+      expect(mockHandleResponse).not.toHaveBeenCalled();
+      expect(mockEndBoardingActivity).toHaveBeenCalledWith('intent-response');
+    });
+
+    it('stale/malformed intent는 응답이 아니므로 닫지 않는다', async () => {
+      mockReadPendingBoardingIntent.mockReturnValue(validBoardedRaw);
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + LIVE_ACTIVITY_INTENT_STALE_MS + 1));
+      await flushBridge();
+      mockReadPendingBoardingIntent.mockReturnValue('not json');
+      capturedPollCallback?.();
+      await flushBridge();
+      expect(mockEndBoardingActivity).not.toHaveBeenCalled();
+    });
   });
 
   describe('⑥ dedup — 동일 origin/line active lock 존재 시 no-op', () => {

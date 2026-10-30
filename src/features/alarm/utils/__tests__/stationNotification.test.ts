@@ -62,6 +62,12 @@ jest.mock('live-activity', () => ({
   hasActiveLiveActivity: () => mockHasActiveLiveActivity(),
 }));
 
+// #3221 PR-4 — 탑승 LA 종료 호출 검증용. 채널 자체는 boardingActivityChannel.test.ts에서 검증한다.
+const mockEndBoardingActivity = jest.fn().mockResolvedValue(undefined);
+jest.mock('../boardingActivityChannel', () => ({
+  endBoardingActivity: (...args: unknown[]) => mockEndBoardingActivity(...args),
+}));
+
 const mockEnsureLiveActivityRegistered = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivityWithDeregister = jest.fn().mockResolvedValue(undefined);
 // #2481 — 기본값 false(=device가 계속 쓴다). 게이트 자체 로직은 liveActivityPushChannel.test.ts가
@@ -1216,6 +1222,27 @@ describe('stationNotification', () => {
       await clearStationNotification();
       expect(mockEndLiveActivity).toHaveBeenCalled();
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-passed');
+    });
+
+    // #3221 PR-4 — 종료 3곳 중 2: 안내 종료(clearStationNotification)도 탑승 LA를 닫는다.
+    it('#3221 — iOS+LA 활성: 탑승 LA도 종료 (B4 clear-station-notification)', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockIsLiveActivityEnabled.mockReturnValue(true);
+      mockEndBoardingActivity.mockClear();
+
+      await clearStationNotification();
+      expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
+      expect(mockEndBoardingActivity).toHaveBeenCalledWith('clear-station-notification');
+    });
+
+    it('#3221 — 여정 LA 종료가 reject해도 탑승 LA 종료는 호출된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockIsLiveActivityEnabled.mockReturnValue(true);
+      mockEndLiveActivity.mockRejectedValueOnce(new Error('종료 실패'));
+      mockEndBoardingActivity.mockClear();
+
+      await clearStationNotification();
+      expect(mockEndBoardingActivity).toHaveBeenCalledTimes(1);
     });
 
     it('#1288 — ACTIVE_TRIP_KEY가 있으면 endLiveActivityWithDeregister 사용', async () => {
