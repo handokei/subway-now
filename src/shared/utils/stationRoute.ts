@@ -1055,6 +1055,11 @@ export interface StaticEtaOptions {
    * `transferTimes.json`은 도보만 포함 — 환승 후 다음 열차 대기는 본 필드 또는 엔진 추정으로만 합산
    */
   arrivalsAtTransfers?: ReadonlyArray<{ arrivalSeconds: number; receivedAtMs: number } | null>;
+  /**
+   * #1480 PR-D — 환승 순서별 환승역 실시간 도착 후보 목록(toLine·진행 방향으로 이미 거른 열차).
+   * 엔진이 fresh 후보 중 T_platform(도착+도보+buffer) 이후 첫 열차를 고른다. 없으면 시간표 → 배차간격/2.
+   */
+  boardableArrivalsAtTransfers?: BoardableArrivalsAtTransfers;
   /** freshness·시간표 조회용 현재 시각(ms). 미지정 시 Date.now() — 테스트는 KST 고정값을 주입한다. */
   nowMs?: number;
   /**
@@ -1082,6 +1087,13 @@ function calculateWalkingSeconds(from: LatLng | undefined, to: LatLng | undefine
   return estimateEtaSeconds(distM, WALKING_SPEED_M_PER_S) ?? 0;
 }
 
+/** 환승역 실시간 도착 후보 한 건. arrivalSeconds=null(시간 모름)은 후보에서 제외된다. */
+export interface BoardableArrival {
+  arrivalSeconds: number | null;
+  receivedAtMs: number;
+}
+export type BoardableArrivalsAtTransfers = ReadonlyArray<ReadonlyArray<BoardableArrival> | null>;
+
 // fresh한 실시간 도착이면 arrivalSeconds, 아니면 null (엔진이 시간표/배차간격으로 추정).
 // receivedAtMs<=0(mock/누락 컨벤션) / 나이>ARRIVAL_FRESHNESS_MS(stale) / arrivalSeconds<0(비정상)을 거른다.
 function freshArrivalSeconds(
@@ -1093,6 +1105,22 @@ function freshArrivalSeconds(
   if (nowMs - arrival.receivedAtMs > ARRIVAL_FRESHNESS_MS) return null;
   if (arrival.arrivalSeconds < 0) return null;
   return arrival.arrivalSeconds;
+}
+
+// 환승 순서별 후보 → fresh한 것만 절대 도착 시각(ms)으로. 신선도 규칙은 freshArrivalSeconds 재사용.
+function toBoardableEpochs(
+  lists: BoardableArrivalsAtTransfers | undefined,
+  nowMs: number,
+): ReadonlyArray<ReadonlyArray<number> | null> | undefined {
+  return lists?.map((list) =>
+    list === null
+      ? null
+      : list.flatMap(({ arrivalSeconds, receivedAtMs }) => {
+          if (arrivalSeconds === null) return [];
+          const fresh = freshArrivalSeconds({ arrivalSeconds, receivedAtMs }, nowMs);
+          return fresh === null ? [] : [receivedAtMs + fresh * 1000];
+        }),
+  );
 }
 
 function reportLookups(eta: JourneyEta, onBoardableLookup: StaticEtaOptions['onBoardableLookup']): void {
@@ -1114,6 +1142,7 @@ export function calculateStaticEtaDetail(route: Route, options: StaticEtaOptions
     excludeOriginWait: options.excludeOriginWait,
     originRealtimeWaitSeconds: freshArrivalSeconds(options.arrivalAtOrigin, nowMs),
     transferRealtimeWaitSeconds: options.arrivalsAtTransfers?.map((a) => freshArrivalSeconds(a, nowMs)),
+    transferBoardableArrivalsMs: toBoardableEpochs(options.boardableArrivalsAtTransfers, nowMs),
   });
   reportLookups(eta, options.onBoardableLookup);
   return eta;
@@ -1241,14 +1270,21 @@ export function routeSignature(route: Route): string {
 export function calculateEtaDetail(
   nextTrainMinutes: number,
   route: Route,
-  options: { excludeOriginWait?: boolean; nowMs?: number; onBoardableLookup?: StaticEtaOptions['onBoardableLookup'] } = {},
+  options: {
+    excludeOriginWait?: boolean;
+    nowMs?: number;
+    onBoardableLookup?: StaticEtaOptions['onBoardableLookup'];
+    boardableArrivalsAtTransfers?: BoardableArrivalsAtTransfers;
+  } = {},
 ): JourneyEta | null {
   if (!route) return null;
+  const nowMs = options.nowMs ?? Date.now();
   const eta = computeJourneyEta({
     route,
-    nowMs: options.nowMs ?? Date.now(),
+    nowMs,
     excludeOriginWait: options.excludeOriginWait,
     originRealtimeWaitSeconds: nextTrainMinutes * 60,
+    transferBoardableArrivalsMs: toBoardableEpochs(options.boardableArrivalsAtTransfers, nowMs),
   });
   reportLookups(eta, options.onBoardableLookup);
   return eta;

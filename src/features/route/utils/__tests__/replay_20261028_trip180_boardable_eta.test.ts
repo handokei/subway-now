@@ -5,7 +5,7 @@
  * `capture_20261028_trip180_evening_7252.fixture.json`(7252 건대입구 실측 position)이며 **불변**이다.
  *
  * 3324 건대입구 도착 17:16:04 + 도보 278 + buffer 30 = platform 17:21:12.
- * 실시간 7호선 상행(=중곡 방향) 후보: 7250(platform 이전) / 7252 / 7254 → 7252 선택, 실제 7252 건대입구 17:24:10 ±1분.
+ * 실시간 7호선 상행(=중곡 방향) 후보: 7250(platform 이전) / 7252 (이후 7254) → 7252 선택, 실제 7252 건대입구 17:24:10 ±1분.
  * 시간표 단독(PR-C)은 1722 선택(+2~4분 known gap) — 주입을 빼면 이 테스트가 red가 된다.
  */
 import { readdirSync, readFileSync } from 'fs';
@@ -14,7 +14,7 @@ import { calculateEtaDetail, findStationByNameAndLine } from '../../../../shared
 import type { Route } from '../../../../shared/utils/stationRoute';
 import { buildBoardableArrivalsAtTransfers } from '../boardableArrivalsAtTransfers';
 
-const BACKEND_FIXTURES = join(__dirname, '../../../../backend/alarm-worker/src/__tests__/fixtures');
+const BACKEND_FIXTURES = join(__dirname, '../../../../../backend/alarm-worker/src/__tests__/fixtures');
 const KST_OFFSET_MS = 9 * 3_600_000;
 const kst = (h: number, mi: number, s: number): number => Date.UTC(2026, 9, 28, h, mi, s) - KST_OFFSET_MS;
 
@@ -71,7 +71,7 @@ describe('replay 10/28 trip 180 — 건대입구 7호선 실시간 boardable 주
   const platformMs = arrive3324 + (278 + 30) * 1000;
   const actual7252 = (() => {
     const fixture = JSON.parse(
-      readFileSync(join(BACKEND_FIXTURES, 'capture_20261028_trip180_evening_7252.fixture.json'), 'utf8'),
+      readFileSync(join(BACKEND_FIXTURES, 'replayLibrary', 'capture_20261028_trip180_evening_7252.fixture.json'), 'utf8'),
     ) as { entries: Array<{ kind: string; body: string }> };
     for (const entry of fixture.entries) {
       if (entry.kind !== 'position') continue;
@@ -93,7 +93,7 @@ describe('replay 10/28 trip 180 — 건대입구 7호선 실시간 boardable 주
     throw new Error('fixture: 7252 건대입구 관측 없음');
   })();
 
-  // 3324 도착(17:16:04) 직전 cycle 스냅샷(17:15:25 수신, 39초 전 = fresh). 중곡 방향 = 7호선 상행 bucket.
+  // 3324 도착(17:16:04) 직전 cycle 스냅샷(17:15:47 수신, 17초 전 = fresh). 중곡 방향 = 7호선 상행 bucket.
   const snapshots = loadKunSnapshots();
   const at = snapshots.find((s) => s.receivedAtMs <= arrive3324 && arrive3324 - s.receivedAtMs <= 60_000);
   if (!at) throw new Error('fixture: 17:16:04 직전 건대입구 arrival 스냅샷 없음');
@@ -113,7 +113,7 @@ describe('replay 10/28 trip 180 — 건대입구 7호선 실시간 boardable 주
   it('fixture sanity: 상행(중곡 방향) 후보는 7250(platform 이전 도착)·7252', () => {
     expect(upTrains.map((t) => t.trainNo)).toEqual(['7250', '7252']);
     const arrivalMs = (t: (typeof upTrains)[number]) => t.receivedAtMs + t.arrivalSeconds * 1000;
-    expect(arrivalMs(upTrains[0])).toBeLessThan(platformMs); // 7250 17:18:25 — platform(17:21:12) 이전
+    expect(arrivalMs(upTrains[0])).toBeLessThan(platformMs); // 7250 17:19:47 — platform(17:21:12) 이전
     expect(arrivalMs(upTrains[1])).toBeGreaterThan(platformMs);
   });
 
@@ -135,7 +135,7 @@ describe('replay 10/28 trip 180 — 건대입구 7호선 실시간 boardable 주
 
   it('stale 스냅샷(수신 후 60초 초과)은 쓰지 않고 시간표로 폴백', () => {
     const eta = calculateEtaDetail(0, route, {
-      nowMs: arrive3324 + 30_000, // 수신 후 69초
+      nowMs: arrive3324 + 60_000, // 스냅샷 수신(17:15:47) 후 77초
       excludeOriginWait: true,
       boardableArrivalsAtTransfers: buildBoardableArrivalsAtTransfers(0, upTrains),
     });

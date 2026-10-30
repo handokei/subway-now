@@ -31,7 +31,7 @@ import { getTransferSeconds } from './transferTimes';
  * 같은 입력은 항상 같은 ETA(결정적 테스트·replay). 3분 고정 대기(DEFAULT_WAIT_MINUTES)는 폐기됐다.
  *
  * 대기 소스 우선순위(사용자 결정 D1=U3):
- *   realtime  호출자가 넘긴 fresh 실시간 대기(초). 출발: 진행방향 도착정보 / 환승: PR-D가 채운다.
+ *   realtime  호출자가 넘긴 fresh 실시간 대기(초). 출발: 진행방향 도착정보 / 환승: PR-D의 boardable 후보(transferBoardableArrivalsMs)가 채운다.
  *   timetable 정규화 역명 + directionOnLine 방향 + dayType(T_platform)의 시간표에서 T_platform 이후 첫 열차.
  *             방향 극성이 시간표와 어긋난 노선(TIMETABLE_DIRECTION_MISMATCH_LINES)은 쓰지 않는다.
  *   headway   시간표가 없거나 방향을 모르면 해당 시간대 배차간격/2 (lineHeadways.json).
@@ -89,6 +89,11 @@ export interface JourneyEtaInput {
   originStop?: { stationName: string; line: LineNumber; direction: Direction } | null;
   /** 환승 순서별 실시간 대기(초). fresh 판정은 호출자 책임. 환승 실시간 주입은 PR-D 소관. */
   transferRealtimeWaitSeconds?: ReadonlyArray<number | null>;
+  /**
+   * 환승 순서별 환승역 실시간 도착 후보(절대 epoch ms) — toLine·진행 방향으로 이미 거른 fresh 열차.
+   * 엔진이 T_platform 이후 첫 열차(boardable)를 고른다. 없거나 boardable이 없으면 시간표로 폴백. (#1480 PR-D)
+   */
+  transferBoardableArrivalsMs?: ReadonlyArray<ReadonlyArray<number> | null>;
 }
 
 interface TransferStep {
@@ -170,6 +175,8 @@ interface WaitRequest {
   direction: Direction | null;
   atMs: number;
   realtimeSeconds: number | null;
+  /** T_platform 이후 첫 열차를 고를 실시간 도착 후보(절대 ms). */
+  boardableArrivalsMs?: ReadonlyArray<number> | null;
 }
 
 interface WaitResolution {
@@ -178,10 +185,14 @@ interface WaitResolution {
 }
 
 function resolveWait(request: WaitRequest): WaitResolution {
-  const { kind, line, stationName, direction, atMs, realtimeSeconds } = request;
+  const { kind, line, stationName, direction, atMs, realtimeSeconds, boardableArrivalsMs } = request;
   const at = new Date(atMs);
   const wait = (source: WaitSource, seconds: number): JourneyWait => ({ kind, line, stationName, source, seconds });
 
+  const boardableMs = (boardableArrivalsMs ?? []).filter((t) => t >= atMs).sort((a, b) => a - b)[0];
+  if (boardableMs !== undefined) {
+    return { wait: wait('realtime', (boardableMs - atMs) / MS_PER_SECOND), lookup: null };
+  }
   if (realtimeSeconds !== null) return { wait: wait('realtime', realtimeSeconds), lookup: null };
 
   let lookup: BoardableLookup | null = null;
@@ -247,6 +258,7 @@ export function computeJourneyEta(input: JourneyEtaInput): JourneyEta {
         direction: transferDirection(route, transfers, index),
         atMs: cursorMs,
         realtimeSeconds: input.transferRealtimeWaitSeconds?.[index] ?? null,
+        boardableArrivalsMs: input.transferBoardableArrivalsMs?.[index] ?? null,
       }),
     );
   });
