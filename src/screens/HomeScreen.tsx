@@ -113,6 +113,7 @@ import {
 } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { ShareTripButton } from '../features/route/components/ShareTripButton';
+import { buildRouteChipLabel, computeChipEta } from '../features/route/utils/routeChipEta';
 import { isDegenerateDestination } from '../features/route/utils/isDegenerateDestination';
 import { computeJourneyLaFields } from '../features/route/utils/journeyLaFields';
 import { Toast } from '../shared/ui/Toast';
@@ -238,6 +239,13 @@ export default function HomeScreen() {
   const routePreference = useDestinationStore((s) => s.routePreference);
   const loadRoutePreference = useDestinationStore((s) => s.loadRoutePreference);
   const [categorized, setCategorized] = useState<CategorizedRoute[]>([]);
+  // #1480 후속 — 경로 칩·공유의 "N분"은 홈 상단과 같은 엔진(지금 출발, 대기 포함). 분 단위로만 갱신해 렌더마다 재계산하지 않는다.
+  // 후보 정렬·선택(travelMinutes)은 불변 — 표시 숫자만 바뀐다.
+  const chipNowMinute = Math.floor(Date.now() / 60_000);
+  const chipEtaByKey = useMemo(
+    () => new Map(categorized.map(({ category, candidate }) => [category.key, computeChipEta(candidate.route, chipNowMinute * 60_000)])),
+    [categorized, chipNowMinute],
+  );
   const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
   // #546: 경로 timeline을 출발/환승/도착 마커만 보일지(false), 모든 정거장을 펼쳐 보일지(true)
   // 사용자가 토글한다. 세션 in-memory — 재기동 시 compact 기본.
@@ -1827,9 +1835,7 @@ export default function HomeScreen() {
                               {t(`routes.${category.key}`)}
                             </Text>
                             <Text style={[styles.routePillSub, { color: colors.muted }]}>
-                              {candidate.transferCount === 0
-                                ? t('route.directOnly', { min: candidate.travelMinutes })
-                                : t('route.minutesAndTransfers', { min: candidate.travelMinutes, count: candidate.transferCount })}
+                              {buildRouteChipLabel(t as unknown as (key: string, options?: Record<string, unknown>) => string, candidate.transferCount, chipEtaByKey.get(category.key) ?? { minutes: candidate.travelMinutes, kind: 'exact' })}
                             </Text>
                           </Pressable>
                         );
@@ -1909,7 +1915,8 @@ export default function HomeScreen() {
                             currentStation={result?.station ?? null}
                             destination={destination}
                             totalStops={journey.totalStops}
-                            travelMinutes={selectedCandidate?.travelMinutes ?? 0}
+                            travelMinutes={chipEtaByKey.get(selectedKey)?.minutes ?? selectedCandidate?.travelMinutes ?? 0}
+                            etaKind={chipEtaByKey.get(selectedKey)?.kind}
                           />
                         </View>
                         <EditorialTimeline

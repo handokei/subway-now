@@ -301,6 +301,9 @@
     "minutesAndTransfers_one": "{{min}}분 · {{count}}환승",
     "minutesAndTransfers_other": "{{min}}분 · {{count}}환승",
     "directOnly": "{{min}}분 · 직통",
+    "directOnlyPlus": "{{min}}분+ · 직통",
+    "minutesAndTransfersPlus_one": "{{min}}분+ · {{count}}환승",
+    "minutesAndTransfersPlus_other": "{{min}}분+ · {{count}}환승",
     "currentStation": "{{name}}역",
     "atCurrentStation": "현재 {{name}}역",
     "approximateDistance": "약 {{m}}m",
@@ -428,7 +431,9 @@
     "trip": {
       "title": "지하철 경로",
       "buttonLabel": "경로 공유",
-      "bodyTemplate": "🚇 지하철 경로\n출발: {{fromName}} ({{fromLine}})\n도착: {{toName}} ({{toLine}})\n약 {{minutes}}분 소요 ({{stops}}정거장)"
+      "bodyTemplate": "🚇 지하철 경로\n출발: {{fromName}} ({{fromLine}})\n도착: {{toName}} ({{toLine}})\n약 {{minutes}}분 소요 ({{stops}}정거장)",
+      "bodyTemplatePlus": "🚇 지하철 경로\n출발: {{fromName}} ({{fromLine}})\n도착: {{toName}} ({{toLine}})\n약 {{minutes}}분+ 소요 ({{stops}}정거장)",
+      "bodyTemplateEnded": "🚇 지하철 경로\n출발: {{fromName}} ({{fromLine}})\n도착: {{toName}} ({{toLine}})\n막차 종료 ({{stops}}정거장)"
     }
   },
   "debug": {

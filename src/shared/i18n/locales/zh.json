@@ -301,6 +301,9 @@
     "minutesAndTransfers_one": "{{min}}分钟 · 换乘{{count}}次",
     "minutesAndTransfers_other": "{{min}}分钟 · 换乘{{count}}次",
     "directOnly": "{{min}}分钟 · 直达",
+    "directOnlyPlus": "{{min}}分钟+ · 直达",
+    "minutesAndTransfersPlus_one": "{{min}}分钟+ · 换乘{{count}}次",
+    "minutesAndTransfersPlus_other": "{{min}}分钟+ · 换乘{{count}}次",
     "currentStation": "{{name}}",
     "atCurrentStation": "当前 {{name}}",
     "approximateDistance": "约{{m}}m",
@@ -428,7 +431,9 @@
     "trip": {
       "title": "地铁路线",
       "buttonLabel": "分享路线",
-      "bodyTemplate": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}} 分钟 ({{stops}} 站)"
+      "bodyTemplate": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}} 分钟 ({{stops}} 站)",
+      "bodyTemplatePlus": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}}+ 分钟 ({{stops}} 站)",
+      "bodyTemplateEnded": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n末班车已结束 ({{stops}} 站)"
     }
   },
   "debug": {

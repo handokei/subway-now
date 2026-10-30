@@ -301,6 +301,9 @@
     "minutesAndTransfers_one": "{{min}}m · {{count}} transfer",
     "minutesAndTransfers_other": "{{min}}m · {{count}} transfers",
     "directOnly": "{{min}}m · Direct",
+    "directOnlyPlus": "{{min}}m+ · Direct",
+    "minutesAndTransfersPlus_one": "{{min}}m+ · {{count}} transfer",
+    "minutesAndTransfersPlus_other": "{{min}}m+ · {{count}} transfers",
     "currentStation": "{{name}}",
     "atCurrentStation": "Currently at {{name}}",
     "approximateDistance": "~{{m}}m",
@@ -428,7 +431,9 @@
     "trip": {
       "title": "Subway Route",
       "buttonLabel": "Share route",
-      "bodyTemplate": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)"
+      "bodyTemplate": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)",
+      "bodyTemplatePlus": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}}+ min ({{stops}} stops)",
+      "bodyTemplateEnded": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nLast train ended ({{stops}} stops)"
     }
   },
   "debug": {

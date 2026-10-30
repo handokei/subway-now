@@ -2,6 +2,7 @@ import { Share } from 'react-native';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import type { LineNumber } from '../../../shared/types/station';
+import type { EtaDisplayKind } from '../../../shared/utils/journeyTimeline';
 
 /**
  * Share A — 시스템 텍스트 공유.
@@ -14,6 +15,13 @@ import type { LineNumber } from '../../../shared/types/station';
  *   상위에서 미리 계산한 totalStops / travelMinutes 만 받는다.
  */
 
+/** 소요 시간 표기별 본문 템플릿 — 대기 미상("N분+")·막차 종료는 홈 상단과 같은 의미로 구분한다. */
+const BODY_TEMPLATE_KEYS: Record<EtaDisplayKind, string> = {
+  exact: 'share.trip.bodyTemplate',
+  unknownWait: 'share.trip.bodyTemplatePlus',
+  lastTrainEnded: 'share.trip.bodyTemplateEnded',
+};
+
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
 export interface ShareTripInput {
@@ -22,6 +30,8 @@ export interface ShareTripInput {
   destination: Station | null;
   totalStops: number;
   travelMinutes: number;
+  /** 소요 시간 표기 종류. 미지정이면 'exact'. */
+  etaKind?: EtaDisplayKind;
   t: TFunction;
 }
 
@@ -35,10 +45,10 @@ function lineLabel(t: TFunction, line: LineNumber): string {
  * 호출자가 버튼을 비활성화할 수 있게 한다.
  */
 export function buildShareTripText(input: ShareTripInput): string | null {
-  const { route, currentStation, destination, totalStops, travelMinutes, t } = input;
+  const { route, currentStation, destination, totalStops, travelMinutes, etaKind = 'exact', t } = input;
   if (!route || !currentStation || !destination) return null;
 
-  return t('share.trip.bodyTemplate', {
+  return t(BODY_TEMPLATE_KEYS[etaKind], {
     fromName: currentStation.name,
     fromLine: lineLabel(t, currentStation.line),
     toName: destination.name,
