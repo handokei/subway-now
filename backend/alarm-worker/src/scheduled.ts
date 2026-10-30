@@ -7101,7 +7101,7 @@ export async function completeWaypointAdvance(
     const contentState = buildLiveActivityContentState(
       nextWaypoint,
       // #2747 PR-6 — 방금 통과한 waypoint에 정차 중이므로 목적지까지 = 그 waypoint의 remainingSecToDest.
-      destinationEtaSeconds(waypoint, 0),
+      destinationEtaSeconds(waypoint, 0, { ahead: trip.waypoints, nowMs: now }),
       trip.waypoints.length,
       trip,
       // #2849 — stationName은 방금 ground truth로 확정 통과한 `waypoint`(이 함수의 파라미터,
@@ -7196,7 +7196,11 @@ export async function maybeFireLiveActivityUpdate(
   const contentState = buildLiveActivityContentState(
     waypoint,
     // #2747 PR-6 — 목적지까지 남은 시간(waypoint ETA + 그 waypoint의 remainingSecToDest). 합산 불가면 null=생략.
-    destinationEtaSeconds(waypoint, etaToWaypointKnown ? etaSeconds : null),
+    // #1480 PR-E (B2) — 앞에 남은 환승의 대기를 지금 기준으로 재선택(등록 payload 재료만 읽음, KV 쓰기 +0).
+    destinationEtaSeconds(waypoint, etaToWaypointKnown ? etaSeconds : null, {
+      ahead: trip.waypoints.filter((w) => w !== waypoint),
+      nowMs: now,
+    }),
     trip.waypoints.length,
     trip,
     // #2849 — waypoint.stationName(다음 추적 대상) 대신 SSoT 현재역(미정착 시 trip origin).

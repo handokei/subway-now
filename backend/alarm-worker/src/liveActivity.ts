@@ -167,10 +167,49 @@ function resolveDefaultTrainCode(trip: Trip): string | undefined {
  * 목적지까지 남은 초). waypoint ETA를 모르거나(null) waypoint에 `remainingSecToDest`가 없으면(구 trip·
  * backend 추론 경로) null -> `buildLiveActivityContentState`가 etaMinutes를 생략한다.
  */
-export function destinationEtaSeconds(waypoint: Waypoint, etaToWaypointSec: number | null): number | null {
+export function destinationEtaSeconds(
+  waypoint: Waypoint,
+  etaToWaypointSec: number | null,
+  /**
+   * #1480 PR-E (B2) — `waypoint` 이후에 남은 waypoint들(`waypoint` 자신 제외)과 현재 시각. 둘 다 있으면 앞에 남은
+   * 첫 환승의 대기를 시간표 출발 K개에서 **지금 기준으로 다시 고른다**. 미지정이면 기존 동작(등록 시점 고정 대기).
+   */
+  reselect?: { ahead: readonly Waypoint[]; nowMs: number },
+): number | null {
   const { remainingSecToDest } = waypoint;
   if (etaToWaypointSec === null || remainingSecToDest === undefined) return null;
-  return etaToWaypointSec + remainingSecToDest;
+  const reselected = reselect ? reselectedDestinationSeconds(waypoint, etaToWaypointSec, reselect) : null;
+  return reselected ?? etaToWaypointSec + remainingSecToDest;
+}
+
+const MS_PER_SECOND = 1000;
+
+/**
+ * #1480 PR-E (B2) — 환승 대기 재선택.
+ *
+ * 앞에 남은 첫 환승 T(재선택 재료가 있는 것)까지: lock 열차 실시간 ETA(`etaToWaypointSec`) + `waypoint`→T 주행
+ * (`remainingSecToDest` 차이). 거기에 도보+buffer를 더한 시각 cursor 이후의 첫 시간표 출발을 고르고, 그 출발 + 이후 주행이
+ * 목적지까지다. 열차가 늦어 cursor가 밀리면 다음 출발로 넘어가 etaMinutes가 늘어난다.
+ * 재료가 없거나 K개를 소진하면 null -> 호출자가 기존 `remainingSecToDest` 합산으로 폴백한다(배차간격 데이터가 backend에 없다).
+ */
+function reselectedDestinationSeconds(
+  waypoint: Waypoint,
+  etaToWaypointSec: number,
+  reselect: { ahead: readonly Waypoint[]; nowMs: number },
+): number | null {
+  const { remainingSecToDest: fromWaypoint } = waypoint;
+  const { ahead, nowMs } = reselect;
+  const transfer = [waypoint, ...ahead].find(
+    (w) => w.nextLegDeparturesEpochSec !== undefined && w.remainingSecToDest !== undefined,
+  );
+  if (!transfer) return null;
+  const { nextLegDeparturesEpochSec, transferWalkSec, rideSecToDest, remainingSecToDest: fromTransfer } = transfer;
+  if (!nextLegDeparturesEpochSec || transferWalkSec === undefined || rideSecToDest === undefined) return null;
+  const secondsToTransfer = Math.max((fromWaypoint ?? 0) - (fromTransfer ?? 0), 0);
+  const platformReadyMs = nowMs + (etaToWaypointSec + secondsToTransfer + transferWalkSec) * MS_PER_SECOND;
+  const departureSec = nextLegDeparturesEpochSec.find((sec) => sec * MS_PER_SECOND >= platformReadyMs);
+  if (departureSec === undefined) return null;
+  return (departureSec * MS_PER_SECOND - nowMs) / MS_PER_SECOND + rideSecToDest;
 }
 
 export function buildLiveActivityContentState(

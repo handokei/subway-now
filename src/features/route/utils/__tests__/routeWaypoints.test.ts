@@ -26,7 +26,15 @@ function stationById(line: LineNumber, id: string): Station {
 
 // #2747 PR-6 — 기존 케이스는 waypoint 구조(이름/노선/kind)만 검증한다. remainingSecToDest는 아래 전용 describe에서 검증.
 const structureOf = (...args: Parameters<typeof routeToWaypoints>): AlarmWaypoint[] =>
-  routeToWaypoints(...args).map(({ remainingSecToDest: _stamped, ...structure }) => structure);
+  routeToWaypoints(...args).map(
+    ({
+      remainingSecToDest: _stamped,
+      nextLegDeparturesEpochSec: _departures, // #1480 PR-E — 재선택 재료는 transferReselect 전용 테스트에서 검증.
+      transferWalkSec: _walk,
+      rideSecToDest: _ride,
+      ...structure
+    }) => structure,
+  );
 
 const wp = (
   stationName: string,

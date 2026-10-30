@@ -20,6 +20,7 @@ import {
   isSameStationName,
 } from '../../../shared/utils/stationRoute';
 import type { AlarmWaypoint } from '../../../shared/types/alarm';
+import { planTransferReselect } from '../../../shared/utils/journeyTimeline';
 
 interface Context {
   destinationName: string;
@@ -128,6 +129,24 @@ const MS_PER_SECOND = 1000;
  * - 해당 역 기준 잔여 주행·도보). 지연으로 어긋나는 한계(plan B1)는 PR-E(B2)가 푼다.
  * `nowMs`는 등록 시각(미지정 시 Date.now()) — 계약 fixture는 실측 등록 시각을 고정 주입한다.
  */
+/**
+ * #1480 PR-E (B2) — 환승 waypoint의 대기 재선택 재료. 시간표를 쓸 수 없으면 `{}`(backend는 remainingSecToDest로 폴백).
+ * `remainingSecToDest`는 등록 시점 고정값이라 열차가 늦어지면 어긋난다 — backend가 push마다 이 재료로 다시 고른다.
+ */
+function reselectFields(
+  anchored: NonNullable<Route>,
+  arrivalMs: number,
+): Pick<AlarmWaypoint, 'nextLegDeparturesEpochSec' | 'transferWalkSec' | 'rideSecToDest'> {
+  const plan = planTransferReselect(anchored, arrivalMs);
+  if (!plan) return {};
+  const { walkSeconds, departuresEpochMs, rideSeconds } = plan;
+  return {
+    nextLegDeparturesEpochSec: departuresEpochMs.map((ms) => Math.round(ms / MS_PER_SECOND)),
+    transferWalkSec: Math.round(walkSeconds),
+    rideSecToDest: Math.round(rideSeconds),
+  };
+}
+
 function stampRemainingSecToDest(
   route: NonNullable<Route>,
   waypoints: AlarmWaypoint[],
@@ -150,12 +169,11 @@ function stampRemainingSecToDest(
     if (!station || !destStation) return waypoint;
     const anchored = anchorOf(station, destStation.id);
     const secondsToWaypoint = Math.max(remainingFromCurrent - getRouteRemainingSeconds(anchored), 0);
+    const arrivalMs = baseNowMs + secondsToWaypoint * MS_PER_SECOND;
     // anchored는 non-null route라 ETA도 항상 숫자.
-    const minutes = calculateStaticETA(anchored, {
-      excludeOriginWait: true,
-      nowMs: baseNowMs + secondsToWaypoint * MS_PER_SECOND,
-    }) as number;
-    return { ...waypoint, remainingSecToDest: minutes * SECONDS_PER_MINUTE };
+    const minutes = calculateStaticETA(anchored, { excludeOriginWait: true, nowMs: arrivalMs }) as number;
+    const stamped = { ...waypoint, remainingSecToDest: minutes * SECONDS_PER_MINUTE };
+    return waypoint.kind === 'transfer' ? { ...stamped, ...reselectFields(anchored, arrivalMs) } : stamped;
   });
 }
 

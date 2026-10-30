@@ -71,3 +71,8 @@ export const TRANSFER_BUFFER_LONG_WALK_SECONDS = 60;
 // #1480 PR-C (D1=U3 → U2) — 시간표·배차간격 어느 쪽도 없을 때(심야 closed 등) 대기 하한(초).
 // 이 값이 쓰이면 ETA는 "N분+"로 표시한다 (실제 대기는 이보다 길 수 있음).
 export const UNKNOWN_WAIT_FLOOR_SECONDS = 60;
+
+// #1480 PR-E (B2) — 환승 waypoint마다 backend에 넘기는 시간표 다음 출발 개수. backend가 push마다 "열차가 늦어졌을 때
+// 밀려갈 다음 출발"을 고르는 후보라 K개를 소진하면 기존 remainingSecToDest로 폴백한다. 6개 ≈ 최장 배차(22분) 기준
+// 수십 분 지연을 덮고, payload는 환승 waypoint당 약 80B.
+export const TRANSFER_RESELECT_DEPARTURE_COUNT = 6;

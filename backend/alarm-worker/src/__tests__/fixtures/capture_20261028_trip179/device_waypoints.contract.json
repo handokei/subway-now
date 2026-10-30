@@ -1,5 +1,5 @@
 {
-  "_comment": "device routeToWaypoints(route 중곡(7)->뚝섬(2) via 건대입구, currentStation=중곡) 등록 payload 계약. remainingSecToDest = calculateStaticETA(anchorRouteToCurrentStation(route, 해당 역, 뚝섬), {excludeOriginWait:true, nowMs: 그 역 도달 예상 시각}) 분 x 60, destination은 0. #1480 PR-C: 환승 대기가 시간표(시각 의존)라 등록 시각 06:28:51 KST(중곡 출발 = 7035 건대입구 도착 06:34:21 - 330s)를 고정 주입해 산출 — 고정 3분 시절 값(900/780/660)에서 840/720/600으로 갱신(건대입구 환승 0641 91초 대기 반영, 군자 840s=14분 vs 실측 뚝섬 도착 06:45:13). device(src/features/route/utils/__tests__/routeWaypoints.test.ts)와 backend(replay_20261028_trip179_la_eta_destination.test.ts)가 같은 파일을 읽는다.",
+  "_comment": "device routeToWaypoints(route 중곡(7)->뚝섬(2) via 건대입구, currentStation=중곡) 등록 payload 계약. remainingSecToDest = calculateStaticETA(anchorRouteToCurrentStation(route, 해당 역, 뚝섬), {excludeOriginWait:true, nowMs: 그 역 도달 예상 시각}) 분 x 60, destination은 0. #1480 PR-C: 환승 대기가 시간표(시각 의존)라 등록 시각 06:28:51 KST(중곡 출발 = 7035 건대입구 도착 06:34:21 - 330s)를 고정 주입해 산출 — 고정 3분 시절 값(900/780/660)에서 840/720/600으로 갱신(건대입구 환승 0641 91초 대기 반영, 군자 840s=14분 vs 실측 뚝섬 도착 06:45:13). #1480 PR-E: 환승 waypoint에 backend 대기 재선택 재료(nextLegDeparturesEpochSec K=6 / transferWalkSec / rideSecToDest) 추가 — 산출 계약 갱신. device(src/features/route/utils/__tests__/routeWaypoints.test.ts)와 backend(replay_20261028_trip179_la_eta_destination.test.ts)가 같은 파일을 읽는다.",
   "route": {
     "type": "transfer",
     "transferName": "건대입구",
@@ -15,7 +15,7 @@
   "waypoints": [
     { "stationName": "군자(능동)", "line": "7", "kind": "intermediate", "remainingSecToDest": 840 },
     { "stationName": "어린이대공원(세종대)", "line": "7", "kind": "intermediate", "remainingSecToDest": 720 },
-    { "stationName": "건대입구", "line": "7", "kind": "transfer", "remainingSecToDest": 600 },
+    { "stationName": "건대입구", "line": "7", "kind": "transfer", "remainingSecToDest": 600, "nextLegDeparturesEpochSec": [1793137260, 1793137620, 1793138160, 1793138400, 1793138760, 1793139060], "transferWalkSec": 308, "rideSecToDest": 210 },
     { "stationName": "성수", "line": "2", "kind": "intermediate", "remainingSecToDest": 120 },
     { "stationName": "뚝섬", "line": "2", "kind": "destination", "remainingSecToDest": 0 }
   ]

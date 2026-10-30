@@ -2,6 +2,7 @@ import type { LineNumber } from '../types/station';
 import {
   TRANSFER_BUFFER_BREAKPOINTS,
   TRANSFER_BUFFER_LONG_WALK_SECONDS,
+  TRANSFER_RESELECT_DEPARTURE_COUNT,
   UNKNOWN_WAIT_FLOOR_SECONDS,
 } from '../constants/eta';
 import { TIMETABLE_DIRECTION_MISMATCH_LINES } from '../constants/timetableDirection';
@@ -66,6 +67,8 @@ export interface BoardableLookup {
 export interface JourneyEta {
   /** 정수 분 (호출처 contract). */
   minutes: number;
+  /** 반올림 전 총 초 — backend 재선택 재료(PR-E)가 대기 제외 주행을 정확히 뽑는 데 쓴다. */
+  totalSeconds: number;
   /** 대기 하한(U2)이 쓰였다 — 표시는 "N분+". */
   waitUnknown: boolean;
   /** 막차 이후 — 표시는 "막차 종료". */
@@ -177,6 +180,11 @@ interface WaitResolution {
   lookup: BoardableLookup | null;
 }
 
+/** 시간표를 대기 소스로 쓸 수 있는가 — 방향을 알고, 시간표 극성이 어긋난 노선이 아니다. */
+function canUseTimetable(line: LineNumber, direction: Direction | null): direction is Direction {
+  return direction !== null && !TIMETABLE_DIRECTION_MISMATCH_LINES.includes(line);
+}
+
 function resolveWait(request: WaitRequest): WaitResolution {
   const { kind, line, stationName, direction, atMs, realtimeSeconds } = request;
   const at = new Date(atMs);
@@ -186,8 +194,9 @@ function resolveWait(request: WaitRequest): WaitResolution {
 
   let lookup: BoardableLookup | null = null;
   if (stationName !== null) {
-    const usable = direction !== null && !TIMETABLE_DIRECTION_MISMATCH_LINES.includes(line);
-    const result = usable ? findBoardableDeparture({ stationName, line, direction, from: at }) : null;
+    const result = canUseTimetable(line, direction)
+      ? findBoardableDeparture({ stationName, line, direction, from: at })
+      : null;
     lookup = { status: result?.status === 'ok' ? 'ok' : 'miss', line, stationName };
     if (result?.status === 'ok') {
       const { departure } = result;
@@ -253,8 +262,10 @@ export function computeJourneyEta(input: JourneyEtaInput): JourneyEta {
 
   cursorMs += (tailSeconds + (input.destinationWalkSeconds ?? 0)) * MS_PER_SECOND;
 
+  const totalSeconds = (cursorMs - nowMs) / MS_PER_SECOND;
   return {
-    minutes: Math.round((cursorMs - nowMs) / MS_PER_SECOND / SECONDS_PER_MINUTE),
+    minutes: Math.round(totalSeconds / SECONDS_PER_MINUTE),
+    totalSeconds,
     waitUnknown: waits.some((w) => w.source === 'floor'),
     lastTrainEnded: waits.some((w) => w.source === 'ended'),
     waits,
@@ -268,4 +279,53 @@ export type EtaDisplayKind = 'exact' | 'unknownWait' | 'lastTrainEnded';
 export function etaDisplayKind(flags: Pick<JourneyEta, 'waitUnknown' | 'lastTrainEnded'> | null): EtaDisplayKind {
   if (flags?.lastTrainEnded) return 'lastTrainEnded';
   return flags?.waitUnknown ? 'unknownWait' : 'exact';
+}
+
+/**
+ * 환승 대기 재선택 재료 (#1480 PR-E, plan B2).
+ *
+ * 등록 시점에 확정한 환승 대기(고정값)는 열차가 지연되면 어긋난다. 그래서 backend가 push마다 "lock 열차의 실시간 환승역
+ * 도착 + 도보" 이후 첫 출발을 다시 고를 수 있게, 그 환승의 해당 방향 시간표 다음 출발 K개와 도보·주행을 넘긴다.
+ *
+ * `route`는 환승역 fromLine 위에 앵커링된 경로(첫 미완료 환승이 이 환승), `arrivalMs`는 그 환승역 도달 예상 시각.
+ * 시간표를 쓸 수 없으면(방향 미상·극성 불일치·역 miss·막차 이후) null — backend는 기존 remainingSecToDest로 폴백한다.
+ */
+export interface TransferReselectPlan {
+  /** 도보 + buffer (초) — 환승역 도착부터 승강장 준비까지. */
+  walkSeconds: number;
+  /** 환승 도보 이후 시간표 다음 출발 K개 (epoch ms, 오름차순). */
+  departuresEpochMs: number[];
+  /** 이 환승의 도보·대기를 제외한 나머지 주행 (초, 반올림 없음; 이후 환승의 stamp 대기 포함). */
+  rideSeconds: number;
+}
+
+export function planTransferReselect(route: NonNullable<Route>, arrivalMs: number): TransferReselectPlan | null {
+  const { transfers } = shapeOf(route);
+  const { walkDone, waitDone } = completedCounts(route);
+  const index = waitDone;
+  if (index >= transfers.length) return null;
+  const step = transfers[index];
+  const { toLine, transferName } = step;
+  const direction = transferDirection(route, transfers, index);
+  if (!canUseTimetable(toLine, direction)) return null;
+
+  const walkSeconds = index < walkDone ? 0 : getTransferSeconds(step.fromLine, step.toLine, transferName);
+  const platformSeconds = walkSeconds + bufferSecondsFor(walkSeconds);
+  const platformMs = arrivalMs + (step.secondsToTransfer + platformSeconds) * MS_PER_SECOND;
+
+  const departuresEpochMs: number[] = [];
+  let fromMs = platformMs;
+  while (departuresEpochMs.length < TRANSFER_RESELECT_DEPARTURE_COUNT) {
+    const result = findBoardableDeparture({ stationName: transferName, line: toLine, direction, from: new Date(fromMs) });
+    if (result.status !== 'ok' || result.departure.isNextDayFallback) break;
+    const departureMs = fromMs + result.departure.waitSeconds * MS_PER_SECOND;
+    departuresEpochMs.push(departureMs);
+    fromMs = departureMs + SECONDS_PER_MINUTE * MS_PER_SECOND; // 시간표 해상도 = 1분 — 같은 분은 같은 열차.
+  }
+  if (departuresEpochMs.length === 0) return null;
+
+  const { totalSeconds, waits } = computeJourneyEta({ route, nowMs: arrivalMs, excludeOriginWait: true });
+  const [firstWait] = waits;
+  const rideSeconds = Math.max(totalSeconds - step.secondsToTransfer - platformSeconds - firstWait.seconds, 0);
+  return { walkSeconds: platformSeconds, departuresEpochMs, rideSeconds };
 }

@@ -79,6 +79,17 @@ export interface Waypoint {
    * etaMinutes = (다음 waypoint ETA + 이 값). 구 client·backend 추론 경로는 부재 -> etaMinutes 생략.
    */
   remainingSecToDest?: number;
+  /**
+   * #1480 PR-E (B2) — 환승 waypoint 전용. device가 등록 payload에 얹은 "환승 도보 이후 toLine 시간표 다음 출발 K개
+   * (epoch 초, 오름차순)". `destinationEtaSeconds`가 push마다 now + lock 열차 실시간 ETA + `transferWalkSec` 이후의
+   * 첫 출발을 다시 골라 환승 대기를 갱신한다. 세 필드(next/transferWalk/ride)는 함께 있거나 함께 없다
+   * (`validateTrip`이 반쪽·잘못된 값은 묶음째 제거). 부재 시 기존 `remainingSecToDest` 동작.
+   */
+  nextLegDeparturesEpochSec?: number[];
+  /** 환승역 도착 → 승강장 준비까지 도보 + buffer (초). */
+  transferWalkSec?: number;
+  /** 이 환승의 도보·대기를 제외한 나머지 주행 (초). 선택 출발까지 + 이 값 = 목적지까지. */
+  rideSecToDest?: number;
 }
 
 export interface Trip {

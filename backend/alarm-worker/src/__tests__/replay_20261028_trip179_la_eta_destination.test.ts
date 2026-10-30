@@ -101,7 +101,12 @@ function tripAtGunja(stripRemaining = false): Trip {
   };
 }
 
-async function fireAndReadEtaMinutes(trip: Trip, etaToWaypointKnown?: boolean): Promise<unknown> {
+async function fireAndReadEtaMinutes(
+  trip: Trip,
+  etaToWaypointKnown?: boolean,
+  /** wp0(군자)까지 lock 열차 실시간 ETA(초) — 미지정이면 실측 fixture 값(7035, 120초). */
+  etaSec: number = nextWaypointEtaSec(),
+): Promise<unknown> {
   const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
   const deps = {
     apnsConfig,
@@ -113,7 +118,7 @@ async function fireAndReadEtaMinutes(trip: Trip, etaToWaypointKnown?: boolean): 
   const args = [
     trip,
     trip.waypoints[0],
-    PUSH_AT + nextWaypointEtaSec() * 1000,
+    PUSH_AT + etaSec * 1000,
     deps,
     stats,
     PUSH_AT,
@@ -184,4 +189,137 @@ describe('#2747 PR-6 — validateTrip remainingSecToDest 검증', () => {
       expect(trip?.waypoints[0]).not.toHaveProperty('remainingSecToDest');
     },
   );
+});
+
+/**
+ * #1480 PR-E (B2) — 환승 대기를 push마다 재선택.
+ *
+ * device는 건대입구(환승) waypoint에 "2호선 해당 방향 시간표 다음 출발 K=6개 / 도보+buffer / 대기 제외 주행"을 stamp한다
+ * (값은 device `routeWaypoints.transferReselect.test.ts`가 같은 실측 등록 시각으로 고정). backend는 lock 열차(7035)의
+ * 실시간 건대입구 도착 추정 + 도보 이후의 첫 출발을 매 push 다시 고른다 -> 열차가 늦으면 다음 출발로 밀려 etaMinutes가 늘어난다.
+ */
+describe('#1480 PR-E — LA etaMinutes가 환승 대기를 push마다 재선택한다', () => {
+  const DEPARTURES_EPOCH_SEC = [1793137260, 1793137620, 1793138160, 1793138400, 1793138760, 1793139060]; // 06:41 06:47 06:56 07:00 07:06 07:11
+  const TRANSFER_FIELDS = { nextLegDeparturesEpochSec: DEPARTURES_EPOCH_SEC, transferWalkSec: 308, rideSecToDest: 210 };
+  const pushEpochSec = PUSH_AT / 1000;
+
+  /** 건대입구 waypoint에 재선택 재료를 얹은 등록 payload -> validateTrip. */
+  function tripWithTransferFields(extra: Record<string, unknown> = TRANSFER_FIELDS): Trip {
+    const contract = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, 'device_waypoints.contract.json'), 'utf8')) as {
+      route: unknown;
+      waypoints: Record<string, unknown>[];
+    };
+    // 계약 fixture(PR-E 이후)는 재료를 이미 담고 있다 — 이 헬퍼는 테스트가 고른 값만 얹도록 먼저 비운다.
+    const waypoints = contract.waypoints.map((wp) => {
+      const { nextLegDeparturesEpochSec: _d, transferWalkSec: _w, rideSecToDest: _r, ...base } = wp;
+      return wp.kind === 'transfer' ? { ...base, ...extra } : base;
+    });
+    const trip = validateTrip({
+      token: 'trip179',
+      destination: '뚝섬',
+      route: contract.route,
+      waypoints,
+      expiresAt: Date.now() + 3_600_000,
+      alarmAtEpochMs: PUSH_AT + 60_000,
+    });
+    if (!trip) throw new Error('validateTrip rejected the payload');
+    return { ...trip, activityPushToken: 'la-token', activityState: 'live', apnsEnv: 'sandbox', originStationName: '중곡' };
+  }
+  const minutesOf = (seconds: number) => Math.max(0, Math.round(seconds / 60));
+  /** 새 필드를 모르는 구 trip이 같은 입력에서 내는 값(기존 동작: eta + remainingSecToDest). */
+  const legacyMinutes = (etaSec: number) => minutesOf(etaSec + 840);
+
+  it('제시간: lock 열차가 예상대로 도착하면 0641을 고른다 -> (0641 − push) + 주행 210s ≈ 15분, 실측(15.4분) ±2분', async () => {
+    const etaMinutes = await fireAndReadEtaMinutes(tripWithTransferFields());
+    expect(etaMinutes).toBe(minutesOf(DEPARTURES_EPOCH_SEC[0] - pushEpochSec + 210));
+    const actualMin = (actualDestinationArrival() - PUSH_AT) / 60_000;
+    expect(Math.abs((etaMinutes as number) - actualMin)).toBeLessThanOrEqual(TOLERANCE_MIN);
+  });
+
+  it('지연: 7035의 건대입구 도착이 9분 늦어지면 다음 출발(0656)로 밀려 etaMinutes가 늘어난다 (구 동작보다 크다)', async () => {
+    const lateEtaSec = nextWaypointEtaSec() + 9 * 60;
+    // cursor = push + lateEta + 군자→건대입구 240s + 도보 308s = 06:49:54 -> 첫 출발 ≥ cursor = 06:56
+    const expected = minutesOf(DEPARTURES_EPOCH_SEC[2] - pushEpochSec + 210);
+    const etaMinutes = await fireAndReadEtaMinutes(tripWithTransferFields(), undefined, lateEtaSec);
+    expect(etaMinutes).toBe(expected);
+    expect(etaMinutes as number).toBeGreaterThan(legacyMinutes(lateEtaSec));
+  });
+
+  it('경계: 도보 이후 시각이 출발과 정확히 같으면 그 열차를 탄다 (같은 분 boardable)', async () => {
+    // cursor == 0647 이 되도록: 0647 − push − 240 − 308
+    const etaSec = DEPARTURES_EPOCH_SEC[1] - pushEpochSec - 240 - 308;
+    const etaMinutes = await fireAndReadEtaMinutes(tripWithTransferFields(), undefined, etaSec);
+    expect(etaMinutes).toBe(minutesOf(DEPARTURES_EPOCH_SEC[1] - pushEpochSec + 210));
+  });
+
+  it('K 소진: 모든 출발이 지난 뒤면 재선택을 포기하고 구 동작(eta + remainingSecToDest)으로 폴백한다', async () => {
+    const etaSec = 4000;
+    const etaMinutes = await fireAndReadEtaMinutes(tripWithTransferFields(), undefined, etaSec);
+    expect(etaMinutes).toBe(legacyMinutes(etaSec));
+  });
+
+  it('구 trip(새 필드 없음)은 무변경: 지연 입력에서도 eta + remainingSecToDest', async () => {
+    const lateEtaSec = nextWaypointEtaSec() + 9 * 60;
+    const etaMinutes = await fireAndReadEtaMinutes(tripWithTransferFields({}), undefined, lateEtaSec);
+    expect(etaMinutes).toBe(legacyMinutes(lateEtaSec));
+  });
+
+  it('wp0 ETA를 모르는 heartbeat(etaToWaypointKnown=false)는 새 필드가 있어도 etaMinutes를 생략한다', async () => {
+    expect(await fireAndReadEtaMinutes(tripWithTransferFields(), false)).toBeUndefined();
+  });
+
+  it('KV 쓰기 +0: 재선택은 trip 상태를 바꾸지 않는다 (waypoints 불변, 등록 payload에 얹힌 값만 읽음)', async () => {
+    const trip = tripWithTransferFields();
+    const before = JSON.stringify(trip.waypoints);
+    await fireAndReadEtaMinutes(trip, undefined, nextWaypointEtaSec() + 9 * 60);
+    expect(JSON.stringify(trip.waypoints)).toBe(before);
+  });
+
+  describe('validateTrip — 새 optional 필드 검증 (잘못된 값은 제거, 등록은 거부 안 함)', () => {
+    const transferOf = (trip: Trip) => trip.waypoints.find((w) => w.kind === 'transfer')!;
+
+    it('유효한 값은 그대로 보존 (구 remainingSecToDest 포함)', () => {
+      const wp = transferOf(tripWithTransferFields());
+      expect(wp.nextLegDeparturesEpochSec).toEqual(DEPARTURES_EPOCH_SEC);
+      expect(wp.transferWalkSec).toBe(308);
+      expect(wp.rideSecToDest).toBe(210);
+      expect(wp.remainingSecToDest).toBe(600);
+    });
+
+    it.each([
+      ['배열이 아닌 값', { ...TRANSFER_FIELDS, nextLegDeparturesEpochSec: '1793137260' }],
+      ['비유한 원소 포함', { ...TRANSFER_FIELDS, nextLegDeparturesEpochSec: [1793137260, null] }],
+      ['음수 원소 포함', { ...TRANSFER_FIELDS, nextLegDeparturesEpochSec: [-1] }],
+      ['빈 배열', { ...TRANSFER_FIELDS, nextLegDeparturesEpochSec: [] }],
+    ])('거부: %s -> 새 필드 묶음 전체 제거(재선택 불가 = 구 동작), 등록은 성공', (_label, bad) => {
+      const wp = transferOf(tripWithTransferFields(bad));
+      expect(wp).not.toHaveProperty('nextLegDeparturesEpochSec');
+      expect(wp).not.toHaveProperty('transferWalkSec');
+      expect(wp).not.toHaveProperty('rideSecToDest');
+      expect(wp.remainingSecToDest).toBe(600);
+    });
+
+    it.each([
+      ['transferWalkSec 음수', { ...TRANSFER_FIELDS, transferWalkSec: -1 }],
+      ['transferWalkSec 문자열', { ...TRANSFER_FIELDS, transferWalkSec: '308' }],
+      ['rideSecToDest 음수', { ...TRANSFER_FIELDS, rideSecToDest: -5 }],
+      ['rideSecToDest null', { ...TRANSFER_FIELDS, rideSecToDest: null }],
+    ])('거부: %s -> 새 필드 묶음 전체 제거', (_label, bad) => {
+      const wp = transferOf(tripWithTransferFields(bad));
+      expect(wp).not.toHaveProperty('nextLegDeparturesEpochSec');
+      expect(wp).not.toHaveProperty('transferWalkSec');
+      expect(wp).not.toHaveProperty('rideSecToDest');
+    });
+
+    it('일부만 있으면(셋 중 하나라도 빠지면) 묶음 전체 제거 — 반쪽 재선택 금지', () => {
+      const wp = transferOf(tripWithTransferFields({ nextLegDeparturesEpochSec: DEPARTURES_EPOCH_SEC }));
+      expect(wp).not.toHaveProperty('nextLegDeparturesEpochSec');
+    });
+
+    it('상한 초과 길이(K 상한 12)는 묶음 제거 — payload 무한 증가 방지', () => {
+      const tooMany = Array.from({ length: 13 }, (_, i) => 1793137260 + i * 600);
+      const wp = transferOf(tripWithTransferFields({ ...TRANSFER_FIELDS, nextLegDeparturesEpochSec: tooMany }));
+      expect(wp).not.toHaveProperty('nextLegDeparturesEpochSec');
+    });
+  });
 });
