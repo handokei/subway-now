@@ -13,9 +13,9 @@ const DEST = '7-015'; // 용마산
 describe('getRouteTotalStops (재앵커링 route 기준 남은 정거장)', () => {
   const stored = findRoute('2-011', DEST)!; // 성수(2) → 건대입구 환승 → 용마산(7)
 
-  it('환승 전 출발역: 4+2 = 6 유지', () => {
+  it('환승 전 출발역: 1+4 = 5 유지 (여정 전체 = 재앵커 전과 동일)', () => {
     expect(stored.type).toBe('transfer');
-    expect(getRouteTotalStops(anchorRouteToCurrentStation(stored, station('2-011'), DEST)!)).toBe(6);
+    expect(getRouteTotalStops(anchorRouteToCurrentStation(stored, station('2-011'), DEST)!)).toBe(5);
   });
 
   it('환승 후 건대입구 7호선 위: toLine 남은 4', () => {
