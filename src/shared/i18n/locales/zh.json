@@ -33,6 +33,8 @@
     "originNearest": "最近站",
     "walkMinutes": "步行{{min}}分钟",
     "minuteUnit": "分钟",
+    "minuteUnitPlus": "分钟+",
+    "lastTrainEnded": "末班车已结束",
     "originEstimated": "当前推定站",
     "originStaleDemote": "行驶中 · 正在确认当前站",
     "routeTo": "前往",

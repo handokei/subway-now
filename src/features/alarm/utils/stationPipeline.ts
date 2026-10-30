@@ -22,6 +22,7 @@ import { getBgHopWindowStation, setBgHopWindowStation } from './hopWindowState';
 import { useLegAdvanceStore } from '../store/useLegAdvanceStore';
 import {
   logFiredAlarm,
+  logBoardableLookupResult,
   logSuppressedChannelAgnosticDedup,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
@@ -210,12 +211,12 @@ export interface ProcessLocationInputs {
   locationUncertain?: boolean;
   /**
    * #777 — 출발역(nearest.station)의 다음 열차 도착 정보. arrival API에서 추출.
-   * 호출자가 제공하면 calculateStaticETA가 동적 대기 시간으로 사용, 미제공 시 DEFAULT_WAIT_MINUTES fallback.
+   * 호출자가 제공하면 calculateStaticETA가 동적 대기 시간으로 사용, 미제공 시 엔진이 노선 배차간격/2로 추정(#1480).
    * 호출자(BG/FG) 통합은 점진적으로 진행 — 본 옵션이 없어도 회귀 없음.
    */
   arrivalAtOrigin?: { arrivalSeconds: number; receivedAtMs: number };
   /**
-   * #778 — 각 환승역의 다음 열차 도착 정보 (transfer 순서). null/누락 element는 leg당 DEFAULT_WAIT_MINUTES fallback.
+   * #778 — 각 환승역의 다음 열차 도착 정보 (transfer 순서). null/누락 element는 엔진이 시간표 → 배차간격/2 순으로 추정(#1480).
    * 호출자가 환승 leg마다 arrival을 제공하면 calculateStaticETA가 동적으로 합산.
    */
   arrivalsAtTransfers?: ReadonlyArray<{ arrivalSeconds: number; receivedAtMs: number } | null>;
@@ -754,7 +755,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // 하차 도보는 미적용 — 현 시점 데이터 모델은 destination이 Station(=하차역)으로 사용자 최종 좌표와
   // 일치하므로 도보 0이 자명. 사용자 좌표를 별도로 보유하게 되면 destination/destinationStation 추가.
   // #777: arrivalAtOrigin 호출자가 제공 시 calculateStaticETA가 다음 열차 대기를 동적으로 계산.
-  // #778: arrivalsAtTransfers 호출자가 제공 시 환승 leg마다 동적, 미제공 시 leg당 DEFAULT_WAIT_MINUTES.
+  // #778: arrivalsAtTransfers 호출자가 제공 시 환승 leg마다 동적, 미제공 시 엔진이 시간표 → 배차간격/2로 추정(#1480).
   // #2290 — in-trip(출발 leg의 boarding 대기 소진 evidence)이면 대기를 제외한다.
   // P1-1 (PR #2295 리뷰): `Boolean(lockForLineGuard)`만으로 판정하면 user-tap lock이 승강장
   // 대기 중에도 "이미 탑승"으로 오판했다 — `hasConsumedOriginWait`로 일반화(device-side evidence
@@ -775,6 +776,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     arrivalAtOrigin,
     arrivalsAtTransfers,
     excludeOriginWait: isInTrip,
+    // #1480 — 시간표 조회 결과를 alarmLog boardable-lookup → boardableMissRatio로 관측(BG 알림 ETA 경로 한 곳).
+    onBoardableLookup: logBoardableLookupResult,
   });
   // #746 — silence로 차단된 phase 알람은 sleep overlay에 노출하지 않음 (alarmEvent → null).
   const effectiveAlarmEvent = suppressedAlarmEvent ? null : alarmEvent;

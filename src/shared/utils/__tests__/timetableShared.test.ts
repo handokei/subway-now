@@ -3,7 +3,6 @@ import {
   findBoardableDeparture,
   formatMinutesAsHHmm,
   hasTimetable,
-  nextDayType,
 } from '../timetableShared';
 
 // KST 시간대 명시 — UTC+9 (KST 정오 = UTC 03:00). 본 테스트는 stations.json/timetables JSON에
@@ -41,16 +40,6 @@ describe('timetableShared - classifyDayTypeKst', () => {
     // 실제로 Hermes에서 발생할 수 있는 weekday part 누락은 intlDateParts module이 흡수해 null 반환.
     const wrappedDate = new Date('invalid-date'); // NaN getTime — Intl.DateTimeFormat이 throw
     expect(classifyDayTypeKst(wrappedDate)).toBeNull();
-  });
-});
-
-describe('timetableShared - nextDayType', () => {
-  it.each([
-    ['weekday', 'saturday'],
-    ['saturday', 'sunday'],
-    ['sunday', 'weekday'],
-  ] as const)('rolls %s → %s', (current, expected) => {
-    expect(nextDayType(current)).toBe(expected);
   });
 });
 

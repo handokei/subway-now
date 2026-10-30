@@ -33,6 +33,8 @@
     "originNearest": "Nearest station",
     "walkMinutes": "{{min}} min walk",
     "minuteUnit": "min",
+    "minuteUnitPlus": "min+",
+    "lastTrainEnded": "Last train ended",
     "originEstimated": "Estimated current station",
     "originStaleDemote": "Moving · confirming current station",
     "routeTo": "Route to",

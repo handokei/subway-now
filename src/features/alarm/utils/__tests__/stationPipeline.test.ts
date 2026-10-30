@@ -124,7 +124,9 @@ const mockLogSuppressedChannelAgnosticDedup = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
 const mockLogSuppressedHopWindow = jest.fn();
 const mockLogSuppressedNotDeparted = jest.fn();
+const mockLogBoardableLookupResult = jest.fn();
 jest.mock('../alarmLog', () => ({
+  logBoardableLookupResult: (...args: unknown[]) => mockLogBoardableLookupResult(...args),
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
@@ -489,7 +491,23 @@ describe('processLocationUpdate', () => {
       arrivalAtOrigin: undefined,
       arrivalsAtTransfers: undefined,
       excludeOriginWait: false,
+      onBoardableLookup: expect.any(Function),
     });
+  });
+
+  // #1480 PR-C — 엔진의 시간표 조회 결과를 alarmLog boardable-lookup(→ boardableMissRatio)으로 관측한다.
+  it('calculateStaticETA에 onBoardableLookup으로 alarmLog logBoardableLookupResult를 연결한다', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    await call();
+
+    const options = mockCalculateStaticETA.mock.calls[0][1] as {
+      onBoardableLookup: (lookup: { status: 'ok' | 'miss'; line: string; stationName: string }) => void;
+    };
+    const lookup = { status: 'miss' as const, line: '3', stationName: '교대' };
+    options.onBoardableLookup(lookup);
+    expect(mockLogBoardableLookupResult).toHaveBeenCalledWith(lookup);
   });
 
   // #2393 — lockless(lock=null) + legAdvance 없음 + firedAlarms non-empty(이 trip에 이미 알람
@@ -509,6 +527,7 @@ describe('processLocationUpdate', () => {
       arrivalAtOrigin: undefined,
       arrivalsAtTransfers: undefined,
       excludeOriginWait: true,
+      onBoardableLookup: expect.any(Function),
     });
   });
 
@@ -527,6 +546,7 @@ describe('processLocationUpdate', () => {
       arrivalAtOrigin: undefined,
       arrivalsAtTransfers: undefined,
       excludeOriginWait: false,
+      onBoardableLookup: expect.any(Function),
     });
   });
 

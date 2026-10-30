@@ -1,6 +1,6 @@
 import { renderHook, act } from '@testing-library/react-native';
 
-// #2768 — 자동 종료 발동을 alarmLog로 배선(computeBoardableWaitsForRoute.ts 등과 같은
+// #2768 — 자동 종료 발동을 alarmLog로 배선(useV1MismatchDetector.ts 등과 같은
 // cross-feature 적재 패턴, eslint-disable import/no-restricted-paths로 옵트인).
 const mockLogArrivalAutoClearFired = jest.fn();
 jest.mock('../../../alarm/utils/alarmLog', () => ({

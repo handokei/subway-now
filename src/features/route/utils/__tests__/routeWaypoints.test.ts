@@ -7,6 +7,7 @@ import {
   calculateStaticETA,
   findRoutes,
   findStationByNameAndLine,
+  getRouteRemainingSeconds,
   getStationsOnLine,
 } from '../../../../shared/utils/stationRoute';
 import type { AlarmWaypoint } from '../../../../shared/types/alarm';
@@ -228,23 +229,45 @@ describe('routeToWaypoints — remainingSecToDest (#2747 PR-6)', () => {
 
   const origin = findStationByNameAndLine('중곡', '7');
   const dest = findStationByNameAndLine('뚝섬', '2');
+  // 시간표 대기가 시각 의존이라 등록 시각을 고정한다. currentStation=중곡(출발)이므로 중곡 출발 시각 =
+  // 7035 건대입구 도착 06:34:21(replayLibrary 실측) − 중곡→건대입구 330초 = 06:28:51 KST (수요일 평일).
+  const TRIP179_REGISTERED_AT_MS = Date.UTC(2026, 9, 28, 6, 28, 51) - 9 * 3_600_000;
 
   it('계약: 10/28 trip 179 경로(중곡->건대입구 환승->뚝섬)의 등록 payload가 backend fixture와 일치한다', () => {
     const route = findRoutes(origin!.id, dest!.id)[0].route!;
     expect(route).toEqual(contract.route);
-    expect(routeToWaypoints(route, '뚝섬', origin!)).toEqual(contract.waypoints);
+    expect(routeToWaypoints(route, '뚝섬', origin!, TRIP179_REGISTERED_AT_MS)).toEqual(contract.waypoints);
   });
 
-  it('값 = mirror writer와 같은 함수·같은 입력: calculateStaticETA(anchor(route, 그 역), {excludeOriginWait:true}) 분 x 60', () => {
+  it('값 = mirror writer와 같은 함수: calculateStaticETA(anchor(route, 그 역), {excludeOriginWait:true}) 분 x 60 — 평가 시각은 그 역 도달 예상 시각 (#1480)', () => {
     const route = findRoutes(origin!.id, dest!.id)[0].route!;
-    const result = routeToWaypoints(route, '뚝섬', origin!);
+    const result = routeToWaypoints(route, '뚝섬', origin!, TRIP179_REGISTERED_AT_MS);
+    const fromOrigin = getRouteRemainingSeconds(anchorRouteToCurrentStation(route, origin!, dest!.id)!);
     for (const { stationName, line, kind, remainingSecToDest } of result) {
       if (kind === 'destination') continue;
       const station = findStationByNameAndLine(stationName, line as LineNumber)!;
-      const minutes = calculateStaticETA(anchorRouteToCurrentStation(route, station, dest!.id), {
-        excludeOriginWait: true,
-      });
+      const anchored = anchorRouteToCurrentStation(route, station, dest!.id)!;
+      // 도달 예상 시각 = 등록 시각 + (출발역 기준 잔여 − 그 역 기준 잔여)
+      const arrivalMs = TRIP179_REGISTERED_AT_MS + (fromOrigin - getRouteRemainingSeconds(anchored)) * 1000;
+      const minutes = calculateStaticETA(anchored, { excludeOriginWait: true, nowMs: arrivalMs });
       expect(remainingSecToDest).toBe(minutes! * 60);
+    }
+  });
+
+  it('시각 의존: 환승 대기가 시간표라 평일 새벽 03:00(첫차 전) 등록과 06:28 등록의 건대입구 stamp가 다르다 (고정 3분이면 같았다)', () => {
+    const route = findRoutes(origin!.id, dest!.id)[0].route!;
+    const at = (h: number, m: number) => routeToWaypoints(route, '뚝섬', origin!, Date.UTC(2026, 9, 28, h, m, 0) - 9 * 3_600_000);
+    const transferStamp = (wps: AlarmWaypoint[]) => wps.find((w) => w.stationName === '건대입구')!.remainingSecToDest;
+    expect(transferStamp(at(6, 28))).not.toBe(transferStamp(at(3, 0)));
+  });
+
+  it('nowMs 미지정이면 현재 시각(Date.now)을 쓴다', () => {
+    const route = findRoutes(origin!.id, dest!.id)[0].route!;
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(TRIP179_REGISTERED_AT_MS);
+    try {
+      expect(routeToWaypoints(route, '뚝섬', origin!)).toEqual(routeToWaypoints(route, '뚝섬', origin!, TRIP179_REGISTERED_AT_MS));
+    } finally {
+      spy.mockRestore();
     }
   });
 

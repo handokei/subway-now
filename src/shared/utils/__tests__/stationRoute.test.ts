@@ -1,5 +1,5 @@
 import lineTopology from '../../../data/lineTopology.json';
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, getRouteRemainingSeconds, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateEtaDetail, calculateStaticETA, calculateStaticEtaDetail, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, getRouteRemainingSeconds, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -9,6 +9,30 @@ import {
 } from '../../../testUtils/routeFixtures';
 // #1459: 환승시간 데이터(transferTimes.json)는 정기적으로 정밀화되므로 테스트는 lookup 값을 동적으로 가져와 expected를 계산한다.
 import { getTransferSeconds } from '../transferTimes';
+import headways from '../../../data/lineHeadways.json';
+import { TRANSFER_BUFFER_BREAKPOINTS, TRANSFER_BUFFER_LONG_WALK_SECONDS } from '../../constants/eta';
+
+// #1480 PR-C — 대기 추정이 시각 의존(시간표/배차간격)이라 이 파일의 기본 Date.now()를 수요일 12:00 KST(평일 offPeak)로
+// 고정한다. 3분 고정(DEFAULT_WAIT_MINUTES)은 폐기됐다 — 출발·환승 대기 기본값은 노선 배차간격/2다.
+const NOON_KST = Date.UTC(2026, 9, 28, 3, 0, 0);
+beforeEach(() => {
+  jest.spyOn(Date, 'now').mockReturnValue(NOON_KST);
+});
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+/** 평일 해당 시간대 배차간격/2 (초) — lineHeadways.json 직접 조회(엔진과 독립). */
+const halfHeadway = (line: LineNumber, period: 'peak' | 'offPeak'): number =>
+  (headways as Record<string, { weekday: Record<string, number> }>)[line].weekday[period] / 2;
+/** 환승 도보 → buffer(초) — 상수 직접 조회(엔진과 독립). */
+const bufferFor = (walkSeconds: number): number =>
+  TRANSFER_BUFFER_BREAKPOINTS.find((b) => walkSeconds <= b.maxWalkingSeconds)?.bufferSeconds ??
+  TRANSFER_BUFFER_LONG_WALK_SECONDS;
+/** 환승 1회의 도보 + buffer(초). */
+const walkAndBuffer = (fromLine: LineNumber, toLine: LineNumber, name: string): number => {
+  const walk = getTransferSeconds(fromLine, toLine, name);
+  return walk + bufferFor(walk);
+};
 
 describe('getStationsOnLine', () => {
   it('returns only stations on the given line, sorted by id', () => {
@@ -414,9 +438,10 @@ describe('calculateETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     });
-    // 출발 2분 + 운행 round((1+5)*2 + transferSec/60) + 환승 leg 1*DEFAULT_WAIT(3)
-    const t = getTransferSeconds('2', '3', '교대');
-    const expected = 2 + Math.round((1 + 5) * 2 + t / 60) + 3;
+    // 출발 2분 + 운행 (1+5)*120s + 도보·buffer + 환승 대기(3호선 평일 offPeak 배차간격/2, 방향 미상)
+    const expected = Math.round(
+      (120 + (1 + 5) * 120 + walkAndBuffer('2', '3', '교대') + halfHeadway('3', 'offPeak')) / 60,
+    );
     expect(calculateETA(2, route)).toBe(expected);
   });
 
@@ -428,10 +453,19 @@ describe('calculateETA', () => {
       ],
       stopsAfterLastTransfer: 4,
     });
-    // 출발 2분 + 운행 round(travelStops*2 + Σtransfer/60) + 환승 2*DEFAULT_WAIT(6)
-    const t1 = getTransferSeconds('8', '2', '잠실');
-    const t2 = getTransferSeconds('2', '1', '시청');
-    const expected = 2 + Math.round((3 + 5 + 4) * 2 + (t1 + t2) / 60) + 6;
+    // 출발 2분 + 운행 + 도보·buffer 2회 + 환승 대기 2회. 환승 대기 값(첫 환승은 시간표, 마지막은 배차간격/2)은 엔진이 보고한
+    // waits를 쓴다 — leg 수만큼 합산됐는지(고정 3분 아님)를 검증한다.
+    const detail = calculateEtaDetail(2, route)!;
+    const transferWaits = detail.waits.filter((w) => w.kind === 'transfer');
+    expect(transferWaits).toHaveLength(2);
+    const expected = Math.round(
+      (120 +
+        (3 + 5 + 4) * 120 +
+        walkAndBuffer('8', '2', '잠실') +
+        walkAndBuffer('2', '1', '시청') +
+        transferWaits.reduce((sum, w) => sum + w.seconds, 0)) /
+        60,
+    );
     expect(calculateETA(2, route)).toBe(expected);
   });
 
@@ -462,9 +496,10 @@ describe('calculateETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     });
-    const t = getTransferSeconds('2', '3', '교대');
-    // 출발 대기 0(제외) + 운행 + 환승 leg 대기(3, 유지)
-    const expected = Math.round((1 + 5) * 2 + t / 60) + 3;
+    // 출발 대기 0(제외) + 운행 + 도보·buffer + 환승 leg 대기(유지)
+    const expected = Math.round(
+      ((1 + 5) * 120 + walkAndBuffer('2', '3', '교대') + halfHeadway('3', 'offPeak')) / 60,
+    );
     expect(calculateETA(2, route, { excludeOriginWait: true })).toBe(expected);
   });
 
@@ -475,27 +510,27 @@ describe('calculateETA', () => {
   // #851 회귀: 용마산(7) → 건대입구 환승 → 성수(2) 실측 데이터 기반
   // 7호선 용마산→건대입구 320s(5.33min) + 환승 7|2|건대입구 64s(1.07min)
   // + 2호선 건대입구→성수 90s(1.5min) = 474s ≈ 7.9 → round 8min 운행.
-  // 환승 leg wait 3min 포함, 출발 nextTrainMinutes=0이면 총 11분.
+  // 환승 leg wait 포함(고정 3분이 아니라 엔진 추정), 출발 nextTrainMinutes=0.
   // 기존 버그: 환승 leg wait 누락 → 8분으로 과소 표기 (실측에선 사용자가 환승역 직전이라 5분 표시).
   it('#851 용마산→성수 transfer route는 환승 leg 대기를 합산한다', () => {
     const route = findRoute('7-015', '2-011');
     expect(route).not.toBeNull();
     expect(route!.type).toBe('transfer');
-    // nextTrainMinutes=0 가정: 운행(8) + 환승 leg wait(3) = 11분
-    expect(calculateETA(0, route)).toBeGreaterThanOrEqual(7);
-    // calculateStaticETA와 일관 (출발 대기 fallback 3 + 환승 leg wait 3 + 운행 8 = 14)
-    expect(calculateStaticETA(route)).toBeGreaterThanOrEqual(7);
+    // nextTrainMinutes=0 가정: 운행(8) + 환승 leg wait가 더해져 8분 초과
+    expect(calculateETA(0, route)).toBeGreaterThan(8);
+    // calculateStaticETA와 일관 (출발 대기 배차간격/2가 추가로 합산)
+    expect(calculateStaticETA(route)).toBeGreaterThanOrEqual(calculateETA(0, route));
   });
 });
 
 describe('calculateStaticETA', () => {
-  it('DirectRoute일 때 기본대기3분 + 정거장*2분을 반환한다', () => {
+  it('DirectRoute일 때 출발 대기(2호선 평일 offPeak 배차간격/2 = 135s) + 정거장*2분을 반환한다', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    // 3분 대기 + 5*2분 = 13분
-    expect(calculateStaticETA(route)).toBe(13);
+    // 135s + 600s = 735s = 12.25분 → 12
+    expect(calculateStaticETA(route)).toBe(12);
   });
 
-  it('TransferRoute일 때 기본대기3분 + 정거장*2분 + 실측 환승시간을 반환한다', () => {
+  it('TransferRoute일 때 출발 대기 + 정거장*2분 + 실측 환승시간 + buffer + 환승 대기를 반환한다', () => {
     const route: TransferRoute = makeTransferRoute({
       transferName: '교대(법원.검찰청)',
       fromLine: '2',
@@ -503,13 +538,17 @@ describe('calculateStaticETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     });
-    // 출발 3분 + 환승 leg 3분(#778) + round((1+5)*2 + transferSec/60)
-    const t = getTransferSeconds('2', '3', '교대');
-    const expected = 3 + 3 + Math.round((1 + 5) * 2 + t / 60);
+    const expected = Math.round(
+      (halfHeadway('2', 'offPeak') +
+        (1 + 5) * 120 +
+        walkAndBuffer('2', '3', '교대') +
+        halfHeadway('3', 'offPeak')) /
+        60,
+    );
     expect(calculateStaticETA(route)).toBe(expected);
   });
 
-  it('MultiTransferRoute일 때 기본대기3분 + 환승별 실측 시간 합산을 반환한다', () => {
+  it('MultiTransferRoute일 때 출발 대기 + 환승별 실측 시간·buffer·대기 합산을 반환한다', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
@@ -517,10 +556,15 @@ describe('calculateStaticETA', () => {
       ],
       stopsAfterLastTransfer: 4,
     });
-    // 출발 3분 + 환승 2*3분(#778) + round(travelStops*2 + Σtransfer/60)
-    const t1 = getTransferSeconds('8', '2', '잠실');
-    const t2 = getTransferSeconds('2', '1', '시청');
-    const expected = 3 + 6 + Math.round((3 + 5 + 4) * 2 + (t1 + t2) / 60);
+    const expected = Math.round(
+      (halfHeadway('8', 'offPeak') +
+        (3 + 5 + 4) * 120 +
+        walkAndBuffer('8', '2', '잠실') +
+        walkAndBuffer('2', '1', '시청') +
+        halfHeadway('2', 'offPeak') +
+        halfHeadway('1', 'offPeak')) /
+        60,
+    );
     expect(calculateStaticETA(route)).toBe(expected);
   });
 
@@ -528,14 +572,14 @@ describe('calculateStaticETA', () => {
     expect(calculateStaticETA(null)).toBeNull();
   });
 
-  // #2290: 탑승 중에는 출발 leg의 boarding 대기(DEFAULT_WAIT_MINUTES fallback 포함)를 제외한다.
-  it('#2290 excludeOriginWait 옵션 시 출발 대기(fallback 3분)를 제외한다(DirectRoute)', () => {
+  // #2290: 탑승 중에는 출발 leg의 boarding 대기(배차간격/2 추정 포함)를 제외한다.
+  it('#2290 excludeOriginWait 옵션 시 출발 대기(배차간격/2 추정)를 제외한다(DirectRoute)', () => {
     const route: DirectRoute = makeDirectRoute(1, '2');
-    // 주행만: round(1*2) = 2분. 출발 대기 fallback 3분 제외.
+    // 주행만: round(1*2) = 2분. 출발 대기 제외.
     expect(calculateStaticETA(route, { excludeOriginWait: true })).toBe(2);
   });
 
-  it('#2290 excludeOriginWait 시에도 환승 leg 대기(fallback)는 유지한다(TransferRoute)', () => {
+  it('#2290 excludeOriginWait 시에도 환승 leg 대기(추정)는 유지한다(TransferRoute)', () => {
     const route: TransferRoute = makeTransferRoute({
       transferName: '교대(법원.검찰청)',
       fromLine: '2',
@@ -543,16 +587,17 @@ describe('calculateStaticETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     });
-    const t = getTransferSeconds('2', '3', '교대');
-    // 출발 대기 0(제외) + 환승 leg 대기(3, 유지) + 운행
-    const expected = 3 + Math.round((1 + 5) * 2 + t / 60);
+    // 출발 대기 0(제외) + 환승 leg 대기(유지) + 운행 + 도보·buffer
+    const expected = Math.round(
+      ((1 + 5) * 120 + walkAndBuffer('2', '3', '교대') + halfHeadway('3', 'offPeak')) / 60,
+    );
     expect(calculateStaticETA(route, { excludeOriginWait: true })).toBe(expected);
   });
 
   it('#2290 excludeOriginWait 미지정(기본값)은 기존 동작과 동치다', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    expect(calculateStaticETA(route)).toBe(13);
-    expect(calculateStaticETA(route, { excludeOriginWait: false })).toBe(13);
+    expect(calculateStaticETA(route)).toBe(12);
+    expect(calculateStaticETA(route, { excludeOriginWait: false })).toBe(12);
   });
 });
 
@@ -566,12 +611,12 @@ describe('calculateStaticETA — 도보 시간 합산 (#776)', () => {
 
   it('options 미지정 시 기존 동작 그대로 (도보 0분)', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    expect(calculateStaticETA(route)).toBe(13); // 3 + 10 + 0
+    expect(calculateStaticETA(route)).toBe(12); // 135s + 600s = 735s
   });
 
   it('currentLocation + originStation 페어로 출발 도보 시간을 합산한다', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    // 13(기존) + round(1.4)=1 → 14분
+    // 735s + 83s(도보 100m) = 818s = 13.6분 → 14분
     expect(
       calculateStaticETA(route, {
         currentLocation: userNearOrigin,
@@ -582,18 +627,18 @@ describe('calculateStaticETA — 도보 시간 합산 (#776)', () => {
 
   it('destination + destinationStation 페어로 하차 도보 시간을 합산한다', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    // 13(기존) + round(10.04)=10 → 23분
+    // 735s + 602s(도보 723m) = 1337s = 22.3분 → 22분
     expect(
       calculateStaticETA(route, {
         destinationStation: destinationStationCoords,
         destination: userFarFromDestStation,
       }),
-    ).toBe(23);
+    ).toBe(22);
   });
 
   it('출발 + 하차 도보 시간을 모두 합산한다', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    // 13 + 1(출발) + 10(하차) = 24분
+    // 735s + 83s(출발) + 602s(하차) = 1420s = 23.7분 → 24분
     expect(
       calculateStaticETA(route, {
         currentLocation: userNearOrigin,
@@ -608,28 +653,28 @@ describe('calculateStaticETA — 도보 시간 합산 (#776)', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
     expect(
       calculateStaticETA(route, { currentLocation: userNearOrigin }),
-    ).toBe(13);
+    ).toBe(12);
   });
 
   it('originStation만 있고 currentLocation 누락이면 출발 도보=0 (graceful fallback)', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
     expect(
       calculateStaticETA(route, { originStation: originStationCoords }),
-    ).toBe(13);
+    ).toBe(12);
   });
 
   it('destination만 있고 destinationStation 누락이면 하차 도보=0 (graceful fallback)', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
     expect(
       calculateStaticETA(route, { destination: userFarFromDestStation }),
-    ).toBe(13);
+    ).toBe(12);
   });
 
   it('destinationStation만 있고 destination 누락이면 하차 도보=0 (graceful fallback)', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
     expect(
       calculateStaticETA(route, { destinationStation: destinationStationCoords }),
-    ).toBe(13);
+    ).toBe(12);
   });
 
   it('동일 좌표면 도보=0 (현위치가 출발역과 같은 점)', () => {
@@ -639,7 +684,7 @@ describe('calculateStaticETA — 도보 시간 합산 (#776)', () => {
         currentLocation: originStationCoords,
         originStation: originStationCoords,
       }),
-    ).toBe(13);
+    ).toBe(12);
   });
 
   it('route가 null이면 options 있어도 null 반환', () => {
@@ -688,35 +733,35 @@ describe('calculateStaticETA — 다음 열차 대기 동적화 (#777)', () => {
     ).toBe(10);
   });
 
-  it('arrivalAtOrigin stale(>60s)이면 DEFAULT_WAIT_MINUTES fallback', () => {
+  it('arrivalAtOrigin stale(>60s)이면 배차간격/2 추정 (NOW=평일 07:13 peak: 75s)', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    // 60_001ms 경과 → stale, fallback 3분
+    // 60_001ms 경과 → stale, 75s + 600s = 675s = 11.25분 → 11
     expect(
       calculateStaticETA(route, {
         arrivalAtOrigin: { arrivalSeconds: 120, receivedAtMs: NOW - 60_001 },
         nowMs: NOW,
       }),
-    ).toBe(13);
+    ).toBe(11);
   });
 
-  it('receivedAtMs=0 (mock/누락 컨벤션)이면 DEFAULT_WAIT_MINUTES fallback', () => {
+  it('receivedAtMs=0 (mock/누락 컨벤션)이면 배차간격/2 추정', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
     expect(
       calculateStaticETA(route, {
         arrivalAtOrigin: { arrivalSeconds: 120, receivedAtMs: 0 },
         nowMs: NOW,
       }),
-    ).toBe(13);
+    ).toBe(11);
   });
 
-  it('arrivalSeconds 음수(비정상)이면 DEFAULT_WAIT_MINUTES fallback', () => {
+  it('arrivalSeconds 음수(비정상)이면 배차간격/2 추정', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
     expect(
       calculateStaticETA(route, {
         arrivalAtOrigin: { arrivalSeconds: -1, receivedAtMs: NOW },
         nowMs: NOW,
       }),
-    ).toBe(13);
+    ).toBe(11);
   });
 
   it('arrival + walking 동시 합산', () => {
@@ -761,8 +806,12 @@ describe('환승역별 실측 환승시간 반영', () => {
       transferName: '잠실(송파구청)', fromLine: '8', toLine: '2',
       stopsToTransfer: 2, stopsFromTransfer: 2,
     });
-    // 둘 다 4 stops 동일. 교대 63초 round(9.05)=9, 잠실 158초 round(10.6333)=11. 차이 2분.
-    expect(calculateETA(0, slow) - calculateETA(0, fast)).toBe(2);
+    // 둘 다 4 stops(480s) 동일, 환승 대기는 각 toLine 평일 offPeak 배차간격/2. 차이는 도보·buffer·대기 차이만 반영된다.
+    const total = (route: TransferRoute, toLine: LineNumber, name: string) =>
+      Math.round((480 + walkAndBuffer(route.fromLine, toLine, name) + halfHeadway(toLine, 'offPeak')) / 60);
+    expect(calculateETA(0, fast)).toBe(total(fast, '3', '교대'));
+    expect(calculateETA(0, slow)).toBe(total(slow, '2', '잠실'));
+    expect(calculateETA(0, slow)).toBeGreaterThan(calculateETA(0, fast));
   });
 
   it('테이블 미등록 환승역은 fallback 180초(3분)를 적용한다', () => {
@@ -771,7 +820,7 @@ describe('환승역별 실측 환승시간 반영', () => {
       transferName: '존재하지않는환승역', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 4,
     });
-    // 0분 출발 대기 + round(5*2 + 180/60)=13 + 환승 leg 대기 1*DEFAULT_WAIT(3) = 16분 (#851)
+    // 0분 출발 대기 + 운행 600s + 도보 180s(fallback) + buffer 20s + 환승 leg 대기(3호선 offPeak/2 = 180s) = 980s = 16.3분 → 16 (#851)
     expect(calculateETA(0, route)).toBe(16);
   });
 
@@ -783,10 +832,15 @@ describe('환승역별 실측 환승시간 반영', () => {
       ],
       stopsAfterLastTransfer: 3,
     });
-    // 출발 3분 + 환승 2*3분(#778) + round(travelStops*2 + Σtransfer/60)
-    const t1 = getTransferSeconds('2', '3', '교대');
-    const t2 = getTransferSeconds('1', '4', '서울역');
-    const expected = 3 + 6 + Math.round((1 + 2 + 3) * 2 + (t1 + t2) / 60);
+    const expected = Math.round(
+      (halfHeadway('2', 'offPeak') +
+        (1 + 2 + 3) * 120 +
+        walkAndBuffer('2', '3', '교대') +
+        walkAndBuffer('1', '4', '서울역') +
+        halfHeadway('3', 'offPeak') +
+        halfHeadway('4', 'offPeak')) /
+        60,
+    );
     expect(calculateStaticETA(route)).toBe(expected);
   });
 });
@@ -799,15 +853,13 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
       transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
-    // 출발 3분(fallback) + 환승 leg 5분(arrivalSeconds=300) + travel round((1+5)*2 + 교대/60)
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
+    // 출발(NOW=평일 07:13 peak, 2호선 배차간격/2 = 75s) + 환승 leg 300s(arrivalSeconds) + 운행 + 도보·buffer
     expect(
       calculateStaticETA(route, {
         arrivalsAtTransfers: [{ arrivalSeconds: 300, receivedAtMs: NOW }],
         nowMs: NOW,
       }),
-    ).toBe(3 + 5 + travel);
+    ).toBe(Math.round((halfHeadway('2', 'peak') + 300 + (1 + 5) * 120 + walkAndBuffer('2', '3', '교대')) / 60));
   });
 
   it('MultiTransferRoute에서 각 leg마다 동적 합산', () => {
@@ -818,10 +870,8 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
       ],
       stopsAfterLastTransfer: 4,
     });
-    // 출발 3분 + leg0 1분(60s) + leg1 2분(120s) + travel round(travelStops*2 + Σtransfer/60)
-    const t1 = getTransferSeconds('8', '2', '잠실');
-    const t2 = getTransferSeconds('2', '1', '시청');
-    const travel = Math.round((3 + 5 + 4) * 2 + (t1 + t2) / 60);
+    // 출발(8호선 peak 배차간격/2 = 120s) + leg0 60s + leg1 120s + 운행 + 도보·buffer 2회
+    const travel = (3 + 5 + 4) * 120 + walkAndBuffer('8', '2', '잠실') + walkAndBuffer('2', '1', '시청');
     expect(
       calculateStaticETA(route, {
         arrivalsAtTransfers: [
@@ -830,10 +880,10 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
         ],
         nowMs: NOW,
       }),
-    ).toBe(3 + 1 + 2 + travel);
+    ).toBe(Math.round((halfHeadway('8', 'peak') + 60 + 120 + travel) / 60));
   });
 
-  it('일부 leg만 제공 시 누락 element는 leg당 DEFAULT_WAIT_MINUTES fallback', () => {
+  it('일부 leg만 제공 시 누락 element는 그 leg만 배차간격/2 추정', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
@@ -841,59 +891,61 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
       ],
       stopsAfterLastTransfer: 4,
     });
-    // 출발 3분 + leg0 1분(60s) + leg1 3분(null → fallback) + travel
-    const t1 = getTransferSeconds('8', '2', '잠실');
-    const t2 = getTransferSeconds('2', '1', '시청');
-    const travel = Math.round((3 + 5 + 4) * 2 + (t1 + t2) / 60);
+    // 출발(8호선 120s) + leg0 60s + leg1(null, 마지막 leg → 1호선 peak 배차간격/2 = 90s) + 운행 + 도보·buffer 2회
+    const travel = (3 + 5 + 4) * 120 + walkAndBuffer('8', '2', '잠실') + walkAndBuffer('2', '1', '시청');
     expect(
       calculateStaticETA(route, {
         arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: NOW }, null],
         nowMs: NOW,
       }),
-    ).toBe(3 + 1 + 3 + travel);
+    ).toBe(Math.round((halfHeadway('8', 'peak') + 60 + halfHeadway('1', 'peak') + travel) / 60));
   });
 
-  it('arrivalsAtTransfers 빈 배열이면 leg마다 fallback (회귀 없음)', () => {
+  it('arrivalsAtTransfers 빈 배열이면 leg마다 배차간격/2 추정', () => {
     const route: TransferRoute = makeTransferRoute({
       transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
-    // 출발 3분 + 환승 3분(빈 배열 → undefined → fallback) + travel
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
+    // 출발 75s + 환승(빈 배열 → 3호선 peak 배차간격/2 = 105s) + 운행 + 도보·buffer
     expect(
       calculateStaticETA(route, { arrivalsAtTransfers: [], nowMs: NOW }),
-    ).toBe(3 + 3 + travel);
+    ).toBe(
+      Math.round(
+        (halfHeadway('2', 'peak') + halfHeadway('3', 'peak') + (1 + 5) * 120 + walkAndBuffer('2', '3', '교대')) / 60,
+      ),
+    );
   });
 
   it('DirectRoute에 arrivalsAtTransfers 전달해도 영향 없음 (transferCount=0)', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    // 출발 3분 + travel 10 = 13 (transferCount=0이라 배열 무시)
+    // 출발 75s + travel 600s = 675s (transferCount=0이라 배열 무시)
     expect(
       calculateStaticETA(route, {
         arrivalsAtTransfers: [{ arrivalSeconds: 600, receivedAtMs: NOW }],
         nowMs: NOW,
       }),
-    ).toBe(13);
+    ).toBe(11);
   });
 
-  it('stale element는 그 leg만 fallback', () => {
+  it('stale element는 그 leg만 배차간격/2 추정', () => {
     const route: TransferRoute = makeTransferRoute({
       transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
-    // 60_001ms 경과 → stale → fallback. 출발 3 + 환승 3 + travel
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
+    // 60_001ms 경과 → stale → 3호선 peak 배차간격/2 추정(105s). 출발 75s + 환승 105s + 운행 + 도보·buffer
     expect(
       calculateStaticETA(route, {
         arrivalsAtTransfers: [{ arrivalSeconds: 300, receivedAtMs: NOW - 60_001 }],
         nowMs: NOW,
       }),
-    ).toBe(3 + 3 + travel);
+    ).toBe(
+      Math.round(
+        (halfHeadway('2', 'peak') + halfHeadway('3', 'peak') + (1 + 5) * 120 + walkAndBuffer('2', '3', '교대')) / 60,
+      ),
+    );
   });
 
-  it('합산 round 정책 — 개별 round했다면 +1되었을 케이스', () => {
+  it('합산 round 정책 — 성분별이 아니라 전체를 한 번만 round', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
@@ -901,11 +953,8 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
       ],
       stopsAfterLastTransfer: 4,
     });
-    // wait = round(3 + 0.5 + 0.5) = 4 (합산 후 round)
-    // travel = round(travelStops*2 + Σtransfer/60)
-    const t1 = getTransferSeconds('8', '2', '잠실');
-    const t2 = getTransferSeconds('2', '1', '시청');
-    const travel = Math.round((3 + 5 + 4) * 2 + (t1 + t2) / 60);
+    // 출발(8호선 120s) + leg 30s + 30s + 운행 + 도보·buffer 2회를 초 단위로 합산한 뒤 한 번만 round
+    const travel = (3 + 5 + 4) * 120 + walkAndBuffer('8', '2', '잠실') + walkAndBuffer('2', '1', '시청');
     expect(
       calculateStaticETA(route, {
         arrivalsAtTransfers: [
@@ -914,86 +963,55 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
         ],
         nowMs: NOW,
       }),
-    ).toBe(4 + travel);
+    ).toBe(Math.round((halfHeadway('8', 'peak') + 30 + 30 + travel) / 60));
   });
 });
 
-describe('calculateStaticETA — timetable boardable wait fallback (#1480)', () => {
-  const NOW = 1_700_000_000_000;
-  // 모든 단일 환승 케이스 공통: 교대 2→3호선, stops 1→5. row factory로 중복 제거.
+describe('calculateStaticETA — 환승 대기 cascade: 실시간 > 추정 (#1480 PR-C)', () => {
+  const NOW = 1_700_000_000_000; // 평일 07:13 KST (peak)
+  // 모든 단일 환승 케이스 공통: 교대 2→3호선, stops 1→5. 3호선 peak 배차간격/2 = 105s, 2호선 = 75s.
   const buildRoute = (): TransferRoute =>
     makeTransferRoute({
       transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
-  const travelMinutes = (): number => {
-    const t = getTransferSeconds('2', '3', '교대');
-    return Math.round((1 + 5) * 2 + t / 60);
-  };
+  const travelSeconds = (): number => (1 + 5) * 120 + walkAndBuffer('2', '3', '교대');
 
   type Opts = Parameters<typeof calculateStaticETA>[1];
-  type Row = readonly [label: string, opts: Opts, expectedWaitMinutes: number];
+  type Row = readonly [label: string, opts: Opts, expectedTransferWaitSeconds: number];
 
-  // initial=3분(default) + waitMinutes(leg별 합) + travel.
+  const estimated = halfHeadway('3', 'peak');
   const cases: ReadonlyArray<Row> = [
     [
-      'timetable only → timetable 값 사용',
-      { timetableBoardableWaitSecondsByLeg: [240], nowMs: NOW },
-      4,
+      'fresh 실시간이면 그 값 사용',
+      { arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: NOW }], nowMs: NOW },
+      60,
     ],
     [
-      'arrivalsAtTransfers fresh > timetable cascade',
-      {
-        arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: NOW }],
-        timetableBoardableWaitSecondsByLeg: [600],
-        nowMs: NOW,
-      },
-      1,
+      'stale 실시간 → 추정',
+      { arrivalsAtTransfers: [{ arrivalSeconds: 300, receivedAtMs: NOW - 60_001 }], nowMs: NOW },
+      estimated,
     ],
     [
-      'arrivalsAtTransfers stale → timetable fallback',
-      {
-        arrivalsAtTransfers: [{ arrivalSeconds: 300, receivedAtMs: NOW - 60_001 }],
-        timetableBoardableWaitSecondsByLeg: [240],
-        nowMs: NOW,
-      },
-      4,
+      'arrival.arrivalSeconds 음수 → !fresh → 추정',
+      { arrivalsAtTransfers: [{ arrivalSeconds: -10, receivedAtMs: NOW }], nowMs: NOW },
+      estimated,
     ],
     [
-      'timetable element null → DEFAULT_WAIT_MINUTES fallback',
-      { timetableBoardableWaitSecondsByLeg: [null], nowMs: NOW },
-      3,
+      'arrival.receivedAtMs=0 (mock) → !fresh → 추정',
+      { arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: 0 }], nowMs: NOW },
+      estimated,
     ],
-    [
-      'timetable element 음수 → DEFAULT_WAIT_MINUTES fallback',
-      { timetableBoardableWaitSecondsByLeg: [-10], nowMs: NOW },
-      3,
-    ],
-    [
-      'arrival.arrivalSeconds 음수 → !isFresh → timetable 사용',
-      {
-        arrivalsAtTransfers: [{ arrivalSeconds: -10, receivedAtMs: NOW }],
-        timetableBoardableWaitSecondsByLeg: [180],
-        nowMs: NOW,
-      },
-      3,
-    ],
-    [
-      'arrival.receivedAtMs=0 (mock) → !isFresh → timetable 사용',
-      {
-        arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: 0 }],
-        timetableBoardableWaitSecondsByLeg: [180],
-        nowMs: NOW,
-      },
-      3,
-    ],
+    ['실시간 없음 → 추정', { nowMs: NOW }, estimated],
   ];
 
-  it.each(cases)('%s', (_label, opts, waitMinutes) => {
-    expect(calculateStaticETA(buildRoute(), opts)).toBe(3 + waitMinutes + travelMinutes());
+  it.each(cases)('%s', (_label, opts, waitSeconds) => {
+    expect(calculateStaticETA(buildRoute(), opts)).toBe(
+      Math.round((halfHeadway('2', 'peak') + waitSeconds + travelSeconds()) / 60),
+    );
   });
 
-  it('multi-transfer mixed cascade — leg0 실시간, leg1 timetable, leg2 fallback', () => {
+  it('multi-transfer mixed cascade — leg0·leg1 실시간, 마지막 leg2 stale → 배차간격/2 추정', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
@@ -1002,22 +1020,21 @@ describe('calculateStaticETA — timetable boardable wait fallback (#1480)', () 
       ],
       stopsAfterLastTransfer: 4,
     });
-    // leg0: 실시간 60s = 1분. leg1: timetable 240s = 4분. leg2: 실시간 stale + timetable null = 3분 fallback.
-    const t1 = getTransferSeconds('8', '2', '잠실');
-    const t2 = getTransferSeconds('2', '5', '왕십리');
-    const t3 = getTransferSeconds('5', '1', '시청');
-    const travel = Math.round((3 + 4 + 2 + 4) * 2 + (t1 + t2 + t3) / 60);
+    const travel =
+      (3 + 4 + 2 + 4) * 120 +
+      walkAndBuffer('8', '2', '잠실') +
+      walkAndBuffer('2', '5', '왕십리') +
+      walkAndBuffer('5', '1', '시청');
     expect(
       calculateStaticETA(route, {
         arrivalsAtTransfers: [
           { arrivalSeconds: 60, receivedAtMs: NOW },
-          null,
+          { arrivalSeconds: 240, receivedAtMs: NOW },
           { arrivalSeconds: 600, receivedAtMs: NOW - 60_001 }, // stale
         ],
-        timetableBoardableWaitSecondsByLeg: [600, 240, null],
         nowMs: NOW,
       }),
-    ).toBe(3 + 1 + 4 + 3 + travel);
+    ).toBe(Math.round((halfHeadway('8', 'peak') + 60 + 240 + halfHeadway('1', 'peak') + travel) / 60));
   });
 });
 
@@ -2406,7 +2423,7 @@ describe('terminusReachesTarget (#2696)', () => {
 // root: toLine 앵커링 후에도 route.type이 transfer/multi-transfer로 남아 ETA가 지난 환승의 도보(transferTimes)와
 // 대기(DEFAULT_WAIT 3분)를 계속 더했다(10/28 trip 179 성수->뚝섬 1정거장인데 9분).
 describe('ETA — 완료 환승 제외 (#1480 N7)', () => {
-  const NOW = 1_000_000;
+  const NOW = NOON_KST; // 대기는 도달 시각 기준으로 평가되므로 기간 경계(peak 종료 09:30)에서 먼 시각을 쓴다
   const opts = { excludeOriginWait: true, nowMs: NOW } as const;
   const st = (line: LineNumber, name: string) => getStationsOnLine(line).find((s) => s.name === name)!;
 
@@ -2420,26 +2437,27 @@ describe('ETA — 완료 환승 제외 (#1480 N7)', () => {
     });
     const walkSec = getTransferSeconds('2', '3', '교대');
 
-    it('환승 전(fromLine 앵커)은 무변경: 주행 + 도보 + 대기 3분 (거부 케이스)', () => {
+    it('환승 전(fromLine 앵커)은 환승 합산 유지: 주행 + 도보 + buffer + 대기 (거부 케이스)', () => {
       const anchored = anchorRouteToCurrentStation(stored, st('2', '강남'), '3-034') as TransferRoute;
       const secs = anchored.secondsToTransfer + anchored.secondsFromTransfer + walkSec;
-      expect(calculateStaticETA(anchored, opts)).toBe(3 + Math.round(secs / 60));
-      expect(calculateETA(0, anchored, { excludeOriginWait: true })).toBe(3 + Math.round(secs / 60));
+      const expected = Math.round((secs + bufferFor(walkSec) + halfHeadway('3', 'offPeak')) / 60);
+      expect(calculateStaticETA(anchored, opts)).toBe(expected);
+      expect(calculateETA(0, anchored, { excludeOriginWait: true, nowMs: NOW })).toBe(expected);
     });
 
-    it('환승 후(toLine 남부터미널 앵커)는 남은 주행만: 지난 환승 도보·대기 3분 제외', () => {
+    it('환승 후(toLine 남부터미널 앵커)는 남은 주행만: 지난 환승 도보·buffer·대기 제외', () => {
       const anchored = anchorRouteToCurrentStation(stored, st('3', '남부터미널(예술의전당)'), '3-034') as TransferRoute;
       expect(anchored.completedTransfers).toBe(1);
       const expected = Math.round(anchored.secondsFromTransfer / 60);
       expect(calculateStaticETA(anchored, opts)).toBe(expected);
-      expect(calculateETA(0, anchored, { excludeOriginWait: true })).toBe(expected);
+      expect(calculateETA(0, anchored, { excludeOriginWait: true, nowMs: NOW })).toBe(expected);
     });
 
-    it('환승역 자체 toLine 앵커는 도보 완료·대기 남음: 주행 + 대기 3분 (도보 제외)', () => {
+    it('환승역 자체 toLine 앵커는 도보 완료·대기 남음: 주행 + 대기 (도보·buffer 제외)', () => {
       const anchored = anchorRouteToCurrentStation(stored, st('3', '교대(법원.검찰청)'), '3-034') as TransferRoute;
-      const expected = 3 + Math.round(anchored.secondsFromTransfer / 60);
+      const expected = Math.round((anchored.secondsFromTransfer + halfHeadway('3', 'offPeak')) / 60);
       expect(calculateStaticETA(anchored, opts)).toBe(expected);
-      expect(calculateETA(0, anchored, { excludeOriginWait: true })).toBe(expected);
+      expect(calculateETA(0, anchored, { excludeOriginWait: true, nowMs: NOW })).toBe(expected);
     });
 
     it('getRouteRemainingSeconds는 완료 환승이어도 무변경 (알람 clamp 면제, ADR-042)', () => {
@@ -2460,31 +2478,38 @@ describe('ETA — 완료 환승 제외 (#1480 N7)', () => {
     const walk1 = getTransferSeconds('2', '1', '시청');
     const anchor = (s: Station) => anchorRouteToCurrentStation(stored, s, '1-001') as MultiTransferRoute;
 
-    it('첫 환승 전(8호선 앵커)은 무변경: 도보 2개 + 대기 2x3분 (거부 케이스)', () => {
+    it('첫 환승 전(8호선 앵커)은 환승 합산 유지: 도보·buffer 2개 + 대기 2개 (거부 케이스)', () => {
       const a = anchor(st('8', '암사'));
       const secs = a.transfers[0].secondsToTransfer + a.transfers[1].secondsToTransfer + a.secondsAfterLastTransfer + walk0 + walk1;
-      expect(calculateStaticETA(a, opts)).toBe(6 + Math.round(secs / 60));
+      const detail = calculateStaticEtaDetail(a, opts)!;
+      const transferWaits = detail.waits.filter((w) => w.kind === 'transfer');
+      expect(transferWaits).toHaveLength(2); // 완료된 환승이 없으므로 둘 다 합산
+      const waits = transferWaits.reduce((sum, w) => sum + w.seconds, 0);
+      expect(calculateStaticETA(a, opts)).toBe(Math.round((secs + bufferFor(walk0) + bufferFor(walk1) + waits) / 60));
     });
 
     it('첫 환승 후(2호선 앵커)는 첫 환승 도보·대기만 제외, 두 번째 환승은 유지', () => {
       const a = anchor(st('2', '강남'));
       expect(a.completedTransfers).toBe(1);
       const secs = a.transfers[1].secondsToTransfer + a.secondsAfterLastTransfer + walk1;
-      expect(calculateStaticETA(a, opts)).toBe(3 + Math.round(secs / 60));
-      expect(calculateETA(0, a, { excludeOriginWait: true })).toBe(3 + Math.round(secs / 60));
+      const expected = Math.round((secs + bufferFor(walk1) + halfHeadway('1', 'offPeak')) / 60);
+      expect(calculateStaticETA(a, opts)).toBe(expected);
+      expect(calculateETA(0, a, { excludeOriginWait: true, nowMs: NOW })).toBe(expected);
     });
 
     it('모든 환승 후(1호선 종각 앵커)는 남은 주행만', () => {
       const a = anchor(st('1', '종각'));
       expect(a.completedTransfers).toBe(2);
       expect(calculateStaticETA(a, opts)).toBe(Math.round(a.secondsAfterLastTransfer / 60));
-      expect(calculateETA(0, a, { excludeOriginWait: true })).toBe(Math.round(a.secondsAfterLastTransfer / 60));
+      expect(calculateETA(0, a, { excludeOriginWait: true, nowMs: NOW })).toBe(Math.round(a.secondsAfterLastTransfer / 60));
     });
 
     it('마지막 환승역 자체의 toLine 앵커(시청)는 도보 완료·대기 남음', () => {
       const a = anchor(st('1', '시청'));
       expect(a.completedTransfers).toBe(2);
-      expect(calculateStaticETA(a, opts)).toBe(3 + Math.round(a.secondsAfterLastTransfer / 60));
+      expect(calculateStaticETA(a, opts)).toBe(
+        Math.round((a.secondsAfterLastTransfer + halfHeadway('1', 'offPeak')) / 60),
+      );
     });
   });
 });

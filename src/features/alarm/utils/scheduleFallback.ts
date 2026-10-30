@@ -1,8 +1,13 @@
 import type { LineNumber } from '../../../shared/types/station';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { KnownEtaRow } from '../../../shared/utils/arrivalEta';
-import { getDateParts } from '../../../shared/utils/intlDateParts';
-import headways from '../../../data/lineHeadways.json';
+import {
+  classifyDayType,
+  classifyPeriod,
+  getKstParts,
+  lookupHeadwaySeconds,
+  type DayType,
+} from '../../../shared/utils/lineHeadway';
 import terminals from '../../../data/lineTerminals.json';
 import line1Timetable from '../../../data/timetables/line-1.json';
 import line2Timetable from '../../../data/timetables/line-2.json';
@@ -21,17 +26,6 @@ type ScheduledStationArrival = StationArrival & {
   down: ScheduledArrivalInfo[];
 };
 
-export type DayType = 'weekday' | 'saturday' | 'sunday';
-export type Period = 'peak' | 'offPeak' | 'late' | 'closed';
-
-interface DayHeadway {
-  peak: number;
-  offPeak: number;
-  late: number;
-}
-
-type HeadwayTable = Record<LineNumber, Record<DayType, DayHeadway>>;
-
 interface LineTerminal {
   up: string;
   down: string;
@@ -39,7 +33,6 @@ interface LineTerminal {
 
 type TerminalTable = Record<LineNumber, LineTerminal>;
 
-const HEADWAYS = headways as HeadwayTable;
 const TERMINALS = terminals as TerminalTable;
 
 // Phase 3 (#473): 1~9호선 시간표 데이터.
@@ -69,90 +62,15 @@ const TIMETABLES: Partial<Record<LineNumber, LineTimetable>> = {
   '9': line9Timetable,
 };
 
-/** 서울 지하철 운행시간 분류는 KST 고정. arrivalApi의 recptnDt 처리와 동일한 관례. */
-const SUBWAY_TIMEZONE = 'Asia/Seoul';
-
-interface KstParts {
-  weekday: string;
-  hour: number;
-  minute: number;
-  second: number;
-}
-
-function getKstParts(date: Date): KstParts | null {
-  // Hermes/iOS에서 weekday part가 누락되는 회귀(#1088). 안전 helper로 nullable 추출 후,
-  // 필수 part 중 하나라도 누락되면 null로 위로 전파해 호출자가 헤드웨이 fallback으로 graceful degrade.
-  const parts = getDateParts(
-    date,
-    {
-      timeZone: SUBWAY_TIMEZONE,
-      weekday: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    },
-    ['weekday', 'hour', 'minute', 'second'],
-  );
-  if (
-    parts.weekday === undefined ||
-    parts.hour === undefined ||
-    parts.minute === undefined ||
-    parts.second === undefined
-  ) {
-    return null;
-  }
-  // Safari가 자정에 'hour'를 '24'로 주는 경우를 % 24로 정규화.
-  const hour = Number.parseInt(parts.hour, 10) % 24;
-  const minute = Number.parseInt(parts.minute, 10);
-  const second = Number.parseInt(parts.second, 10);
-  return { weekday: parts.weekday, hour, minute, second };
-}
-
-export function classifyDayType(date: Date): DayType {
-  const parts = getKstParts(date);
-  // weekday part 누락 시 보수적으로 weekday (가장 흔한 케이스, 헤드웨이 적용 가능).
-  if (parts === null) return 'weekday';
-  const { weekday } = parts;
-  if (weekday === 'Sun') return 'sunday';
-  if (weekday === 'Sat') return 'saturday';
-  return 'weekday';
-}
-
-export function classifyPeriod(date: Date, dayType: DayType): Period {
-  const parts = getKstParts(date);
-  // 시간 part 누락 시 가장 흔한 offPeak으로 보수 처리.
-  if (parts === null) return 'offPeak';
-  const { hour, minute } = parts;
-  const minutes = hour * 60 + minute;
-  // closed: 01:00 ~ 05:30
-  if (minutes >= 60 && minutes < 330) return 'closed';
-  // late: 22:00 ~ 24:00 + 00:00 ~ 01:00
-  if (minutes >= 22 * 60 || minutes < 60) return 'late';
-  // weekday peak: 07:00 ~ 09:30, 18:00 ~ 20:00
-  if (dayType === 'weekday') {
-    const inMorningPeak = minutes >= 7 * 60 && minutes < 9 * 60 + 30;
-    const inEveningPeak = minutes >= 18 * 60 && minutes < 20 * 60;
-    if (inMorningPeak || inEveningPeak) return 'peak';
-  }
-  return 'offPeak';
-}
-
 /** LineNumber 확장 시 lineHeadways.json에 키 누락 가능 — 무결성 정적 검증용. */
 export function hasHeadwayData(line: LineNumber): boolean {
-  return Number.isFinite(HEADWAYS[line]?.weekday?.offPeak);
+  return lookupHeadwaySeconds(line, 'weekday', 'offPeak') !== null;
 }
 
 /** LineNumber 확장 시 lineTerminals.json에 키 누락 가능 — 무결성 정적 검증용. */
 export function hasTerminalData(line: LineNumber): boolean {
   const terminal = TERMINALS[line];
   return Boolean(terminal?.up && terminal?.down);
-}
-
-function lookupHeadwaySeconds(line: LineNumber, dayType: DayType, period: Period): number | null {
-  if (period === 'closed') return null;
-  const value = HEADWAYS[line]?.[dayType]?.[period];
-  return Number.isFinite(value) ? value : null;
 }
 
 /**

@@ -11,7 +11,8 @@
  * 1. accuracyRatio     — alarmLog fired / (fired + suppressed) 비율 (last 24h R2 scan)
  * 2. silentPushDeliveryRatio — PENDING_PUSHES KV received / (received + pending) 근사치
  * 3. locklessMissRatio — alarmLog 중 lockless-forward-only-block reason 비율
- * 4. boardableMissRatio — #1503 (M3 Sub C wire) — device `computeBoardableWaitsForRoute`가
+ * 4. boardableMissRatio — #1503 (M3 Sub C wire) — device `journeyTimeline` 엔진
+ *    (`calculateStaticETA` 위임, BG 알림 ETA 경로 `stationPipeline`이 onBoardableLookup으로 연결)이
  *    transfer leg마다 emit한 source='boardable-lookup' alarmLog entry(outcome='received'=ok,
  *    'suppressed'=miss)를 R2 scan으로 집계. miss / (ok + miss). transfer 없는 trip(direct
  *    route 또는 route 없음)은 stamp 없어 분모 0 → ratio 0.
@@ -31,10 +32,12 @@
  * - silentPushDeliveryRatio: PENDING_PUSHES KV TTL이 60s(pending)/1h(received)라
  *   정확한 24h 집계가 불가. 현재 창(1h) 기준 근사치.
  * - boardableMissRatio: 1s dedup으로 같은 (status,line,stationName) burst 1건만 적재되므로
- *   transfer가 잦은 trip도 leg 수만큼만 stamp. computeBoardableWaitsForRoute가 호출되지 않는
- *   경로(arrival fallback 등)는 측정 갭 — `sourceCounts['boardable-lookup']`이 0인 trip은
- *   본 metric에서 보이지 않으나, transfer route가 있는 trip은 반드시 호출됨을 wire-completion
- *   audit으로 보장.
+ *   transfer가 잦은 trip도 leg 수만큼만 stamp. emit 지점은 BG 알림 ETA 경로(stationPipeline)
+ *   하나뿐이다 — 홈 화면(HomeScreen)·LA mirror·waypoint stamp의 ETA 계산은 렌더/등록 빈도가 높아
+ *   onBoardableLookup을 연결하지 않았으므로 측정 갭이다. `sourceCounts['boardable-lookup']`이 0인
+ *   trip은 본 metric에서 보이지 않는다(= "transfer route가 있는 trip은 반드시 stamp"는 성립하지
+ *   않는다. 이전 주석의 그 단언은 틀렸다 — 구 `computeBoardableWaitsForRoute`는 production 호출 0이었다,
+ *   #1480).
  */
 
 import { computeAlarmLogStats } from './alarmLogStats';
