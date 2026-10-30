@@ -81,6 +81,20 @@ describe('computeJourneyLaFields (#3221)', () => {
     expect(afterFirst.legStopsTotal).toBe(second.stopsToTransfer);
     expect(afterFirst.nextLegStopsTotal).toBe(route.stopsAfterLastTransfer);
     expect(afterFirst.nextLineColorHex).toBe(LINE_COLORS[second.toLine]);
+
+    const afterLast = computeJourneyLaFields(route, station(second.transferName, second.toLine), dest);
+    expect(afterLast.legStopsTotal).toBe(route.stopsAfterLastTransfer);
+    expect(afterLast.nextLegStopsTotal).toBeUndefined();
+    expect(afterLast.nextLineColorHex).toBeUndefined();
+  });
+
+  it('소요 시간 데이터가 깨져 ETA가 NaN이면 etaMinutes만 생략하고 나머지는 채운다', () => {
+    const brokenRoute = { type: 'direct', line: '2', stops: 3 } as never;
+    // 재앵커링 불가(레코드에 없는 id)라 깨진 원본 route가 그대로 ETA 입력이 된다.
+    const unknownDest = { ...station('강남', '2'), id: 'unknown-id' };
+    const fields = computeJourneyLaFields(brokenRoute, station('교대', '2'), unknownDest);
+    expect(fields.etaMinutes).toBeUndefined();
+    expect(fields.legStopsTotal).toBe(3);
   });
 
   it('route 없음: 아무 필드도 산출하지 않는다(위젯 폴백 유지)', () => {

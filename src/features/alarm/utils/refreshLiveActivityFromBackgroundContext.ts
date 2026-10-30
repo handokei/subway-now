@@ -51,6 +51,7 @@ import {
 import { readBackendSsotMirror, resolveBackendSsotMirrorStation, isBackendSsotMirrorFresh } from './backendSsotMirror';
 import { updateLiveActivityFromMirrorStation } from './liveActivityMirrorSync';
 import { endBoardingActivity } from './boardingActivityChannel';
+import { computeJourneyLaFields } from '../../route/utils/journeyLaFields';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import { arcIndexOfStation } from '../../route/utils/stationProgressEstimator';
 import {
@@ -323,6 +324,9 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       false,
       null,
       fallbackSource,
+      null,
+      // #3221 — BG는 실시간 ETA가 없으니 원본 route 기준 static ETA·진행 막대·다음 역으로 채운다(backend push가 오면 교체).
+      computeJourneyLaFields(route, currentStation, destination),
     );
     await LiveActivity.updateLiveActivity(data);
     // #2735 PR-1 — D3 writer. 이 분기는 권위 게이트(backendAuthoritySkipsGpsWrite=false)를 통과한 쓰기다.

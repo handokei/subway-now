@@ -83,7 +83,7 @@ describe('useEnsureLiveActivity', () => {
       useEnsureLiveActivity(gangnam, 120, chungmuro, null, 5, LOCK),
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
-    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, chungmuro, null, 5);
+    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, chungmuro, null, 5, undefined, undefined, undefined, null, {});
   });
 
   // #2735 PR-1 — D7(LA 부재 시 FG 시작) 쓰기 관측.
@@ -239,6 +239,6 @@ describe('useEnsureLiveActivity', () => {
   it('#2811 편측 감사: destination이 없으면(lock만으로 트립 활성) route를 그대로 전달한다(anchor 대상 없음)', () => {
     const staleRoute = { type: 'direct' as const, line: '2' as const, stops: 5, travelSeconds: 600 };
     renderHook(() => useEnsureLiveActivity(gangnam, 120, null, staleRoute, 5, LOCK));
-    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, null, staleRoute, 5);
+    expect(mockBuildLiveActivityData).toHaveBeenCalledWith(gangnam, 120, null, staleRoute, 5, undefined, undefined, undefined, null, null);
   });
 });

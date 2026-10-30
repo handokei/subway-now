@@ -346,8 +346,8 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       [ROUTE_KEY]: JSON.stringify(directRoute),
     });
     await refreshLiveActivityFromBackgroundContext();
-    const journeyFields = mockBuild.mock.calls[0][9];
-    expect(journeyFields).toEqual(computeJourneyLaFields(directRoute, bgStation.station, destination));
+    const journeyFields = mockBuild.mock.calls[0][9] as { legStopsTotal?: number };
+    expect(journeyFields).toEqual(computeJourneyLaFields(directRoute as never, bgStation.station as never, destination as never));
     expect(journeyFields.legStopsTotal).toBe(directRoute.stops);
   });
 
@@ -713,6 +713,8 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
         false,
         null,
         'deviceFallback',
+        null,
+        expect.any(Object),
       );
     });
 

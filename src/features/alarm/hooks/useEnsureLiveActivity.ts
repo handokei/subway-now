@@ -27,6 +27,7 @@ import type { Station } from '../../../shared/types/station';
 import { anchorRouteToCurrentStation, type Route } from '../../../shared/utils/stationRoute';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import { buildLiveActivityData } from '../utils/stationNotification';
+import { computeJourneyLaFields } from '../../route/utils/journeyLaFields';
 import { logLaWrite } from '../utils/alarmLog';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -58,7 +59,19 @@ export function useEnsureLiveActivity(
       const remainingRoute = destination
         ? anchorRouteToCurrentStation(route, currentStation, destination.id)
         : route;
-      const data = buildLiveActivityData(currentStation, distanceM, destination, remainingRoute, etaMinutes);
+      const data = buildLiveActivityData(
+        currentStation,
+        distanceM,
+        destination,
+        remainingRoute,
+        etaMinutes,
+        undefined,
+        undefined,
+        undefined,
+        null,
+        // #3221 — 진행 막대/다음 역은 freeze된 원본 route 기준.
+        destination ? computeJourneyLaFields(route, currentStation, destination) : null,
+      );
       LiveActivity.updateLiveActivity(data)
         .then(() => {
           // #2735 PR-1 — D7 writer(LA 부재 시 FG 시작). lock 전/생성 경로라 권위 판정 대상 아님.

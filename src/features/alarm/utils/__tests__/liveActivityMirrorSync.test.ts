@@ -108,6 +108,8 @@ describe('updateLiveActivityFromMirrorStation', () => {
       false,
       null,
       undefined,
+      null,
+      expect.objectContaining({ legStopsTotal: 1 }),
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
@@ -118,7 +120,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
 
   it('#3221 — 원본 route 기준 여정 필드(진행 막대·다음 역)를 buildLiveActivityData 10번째 인자로 싣는다', async () => {
     await updateLiveActivityFromMirrorStation(mirrorStation, destination, directRoute);
-    const journeyFields = mockBuild.mock.calls[0][9];
+    const journeyFields = mockBuild.mock.calls[0][9] as { legStopsTotal?: number; nextStationName?: string };
     expect(journeyFields).toEqual(computeJourneyLaFields(directRoute, mirrorStation, destination));
     expect(journeyFields.legStopsTotal).toBe(1);
     expect(journeyFields.nextStationName).toBe(destination.name);
@@ -139,7 +141,7 @@ describe('updateLiveActivityFromMirrorStation', () => {
 
   it('route가 null이면 etaMinutes도 null(기존대로) — #2805 거부 케이스', async () => {
     const applied = await updateLiveActivityFromMirrorStation(mirrorStation, destination, null);
-    expect(mockBuild).toHaveBeenCalledWith(mirrorStation, 0, destination, null, null, false, null, undefined);
+    expect(mockBuild).toHaveBeenCalledWith(mirrorStation, 0, destination, null, null, false, null, undefined, null, {});
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);
   });
@@ -205,6 +207,8 @@ describe('updateLiveActivityFromMirrorStation', () => {
       false,
       null,
       'deviceFallback',
+      null,
+      expect.any(Object),
     );
     expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
     expect(applied).toBe(true);

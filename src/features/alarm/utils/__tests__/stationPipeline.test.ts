@@ -53,6 +53,12 @@ jest.mock('../../../route/utils/routeProgress', () => ({
   computeRouteArc: (...args: unknown[]) => mockComputeRouteArc(...args),
 }));
 
+// #3221 — 여정 LA 필드 산출은 journeyLaFields.test.ts가 검증한다. 여기서는 원본(storedRoute) 입력/전달만 본다.
+const mockComputeJourneyLaFields = jest.fn();
+jest.mock('../../../route/utils/journeyLaFields', () => ({
+  computeJourneyLaFields: (...args: unknown[]) => mockComputeJourneyLaFields(...args),
+}));
+
 const mockGetBgHopWindowStation = jest.fn();
 const mockSetBgHopWindowStation = jest.fn();
 jest.mock('../hopWindowState', () => ({
@@ -475,6 +481,7 @@ describe('processLocationUpdate', () => {
       undefined,
       null,
       undefined,
+      null,
     );
   });
 
@@ -560,6 +567,7 @@ describe('processLocationUpdate', () => {
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation, 150, mockDestination, mockRoute, 10, undefined, mockAlarmEvent, undefined,
+      null,
     );
   });
 
@@ -572,6 +580,7 @@ describe('processLocationUpdate', () => {
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation, 150, mockDestination, mockRoute, 10, undefined, null, undefined,
+      null,
     );
   });
 
@@ -605,6 +614,7 @@ describe('processLocationUpdate', () => {
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation, 457, mockDestination, mockRoute, 5, undefined, null, undefined,
+      null,
     );
   });
 
@@ -632,6 +642,30 @@ describe('processLocationUpdate', () => {
     expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
     expect(mockFindRoute).not.toHaveBeenCalled();
     expect(mockCalculateStaticETA).toHaveBeenCalledWith(updatedRoute, expect.any(Object));
+  });
+
+  it('#3221 — storedRoute(원본) 기준 여정 필드를 updateStationNotification 마지막 인자로 전달한다(재앵커링본 아님)', async () => {
+    const storedRoute = makeDirectRoute(5, '2');
+    const updatedRoute = makeDirectRoute(3, '2');
+    const journeyFields = { legStopsTotal: 5, nextStationName: '역삼' };
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockUpdateRouteFromPosition.mockReturnValue(updatedRoute);
+    mockComputeJourneyLaFields.mockReturnValue(journeyFields);
+
+    await call({ storedRoute });
+
+    expect(mockComputeJourneyLaFields).toHaveBeenCalledWith(storedRoute, mockStation, mockDestination);
+    const args = mockUpdateStationNotification.mock.calls[0];
+    expect(args[args.length - 1]).toBe(journeyFields);
+  });
+
+  it('#3221 [거부] storedRoute 없으면 여정 필드를 산출하지 않는다(null)', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    await call();
+
+    expect(mockComputeJourneyLaFields).not.toHaveBeenCalled();
   });
 
   // #U1 (2026-08-31) — 실탑승 evidence: 뚝섬→신당 활성 trip 도중 단일 off-route GPS 좌표
@@ -751,6 +785,7 @@ describe('processLocationUpdate', () => {
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation, 150, mockDestination, null, null, undefined, null, undefined,
+      null,
     );
     expect(result.nearest).toBe(mockNearestResult);
   });
@@ -912,6 +947,7 @@ describe('processLocationUpdate', () => {
 
       expect(mockUpdateStationNotification).toHaveBeenCalledWith(
         mockStation, 150, mockDestination, mockRoute, 10, undefined, null, 'gpsOnly',
+        null,
       );
     });
 
@@ -924,6 +960,7 @@ describe('processLocationUpdate', () => {
 
       expect(mockUpdateStationNotification).toHaveBeenCalledWith(
         mockStation, 150, mockDestination, mockRoute, 10, undefined, null, 'positionTrain',
+        null,
       );
     });
 
@@ -936,6 +973,7 @@ describe('processLocationUpdate', () => {
 
       expect(mockUpdateStationNotification).toHaveBeenCalledWith(
         mockStation, 150, mockDestination, mockRoute, 10, undefined, null, 'uncertain',
+        null,
       );
     });
 
@@ -948,6 +986,7 @@ describe('processLocationUpdate', () => {
 
       expect(mockUpdateStationNotification).toHaveBeenCalledWith(
         mockStation, 150, mockDestination, mockRoute, 10, undefined, null, undefined,
+        null,
       );
     });
 
