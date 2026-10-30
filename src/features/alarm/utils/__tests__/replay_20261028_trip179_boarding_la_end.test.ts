@@ -146,7 +146,7 @@ describe('replay 20261028 trip 179 — 응답 시퀀스가 탑승 LA를 닫는�
 
     // 06:27:55 [탑승] 응답 -> lock primitive.
     jest.setSystemTime(kst(TRIP_179_BOARDED_RESPONSE));
-    await useBoardingLockStore.getState().createLock(lockAt(Date.now(), '7123'), false, 'prompt-response');
+    await useBoardingLockStore.getState().createLock(lockAt(Date.now(), '7123'), false, 'boarding-prompt-response');
     expect(mockEndBoardingActivities).toHaveBeenCalledTimes(1);
 
     // 06:36:51 [미탑승] 응답 -> 응답 handler.

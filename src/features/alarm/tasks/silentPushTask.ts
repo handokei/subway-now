@@ -67,6 +67,7 @@ import {
   getLastSilentPushReceivedAt,
 } from '../utils/lastSilentPushReceivedAt';
 import { getBoardingLock } from '../utils/boardingLockStorage';
+import { startBoardingActivityFromPrompt } from '../utils/boardingActivityChannel';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import {
   checkTripDeathByPull,
@@ -1309,6 +1310,9 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
           displayed: false,
           suppressedReason: 'boarding-prompt-remote-only',
         });
+        // #3221 PR-4 (B1) — iOS 17.0~17.1은 서버 push-to-start가 없어 앱이 FG에서 이 silent push를 받았을 때
+        // 탑승 LA를 직접 시작한다. 17.2+/16.x/BG 판정은 채널이 하며(시작 안 함) 이 호출은 throw하지 않는다.
+        await startBoardingActivityFromPrompt(payload);
         void ackOutcome(payload.pushId, apnsToken, 'skipped', 'boarding-prompt-remote-only');
         return;
       }

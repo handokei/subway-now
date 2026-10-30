@@ -4917,10 +4917,15 @@ describe('useApnsTripRegistration', () => {
           await Promise.resolve();
         });
         expect(mockRegister).toHaveBeenCalledTimes(5); // 수렴 확정(1) + Tier 2 heal(1).
-        const healed = mockRegister.mock.calls[4][0] as {
-          promptGeoContext?: { origin: { lat: number; lng: number } };
-        };
-        expect(healed.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+        // #3221 PR-4 — callRegister에 await 1개(탑승 LA 채널 조각)가 추가돼 수렴 확정 register와 Tier 2 heal의 도달
+        // 순서가 microtask 단위로 뒤바뀔 수 있다. "5번째 호출"이라는 순서 가정 대신 heal(스탬프 없는 promptGeoContext
+        // 포함) 호출을 내용으로 찾는다 — 검증 의도(heal이 raw=true origin으로 발동)는 동일.
+        const healed = (
+          mockRegister.mock.calls.map(([payload]) => payload) as Array<{
+            promptGeoContext?: { origin: { lat: number; lng: number } };
+          }>
+        ).find((payload) => payload.promptGeoContext !== undefined);
+        expect(healed?.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
       });
 
       it('60초 후 currentStation이 이미 해소돼 있으면 Tier 2 heal 미발동', async () => {

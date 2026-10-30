@@ -30,6 +30,9 @@ export const APNS_TOKEN_KEY = 'subway-now:apns-token';
 // backend self-heal 발동 횟수를 0에 수렴시킨다. 부재(첫 register / parse 실패) 시 fallback.
 // 형식: 'sandbox' 또는 'production' string.
 export const LAST_CONFIRMED_APNS_ENV_KEY = 'subway-now:last-confirmed-apns-env';
+// #3221 PR-4 — 탑승여부 LA(`BoardingActivityAttributes`) push-to-start token(hex) 캐시. 기기 단위 값이며
+// trip과 무관하게 유지된다(trip 종료 cleanup 대상 아님). 값이 없으면 push-to-start 불가(iOS<17.2/미발급).
+export const BOARDING_PUSH_TO_START_TOKEN_KEY = 'subway-now:boarding-push-to-start-token';
 export const ACTIVE_TRIP_KEY = 'subway-now:active-trip';
 export const TRIP_TRAIN_CODE_KEY = 'subway-now:trip-train-code';
 // #700 — useTripOrigin이 destination set 순간 캡처하는 trip origin Station.

@@ -31,6 +31,7 @@ import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { resetLiveActivityChannelAfterExternalEnd } from '../utils/liveActivityPushChannel';
+import { endBoardingActivity } from '../utils/boardingActivityChannel';
 import { clearLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import { cancelAllSafetyNetAlarms, resolveEffectiveTripToken } from '../utils/safetyNetScheduler';
@@ -278,6 +279,9 @@ function resetNavigationActive(): Promise<void> {
  * 일관성 보강하지만 본 helper 자체가 swallow하므로 단독 호출(예: 테스트)에서도 안전.
  */
 function endLiveActivityCleanup(): Promise<void> {
+  // #3221 PR-4 (B4) — 탑승 LA(질문 카드)도 함께 닫는다. 여정 end와 서로 막지 않도록 먼저 호출하고(채널은 throw하지
+  // 않는다) 여정 end 체인은 그대로 둔다. 빠지면 안내 종료 후에도 "탑승하셨나요?" 카드가 고아로 남는다.
+  void endBoardingActivity('trip-cleanup');
   return (
     LiveActivity.endLiveActivity()
       .catch((e) => {

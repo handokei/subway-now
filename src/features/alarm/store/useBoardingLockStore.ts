@@ -17,6 +17,7 @@ import {
 import { isPendingTrainCode, isRealBoardingLock } from '../../../shared/constants/boardingLock';
 import { recordPendingLockPromotion } from '../utils/lockCorrectionMetrics';
 import { cancelTripEndOffer, rearmTripEndOfferOnRelease } from '../utils/tripEndOffer';
+import { endBoardingActivity } from '../utils/boardingActivityChannel';
 
 /**
  * #1438 (E5) — release 사유 식별자.
@@ -152,6 +153,11 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
     // 호출부가 lock 객체 리터럴 안에 산발적으로 boardingEvidence를 stamp하던 방식(P1-1)은
     // 새 생성 경로가 추가돼도 stamp를 빠뜨리면 컴파일이 통과했다 — 이 지점 하나로 강제한다.
     const lock: BoardingLock = { ...lockInput, boardingEvidence: evidence };
+    // #3221 PR-4 (B3) — lock 생성 시도 = 사용자 응답/탑승 의향의 결과(F22 4개 호출처 공통 경로: 탑승 알림 응답 /
+    // LA 탑승 버튼 / BoardingTrainList 직접 탭 / PENDING 승격). 질문 카드(탑승 LA)는 답해졌으므로 닫는다.
+    // 아래 불변 가드로 교체가 skip돼도 응답 자체는 이뤄졌으므로 가드보다 앞에 둔다. lock 영속을 지연시키지 않도록
+    // await하지 않는다(채널은 throw하지 않는다).
+    void endBoardingActivity('lock-created');
     // #2786 리뷰(항목 4) — prev를 flag 분기 밖으로 끌어올려 아래 승격 telemetry와 공유한다.
     const prev = get().lock;
     // #1996 (Phase 1-7, ADR-022 A4) — boardingStationId 불변 정책 (flag ON 시).

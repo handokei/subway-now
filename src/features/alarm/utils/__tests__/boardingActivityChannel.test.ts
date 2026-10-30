@@ -88,6 +88,8 @@ describe('resolveBoardingStartMode — iOS 버전/LA 설정 판정', () => {
     ['17.0', 'fg-only'],
     ['16.4', 'none'],
     ['16.2', 'none'],
+    ['17', 'fg-only'], // minor 생략
+    ['18', 'push-to-start'],
   ])('iOS %s -> %s', (version, expected) => {
     setPlatform('ios', version);
     expect(resolveBoardingStartMode()).toBe(expected);
@@ -189,6 +191,21 @@ describe('push-to-start token 캐시', () => {
     startBoardingPushToStartTokenCapture();
     await flush();
     expect(mockStore.get(BOARDING_PUSH_TO_START_TOKEN_KEY)).toBe('keep');
+  });
+
+  it('capture: 이벤트 token 캐시(storage write)가 실패해도 throw하지 않고 onChange도 호출하지 않는다', async () => {
+    const onChange = jest.fn();
+    let emit: (e: { token: string }) => void = () => undefined;
+    mockAddTokenListener.mockImplementation((cb: (e: { token: string }) => void) => {
+      emit = cb;
+      return { remove: jest.fn() };
+    });
+    const AsyncStorage = jest.requireMock('@react-native-async-storage/async-storage');
+    AsyncStorage.setItem.mockRejectedValueOnce(new Error('disk full'));
+    startBoardingPushToStartTokenCapture(onChange);
+    emit({ token: 't-fail' });
+    await flush();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('capture: iOS가 아니면 구독하지 않는다', () => {
@@ -318,7 +335,12 @@ describe('startBoardingActivityFromPrompt — B1 (17.0~17.1 FG 시작)', () => {
 });
 
 describe('계약(텍스트) — 채널 분리', () => {
-  const read = (rel: string): string => fs.readFileSync(path.join(__dirname, rel), 'utf8');
+  // 주석은 제외하고 코드만 본다(설명 주석이 금지 심볼 이름을 언급할 수 있다).
+  const read = (rel: string): string =>
+    fs
+      .readFileSync(path.join(__dirname, rel), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
 
   it('탑승 모듈은 ADR-049 권위 게이트(shouldSkipDeviceLiveActivityWrite)나 여정 채널을 import하지 않는다', () => {
     const src = read('../boardingActivityChannel.ts');

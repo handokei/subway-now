@@ -82,6 +82,7 @@ import {
 } from './useBoardingPromptDisplayLogger';
 import { handleAlarmEndTripResponse } from './useAlarmEndTripResponder';
 import { promotePendingLockFromConfirm } from '../utils/promotePendingLockFromConfirm';
+import { endBoardingActivity } from '../utils/boardingActivityChannel';
 
 const log = createLogger('boardingPromptResponder');
 
@@ -277,6 +278,8 @@ export async function handleResponse(
   // #2034 — hop-end (환승역 하차) 분기 처리. 기존 boarding 승차 prompt 처리와 완전 분리해
   // autoLock 시도를 skip 하고 [하차함]/[아직] 만 처리한다.
   if (payload.hopEndKind === 'disembark') {
+    // #3221 PR-4 (B3) — 하차 질문에 답했으므로(어느 응답이든) hop-end 탑승 LA 카드를 닫는다.
+    await endBoardingActivity('hop-end-response');
     await handleHopEndResponse(actionIdentifier, payload, deps);
     return;
   }
@@ -349,6 +352,9 @@ export async function handleResponse(
     return;
   }
   // [미탑승] 또는 dismiss — 5분 silence.
+  // #3221 PR-4 (B3) — 승차 질문에 "안 탔어요"/dismiss로 답했다. 이 경로는 lock을 만들지 않으므로 lock primitive가
+  // 카드를 닫지 못한다 — 여기서 직접 닫는다([탑승] 응답은 createLock이 닫는다).
+  await endBoardingActivity('not-boarded-response');
   // #1170 — dismissed 측정. dismiss POST 결과(네트워크 성공/실패)와 무관하게 사용자 인지 기준 적재.
   logBoardingPromptResponded({ outcome: 'dismissed' });
   await dismissBoardingPrompt(payload.tripToken);

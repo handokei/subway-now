@@ -47,6 +47,10 @@ import {
   type GpsFix,
 } from '../utils/boardingPromptContext';
 import { resolveGpsFreeOrigin } from '../utils/gpsFreeOrigin';
+import {
+  buildBoardingRegisterFields,
+  startBoardingPushToStartTokenCapture,
+} from '../utils/boardingActivityChannel';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY, DESTINATION_KEY } from '../../../shared/constants/storageKeys';
 import {
   BOARDING_LOCK_RELEASE_DEBOUNCE_MS,
@@ -368,6 +372,10 @@ async function callRegister(
   // (`resolveApnsEnv()`)로 자연 fallback. self-heal 발동 횟수를 0에 수렴시키는 핵심 wire.
   const apnsEnv = await getRegisteringApnsEnv();
 
+  // #3221 PR-4 — 탑승 LA 분리 capability(laClient) + push-to-start token. 모든 register 경로가 이 단일 빌더를 거치므로
+  // heal/token refresh 재등록도 같은 값을 싣는다(재등록은 incoming이 이긴다 — 빠뜨리면 backend가 구 클라이언트로 되돌린다).
+  const boardingFields = await buildBoardingRegisterFields();
+
   const result = await registerActiveTrip({
     token: input.token,
     route: input.route,
@@ -416,6 +424,7 @@ async function callRegister(
     ...(input.sleepMode && input.sleepAlarm ? { sleepAlarm: input.sleepAlarm } : {}),
     // #2280 — SSOT 출발역명. 캡처 전(undefined)이면 필드 자체 생략(graceful).
     ...(input.originStationName ? { originStationName: input.originStationName } : {}),
+    ...boardingFields,
   });
   // #2130 (B-1) — 이번 register가 실제로 promptContext를 포함했는지 + 그 내용을 호출자에게 노출.
   // Tier 1 heal 판정의 SSoT이자, 캐시(`lastPromptContextRef`) 갱신 입력.
@@ -1325,9 +1334,20 @@ export function useApnsTripRegistration({
       })();
     });
 
+    // #3221 PR-4 — 탑승 LA push-to-start token 캡처. token이 발급/회전하면(값이 바뀐 경우에만) 활성 트립을
+    // 새 token으로 재등록한다 — 위 APNs token refresh와 같은 단일 출처(registerFromLatestInputs). 회전은 드물어
+    // putTrip 증가는 회전당 1회(PR 본문 KV 계산 참고).
+    const stopBoardingTokenCapture = startBoardingPushToStartTokenCapture(() => {
+      void (async () => {
+        const apnsToken = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+        if (apnsToken) await registerFromLatestInputs(apnsToken);
+      })();
+    });
+
     return () => {
       cancelled = true;
       subscription?.remove();
+      stopBoardingTokenCapture();
       // #1960 — 컴포넌트 unmount 시 대기 중인 register 재시도 타이머 정리(메모리 누수/좀비 POST 방지).
       clearRegisterRetry();
     };
