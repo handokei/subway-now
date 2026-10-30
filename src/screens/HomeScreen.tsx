@@ -119,6 +119,7 @@ import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDe
 import { useTrainCodeMismatchDetector } from '../features/route/hooks/useTrainCodeMismatchDetector';
 import { useTrainPositions } from '../features/route/hooks/useTrainPositions';
 import { useTransferTrainList } from '../features/route/hooks/useTransferTrainList';
+import { buildBoardableArrivalsAtTransfers } from '../features/route/utils/boardableArrivalsAtTransfers';
 import { useTransferAutoDetect } from '../features/route/hooks/useTransferAutoDetect';
 import {
   BOARDING_PROXIMITY_THRESHOLD_M,
@@ -822,16 +823,10 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- id 기반 안정 deps(기존 파일 관례, 예: nextStationName useMemo)
     [route, effectiveOrigin?.id, destination?.id],
   );
-  // #1480 PR-C — ETA는 journeyTimeline 엔진 결과(분 + "N분+"/"막차 종료" 플래그). 환승 대기는 시간표 →
-  // 배차간격/2 추정이라 시각(Date.now())에 의존하며 렌더마다 새로 구한다.
-  const etaDetail = remainingRoute && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
-    ? calculateEtaDetail(nextTrainMinutes, remainingRoute, { excludeOriginWait: isInTrip })
-    : null;
-  const etaMinutes = etaDetail?.minutes ?? null;
   // #784: rawArrival(useArrivalInfo)을 직접 사용 — useArrivalCountdown(1Hz tick)은 receivedAtMs를
   // 원본으로 유지하면서 arrivalSeconds만 차감해 60s 후 항상 stale로 판정되는 회귀 회피(옵션 B).
   // 분 단위 정수 ETA라 tick 미반영 영향 없음. arrivalsAtTransfers는 환승역별 폴링 인프라가 없어
-  // undefined — 엔진이 환승 대기를 시간표 → 배차간격/2로 추정(실시간 주입은 후속 PR-D).
+  // undefined — 엔진이 환승 대기를 시간표 → 배차간격/2로 추정(실시간 주입은 위 etaDetail, #1480 PR-D).
   const staticEtaDetail = remainingRoute
     ? calculateStaticEtaDetail(remainingRoute, {
         currentLocation: userLocation ?? undefined,
@@ -843,9 +838,6 @@ export default function HomeScreen() {
       })
     : null;
   const staticEtaMinutes = staticEtaDetail?.minutes ?? null;
-  const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
-  const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
-  const displayEtaKind = etaDisplayKind(isRealtimeEta ? etaDetail : staticEtaDetail);
 
   const nextStationName = useMemo(
     () => (effectiveOrigin && destination && route ? getNextStationName(effectiveOrigin.id, destination.id, route) : null),
@@ -1166,6 +1158,25 @@ export default function HomeScreen() {
     destinationName: destination?.name ?? null,
     currentStation: result?.station ?? null,
   });
+  // #1480 PR-C — ETA는 journeyTimeline 엔진 결과(분 + "N분+"/"막차 종료" 플래그). 환승 대기는 시간표 →
+  // 배차간격/2 추정이라 시각(Date.now())에 의존하며 렌더마다 새로 구한다.
+  // #1480 PR-D — 환승역 위(환승 컨텍스트 활성)에서는 환승 목록의 실시간 도착(toLine·진행 방향)에서 T_platform
+  // 이후 첫 열차를 엔진에 주입한다. 컨텍스트가 없거나 boardable이 없으면 시간표 폴백(무변경).
+  const boardableArrivalsAtTransfers = buildBoardableArrivalsAtTransfers(
+    transferContext?.completedTransferIdx ?? null,
+    transferArrivals,
+  );
+  const etaDetail = remainingRoute && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
+    ? calculateEtaDetail(nextTrainMinutes, remainingRoute, {
+        excludeOriginWait: isInTrip,
+        boardableArrivalsAtTransfers,
+      })
+    : null;
+  const etaMinutes = etaDetail?.minutes ?? null;
+  const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
+  const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
+  const displayEtaKind = etaDisplayKind(isRealtimeEta ? etaDetail : staticEtaDetail);
+
   // #2179 — 환승 leg의 "전열차" 후보 nextStationName. origin 슬롯의 label 계산(#649)과 동일하게
   // (환승 후 노선, 환승역, 다음 waypoint) 기준 진행 방향 바로 다음 인접역을 산출한다.
   const transferNextStationName = useMemo(() => {

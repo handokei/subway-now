@@ -142,3 +142,52 @@ describe('etaDisplayKind', () => {
     expect(etaDisplayKind(flags)).toBe(kind);
   });
 });
+
+describe('calculateEtaDetail — boardableArrivalsAtTransfers (#1480 PR-D)', () => {
+  const route = makeTransferRoute({
+    transferName: '홍대입구',
+    fromLine: '2',
+    toLine: 'gyeongui',
+    stopsToTransfer: 2,
+    stopsFromTransfer: 3,
+  });
+  const fresh = (arrivalSeconds: number | null, ageMs = 1_000) => ({ arrivalSeconds, receivedAtMs: noon - ageMs });
+  // 환승역 도착까지 주행 240s + 도보 407 + buffer 60 = T_platform까지 707s.
+  const platformSec = 240 + 407 + 60;
+  const etaWith = (list: ReturnType<typeof fresh>[] | null) =>
+    calculateEtaDetail(0, route, {
+      nowMs: noon,
+      excludeOriginWait: true,
+      boardableArrivalsAtTransfers: [list],
+    });
+
+  it('fresh 후보 중 T_platform 이후 첫 열차를 대기로 쓴다 (receivedAt 기준 절대시각)', () => {
+    // 후보 도착 절대시각 = noon - 1s + sec. platform = noon + 707s.
+    const eta = etaWith([fresh(platformSec - 200), fresh(platformSec + 300)]); // 앞 후보는 platform 이전
+    expect(eta?.waits[0]).toMatchObject({ source: 'realtime', seconds: 299 });
+  });
+
+  it('stale(>60s)·receivedAt<=0·arrivalSeconds null/음수 후보는 제외하고 폴백', () => {
+    const eta = etaWith([
+      fresh(platformSec + 300, 61_000),
+      { arrivalSeconds: platformSec + 300, receivedAtMs: 0 },
+      fresh(null),
+      fresh(-5),
+    ]);
+    expect(eta?.waits[0].source).not.toBe('realtime');
+  });
+
+  it('후보 없음(null) → 입력 없음과 동일 결과', () => {
+    const plain = calculateEtaDetail(0, route, { nowMs: noon, excludeOriginWait: true });
+    expect(etaWith(null)).toEqual(plain);
+  });
+
+  it('calculateStaticEtaDetail도 같은 입력을 받는다', () => {
+    const eta = calculateStaticEtaDetail(route, {
+      nowMs: noon,
+      excludeOriginWait: true,
+      boardableArrivalsAtTransfers: [[fresh(platformSec + 300)]],
+    });
+    expect(eta?.waits[0]).toMatchObject({ source: 'realtime', seconds: 299 });
+  });
+});
