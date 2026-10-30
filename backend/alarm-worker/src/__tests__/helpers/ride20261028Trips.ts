@@ -82,3 +82,42 @@ export function makeRide20261028EveningTrip(token: string, now: number): Trip {
     infoModeEnabled: true,
   };
 }
+
+/**
+ * #3221 PR-3 — 아침 trip 179의 **탑승 전(pre-boarding) seed**. lock seed(`makeRide20261028MorningTrip`)는 질문 사슬
+ * (탑승 질문 -> 응답 -> 환승 하차 질문 -> leg-2 질문 -> 재질문)을 못 탄다. 창 시작(06:26:46) 시점 실측 상태:
+ * 용마산 출발 대기, 7호선 안내 시작(promptOptIn), 여정 LA live, lock 없음. 응답은 replay 테스트의 `beforeTick`이 주입한다.
+ * `split`이면 LA 2개 분리를 지원하고 push-to-start token을 등록한 클라이언트(`laClient` + token).
+ */
+export const RIDE_20261028_BOARDING_START_TOKEN = 'ptstoken0179';
+
+export function makeRide20261028MorningPreBoardingTrip(token: string, now: number, opts: { split: boolean }): Trip {
+  return {
+    token,
+    route: { type: 'transfer', transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 5, stopsFromTransfer: 2 },
+    destination: '뚝섬',
+    waypoints: [
+      { stationName: '중곡', line: '7', kind: 'intermediate' },
+      { stationName: '군자(능동)', line: '7', kind: 'intermediate' },
+      { stationName: '어린이대공원(세종대)', line: '7', kind: 'intermediate' },
+      { stationName: '건대입구', line: '7', kind: 'transfer' },
+      { stationName: '성수', line: '2', kind: 'intermediate' },
+      { stationName: '뚝섬', line: '2', kind: 'destination' },
+    ],
+    expiresAt: now + HOUR_MS,
+    createdAt: now,
+    alarmAtEpochMs: now,
+    promptOptIn: true,
+    originStationName: '용마산',
+    promptDisplay: { originStation: '용마산', line: '7' },
+    activityPushToken: 'la-token',
+    activityState: 'live',
+    apnsEnv: 'production',
+    ...(opts.split
+      ? {
+          laClient: { split: true, boardingStart: 'push-to-start' as const },
+          boardingPushToStartToken: RIDE_20261028_BOARDING_START_TOKEN,
+        }
+      : {}),
+  };
+}
