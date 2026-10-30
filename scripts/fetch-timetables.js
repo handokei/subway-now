@@ -26,7 +26,7 @@
  *   엔드포인트: /SearchSTNTimeTableByFRCodeService/{start}/{end}/{FR_CODE}/{WEEK_TAG}/{INOUT_TAG}
  *   FR_CODE: 3자리 정수 (노선별 100단위가 base, 지선/순환선은 별도 대역 — stationCodes.json 참조)
  *   WEEK_TAG: 1=평일, 2=토요일, 3=일요일/공휴일
- *   INOUT_TAG: 1=상행/내선, 2=하행/외선
+ *   INOUT_TAG: 1=상행/내선, 2=하행/외선 (9호선은 반대 — lineTopology.timetableInoutInvertedLines로 반전 저장, #1480)
  *
  * ## 출력 형식 (line-N.json)
  *
@@ -64,6 +64,17 @@ const WEEK_INOUT_PLAN = [
   { weekTag: '3', inoutTag: '2', weekKey: 'sunday', inoutKey: 'down' },
 ];
 
+/**
+ * #1480 — INOUT_TAG(1/2)와 앱 up/down 규약이 어긋나는 노선 집합 (lineTopology.timetableInoutInvertedLines).
+ * 이 노선은 INOUT_TAG 1→down, 2→up으로 저장한다.
+ */
+function loadInvertedInoutLines() {
+  const { timetableInoutInvertedLines } = require('../src/data/lineTopology.json');
+  return new Set(timetableInoutInvertedLines);
+}
+
+const INVERTED_INOUT_KEY = { up: 'down', down: 'up' };
+
 const ARRIVE_TIME_RE = /^(\d{2}):(\d{2}):/;
 
 // "HH:MM:SS" → "HHMM". 24h+ 표기("24:09:30")는 익일 시각으로 보존 (정렬은 문자열 비교).
@@ -91,7 +102,8 @@ async function fetchOne(apiKey, frCode, weekTag, inoutTag, { fetchImpl = fetch }
   return wrapper.row ?? [];
 }
 
-async function fetchStation(apiKey, frCode, { fetchImpl = fetch, sleepImpl = sleep } = {}) {
+async function fetchStation(apiKey, frCode, { fetchImpl = fetch, sleepImpl = sleep, invertInout = false } = {}) {
+  const inoutKeyOf = (step) => (invertInout ? INVERTED_INOUT_KEY[step.inoutKey] : step.inoutKey);
   // 평일 상행 probe — 데이터 없으면 나머지 5호출 생략
   const [probe, ...rest] = WEEK_INOUT_PLAN;
   const probeRows = await fetchOne(apiKey, frCode, probe.weekTag, probe.inoutTag, { fetchImpl });
@@ -100,7 +112,7 @@ async function fetchStation(apiKey, frCode, { fetchImpl = fetch, sleepImpl = sle
   const stationName = probeRows[0].STATION_NM;
   const result = {
     [probe.weekKey]: {
-      [probe.inoutKey]: probeRows.map((r) => compactTime(r.ARRIVETIME)).filter(Boolean).sort(),
+      [inoutKeyOf(probe)]: probeRows.map((r) => compactTime(r.ARRIVETIME)).filter(Boolean).sort(),
     },
   };
   for (const step of rest) {
@@ -109,7 +121,7 @@ async function fetchStation(apiKey, frCode, { fetchImpl = fetch, sleepImpl = sle
     if (!rows || rows.length === 0) continue;
     const times = rows.map((r) => compactTime(r.ARRIVETIME)).filter(Boolean).sort();
     if (!result[step.weekKey]) result[step.weekKey] = {};
-    result[step.weekKey][step.inoutKey] = times;
+    result[step.weekKey][inoutKeyOf(step)] = times;
   }
   return { stationName, timetable: result };
 }
@@ -243,6 +255,7 @@ async function processLine(apiKey, line, frCodes, { fetchImpl, sleepImpl, log } 
     return { line, stationCount: 0, outPath: null };
   }
   // 기존 데이터 merge — missing-only 모드 등 부분 갱신 케이스 보존
+  const invertInout = loadInvertedInoutLines().has(line);
   const existing = readExistingLine(line);
   const stations = { ...existing.stations };
   let added = 0;
@@ -250,7 +263,7 @@ async function processLine(apiKey, line, frCodes, { fetchImpl, sleepImpl, log } 
   for (const frCode of sortedCodes) {
     let stationName, timetable;
     try {
-      ({ stationName, timetable } = await fetchStation(apiKey, frCode, { fetchImpl, sleepImpl }));
+      ({ stationName, timetable } = await fetchStation(apiKey, frCode, { fetchImpl, sleepImpl, invertInout }));
     } catch (e) {
       log(`E(${frCode}:${e.message})`);
       continue;
@@ -305,6 +318,7 @@ async function main(argv = process.argv.slice(2), env = process.env, deps = {}) 
 
 module.exports = {
   compactTime,
+  loadInvertedInoutLines,
   fetchOne,
   fetchStation,
   collectFrCodesByLine,

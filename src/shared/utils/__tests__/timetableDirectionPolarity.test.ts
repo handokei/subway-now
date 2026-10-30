@@ -66,6 +66,24 @@ describe('시간표 up/down vs directionOnLine 극성 (§9-3)', () => {
     expect(agree + disagree).toBeGreaterThan(0);
   });
 
+  it('9호선 극성이 원천에서 교정됐다: 다수결 일치 + 종점 0000 열이 올바른 방향', () => {
+    const { agree, disagree } = votes.find((v) => v.line === '9')!;
+    expect(agree).toBeGreaterThanOrEqual(33);
+    expect(disagree).toBeLessThanOrEqual(4);
+    const timetable = loadTimetable('9');
+    const { weekday: gaehwa } = timetable['개화'];
+    // ARRIVETIME 기반: 종점의 출발 방향 열은 0000, 도착 방향 열만 시각을 갖는다 (3호선 대화와 동일)
+    expect(minutesOf(gaehwa.up).length).toBeGreaterThan(0);
+    expect(minutesOf(gaehwa.down)).toEqual([]);
+    const { weekday: veterans } = timetable['중앙보훈병원'];
+    expect(minutesOf(veterans.down).length).toBeGreaterThan(0);
+    expect(minutesOf(veterans.up)).toEqual([]);
+  });
+
+  it('TIMETABLE_DIRECTION_MISMATCH_LINES는 비어 있다 (모든 노선이 시간표를 쓴다)', () => {
+    expect(TIMETABLE_DIRECTION_MISMATCH_LINES).toEqual([]);
+  });
+
   it('다수결로 불일치한 노선 집합 == TIMETABLE_DIRECTION_MISMATCH_LINES', () => {
     const mismatched = votes.filter((v) => v.disagree > v.agree).map((v) => v.line);
     expect([...mismatched].sort()).toEqual([...TIMETABLE_DIRECTION_MISMATCH_LINES].sort());

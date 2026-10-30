@@ -6,6 +6,9 @@ import type { LineNumber } from '../types/station';
  * 인접역 쌍마다 "A 출발 후 6분 안에 B가 따라오는" 시간표 열을 대조한 다수결 결과이며,
  * `timetableDirectionPolarity.test.ts`가 실데이터로 이 목록을 매번 재도출해 어긋나면 실패한다.
  * 여기 있는 노선의 환승 대기는 시간표(방향 뒤집힘 → 반대 방향 열차를 고르는 오류) 대신
- * 배차간격/2(U3)로 추정한다. 시간표 극성을 고치는 것은 별도 작업이다.
+ * 배차간격/2(U3)로 추정한다.
+ *
+ * 9호선은 원천(fetch-timetables.js INOUT_TAG 가정)에서 교정돼 비었다(`lineTopology.timetableInoutInvertedLines`).
+ * 새 어긋남은 원천(스크립트 반전 키)에서 고치는 것이 정답이고, 이 목록은 극성 테스트가 잡은 임시 가드다.
  */
-export const TIMETABLE_DIRECTION_MISMATCH_LINES: readonly LineNumber[] = ['9'];
+export const TIMETABLE_DIRECTION_MISMATCH_LINES: readonly LineNumber[] = [];
