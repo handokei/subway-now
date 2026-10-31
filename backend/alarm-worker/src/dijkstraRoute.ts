@@ -132,3 +132,31 @@ export function inferWaypointsFromOriginAndDestination(args: {
   if (route.legs.length === 0 && route.transfers.length === 0) return null;
   return routeToInferredWaypoints(route, args.destinationName);
 }
+
+type TransferKeyWaypoint = Pick<Waypoint, 'stationName' | 'line' | 'kind' | 'stationId'>;
+
+/** #1480 — 관측용 transfer 키 목록(`역명|노선`, 순서 보존). 거부 이벤트 meta에 싣는다. */
+export function transferWaypointKeys(waypoints: ReadonlyArray<TransferKeyWaypoint>): string[] {
+  return waypoints.filter((w) => w.kind === 'transfer').map((w) => `${w.stationName}|${w.line}`);
+}
+
+/**
+ * #1480 — 재합성 결과를 채택해도 되는가(기기가 고른 환승 경로를 덮어쓰지 않는가).
+ * incoming에 transfer가 없으면(목적지만 보낸 legacy collapse / 직통) 보존할 선택이 없으므로 채택 가능.
+ * transfer가 있으면 재합성 transfer 순서와 같아야 한다.
+ * 같은 위치의 양쪽 모두 stationId가 있으면 id로(환승역 표기 drift 면역), 아니면 `역명`+`노선`으로 비교한다.
+ */
+export function preservesIncomingTransfers(
+  incoming: ReadonlyArray<TransferKeyWaypoint>,
+  inferred: ReadonlyArray<TransferKeyWaypoint>,
+): boolean {
+  const incomingTransfers = incoming.filter((w) => w.kind === 'transfer');
+  const inferredTransfers = inferred.filter((w) => w.kind === 'transfer');
+  if (incomingTransfers.length === 0) return true;
+  if (incomingTransfers.length !== inferredTransfers.length) return false;
+  return incomingTransfers.every((w, i) => {
+    const other = inferredTransfers[i];
+    if (w.stationId !== undefined && other.stationId !== undefined) return w.stationId === other.stationId;
+    return w.stationName === other.stationName && w.line === other.line;
+  });
+}

@@ -256,7 +256,11 @@ export type TripEventKind =
   // #2747 PR-2 — 여정 LA push(update/advance/station-passed/prompt-alert/end) 관측. 직전 행과 digest
   // (path, stationName, stopsRemaining, etaMinutes 유무)가 다를 때만 1행(`laPushLog.ts`). KV write 0.
   // meta={ activity:'journey', path, stationName, stopsRemaining, hasEta, etaMinutes? }.
-  | 'la-push';
+  | 'la-push'
+  // #1480 PR-0 — POST /trips 서버 waypoint 재합성(Dijkstra min-time)이 기기가 보낸 transfer 순서와 달라 채택을 거부한 1건.
+  // meta={ reason:'transfer-mismatch', origin, originLine, destinationId, incomingTransfers[], inferredTransfers[] }.
+  // register당 최대 1행, KV write 0. 관측 전용 — 거부 시 incoming이 그대로 저장된다.
+  | 'waypoint-resynth-rejected';
 
 /** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
 export type LockAttachPath =
