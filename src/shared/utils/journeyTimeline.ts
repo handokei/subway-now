@@ -218,9 +218,12 @@ function resolveWait(request: WaitRequest): WaitResolution {
   }
 
   const dayType = classifyDayType(at);
-  const headway = lookupHeadwaySeconds(line, dayType, classifyPeriod(at, dayType));
-  return headway !== null
-    ? { wait: wait('headway', headway / HEADWAY_WAIT_DIVISOR), lookup }
+  const period = classifyPeriod(at, dayType);
+  const headway = lookupHeadwaySeconds(line, dayType, period);
+  if (headway !== null) return { wait: wait('headway', headway / HEADWAY_WAIT_DIVISOR), lookup };
+  // 운행 시간 밖(closed)은 "N분+"가 아니라 막차 종료. 그 외 null(데이터 누락)만 하한.
+  return period === 'closed'
+    ? { wait: wait('ended', 0), lookup }
     : { wait: wait('floor', UNKNOWN_WAIT_FLOOR_SECONDS), lookup };
 }
 

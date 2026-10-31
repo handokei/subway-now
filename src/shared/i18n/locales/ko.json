@@ -277,7 +277,8 @@
     }
   },
   "journey": {
-    "transferNote": "환승",
+    "transferLines": "{{from}} → {{to}} 환승",
+    "segmentChip": "{{line}} {{stops}}",
     "arrivalNote": "도착",
     "transferArrivalNote": "환승 → 도착"
   },
@@ -323,8 +324,9 @@
     "stopsRemainingToTransfer_one": "{{destination}} 환승까지 {{count}}정거장",
     "stopsRemainingToTransfer_other": "{{destination}} 환승까지 {{count}}정거장",
     "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장",
-    "quickExitDoor": "{{door}}번 문",
-    "boardingDoor": "탑승 {{door}}번 문"
+    "boardingDoor": "탑승 {{door}}번 문",
+    "boardingDoorTransfer": "{{station}} 환승 빠른 칸",
+    "boardingDoorExit": "{{station}}에서 나가기 빠른 칸"
   },
   "lines": {
     "1": "1호선",

@@ -116,7 +116,7 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
     expect(eta.lookups).toEqual([{ status: 'miss', line: 'gyeongui', stationName: '홍대입구' }]);
   });
 
-  it('배차간격도 없는 시간대(심야 closed)는 하한 + waitUnknown ("N분+")', () => {
+  it('운행 시간 밖(심야 closed)은 하한 "N분+"가 아니라 막차 종료 ended (#1480)', () => {
     const route = makeTransferRoute({
       transferName: '홍대입구',
       fromLine: '2',
@@ -125,9 +125,9 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
       stopsFromTransfer: 3,
     });
     const eta = computeJourneyEta({ route, nowMs: kstMs(2026, 10, 28, 3, 0), excludeOriginWait: true });
-    expect(eta.waits[0]).toMatchObject({ source: 'floor', seconds: 60 });
-    expect(eta.waitUnknown).toBe(true);
-    expect(eta.lastTrainEnded).toBe(false);
+    expect(eta.waits[0]).toMatchObject({ source: 'ended', seconds: 0 });
+    expect(eta.waitUnknown).toBe(false);
+    expect(eta.lastTrainEnded).toBe(true);
   });
 
   it('9호선도 시간표를 쓴다 (극성 원천 교정, #1480) — headway 폴백이 아니라 timetable 소스', () => {

@@ -277,7 +277,8 @@
     }
   },
   "journey": {
-    "transferNote": "换乘",
+    "transferLines": "{{from}} → {{to}} 换乘",
+    "segmentChip": "{{line}} {{stops}}",
     "arrivalNote": "到达",
     "transferArrivalNote": "换乘 → 到达"
   },
@@ -323,8 +324,9 @@
     "stopsRemainingToTransfer_one": "距换乘站{{destination}}还有{{count}}站",
     "stopsRemainingToTransfer_other": "距换乘站{{destination}}还有{{count}}站",
     "stopsRemainingViaTransfer": "距{{transfer}}换乘{{transferStops}}站 · 距{{destination}}{{totalStops}}站",
-    "quickExitDoor": "{{door}}号门",
-    "boardingDoor": "{{door}}号门上车"
+    "boardingDoor": "{{door}}号门上车",
+    "boardingDoorTransfer": "{{station}}换乘最快车厢",
+    "boardingDoorExit": "{{station}}出站最快车厢"
   },
   "lines": {
     "1": "1号线",
