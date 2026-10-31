@@ -2906,6 +2906,8 @@ function buildStationPassedImminentPayload(
     // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
     // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
     occupiedLine: waypoint.line,
+    // #3177 — 하차 승강장 역 id를 그대로 forward(값이 있을 때만 wire). 환승역은 fromLine 쪽 id.
+    stationId: waypoint.stationId,
     // #1307 (2026-09-15 P1 리뷰로 #2644 범위에서 철회) — 이 필드를 device 기압계
     // (trip.subsurface)에서 stations.json waypoint environment로 교체하려 했으나 반려됐다.
     // 근거: `silentPushLocationGate.ts`의 `isSubsurfaceBypass`가 subsurface=true를 받으면
@@ -3204,7 +3206,7 @@ async function recordNonDefaultSleepAlarm(
  * #2066 (Phase 2-backend) — 취침 알람 실패 시 retry queue 등록용 payload. `SilentPushPayload`의
  * 필수 필드만 채운 최소 shape — companion(kind `sleep-alarm-companion`) 자체 필드(originStation
  * 등)는 retry queue의 `SilentPushPayload` 타입에 없어 보존되지 않지만(Phase 2-device 소비 전이라
- * 무해), station/tripToken 정보는 보존해 재발사 시 device가 최소한 "이 역 근처" 신호는 받는다.
+ * 무해), station/tripToken/stationId 정보는 보존해 재발사 시 device가 최소한 "이 역 근처" 신호는 받는다.
  */
 function buildSleepAlarmRetryPayload(
   pushId: string,
@@ -3221,6 +3223,8 @@ function buildSleepAlarmRetryPayload(
     sentAt: now,
     pushId,
     tripToken,
+    // #3177 — 재발사 시에도 device가 하차문 id를 받도록 target waypoint의 stationId를 보존한다.
+    stationId: target.stationId,
   };
 }
 

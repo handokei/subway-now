@@ -1,5 +1,5 @@
 import lineTopology from '../../../data/lineTopology.json';
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateEtaDetail, calculateStaticETA, calculateStaticEtaDetail, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, getRouteRemainingSeconds, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStations, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateEtaDetail, calculateStaticETA, calculateStaticEtaDetail, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, getRouteRemainingSeconds, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -2324,43 +2324,40 @@ describe('환승역 이름 표기 불일치 회귀 — #401', () => {
   });
 });
 
-describe('getIntermediateStationNames', () => {
+// #3177 PR-10 — 이름 배열(getIntermediateStationNames)을 Station 배열로 교체: waypoint가 id를 싣기 위해.
+describe('getIntermediateStations', () => {
+  const namesOf = (from: string, to: string) => getIntermediateStations(from, to)?.map(({ name }) => name);
+
   it('returns empty array when current and destination are the same', () => {
-    expect(getIntermediateStationNames('1-001', '1-001')).toEqual([]);
+    expect(getIntermediateStations('1-001', '1-001')).toEqual([]);
   });
 
   it('returns empty array for adjacent stations', () => {
     // 1-001(소요산) → 1-002(동두천): 사이에 역 없음
-    expect(getIntermediateStationNames('1-001', '1-002')).toEqual([]);
+    expect(getIntermediateStations('1-001', '1-002')).toEqual([]);
   });
 
-  it('returns intermediate station names in forward direction', () => {
+  it('returns intermediate stations in forward direction (id 포함)', () => {
     // 1-001(소요산) → 1-005(지행): 동두천, 보산, 동두천중앙
-    expect(getIntermediateStationNames('1-001', '1-005')).toEqual([
-      '동두천',
-      '보산',
-      '동두천중앙',
-    ]);
+    expect(namesOf('1-001', '1-005')).toEqual(['동두천', '보산', '동두천중앙']);
+    expect(getIntermediateStations('1-001', '1-005')?.map(({ id }) => id)).toEqual(['1-002', '1-003', '1-004']);
   });
 
-  it('returns intermediate station names in reverse direction', () => {
+  it('returns intermediate stations in reverse direction', () => {
     // 1-005(지행) → 1-001(소요산): 동두천중앙, 보산, 동두천 (역순)
-    expect(getIntermediateStationNames('1-005', '1-001')).toEqual([
-      '동두천중앙',
-      '보산',
-      '동두천',
-    ]);
+    expect(namesOf('1-005', '1-001')).toEqual(['동두천중앙', '보산', '동두천']);
+    expect(getIntermediateStations('1-005', '1-001')?.map(({ id }) => id)).toEqual(['1-004', '1-003', '1-002']);
   });
 
   it('returns null when stations are on different lines', () => {
     const line1 = getStationsOnLine('1')[0];
     const line2 = getStationsOnLine('2')[0];
-    expect(getIntermediateStationNames(line1.id, line2.id)).toBeNull();
+    expect(getIntermediateStations(line1.id, line2.id)).toBeNull();
   });
 
   it('returns null for unknown station id', () => {
-    expect(getIntermediateStationNames('1-001', 'unknown-id')).toBeNull();
-    expect(getIntermediateStationNames('unknown-id', '1-001')).toBeNull();
+    expect(getIntermediateStations('1-001', 'unknown-id')).toBeNull();
+    expect(getIntermediateStations('unknown-id', '1-001')).toBeNull();
   });
 });
 

@@ -768,6 +768,23 @@ describe('silentPushTask', () => {
       });
     });
 
+    // #3177 PR-11 — backend가 forward한 발사 시점 waypoint의 하차 승강장 역 id(환승역은 fromLine 쪽 2-026).
+    describe('stationId (#3177)', () => {
+      const base = { nextWaypoint: '사당', etaSeconds: 0, phase: 'imminent' };
+
+      it('비어있지 않은 string이면 그대로 전달 (사당 2호선 쪽 2-026)', () => {
+        expect(extractPayload(bgTaskData({ ...base, stationId: '2-026' }))).toMatchObject({ stationId: '2-026' });
+      });
+
+      it('누락/빈문자열/숫자/null이면 undefined (구 backend 호환 — 이름으로 대체 조회하지 않는다)', () => {
+        for (const stationId of [undefined, '', 2026, null]) {
+          const extracted = extractPayload(bgTaskData({ ...base, stationId }));
+          expect(extracted).not.toBeNull();
+          expect((extracted as { stationId?: string }).stationId).toBeUndefined();
+        }
+      });
+    });
+
     // #1438 (E5) — backend → device lock release sync 채널.
     describe('lockReleasedReason (#1438)', () => {
       it("'transfer' 그대로 통과", () => {
@@ -1777,6 +1794,29 @@ describe('silentPushTask', () => {
           }
         },
       );
+
+      // #3177 PR-11 — 스큐 본문이 이름 첫 매칭(잘못된 문)이 아니라 backend가 forward한 stationId로 하차문을 낸다.
+      it('stationId가 유효하면 buildAlarmContent 이벤트에 stationId를 싣는다 (사당 2-026)', async () => {
+        await handleSilentPush(
+          payload({ kind: 'future-station-kind', phase: 'early', nextWaypoint: '사당', pushId: 'p-skew-sid', stationId: '2-026' }),
+        );
+        expect(mockBuildAlarmContent).toHaveBeenLastCalledWith(
+          expect.objectContaining({ phaseId: 'imminent', type: 'destination', stationName: '사당', stationId: '2-026' }),
+        );
+      });
+
+      it.each([
+        ['stations.json에 없는 id', 'zz-999'],
+        ['id 부재(구 backend)', undefined],
+        ['빈 문자열', ''],
+      ])('stationId가 %s이면 이벤트에 stationId가 없다 — 하차문 줄은 생략(오안내 금지)', async (_label, stationId) => {
+        await handleSilentPush(
+          payload({ kind: 'future-station-kind', phase: 'early', nextWaypoint: '사당', pushId: 'p-skew-nosid', stationId }),
+        );
+        const [[event]] = mockBuildAlarmContent.mock.calls.slice(-1);
+        expect(event).toMatchObject({ stationName: '사당' });
+        expect(event).not.toHaveProperty('stationId');
+      });
 
       it('kind가 없으면(구버전 backend) 여전히 payload-missing-kind skip — fallback fire 아님', async () => {
         await handleSilentPush(

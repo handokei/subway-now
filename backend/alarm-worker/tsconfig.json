@@ -31,6 +31,7 @@
     "../../src/shared/utils/lineLoopPath.ts",
     "../../src/shared/types/pushContract.ts",
     "../../src/shared/types/__fixtures__/boardingPromptTrainCodeWireFixture.ts",
+    "../../src/shared/types/__fixtures__/stationPushStationIdWireFixture.ts",
     "../../src/shared/utils/stationLookup.ts",
     "../../src/shared/utils/normalizeStationName.js",
     "../../src/shared/utils/dijkstraRoute.ts",
