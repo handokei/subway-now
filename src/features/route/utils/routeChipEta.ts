@@ -16,8 +16,8 @@ export interface ChipEta {
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
-export function computeChipEta(route: NonNullable<Route>, nowMs: number): ChipEta {
-  const detail = calculateStaticEtaDetail(route, { nowMs });
+export function computeChipEta(route: NonNullable<Route>, nowMs: number, originStationId?: string): ChipEta {
+  const detail = calculateStaticEtaDetail(route, { nowMs, originStationId });
   // route가 non-null이므로 detail은 항상 존재한다.
   const { minutes, firstTrainAtMs } = detail!;
   return { minutes, kind: etaDisplayKind(detail), firstTrainAtMs };

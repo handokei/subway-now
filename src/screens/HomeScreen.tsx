@@ -243,7 +243,7 @@ export default function HomeScreen() {
   // 후보 정렬·선택(travelMinutes)은 불변 — 표시 숫자만 바뀐다.
   const chipNowMinute = Math.floor(Date.now() / 60_000);
   const chipEtaByKey = useMemo(
-    () => new Map(categorized.map(({ category, candidate }) => [category.key, computeChipEta(candidate.route, chipNowMinute * 60_000)])),
+    () => new Map(categorized.map(({ category, candidate }) => [category.key, computeChipEta(candidate.route, chipNowMinute * 60_000, candidate.originStationId)])),
     [categorized, chipNowMinute],
   );
   const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
@@ -844,6 +844,7 @@ export default function HomeScreen() {
           : undefined,
         arrivalAtOrigin: pickArrivalAtOrigin(rawArrival, originWaitDirection),
         excludeOriginWait: isInTrip,
+        originStationId: effectiveOrigin?.id,
       })
     : null;
   const staticEtaMinutes = staticEtaDetail?.minutes ?? null;
