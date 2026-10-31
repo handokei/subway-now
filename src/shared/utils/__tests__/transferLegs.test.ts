@@ -16,6 +16,7 @@ describe('getTransferLegs', () => {
       stops: 5,
       line: '2',
       travelSeconds: 600,
+      destinationStationId: '2-001',
     };
     expect(getTransferLegs(route)).toEqual([]);
   });
@@ -30,6 +31,8 @@ describe('getTransferLegs', () => {
       stopsFromTransfer: 4,
       secondsToTransfer: 360,
       secondsFromTransfer: 480,
+      transferStationId: '2-001',
+      destinationStationId: '5-001',
     };
     expect(getTransferLegs(route)).toEqual([{ transferName: '왕십리', fromLine: '2' }]);
   });
@@ -44,6 +47,7 @@ describe('getTransferLegs', () => {
           toLine: '5',
           stopsToTransfer: 3,
           secondsToTransfer: 360,
+          transferStationId: '2-001',
         },
         {
           transferName: '광화문',
@@ -51,10 +55,12 @@ describe('getTransferLegs', () => {
           toLine: '3',
           stopsToTransfer: 2,
           secondsToTransfer: 240,
+          transferStationId: '5-001',
         },
       ],
       stopsAfterLastTransfer: 4,
       secondsAfterLastTransfer: 480,
+      destinationStationId: '3-001',
     };
     expect(getTransferLegs(route)).toEqual([
       { transferName: '왕십리', fromLine: '2' },

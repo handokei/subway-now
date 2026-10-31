@@ -109,6 +109,7 @@ describe('buildWidgetTripContext (#1929 RC-15 widget tripContext wire helper)', 
         stops: 5,
         line: '2',
         travelSeconds: 600,
+        destinationStationId: '2-001',
       };
       const result = buildWidgetTripContext({
         destination: MOCK_STATIONS.chungmuro,
@@ -129,6 +130,8 @@ describe('buildWidgetTripContext (#1929 RC-15 widget tripContext wire helper)', 
         stopsFromTransfer: 4,
         secondsToTransfer: 360,
         secondsFromTransfer: 480,
+        transferStationId: '2-001',
+        destinationStationId: '3-001',
       };
       const result = buildWidgetTripContext({
         destination: MOCK_STATIONS.chungmuro,
@@ -153,6 +156,7 @@ describe('buildWidgetTripContext (#1929 RC-15 widget tripContext wire helper)', 
             toLine: '3',
             stopsToTransfer: 3,
             secondsToTransfer: 360,
+            transferStationId: '2-001',
           },
           {
             transferName: '동대문',
@@ -160,10 +164,12 @@ describe('buildWidgetTripContext (#1929 RC-15 widget tripContext wire helper)', 
             toLine: '4',
             stopsToTransfer: 2,
             secondsToTransfer: 240,
+            transferStationId: '3-001',
           },
         ],
         stopsAfterLastTransfer: 5,
         secondsAfterLastTransfer: 600,
+        destinationStationId: '4-001',
       };
       const result = buildWidgetTripContext({
         destination: MOCK_STATIONS.chungmuro,
@@ -178,6 +184,7 @@ describe('buildWidgetTripContext (#1929 RC-15 widget tripContext wire helper)', 
       const emptyMulti: MultiTransferRoute = {
         type: 'multi-transfer',
         transfers: [],
+        destinationStationId: '2-001',
         stopsAfterLastTransfer: 5,
         secondsAfterLastTransfer: 600,
       };

@@ -49,7 +49,7 @@ const bgContext: BgLastStationContext = {
   timestamp: 1_700_000_000_000,
 };
 
-const directRoute: Route = { type: 'direct', line: '2', stops: 3, travelSeconds: 240 };
+const directRoute: Route = { type: 'direct', line: '2', stops: 3, travelSeconds: 240, destinationStationId: '2-001' };
 const transferRoute: Route = {
   type: 'transfer',
   transferName: '건대입구',
@@ -59,6 +59,8 @@ const transferRoute: Route = {
   stopsFromTransfer: 5,
   secondsToTransfer: 180,
   secondsFromTransfer: 360,
+  transferStationId: '2-012',
+  destinationStationId: '7-001',
 };
 const multiTransferRoute: Route = {
   type: 'multi-transfer',
@@ -69,6 +71,7 @@ const multiTransferRoute: Route = {
       toLine: '5',
       stopsToTransfer: 1,
       secondsToTransfer: 100,
+      transferStationId: '2-001',
     },
     {
       transferName: '천호',
@@ -76,10 +79,12 @@ const multiTransferRoute: Route = {
       toLine: '8',
       stopsToTransfer: 4,
       secondsToTransfer: 320,
+      transferStationId: '5-001',
     },
   ],
   stopsAfterLastTransfer: 2,
   secondsAfterLastTransfer: 180,
+  destinationStationId: '8-001',
 };
 
 describe('updateWidgetFromSilentPush', () => {
