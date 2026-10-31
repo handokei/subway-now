@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { computeJourneyEta } from '../journeyTimeline';
+import { computeJourneyEta, formatFirstTrainTime } from '../journeyTimeline';
 import { findStationByNameAndLine } from '../stationRoute';
 import type { Route } from '../stationRoute';
 import { makeDirectRoute, makeTransferRoute } from '../../../testUtils/routeFixtures';
@@ -162,6 +162,9 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
     expect(eta.lastTrainEnded).toBe(true);
     expect(eta.waits[0]).toMatchObject({ source: 'ended', seconds: 0 });
     expect(eta.minutes).toBe(7); // 도보 180 + buffer 20 + 주행 240 = 440초, 대기 0
+    // 다음 운행일 첫차 시각(시간표 fallback 출발) — 23:50 이후이므로 익일 새벽.
+    expect(eta.firstTrainAtMs).toBeGreaterThan(kstMs(2026, 10, 29, 23, 50));
+    expect(formatFirstTrainTime(eta.firstTrainAtMs!)).toMatch(/^0[4-6]:\d\d$/);
   });
 });
 
