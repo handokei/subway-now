@@ -66,6 +66,7 @@ describe('replay 10/28 trip 180 — 건대입구 7호선 실시간 boardable 주
     secondsToTransfer: 0,
     secondsFromTransfer: 150,
     destinationStationId: junggok.id,
+    transferStationId: '2-012',
   };
   const arrive3324 = kst(17, 16, 4);
   const platformMs = arrive3324 + (278 + 30) * 1000;

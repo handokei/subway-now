@@ -55,22 +55,22 @@ describe('directionOnLine — id 배치 우연/배치 의존 계약 (#2954 K-2)'
 
 describe('resolveTripDirection — 동일 쌍, Route 경유 호출 계약 (#2954 K-2)', () => {
   it('1호선 구로 → 가산디지털단지 direct route → down', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '1', travelSeconds: 0 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '1', travelSeconds: 0, destinationStationId: '1-001' };
     expect(resolveTripDirection(route, canonicalStationName('가산디지털단지', '1'), '1-042')).toBe('down');
   });
 
   it('1호선 가산디지털단지 → 구로 direct route → up', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '1', travelSeconds: 0 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '1', travelSeconds: 0, destinationStationId: '1-001' };
     expect(resolveTripDirection(route, canonicalStationName('구로', '1'), '1-100')).toBe('up');
   });
 
   it('2호선 시청 → 충정로 direct route → down(외선, #2949 fix 후 정답)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0, destinationStationId: '2-001' };
     expect(resolveTripDirection(route, canonicalStationName('충정로(경기대입구)', '2'), '2-001')).toBe('down');
   });
 
   it('2호선 충정로 → 시청 direct route → up(내선, #2949 fix 후 정답)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0, destinationStationId: '2-001' };
     expect(resolveTripDirection(route, canonicalStationName('시청', '2'), '2-043')).toBe('up');
   });
 });

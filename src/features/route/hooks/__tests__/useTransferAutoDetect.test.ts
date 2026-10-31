@@ -261,6 +261,8 @@ describe('useTransferAutoDetect', () => {
       stopsFromTransfer: 2,
       secondsToTransfer: 60,
       secondsFromTransfer: 120,
+      transferStationId: '3-023',
+      destinationStationId: '4-001',
     };
     const chungmuro3: Station = { id: '0330', name: '충무로', line: '3', lineColor: '#EF7C1C', lat: 37.561, lng: 126.994 };
     const nearestChungmuro: NearestStationsResult = {
@@ -344,6 +346,8 @@ describe('useTransferAutoDetect', () => {
         stopsFromTransfer: 2,
         secondsToTransfer: 60,
         secondsFromTransfer: 120,
+        transferStationId: '2-005',
+        destinationStationId: '4-001',
       };
       const nearestDdp5: NearestStationsResult = {
         primary: DDP_5,
@@ -391,6 +395,7 @@ describe('useTransferAutoDetect', () => {
       stops: 4,
       line: '7' as const,
       travelSeconds: 480,
+      destinationStationId: '7-001',
     };
 
     it('route가 아는 line 위의 통과역(군자) → 5호선 임박이 있어도 모달 안 뜸', () => {

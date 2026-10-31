@@ -125,43 +125,43 @@ describe('resolveAllTargets', () => {
   it('returns single destination for DirectRoute', () => {
     const route = makeDirectRoute(5, '2');
     expect(resolveAllTargets(route, '강남')).toEqual([
-      { name: '강남', stops: 5, alarmType: 'destination', approachLine: '2' },
+      { name: '강남', stops: 5, alarmType: 'destination', approachLine: '2', stationId: expect.any(String) },
     ]);
   });
 
   it('returns transfer + destination for TransferRoute with approachLine per leg', () => {
     expect(resolveAllTargets(makeTransferRoute(3, 5), '강남')).toEqual([
-      { name: '시청', stops: 3, alarmType: 'transfer', approachLine: '1' },
-      { name: '강남', stops: 5, alarmType: 'destination', approachLine: '2' },
+      { name: '시청', stops: 3, alarmType: 'transfer', approachLine: '1', stationId: expect.any(String) },
+      { name: '강남', stops: 5, alarmType: 'destination', approachLine: '2', stationId: expect.any(String) },
     ]);
   });
 
   it('collapses transfer when transferName equals destination', () => {
     expect(resolveAllTargets(makeTransferRoute(3, 0, '옥수', 'gyeongui', '3'), '옥수')).toEqual([
-      { name: '옥수', stops: 3, alarmType: 'destination', approachLine: 'gyeongui' },
+      { name: '옥수', stops: 3, alarmType: 'destination', approachLine: 'gyeongui', stationId: expect.any(String) },
     ]);
   });
 
   it('returns all waypoints in order for MultiTransferRoute with approachLine per leg', () => {
     expect(resolveAllTargets(makeMultiRoute(5, 3, 2), '강남')).toEqual([
-      { name: '시청', stops: 5, alarmType: 'transfer', approachLine: '1' },
-      { name: '충무로', stops: 3, alarmType: 'transfer', approachLine: '3' },
-      { name: '강남', stops: 2, alarmType: 'destination', approachLine: '4' },
+      { name: '시청', stops: 5, alarmType: 'transfer', approachLine: '1', stationId: expect.any(String) },
+      { name: '충무로', stops: 3, alarmType: 'transfer', approachLine: '3', stationId: expect.any(String) },
+      { name: '강남', stops: 2, alarmType: 'destination', approachLine: '4', stationId: expect.any(String) },
     ]);
   });
 
   it('marks first transfer as destination when name matches', () => {
     expect(resolveAllTargets(makeMultiRoute(1, 5, 3, '옥수'), '옥수')).toEqual([
-      { name: '옥수', stops: 1, alarmType: 'destination', approachLine: '1' },
-      { name: '충무로', stops: 5, alarmType: 'transfer', approachLine: '3' },
-      { name: '옥수', stops: 3, alarmType: 'destination', approachLine: '4' },
+      { name: '옥수', stops: 1, alarmType: 'destination', approachLine: '1', stationId: expect.any(String) },
+      { name: '충무로', stops: 5, alarmType: 'transfer', approachLine: '3', stationId: expect.any(String) },
+      { name: '옥수', stops: 3, alarmType: 'destination', approachLine: '4', stationId: expect.any(String) },
     ]);
   });
 
   it('does not duplicate destination when last transfer name equals destination', () => {
     expect(resolveAllTargets(makeMultiRoute(5, 3, 0, '시청', '강남'), '강남')).toEqual([
-      { name: '시청', stops: 5, alarmType: 'transfer', approachLine: '1' },
-      { name: '강남', stops: 3, alarmType: 'destination', approachLine: '3' },
+      { name: '시청', stops: 5, alarmType: 'transfer', approachLine: '1', stationId: expect.any(String) },
+      { name: '강남', stops: 3, alarmType: 'destination', approachLine: '3', stationId: expect.any(String) },
     ]);
   });
 
@@ -169,15 +169,15 @@ describe('resolveAllTargets', () => {
   it('transferName과 destinationName이 노선별 표기 차이만 있으면 단일 destination으로 축약', () => {
     expect(
       resolveAllTargets(makeTransferRoute(3, 0, '상봉', 'gyeongui', '7'), '상봉(시외버스터미널)'),
-    ).toEqual([{ name: '상봉(시외버스터미널)', stops: 3, alarmType: 'destination', approachLine: 'gyeongui' }]);
+    ).toEqual([{ name: '상봉(시외버스터미널)', stops: 3, alarmType: 'destination', approachLine: 'gyeongui', stationId: expect.any(String) }]);
   });
 
   it('multi-transfer 마지막 환승역 표기 차이도 동일하게 축약', () => {
     expect(
       resolveAllTargets(makeMultiRoute(5, 3, 0, '시청', '왕십리'), '왕십리(성동구청)'),
     ).toEqual([
-      { name: '시청', stops: 5, alarmType: 'transfer', approachLine: '1' },
-      { name: '왕십리(성동구청)', stops: 3, alarmType: 'destination', approachLine: '3' },
+      { name: '시청', stops: 5, alarmType: 'transfer', approachLine: '1', stationId: expect.any(String) },
+      { name: '왕십리(성동구청)', stops: 3, alarmType: 'destination', approachLine: '3', stationId: expect.any(String) },
     ]);
   });
 });
@@ -205,7 +205,7 @@ describe('V2 — 환승 경로 transfer 알람 정확히 1회 (idempotent)', () 
     const route = makeTransferRoute(1, 5);
     const fired = new Set<string>();
     const first = evaluateAlarmPhase(source({ route, destinationName }), fired);
-    expect(first).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+    expect(first).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청', stationId: expect.any(String) });
     // 실제 훅은 발사 후 alarmKey를 fired에 추가한다.
     fired.add(alarmKey(first!));
     const second = evaluateAlarmPhase(source({ route, destinationName }), fired);
@@ -227,7 +227,7 @@ describe('evaluateAlarmPhase', () => {
       expect(evaluateAlarmPhase(source({ route, destinationName }), new Set())).toEqual({
         phaseId: 'early',
         type: 'destination',
-        stationName: '강남',
+        stationName: '강남', stationId: expect.any(String),
       });
     });
 
@@ -250,7 +250,7 @@ describe('evaluateAlarmPhase', () => {
       expect(evaluateAlarmPhase(source({ route, destinationName, etaSeconds: 8 }), fired)).toEqual({
         phaseId: 'imminent',
         type: 'destination',
-        stationName: '강남',
+        stationName: '강남', stationId: expect.any(String),
       });
     });
 
@@ -265,7 +265,7 @@ describe('evaluateAlarmPhase', () => {
       expect(evaluateAlarmPhase(source({ route, destinationName, etaSeconds: 5 }), new Set())).toEqual({
         phaseId: 'early',
         type: 'destination',
-        stationName: '강남',
+        stationName: '강남', stationId: expect.any(String),
       });
     });
 
@@ -280,7 +280,7 @@ describe('evaluateAlarmPhase', () => {
       expect(evaluateAlarmPhase(source({ route, destinationName }), new Set())).toEqual({
         phaseId: 'early',
         type: 'destination',
-        stationName: '강남',
+        stationName: '강남', stationId: expect.any(String),
       });
     });
   });
@@ -289,7 +289,7 @@ describe('evaluateAlarmPhase', () => {
     it('fires early for transfer when stopsToTransfer === 1', () => {
       expect(
         evaluateAlarmPhase(source({ route: makeTransferRoute(1, 5), destinationName }), new Set()),
-      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청', stationId: expect.any(String) });
     });
 
     it('does not fire when transfer is far even if destination eta is close', () => {
@@ -310,7 +310,7 @@ describe('evaluateAlarmPhase', () => {
           source({ route: makeTransferRoute(1, 5), destinationName, etaSeconds: 5 }),
           new Set(),
         ),
-      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청', stationId: expect.any(String) });
     });
 
     it('routes external eta to destination once transfer is passed (stops=0)', () => {
@@ -322,7 +322,7 @@ describe('evaluateAlarmPhase', () => {
           source({ route: makeTransferRoute(0, 1), destinationName, etaSeconds: 5, currentLine: '2' }),
           fired,
         ),
-      ).toEqual({ phaseId: 'imminent', type: 'destination', stationName: '강남' });
+      ).toEqual({ phaseId: 'imminent', type: 'destination', stationName: '강남', stationId: expect.any(String) });
     });
 
     it('fires destination alarm when transferName equals destination and approaches', () => {
@@ -331,7 +331,7 @@ describe('evaluateAlarmPhase', () => {
           source({ route: makeTransferRoute(1, 0, '옥수', '5', '6'), destinationName: '옥수' }),
           new Set(),
         ),
-      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '옥수' });
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '옥수', stationId: expect.any(String) });
     });
 
     it('returns destination alarm after transfer early is fired and destination is close', () => {
@@ -339,7 +339,7 @@ describe('evaluateAlarmPhase', () => {
       const fired = new Set(['early:시청']);
       expect(
         evaluateAlarmPhase(source({ route: makeTransferRoute(0, 1), destinationName, currentLine: '2' }), fired),
-      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: expect.any(String) });
     });
   });
 
@@ -347,7 +347,7 @@ describe('evaluateAlarmPhase', () => {
     it('fires first transfer at stopsToTransfer === 1', () => {
       expect(
         evaluateAlarmPhase(source({ route: makeMultiRoute(1, 5, 3), destinationName }), new Set()),
-      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청', stationId: expect.any(String) });
     });
 
     it('proceeds to second transfer after first is fired', () => {
@@ -355,7 +355,7 @@ describe('evaluateAlarmPhase', () => {
       const fired = new Set(['early:시청']);
       expect(
         evaluateAlarmPhase(source({ route: makeMultiRoute(0, 1, 3), destinationName, currentLine: '3' }), fired),
-      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '충무로' });
+      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '충무로', stationId: expect.any(String) });
     });
 
     it('proceeds to destination after both transfers fired', () => {
@@ -363,7 +363,7 @@ describe('evaluateAlarmPhase', () => {
       const fired = new Set(['early:시청', 'early:충무로']);
       expect(
         evaluateAlarmPhase(source({ route: makeMultiRoute(0, 0, 1), destinationName, currentLine: '4' }), fired),
-      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: expect.any(String) });
     });
 
     it('does not fire at the start of multi-segment route (regression: #152)', () => {
@@ -380,17 +380,17 @@ describe('evaluateAlarmPhase', () => {
       const fired = new Set<string>();
       // 1st leg (fromLine='1'): 시청 transfer/early
       const step1 = evaluateAlarmPhase(source({ route: makeMultiRoute(1, 5, 3), destinationName, currentLine: '1' }), fired);
-      expect(step1).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+      expect(step1).toEqual({ phaseId: 'early', type: 'transfer', stationName: '시청', stationId: expect.any(String) });
       fired.add(alarmKey(step1!));
 
       // 2nd leg (line='3'): 충무로 transfer/early
       const step2 = evaluateAlarmPhase(source({ route: makeMultiRoute(0, 1, 3), destinationName, currentLine: '3' }), fired);
-      expect(step2).toEqual({ phaseId: 'early', type: 'transfer', stationName: '충무로' });
+      expect(step2).toEqual({ phaseId: 'early', type: 'transfer', stationName: '충무로', stationId: expect.any(String) });
       fired.add(alarmKey(step2!));
 
       // 3rd leg (line='4'): 강남 destination/early
       const step3 = evaluateAlarmPhase(source({ route: makeMultiRoute(0, 0, 1), destinationName, currentLine: '4' }), fired);
-      expect(step3).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
+      expect(step3).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: expect.any(String) });
     });
   });
 
@@ -425,7 +425,7 @@ describe('evaluateAlarmPhase', () => {
           source({ route, destinationName: '성수', currentLine: '2' }),
           new Set(),
         ),
-      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '성수' });
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '성수', stationId: expect.any(String) });
     });
 
     it('fires transfer/early when user is on fromLine approaching transfer', () => {
@@ -435,7 +435,7 @@ describe('evaluateAlarmPhase', () => {
           source({ route, destinationName: '성수', currentLine: '7' }),
           new Set(),
         ),
-      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '건대입구' });
+      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '건대입구', stationId: expect.any(String) });
     });
 
     it('returns null when currentLine does not match any leg (GPS noise → other line)', () => {
@@ -472,7 +472,7 @@ describe('evaluateAlarmPhase', () => {
           source({ route, destinationName: '성수', currentLine: '7' }),
           new Set(),
         ),
-      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '건대입구' });
+      ).toEqual({ phaseId: 'early', type: 'transfer', stationName: '건대입구', stationId: expect.any(String) });
     });
 
     it('#2464 — 환승 타겟을 이미 통과(stops<=0)했다면 currentLine mismatch여도 다음 leg로 정상 진행한다', () => {
@@ -483,7 +483,7 @@ describe('evaluateAlarmPhase', () => {
           source({ route, destinationName: '성수', currentLine: '2' }),
           new Set(),
         ),
-      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '성수' });
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '성수', stationId: expect.any(String) });
     });
 
     it('#2464 — 유일한 타겟이 이미 통과(stops<=0)했지만 currentLine이 어느 leg와도 안 맞으면 loop 끝까지 진행 후 null', () => {
@@ -512,7 +512,7 @@ describe('evaluateAlarmPhase', () => {
       );
       expect(event).toBeNull();
       expect(suppressed).toEqual([
-        { phaseId: 'early', type: 'destination', stationName: '강남' },
+        { phaseId: 'early', type: 'destination', stationName: '강남', stationId: expect.any(String) },
       ]);
     });
 
@@ -545,7 +545,7 @@ describe('evaluateAlarmPhase', () => {
       ];
       expect(
         evaluateAlarmPhase(source({ route, destinationName }), new Set(), customPhases),
-      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: expect.any(String) });
     });
   });
 
@@ -562,7 +562,7 @@ describe('evaluateAlarmPhase', () => {
       {
         label: 'degraded=false → early 정상 발사 (제어군)',
         overrides: { degradedConfidence: false },
-        expected: { phaseId: 'early', type: 'destination', stationName: '강남' },
+        expected: { phaseId: 'early', type: 'destination', stationName: '강남', stationId: expect.any(String) },
       },
       {
         label: 'degraded=true + transfer 카테고리 → 보류',
@@ -572,12 +572,12 @@ describe('evaluateAlarmPhase', () => {
       {
         label: 'degraded=true + imminent(ETA 5s) → destination imminent 통과',
         overrides: { etaSeconds: 5, degradedConfidence: true },
-        expected: { phaseId: 'imminent', type: 'destination', stationName: '강남' },
+        expected: { phaseId: 'imminent', type: 'destination', stationName: '강남', stationId: expect.any(String) },
       },
       {
         label: 'degraded 미전달(undefined) → 기존 동작 (graceful)',
         overrides: {},
-        expected: { phaseId: 'early', type: 'destination', stationName: '강남' },
+        expected: { phaseId: 'early', type: 'destination', stationName: '강남', stationId: expect.any(String) },
       },
     ])('$label', ({ overrides, expected }) => {
       expect(evalDegraded(overrides)).toEqual(expected);
@@ -599,7 +599,7 @@ describe('evaluateAlarmPhase', () => {
       expect(evaluateAlarmPhase(transferContext(false), fired)).toEqual({
         phaseId: 'early',
         type: 'transfer',
-        stationName: '시청',
+        stationName: '시청', stationId: expect.any(String),
       });
     });
   });

@@ -30,7 +30,7 @@ describe('#2688 — early phase departure gate (1-stop leg)', () => {
     expect(evaluateAlarmPhase(src, new Set())).toEqual({
       phaseId: 'early',
       type: 'destination',
-      stationName: '뚝섬',
+      stationName: '뚝섬', stationId: expect.any(String),
     });
   });
 
@@ -45,7 +45,7 @@ describe('#2688 — early phase departure gate (1-stop leg)', () => {
     expect(evaluateAlarmPhase(src, new Set())).toEqual({
       phaseId: 'early',
       type: 'destination',
-      stationName: '뚝섬',
+      stationName: '뚝섬', stationId: expect.any(String),
     });
   });
 
@@ -61,7 +61,7 @@ describe('#2688 — early phase departure gate (1-stop leg)', () => {
     const heldOut: import('../stationAlarm').AlarmEvent[] = [];
     const result = evaluateAlarmPhase(src, new Set(), undefined, undefined, heldOut);
     expect(result).toBeNull();
-    expect(heldOut).toEqual([{ phaseId: 'early', type: 'destination', stationName: '뚝섬' }]);
+    expect(heldOut).toEqual([{ phaseId: 'early', type: 'destination', stationName: '뚝섬', stationId: expect.any(String) }]);
   });
 
   it('2정거장 이상 일반 구간은 departed=false여도 remainingStops>1이면 early가 애초에 미충족 — heldOut에 적재 안 함(회귀 방지)', () => {
