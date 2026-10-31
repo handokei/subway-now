@@ -275,7 +275,7 @@ describe('useDestinationStore', () => {
     // #2258 — setAlarmEvent는 sleepMode 전용 게이트를 거치므로, 이 테스트가 검증하는
     // setDestination의 alarmEvent clear 동작(alarm 게이트와 무관)은 state를 직접 세팅해 확인한다.
     useAlarmEventStore.setState({
-      alarmEvent: { phaseId: 'early', type: 'destination', stationName: '시청' },
+      alarmEvent: { phaseId: 'early', type: 'destination', stationName: '시청', stationId: '1-033' },
     });
     expect(useAlarmEventStore.getState().alarmEvent).not.toBeNull();
 

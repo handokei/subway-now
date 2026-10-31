@@ -29,7 +29,7 @@ describe('useAlarmEventStore', () => {
   // 환승/하차 오버레이가 뜨는 회귀였다). red: 게이트 변경 전에는 이 상태에서 alarmEvent가 set됐다.
   it('setAlarmEvent: sleepMode=false면 활성 trip 중이어도 알람 이벤트를 억제한다', () => {
     const { setAlarmEvent } = useAlarmEventStore.getState();
-    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '강남' });
+    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' });
 
     expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
   });
@@ -37,17 +37,17 @@ describe('useAlarmEventStore', () => {
   it('setAlarmEvent: sleepMode=true면 알람 이벤트를 설정한다', () => {
     useSettingsStore.setState({ sleepMode: true });
     const { setAlarmEvent } = useAlarmEventStore.getState();
-    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '강남' });
+    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' });
 
     const { alarmEvent } = useAlarmEventStore.getState();
-    expect(alarmEvent).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
+    expect(alarmEvent).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' });
   });
 
   // #2210 (증상③) — 비취침 상태의 stale 알람 replay 억제. red: 게이트 추가 전에는 sleepMode=false
   // 기본 상태에서도 alarmEvent가 그대로 설정돼 FG 복귀 시 overlay가 떴다.
   it('setAlarmEvent: 비취침 상태면 알람 이벤트를 억제한다', () => {
     const { setAlarmEvent } = useAlarmEventStore.getState();
-    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '강남' });
+    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' });
 
     expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
   });
@@ -55,7 +55,7 @@ describe('useAlarmEventStore', () => {
   it('clearAlarmEvent: 알람 이벤트를 초기화하고 AsyncStorage도 정리한다', () => {
     useSettingsStore.setState({ sleepMode: true });
     const { setAlarmEvent, clearAlarmEvent } = useAlarmEventStore.getState();
-    setAlarmEvent({ phaseId: 'early', type: 'transfer', stationName: '역삼' });
+    setAlarmEvent({ phaseId: 'early', type: 'transfer', stationName: '역삼', stationId: '2-021' });
     clearAlarmEvent();
 
     const { alarmEvent } = useAlarmEventStore.getState();
@@ -76,7 +76,7 @@ describe('useAlarmEventStore', () => {
   // 구버전이 남긴 잔여 키는 drain(removeItem)만 한다.
   it('loadAlarmEvent: sleepMode=true여도 저장된 이벤트를 재생하지 않고 키만 비운다 (drain-only)', async () => {
     useSettingsStore.setState({ sleepMode: true });
-    const event = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+    const event = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남', stationId: '2-022' };
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(event));
 
     const { loadAlarmEvent } = useAlarmEventStore.getState();
@@ -88,10 +88,10 @@ describe('useAlarmEventStore', () => {
 
   it('loadAlarmEvent: 이미 떠 있는 companion 오버레이(alarmEvent)를 지우지 않는다', async () => {
     useSettingsStore.setState({ sleepMode: true });
-    const live = { phaseId: 'early' as const, type: 'transfer' as const, stationName: '시청', band: 3 };
+    const live = { phaseId: 'early' as const, type: 'transfer' as const, stationName: '시청', band: 3, stationId: '1-033' };
     useAlarmEventStore.setState({ alarmEvent: live });
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
-      JSON.stringify({ phaseId: 'early', type: 'destination', stationName: '강남' }),
+      JSON.stringify({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' }),
     );
 
     await useAlarmEventStore.getState().loadAlarmEvent();
@@ -103,7 +103,7 @@ describe('useAlarmEventStore', () => {
   // ALARM_EVENT_KEY를 FG loadAlarmEvent가 replay하는 경로. 비취침 상태면 in-memory alarmEvent는
   // 억제되지만, storage는 무조건 drain해 재차 replay되지 않는다.
   it('loadAlarmEvent: 비취침 상태면 알람 이벤트는 억제하되 storage는 drain한다', async () => {
-    const event = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+    const event = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남', stationId: '2-022' };
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(event));
 
     const { loadAlarmEvent } = useAlarmEventStore.getState();

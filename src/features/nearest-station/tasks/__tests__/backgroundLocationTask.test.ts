@@ -484,7 +484,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   // ── alarmEvent 있음: firedAlarms 저장 ──
 
   it('alarmEvent가 있으면 alarmKey를 추가하고 setFiredAlarms(destId, set)를 호출한다 (#462)', async () => {
-    const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
+    const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청', stationId: '1-033' };
     mockStorageValues(JSON.stringify(mockDestination));
 
     mockProcessLocationUpdate.mockResolvedValue({
@@ -510,7 +510,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it('기존 firedAlarms에 alarmEvent 키를 추가하여 저장한다', async () => {
-    const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '강남' };
+    const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '강남', stationId: '2-022' };
     mockStorageValues(JSON.stringify(mockDestination));
     mockGetFiredAlarms.mockResolvedValueOnce(new Set(['destination:시청']));
 
