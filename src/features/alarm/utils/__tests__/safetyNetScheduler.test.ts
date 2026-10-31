@@ -106,7 +106,7 @@ describe('deriveSafetyNetWaypoints', () => {
     const route = makeDirectRoute(5, '2');
     const waypoints = deriveSafetyNetWaypoints(route, GANGNAM);
     expect(waypoints).toEqual([
-      { stationName: GANGNAM, kind: 'destination', stops: 5, legMs: 5 * 120_000 },
+      { stationName: GANGNAM, kind: 'destination', stops: 5, legMs: 5 * 120_000, stationId: expect.any(String) },
     ]);
   });
 
@@ -202,7 +202,7 @@ describe('registerSafetyNetAlarms', () => {
     // bg-scheduled 관례)로 예약 시점 기록. 취소되면 이 entry가 그대로 남는 known limitation은
     // 구 3종 스케줄러 시절부터 존재하던 동일 특성(신규 도입 아님).
     expect(mockLogScheduledAlarm).toHaveBeenCalledWith(
-      { phaseId: 'early', type: 'destination', stationName: GANGNAM },
+      { phaseId: 'early', type: 'destination', stationName: GANGNAM, stationId: expect.any(String) },
       expect.objectContaining({ expectedStationAtFire: GANGNAM }),
     );
   });
