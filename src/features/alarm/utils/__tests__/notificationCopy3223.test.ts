@@ -11,38 +11,41 @@ import zh from '../../../../shared/i18n/locales/zh.json';
 
 jest.mock('expo-notifications');
 
+/** 하차문 데이터가 없는 역 id(9호선) — 이 파일은 문구 본문만 검증하므로 좌/우 줄이 붙지 않는 id를 쓴다. */
+const NO_EXIT_DATA_STATION_ID = '9-002';
+
 afterEach(async () => {
   await i18next.changeLanguage('ko');
 });
 
 describe('ko — 로컬 알람/알림 확정 문구', () => {
   it('imminent destination: "{역} 도착" / "이번 역에서 내리세요"', () => {
-    expect(buildAlarmContent({ phaseId: 'imminent', type: 'destination', stationName: '강남' })).toEqual({
+    expect(buildAlarmContent({ phaseId: 'imminent', type: 'destination', stationName: '강남', stationId: NO_EXIT_DATA_STATION_ID })).toEqual({
       title: '강남 도착',
       body: '이번 역에서 내리세요',
     });
   });
 
   it('imminent transfer: "{역} 환승" / 노선 정보가 없으므로 "이번 역에서 내려 갈아타세요"', () => {
-    expect(buildAlarmContent({ phaseId: 'imminent', type: 'transfer', stationName: '시청' })).toEqual({
+    expect(buildAlarmContent({ phaseId: 'imminent', type: 'transfer', stationName: '시청', stationId: NO_EXIT_DATA_STATION_ID })).toEqual({
       title: '시청 환승',
       body: '이번 역에서 내려 갈아타세요',
     });
   });
 
   it('취침 N역 전 band: 역명이 제목으로, 본문은 일어나서 준비', () => {
-    expect(buildAlarmContent({ phaseId: 'early', type: 'transfer', stationName: '시청', band: 2 })).toEqual({
+    expect(buildAlarmContent({ phaseId: 'early', type: 'transfer', stationName: '시청', band: 2, stationId: NO_EXIT_DATA_STATION_ID })).toEqual({
       title: '시청 환승까지 2정거장',
       body: '일어나서 환승 준비하세요',
     });
-    expect(buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '강남', band: 3 })).toEqual({
+    expect(buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '강남', band: 3, stationId: NO_EXIT_DATA_STATION_ID })).toEqual({
       title: '강남 도착까지 3정거장',
       body: '일어나서 하차 준비하세요',
     });
   });
 
   it('1역 전 early(band 없음)은 무변경', () => {
-    expect(buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '강남' }).body).toBe(
+    expect(buildAlarmContent({ phaseId: 'early', type: 'destination', stationName: '강남', stationId: NO_EXIT_DATA_STATION_ID }).body).toBe(
       '다음 역 강남에서 하차하세요!',
     );
   });

@@ -935,7 +935,7 @@ describe('stationNotification', () => {
     });
 
     it('alarmEvent가 있으면 alarmType과 alarmStationName이 포함된다', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, transferRoute, 12, false, { phaseId: 'early', type: 'transfer', stationName: '동대문' });
+      await updateStationNotification(mockStation, 154, mockDestination, transferRoute, 12, false, { phaseId: 'early', type: 'transfer', stationName: '동대문', stationId: '1-029' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           alarmType: 'transfer',
@@ -947,7 +947,7 @@ describe('stationNotification', () => {
     });
 
     it('alarmEvent가 destination 타입이면 alarmType이 destination이다', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남' });
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           alarmType: 'destination',
@@ -959,7 +959,7 @@ describe('stationNotification', () => {
     });
 
     it('#3100 alarmEvent에 band가 있으면 LA alarmBody도 N역 전 문구 (오버레이·알림과 같은 키)', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', band: 3 });
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', band: 3, stationId: '2-022' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           alarmBody: '일어나서 하차 준비하세요',
@@ -979,7 +979,7 @@ describe('stationNotification', () => {
     });
 
     it('alarmEvent에 stationId가 없으면 이름이 같은 역이 있어도 alarmExitSide가 빠진다', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '잠실', direction: 'up' });
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '잠실', direction: 'up' } as unknown as Parameters<typeof updateStationNotification>[6]);
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.not.objectContaining({ alarmExitSide: expect.anything() })
       );
@@ -1305,10 +1305,10 @@ describe('stationNotification', () => {
   // alarmScheduler/tripBoundScheduler/boardingLockScheduler(#2089 대상, 이번 PR 범위 밖)가
   // 소비하므로 stationNotification.ts에 남아있다 — 아래는 그 로직을 직접 검증한다.
   describe('buildAlarmContent', () => {
-    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
-    const earlyTransfer = { phaseId: 'early' as const, type: 'transfer' as const, stationName: '시청' };
-    const imminentDest = { phaseId: 'imminent' as const, type: 'destination' as const, stationName: '강남' };
-    const imminentTransfer = { phaseId: 'imminent' as const, type: 'transfer' as const, stationName: '시청' };
+    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남', stationId: '2-022' };
+    const earlyTransfer = { phaseId: 'early' as const, type: 'transfer' as const, stationName: '시청', stationId: '1-033' };
+    const imminentDest = { phaseId: 'imminent' as const, type: 'destination' as const, stationName: '강남', stationId: '2-022' };
+    const imminentTransfer = { phaseId: 'imminent' as const, type: 'transfer' as const, stationName: '시청', stationId: '1-033' };
 
     it('early destination이면 하차 문구를 만든다', () => {
       expect(buildAlarmContent(earlyDest)).toEqual({
@@ -1385,7 +1385,9 @@ describe('stationNotification', () => {
       beforeEach(() => mockLogExitSideUnknownStationId.mockClear());
 
       it('event.stationId가 없으면 이름이 같은 역이 있어도 좌/우 라인을 추가하지 않고 unknown 로그를 남긴다', () => {
-        expect(buildAlarmContent(earlyDest).body).toBe('다음 역 강남에서 하차하세요!');
+        // stationId 필수 타입이어도 런타임에 누락된 구버전 이벤트(저장분)는 좌/우 줄 없이 처리돼야 한다.
+        const legacy = { ...earlyDest, stationId: undefined } as unknown as Parameters<typeof buildAlarmContent>[0];
+        expect(buildAlarmContent(legacy).body).toBe('다음 역 강남에서 하차하세요!');
         expect(mockLogExitSideUnknownStationId).toHaveBeenCalledWith('강남');
       });
 
@@ -1527,7 +1529,7 @@ describe('stationNotification', () => {
           '2-016',
         ],
       ] as const)('%s', (_label, phaseId, type, stationName, title, body, stationId) => {
-        expect(buildAlarmContent({ phaseId, type, stationName, stationId })).toEqual({ title, body });
+        expect(buildAlarmContent({ phaseId, type, stationName, stationId } as Parameters<typeof buildAlarmContent>[0])).toEqual({ title, body });
       });
     });
   });
@@ -1588,7 +1590,7 @@ describe('stationNotification', () => {
   // #2379 (Phase 2-device 복원, #2067 되돌리기) — EXPO_PUBLIC_MINIMAL_ALARM 플래그 ON일 때 BG
   // pipeline이 직접 발사하는 device 로컬 transfer/destination 알람 배너.
   describe('fireLocalAlarmNotification (#2379 — #2067 sendAlarmNotification 복원)', () => {
-    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남', stationId: '2-022' };
 
     it('buildAlarmContent와 동일한 title/body로 ALARM_NOTIFICATION_ID 알림을 예약한다', async () => {
       await fireLocalAlarmNotification(earlyDest);
@@ -1796,7 +1798,7 @@ describe('stationNotification', () => {
   });
 
   describe('source 라벨 자백 (#327)', () => {
-    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남', stationId: '2-022' };
     const baseBody = '다음 역 강남에서 하차하세요!';
 
     // 자백 대상(gpsOnly/uncertain)만 라벨 부착. positionTrain/routeProgress는 정상 신뢰 케이스라 생략.
