@@ -277,7 +277,8 @@
     }
   },
   "journey": {
-    "transferNote": "Transfer",
+    "transferLines": "{{from}} → {{to}} transfer",
+    "segmentChip": "{{line}} · {{stops}}",
     "arrivalNote": "Arrival",
     "transferArrivalNote": "Transfer → Arrival"
   },
@@ -320,8 +321,9 @@
     "stopsRemainingToTransfer_one": "{{count}} stop to transfer at {{destination}}",
     "stopsRemainingToTransfer_other": "{{count}} stops to transfer at {{destination}}",
     "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}",
-    "quickExitDoor": "Door {{door}}",
-    "boardingDoor": "Board at door {{door}}"
+    "boardingDoor": "Board at door {{door}}",
+    "boardingDoorTransfer": "Fastest car for {{station}} transfer",
+    "boardingDoorExit": "Fastest car to exit at {{station}}"
   },
   "lines": {
     "1": "Line 1",

@@ -22,7 +22,7 @@ import {
 import type { LineNumber, Waypoint } from './types';
 
 /** Dijkstra 결과를 Waypoint 형태로 매핑하기 위한 sub-shape. validateTrip이 occurrenceIdx/hopIndex stamp. */
-export type InferredWaypoint = Pick<Waypoint, 'stationName' | 'line' | 'kind'>;
+export type InferredWaypoint = Pick<Waypoint, 'stationName' | 'line' | 'kind' | 'stationId'>;
 
 /**
  * (name, line) → station id 조회. POST /trips에서 device의 `promptDisplay.originStation` +
@@ -65,6 +65,7 @@ export function __resetStationNameCache(): void {
 
 /**
  * `Route.legs` → backend Waypoint[]. routeWaypoints(device)와 형태 정합.
+ * (#3177 PR-9b 이후 `stationId`는 이쪽에만 있다 — device `routeWaypoints`는 PR-10에서 같은 형태로 다시 맞춘다.)
  *
  * 규칙:
  *  - 각 leg는 시작역(=출발역 또는 환승역) 제외, 나머지 station을 `intermediate`로 펼친다.
@@ -86,18 +87,21 @@ function routeToInferredWaypoints(route: Route, destinationName: string): Inferr
       const isLastStationOfLeg = j === stationIds.length - 1;
       if (isLastLeg && isLastStationOfLeg) {
         // 마지막 leg의 마지막 station = destination. 표시명은 destinationName 우선(device 의도).
-        result.push({ stationName: destinationName, line: leg.line, kind: 'destination' });
+        // #3177 — stationId = 실제로 내리는 승강장(Dijkstra가 도착한 노드). 목적지 id와 다른 노선일 수 있다(환승역=목적지).
+        result.push({ stationName: destinationName, line: leg.line, kind: 'destination', stationId: stationIds[j] });
       } else if (isLastStationOfLeg) {
         // 환승역 — 다음 transfer record의 stationName 사용 (device routeWaypoints와 동형).
         // transfer record는 leg 개수 - 1만큼 있으므로 마지막 leg가 아니면 항상 존재.
         const transfer = route.transfers[i];
         const name = transfer ? transfer.stationName : '';
-        result.push({ stationName: name, line: leg.line, kind: 'transfer' });
+        // #3177 — 환승 waypoint id는 fromLine(내리는 쪽) 승강장 = 이 leg의 마지막 station.
+        result.push({ stationName: name, line: leg.line, kind: 'transfer', stationId: stationIds[j] });
       } else {
         result.push({
           stationName: lookupStationNameById(stationIds[j]),
           line: leg.line,
           kind: 'intermediate',
+          stationId: stationIds[j],
         });
       }
     }

@@ -96,6 +96,12 @@ export interface SilentPushPayload {
    */
   occupiedLine?: string;
   /**
+   * #3177 — 발사 시점 waypoint의 하차 승강장 역 id(stations.json `id`, 환승역은 fromLine 쪽 — 예: 사당 2호선 '2-026').
+   * 디바이스가 하차문 좌/우를 이름 첫 매칭이 아니라 이 id로 조회한다(`Waypoint.stationId` forward).
+   * 구 device 등록·추론 불가 시 부재 — wire에서 자연 누락, 구 client는 필드를 무시한다(ADR-029 optional 추가).
+   */
+  stationId?: string;
+  /**
    * #1307 — 발사 시점 trip의 지하(subsurface) 판정. server-authoritative.
    * 지하에서는 WiFi/cell 보정으로 GPS가 stale/spoof되어 디바이스 위치 게이트가
    * 정상 intermediate push를 out-of-range로 오거부한다. 클라이언트는 이 flag로
@@ -384,6 +390,8 @@ export function buildSilentPushData(payload: SilentPushPayload): Record<string, 
     // #1365 — occupiedLine은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
     // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
     ...(payload.occupiedLine === undefined ? {} : { occupiedLine: payload.occupiedLine }),
+    // #3177 — stationId는 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 → 구 client 및 구 backend payload와 byte-level 호환.
+    ...(payload.stationId === undefined ? {} : { stationId: payload.stationId }),
     // #1307 — subsurface는 true일 때만 wire. false/undefined는 JSON에서 자연 누락 →
     // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
     ...(payload.subsurface === true ? { subsurface: true } : {}),

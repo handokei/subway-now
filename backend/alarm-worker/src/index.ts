@@ -17,6 +17,7 @@ import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 // 써야 "sync가 stamp한 역명"과 "cron이 advance하는 waypoint 역명"이 조용히 어긋나지 않는다.
 import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import { normalizeSleepAlarmConfig } from '../../../src/shared/utils/sleepAlarmCells';
+import { findStationById } from '../../../src/shared/utils/stationLookup';
 import { isTrainSeenAtAnchor, loadAnchorDepartures, loadTrainPosition } from './anchorDeparturesQuery';
 import { planPromotionFastForward } from './anchorDepartures';
 import {
@@ -4682,6 +4683,30 @@ function validReselectFields(raw: {
   return { nextLegDeparturesEpochSec: nextLegDeparturesEpochSec as number[], transferWalkSec, rideSecToDest };
 }
 
+/**
+ * #3177 PR-9a — device가 waypoint에 실은 stationId(실제 하차 승강장의 stations.json id)를 검증한다.
+ * 서버(배포 시점)와 앱(빌드 시점)의 stations.json 버전이 어긋날 수 있으므로 **트립을 거부하지 않는다**:
+ * 문자열이 아님 / 서버 stations.json에 없음 / 노선이 wp.line과 다름이면 그 waypoint의 stationId만 지우고
+ * 관측(console.warn + Sentry breadcrumb)한다. 부재(구 device)는 조용히 `{}`.
+ */
+function validWaypointStationId(
+  raw: unknown,
+  wp: { stationName: string; line: string },
+  tokenPrefix: string,
+): { stationId: string } | Record<string, never> {
+  if (raw === undefined) return {};
+  const { stationName, line } = wp;
+  const station = typeof raw === 'string' ? findStationById(raw) : null;
+  if (station !== null && String(station.line) === line) return { stationId: station.id };
+  const cause = typeof raw !== 'string' ? 'not-string' : station === null ? 'unknown-id' : 'line-mismatch';
+  console.warn(
+    `validateTrip waypoint-station-id-dropped: ${cause}`,
+    JSON.stringify({ cause, stationName, line, tokenPrefix }),
+  );
+  addValidateRejectBreadcrumb('waypoint-station-id-dropped', { cause, stationName, line, tokenPrefix });
+  return {};
+}
+
 export function validateTrip(
   input: unknown,
   // #2998 — 거부 사유 관측 훅. 종전에는 `console.warn` + Sentry breadcrumb만 남아
@@ -4761,8 +4786,15 @@ export function validateTrip(
     // #1480 PR-E (B2) — 환승 대기 재선택 재료(등록 put에 얹힘, KV 쓰기 +0). 셋이 모두 유효할 때만 채택하고
     // 하나라도 잘못되면 묶음째 제거한다(반쪽 재선택 금지; 등록은 거부하지 않음 — 구 동작으로 graceful degrade).
     const { nextLegDeparturesEpochSec, transferWalkSec, rideSecToDest, ...restWithoutReselect } = rest;
+    // #3177 PR-9a — 하차 승강장 stationId. 무효면 이 필드만 제거(트립 거부 0건).
+    const { stationId, ...restWithoutStationId } = restWithoutReselect;
     return {
-      ...restWithoutReselect,
+      ...restWithoutStationId,
+      ...validWaypointStationId(
+        stationId,
+        { stationName: restWithoutStationId.stationName as string, line: restWithoutStationId.line as string },
+        tokenRaw.slice(0, 8),
+      ),
       occurrenceIdx: existingOcc,
       hopIndex: existingHop,
       ...validRemaining,

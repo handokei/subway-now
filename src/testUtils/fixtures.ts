@@ -47,13 +47,13 @@ export const MOCK_JOURNEYS = {
 
 export const MOCK_STOPS = {
   twoStops: [
-    { station: '강남', line: '2', mark: 'filled' },
-    { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
+    { station: '강남', line: '2', mark: 'filled', segmentToNext: { line: '2', stops: 1 } },
+    { station: '역삼', line: '2', mark: 'dest', note: '도착' },
   ] satisfies Stop[],
   threeStops: [
-    { station: '효창공원앞', line: '6', mark: 'filled' },
-    { station: '공덕', line: '5', stopsFromPrev: '2정거장', mark: 'transfer', note: '환승' },
-    { station: '여의나루', line: '5', stopsFromPrev: '3정거장', mark: 'dest', note: '도착' },
+    { station: '효창공원앞', line: '6', mark: 'filled', segmentToNext: { line: '6', stops: 2 } },
+    { station: '공덕', line: '5', mark: 'transfer', note: '6호선 → 5호선 환승', segmentToNext: { line: '5', stops: 3 } },
+    { station: '여의나루', line: '5', mark: 'dest', note: '도착' },
   ] satisfies Stop[],
 };
 

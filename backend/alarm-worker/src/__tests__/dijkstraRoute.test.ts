@@ -163,6 +163,52 @@ describe('#1604 backend Dijkstra adapter', () => {
     });
   });
 
+  describe('#3177 PR-9b — 추론 waypoint가 실제 하차 승강장 stationId를 싣는다', () => {
+    it('강남(2) → 사당(4-025): Dijkstra가 사당을 2호선에서 내리는 걸로 추론 — destination stationId는 2-026(2호선 쪽), 4-025가 아니다', () => {
+      const waypoints = inferWaypointsFromOriginAndDestination({
+        originName: '강남',
+        originLine: '2',
+        destinationId: '4-025',
+        destinationName: '사당',
+      });
+      expect(waypoints).toEqual([
+        { stationName: '교대(법원.검찰청)', line: '2', kind: 'intermediate', stationId: '2-023' },
+        { stationName: '서초', line: '2', kind: 'intermediate', stationId: '2-024' },
+        { stationName: '방배', line: '2', kind: 'intermediate', stationId: '2-025' },
+        { stationName: '사당', line: '2', kind: 'destination', stationId: '2-026' },
+      ]);
+    });
+
+    it('종합운동장(9) → 신당(6-026): 환승 waypoint id는 fromLine 쪽(선정릉 9-027, 왕십리 bundang-053), 도착은 2호선 신당 2-006', () => {
+      const waypoints = inferWaypointsFromOriginAndDestination({
+        originName: '종합운동장',
+        originLine: '9',
+        destinationId: '6-026',
+        destinationName: '신당',
+      });
+      const transfers = (waypoints ?? []).filter(({ kind }) => kind === 'transfer');
+      expect(transfers.map(({ stationName, line, stationId }) => ({ stationName, line, stationId }))).toEqual([
+        { stationName: '선정릉', line: '9', stationId: '9-027' },
+        { stationName: '왕십리', line: 'bundang', stationId: 'bundang-053' },
+      ]);
+      expect(waypoints?.at(-1)).toMatchObject({ kind: 'destination', line: '2', stationId: '2-006' });
+    });
+
+    it('모든 추론 waypoint는 stationId를 갖고, 그 id의 노선이 waypoint.line과 같다', () => {
+      const waypoints = inferWaypointsFromOriginAndDestination({
+        originName: '종합운동장',
+        originLine: '9',
+        destinationId: '6-026',
+        destinationName: '신당',
+      });
+      expect(waypoints?.length).toBeGreaterThan(0);
+      for (const { line, stationId } of waypoints ?? []) {
+        expect(stationId).toBeDefined();
+        expect(String(stationId).startsWith(`${line}-`)).toBe(true);
+      }
+    });
+  });
+
   describe('stationName cache', () => {
     it('두 번째 호출은 캐시된 lookup 반환 (동일 결과)', () => {
       const first = inferWaypointsFromOriginAndDestination({
