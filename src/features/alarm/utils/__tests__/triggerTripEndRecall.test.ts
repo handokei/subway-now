@@ -10,6 +10,7 @@ const mockSetItem = jest.fn();
 const mockComputeAndUploadTripRecall = jest.fn();
 const mockComputeAndUploadTripPrescheduled = jest.fn();
 const mockComputeRouteArc = jest.fn();
+const mockLogStoredRouteMigrationFailed = jest.fn();
 const mockGetTripStartedAt = jest.fn();
 const mockFlushRegressionCounters = jest.fn();
 const mockUploadSignalDump = jest.fn();
@@ -90,6 +91,7 @@ jest.mock('../alarmLog', () => ({
   // #1972 — lockless trip 분기 stamp + fire counter.
   logLocklessTripEnd: (...args: unknown[]) => mockLogLocklessTripEnd(...args),
   countFiredAlarms: (...args: unknown[]) => mockCountFiredAlarms(...args),
+  logStoredRouteMigrationFailed: (...args: unknown[]) => mockLogStoredRouteMigrationFailed(...args),
 }));
 
 jest.mock('../../store/useBoardingLockStore', () => ({
@@ -307,6 +309,63 @@ describe('triggerTripEndRecall', () => {
     const result = await triggerTripEndRecall();
 
     expect(result).toEqual({ uploaded: false, skipped: 'route-arc-failed' });
+  });
+
+  it('origin JSON parse 실패 시 skip (route-arc-failed)', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: '{invalid json',
+      [DESTINATION_KEY]: DEST_JSON,
+    });
+
+    const result = await triggerTripEndRecall();
+
+    expect(result).toEqual({ uploaded: false, skipped: 'route-arc-failed' });
+  });
+
+  // #3177 PR-2b — 구버전 저장 경로(id 없음)는 공용 파서(readStoredRoute)가 하차 승강장 id를 채운 뒤 arc에 넘긴다.
+  const LEGACY_TRANSFER = {
+    type: 'transfer',
+    transferName: '사당',
+    fromLine: '2',
+    toLine: '4',
+    stopsToTransfer: 3,
+    stopsFromTransfer: 2,
+    secondsToTransfer: 360,
+    secondsFromTransfer: 240,
+  };
+
+  it('#3177 — 구버전 저장 경로는 id를 채워 computeRouteArc에 전달 (사당 2-026 / 목적지 id)', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: JSON.stringify(LEGACY_TRANSFER),
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+    });
+
+    await triggerTripEndRecall();
+
+    const [route] = mockComputeRouteArc.mock.calls[0];
+    expect(route).toMatchObject({ transferStationId: '2-026', destinationStationId: 'd' });
+  });
+
+  it('#3177 — 환승역 id를 못 구하는 구버전 경로는 arc 계산 없이 skip + 마이그레이션 실패 로그', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: JSON.stringify({ ...LEGACY_TRANSFER, transferName: '없는역' }),
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+    });
+
+    const result = await triggerTripEndRecall();
+
+    expect(result).toEqual({ uploaded: false, skipped: 'route-arc-failed' });
+    expect(mockComputeRouteArc).not.toHaveBeenCalled();
+    expect(mockLogStoredRouteMigrationFailed).toHaveBeenCalledWith('없는역');
   });
 
   it('computeRouteArc null 반환 시 skip (route-arc-failed)', async () => {
