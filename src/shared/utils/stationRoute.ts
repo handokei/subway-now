@@ -648,12 +648,12 @@ export function getRemainingStops(
   return path.length - 1;
 }
 
-// 같은 노선 위 두 역 사이의 중간역 이름 배열을 진행 방향대로 반환.
+// 같은 노선 위 두 역 사이의 중간역을 진행 방향대로 반환(#3177 — 이름이 아니라 Station이라 호출부가 id를 쓴다).
 // 양 끝점은 제외. 인접 역 또는 같은 역이면 빈 배열. 다른 노선/미존재 id면 null.
-export function getIntermediateStationNames(
+export function getIntermediateStations(
   fromId: string,
   toId: string,
-): string[] | null {
+): Station[] | null {
   const from = stationById.get(fromId);
   const to = stationById.get(toId);
   if (!from || !to) return null;
@@ -668,7 +668,7 @@ export function getIntermediateStationNames(
 
   // #1698 — 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path 반환.
   const path = shortestLinePathIndices(lineStations, fromIdx, toIdx, from.line);
-  return path.slice(1, -1).map((i) => lineStations[i].name);
+  return path.slice(1, -1).map((i) => lineStations[i]);
 }
 
 function buildNameIndex(stations: Station[]): Map<string, number> {

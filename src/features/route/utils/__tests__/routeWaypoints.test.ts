@@ -32,6 +32,7 @@ const structureOf = (...args: Parameters<typeof routeToWaypoints>): AlarmWaypoin
       nextLegDeparturesEpochSec: _departures, // #1480 PR-E — 재선택 재료는 transferReselect 전용 테스트에서 검증.
       transferWalkSec: _walk,
       rideSecToDest: _ride,
+      stationId: _stationId, // #3177 PR-10 — id는 routeWaypoints.stationId.test.ts에서 검증.
       ...structure
     }) => structure,
   );
@@ -244,7 +245,12 @@ describe('routeToWaypoints — remainingSecToDest (#2747 PR-6)', () => {
   it('계약: 10/28 trip 179 경로(중곡->건대입구 환승->뚝섬)의 등록 payload가 backend fixture와 일치한다', () => {
     const route = findRoutes(origin!.id, dest!.id)[0].route!;
     expect(route).toEqual(contract.route);
-    expect(routeToWaypoints(route, '뚝섬', origin!, TRIP179_REGISTERED_AT_MS)).toEqual(contract.waypoints);
+    // 실측 fixture(불변)는 stationId(#3177 PR-10) 도입 전 캡처라 이 필드가 없다 — 가산 필드만 제외하고 나머지는 그대로 일치해야 한다.
+    // stationId 자체는 routeWaypoints.stationId.test.ts가 검증한다.
+    const withoutStationId = routeToWaypoints(route, '뚝섬', origin!, TRIP179_REGISTERED_AT_MS).map(
+      ({ stationId: _stationId, ...rest }) => rest,
+    );
+    expect(withoutStationId).toEqual(contract.waypoints);
   });
 
   it('값 = mirror writer와 같은 함수: calculateStaticETA(anchor(route, 그 역), {excludeOriginWait:true}) 분 x 60 — 평가 시각은 그 역 도달 예상 시각 (#1480)', () => {

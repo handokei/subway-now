@@ -15,7 +15,7 @@ import {
   anchorRouteToCurrentStation,
   calculateStaticETA,
   findStationByNameAndLine,
-  getIntermediateStationNames,
+  getIntermediateStations,
   getRouteRemainingSeconds,
   isSameStationName,
 } from '../../../shared/utils/stationRoute';
@@ -28,12 +28,14 @@ interface Context {
   enabled: boolean;
 }
 
+// stationId는 경로 계산 함수가 채운 값만 싣는다(이름 조회로 대체하지 않음 — #3177). 없으면 키 자체를 생략.
 function makeWaypoint(
   stationName: string,
   line: LineNumber,
   kind: AlarmWaypoint['kind'],
+  stationId?: string,
 ): AlarmWaypoint {
-  return { stationName, line, kind };
+  return { stationName, line, kind, ...(stationId && { stationId }) };
 }
 
 function intermediateWaypoints(
@@ -43,9 +45,9 @@ function intermediateWaypoints(
   toId: string | undefined,
 ): AlarmWaypoint[] {
   if (!ctx.enabled || !fromId || !toId) return [];
-  const names = getIntermediateStationNames(fromId, toId);
-  if (!names) return [];
-  return names.map((stationName) => makeWaypoint(stationName, line, 'intermediate'));
+  const stations = getIntermediateStations(fromId, toId);
+  if (!stations) return [];
+  return stations.map(({ name, id }) => makeWaypoint(name, line, 'intermediate', id));
 }
 
 function buildDirect(route: DirectRoute, ctx: Context): AlarmWaypoint[] {
@@ -56,11 +58,13 @@ function buildDirect(route: DirectRoute, ctx: Context): AlarmWaypoint[] {
     ctx.currentStation?.id,
     destStation?.id,
   );
-  return [...intermediates, makeWaypoint(ctx.destinationName, route.line, 'destination')];
+  const { destinationStationId } = route;
+  return [...intermediates, makeWaypoint(ctx.destinationName, route.line, 'destination', destinationStationId)];
 }
 
 function buildTransfer(route: TransferRoute, ctx: Context): AlarmWaypoint[] {
-  // 환승역 == 목적지 → fromLine으로 도착 처리.
+  const { transferStationId, destinationStationId } = route;
+  // 환승역 == 목적지 → fromLine으로 도착 처리. 실제로 내리는 곳은 fromLine 승강장(transferStationId)이다.
   if (isSameStationName(route.transferName, ctx.destinationName)) {
     const destFromLine = findStationByNameAndLine(route.transferName, route.fromLine);
     const intermediates = intermediateWaypoints(
@@ -69,16 +73,19 @@ function buildTransfer(route: TransferRoute, ctx: Context): AlarmWaypoint[] {
       ctx.currentStation?.id,
       destFromLine?.id,
     );
-    return [...intermediates, makeWaypoint(ctx.destinationName, route.fromLine, 'destination')];
+    return [
+      ...intermediates,
+      makeWaypoint(ctx.destinationName, route.fromLine, 'destination', transferStationId),
+    ];
   }
   const transferFromLine = findStationByNameAndLine(route.transferName, route.fromLine);
   const transferToLine = findStationByNameAndLine(route.transferName, route.toLine);
   const destToLine = findStationByNameAndLine(ctx.destinationName, route.toLine);
   return [
     ...intermediateWaypoints(ctx, route.fromLine, ctx.currentStation?.id, transferFromLine?.id),
-    makeWaypoint(route.transferName, route.fromLine, 'transfer'),
+    makeWaypoint(route.transferName, route.fromLine, 'transfer', transferStationId),
     ...intermediateWaypoints(ctx, route.toLine, transferToLine?.id, destToLine?.id),
-    makeWaypoint(ctx.destinationName, route.toLine, 'destination'),
+    makeWaypoint(ctx.destinationName, route.toLine, 'destination', destinationStationId),
   ];
 }
 
@@ -99,6 +106,7 @@ function buildMultiTransfer(route: MultiTransferRoute, ctx: Context): AlarmWaypo
         isDestination ? ctx.destinationName : seg.transferName,
         seg.fromLine,
         isDestination ? 'destination' : 'transfer',
+        seg.transferStationId,
       ),
     );
     if (isDestination) return result;
@@ -110,7 +118,7 @@ function buildMultiTransfer(route: MultiTransferRoute, ctx: Context): AlarmWaypo
   result.push(
     ...intermediateWaypoints(ctx, lastSegment.toLine, segmentStart?.id, destToLine?.id),
   );
-  result.push(makeWaypoint(ctx.destinationName, lastSegment.toLine, 'destination'));
+  result.push(makeWaypoint(ctx.destinationName, lastSegment.toLine, 'destination', route.destinationStationId));
   return result;
 }
 
