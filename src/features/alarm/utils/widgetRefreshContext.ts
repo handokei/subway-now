@@ -19,6 +19,7 @@ import {
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { BgLastStationContext } from '../../../shared/types/widgetRefresh';
+import { readStoredRouteLogged } from './readStoredRouteLogged';
 
 export interface WidgetRefreshContext {
   destination: Station | null;
@@ -79,7 +80,8 @@ export async function readWidgetRefreshContext(): Promise<WidgetRefreshContext> 
     ]);
     return {
       destination: parseDestination(destRaw),
-      route: safeParse<Route>(routeRaw),
+      // #3177 PR-2b — 구버전 저장 경로(id 없음)는 공용 파서가 하차 승강장 id를 채운다.
+      route: readStoredRouteLogged(routeRaw, destRaw),
       bgContext: parseBgLastStation(bgRaw),
     };
   } catch {

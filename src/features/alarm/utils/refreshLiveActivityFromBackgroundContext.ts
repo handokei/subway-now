@@ -43,6 +43,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { logLaRefreshDecision, logLaWrite } from './alarmLog';
+import { readStoredRouteLogged } from './readStoredRouteLogged';
 import {
   reconcileLiveActivityToken,
   resolveDeviceFallbackSource,
@@ -190,7 +191,8 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     const mirrorStationCandidate = mirrorFresh && mirror ? resolveBackendSsotMirrorStation(mirror) : null;
 
     const bg = readBgLastStation(bgRaw);
-    const route = safeParse<Route>(routeRaw);
+    // #3177 PR-2b — 구버전 저장 경로(id 없음)는 공용 파서가 하차 승강장 id를 채운다.
+    const route = readStoredRouteLogged(routeRaw, destRaw);
 
     // #2732 (gap1, 2026-09-30 교차추적 감사) — FG cascade picker(`useFusedNearestStation`)는
     // `isBackendSsotRouteRegression`(#2669/#2841)을 경유해 얼어붙은 mirror가 신뢰 가능한 GPS보다

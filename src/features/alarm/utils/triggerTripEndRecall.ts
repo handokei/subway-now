@@ -62,6 +62,7 @@ import {
 import { getFusionDebugEntries } from '../../nearest-station/utils/fusionDebugBuffer';
 import { getGpsDropEntries } from '../../nearest-station/utils/gpsDropBuffer';
 import { readBackendSsotMirror } from './backendSsotMirror';
+import { readStoredRouteLogged } from './readStoredRouteLogged';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
 
@@ -337,7 +338,10 @@ async function loadRouteStops(): Promise<string[] | null> {
   let origin: Station;
   let destination: Station;
   try {
-    route = JSON.parse(routeRaw) as Route;
+    // #3177 PR-2b — 구버전 저장 경로(id 없음)는 공용 파서가 하차 승강장 id를 채운다(파싱 실패/환승역 미해결=null).
+    const stored = readStoredRouteLogged(routeRaw, destinationRaw);
+    if (!stored) return null;
+    route = stored;
     origin = JSON.parse(originRaw) as Station;
     destination = JSON.parse(destinationRaw) as Station;
   } catch {
