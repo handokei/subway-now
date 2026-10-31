@@ -309,6 +309,7 @@ describe('resolveOriginStop — 출발역 시간표 슬롯 (#1480)', () => {
   });
 
   it('다음 waypoint를 알 수 없으면(직통인데 destinationStationId 없음) null', () => {
-    expect(resolveOriginStop(makeDirectRoute(1, '2'), '2-011')).toBeNull();
+    const { destinationStationId: _d, ...legacy } = makeDirectRoute(1, '2');
+    expect(resolveOriginStop(legacy as unknown as NonNullable<Route>, '2-011')).toBeNull();
   });
 });
