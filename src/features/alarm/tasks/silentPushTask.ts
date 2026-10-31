@@ -42,6 +42,7 @@ import {
   DESTINATION_KEY,
 } from '../../../shared/constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
+import { findStationById } from '../../../shared/utils/stationLookup';
 import { createLogger } from '../../../shared/utils/logger';
 import {
   flushAlarmLog,
@@ -177,6 +178,12 @@ export interface SilentPushPayload {
    * 구 backend 호환 위해 optional — 누락 시 cross-check 자연 skip(graceful).
    */
   occupiedLine?: string;
+  /**
+   * #3177 — backend가 forward한 발사 시점 waypoint의 하차 승강장 역 id(stations.json `id`, 환승역은 fromLine 쪽).
+   * 계약 스큐 fallback 알림 본문이 하차문 좌/우를 이름 첫 매칭이 아니라 이 id로 조회한다. 구 backend 호환 위해
+   * optional — 누락·무효면 하차문 줄을 생략한다(이름으로 대체 조회하지 않음).
+   */
+  stationId?: string;
   /**
    * #1399 — backend가 push 발사 시점에 stamp한 active trip token (좀비 알림 cleanup).
    * 디바이스는 `ACTIVE_TRIP_KEY`와 비교해 mismatch면 즉시 drop (현재 trip이 아님 — 만료 token push).
@@ -643,6 +650,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     subsurface,
     boardingLine,
     occupiedLine,
+    stationId,
     tripToken,
     lockReleasedReason,
     passedStations,
@@ -679,6 +687,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     subsurface: validSubsurface(subsurface),
     boardingLine: validBoardingLine(boardingLine),
     occupiedLine: validBoardingLine(occupiedLine),
+    stationId: validStationId(stationId),
     tripToken: validTripToken(tripToken),
     lockReleasedReason: validLockReleasedReason(lockReleasedReason),
     passedStations: validPassedStations(passedStations),
@@ -765,6 +774,11 @@ function validTripToken(value: unknown): string | undefined {
  * #2064 (Phase 1-device) — 소비하던 device 게이트(`fireWithGate`) 제거됨. schema 파싱만 유지.
  */
 function validBoardingLine(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** #3177 — payload.stationId 형식 검증(비어있지 않은 string). 존재 여부는 사용 시점에 `findStationById`로 다시 확인한다. */
+function validStationId(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
@@ -1791,10 +1805,14 @@ async function fireSleepAlarmCompanion(
  * `ALARM_SILENT_CHANNEL_ID`는 이미 #2158에서 만들어진 일반모드 무음 채널을 그대로 재사용한다.
  */
 async function fireStationKindSkewFallback(payload: SilentPushPayload): Promise<void> {
+  const { nextWaypoint, stationId } = payload;
+  // #3177 — backend id를 서버·앱 stations.json 버전 차이에 대비해 한 번 더 확인한다. 무효면 id 없이 발사(하차문 줄 생략).
+  const verifiedStationId = stationId !== undefined && findStationById(stationId) !== null ? stationId : undefined;
   const { title, body } = buildAlarmContent({
     phaseId: 'imminent',
     type: 'destination',
-    stationName: payload.nextWaypoint,
+    stationName: nextWaypoint,
+    ...(verifiedStationId && { stationId: verifiedStationId }),
   });
   const sleepMode = await readSleepMode();
   await Notifications.scheduleNotificationAsync({
