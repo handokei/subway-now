@@ -17,6 +17,7 @@ import { resolveQuickExit } from '../../route/utils/quickExit';
 import { resolveProgressingTerminal, resolveTravelDirection } from '../../route/utils/travelDirection';
 import { resolveTransferDoor } from '../../route/utils/transferExit';
 import { findStationByNameAndLine } from '../../../shared/utils/stationRoute';
+import { LINE_NAMES } from '../../../shared/constants/lineColors';
 import type { LineNumber } from '../../../shared/types/station';
 
 interface Props {
@@ -91,17 +92,28 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
         const nextStop = stops[i + 1] ?? null;
         const nextConnectorLine = nextStop?.connectorLine ?? nextStop?.line ?? null;
         const nextLineC = nextConnectorLine != null ? getLineColor(nextConnectorLine) : colors.inkStrong;
-        const quickExitDoor = doorFor(s, accessibilityMode);
-        // #635 — 출발역(첫 mark='filled')에서 탑승 시 어느 칸·문에 타야 다음 hop(환승/도착)에서
-        // 빠르게 내릴 수 있는지 표시. 같은 열차 = 같은 문 번호이므로 다음 hop stop의 도어를 그대로 재사용.
-        // 의미만 다름: 다음 stop에선 "내리는 위치", 출발역에선 "타는 위치".
-        // expanded 모드에선 origin과 첫 hop 사이에 intermediate stop들이 끼므로 인접 [i+1] 대신
-        // arrivalContext가 있는 첫 후속 stop을 찾는다 (review P1-1).
-        const isOrigin = i === 0 && s.mark === 'filled';
-        const nextHopStop = isOrigin
+        // #3258 — 노드 칸 정보 = "그 역에서 탈 칸". 출발(filled)/환승(transfer) 노드만 갖고, 값은 다음 hop의
+        // 도어(환승이면 환승 빠른 칸, 도착이면 하차 빠른 칸)를 재사용한다(#635). 도착 노드는 칸 없음.
+        // expanded 모드에선 intermediate stop이 끼므로 arrivalContext가 있는 첫 후속 stop을 찾는다.
+        const boardsHere = s.mark === 'filled' || s.mark === 'transfer';
+        const nextHopStop = boardsHere
           ? stops.slice(i + 1).find((st) => st.arrivalContext != null) ?? null
           : null;
         const boardingDoor = doorFor(nextHopStop, accessibilityMode);
+        const boardingDoorNote =
+          boardingDoor != null && nextHopStop != null
+            ? t(nextHopStop.mark === 'transfer' ? 'route.boardingDoorTransfer' : 'route.boardingDoorExit', {
+                station: nextHopStop.station,
+              })
+            : null;
+        const { segmentToNext } = s;
+        const segmentChip =
+          segmentToNext != null
+            ? t('journey.segmentChip', {
+                line: LINE_NAMES[segmentToNext.line],
+                stops: t('route.stops', { count: segmentToNext.stops }),
+              })
+            : null;
 
         const isIntermediate = s.mark === 'intermediate';
         const slot = renderHopSlot ? renderHopSlot(s, i) : null;
@@ -149,33 +161,39 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
                 {s.station}
               </Text>
               {s.note != null && (
-                <Text style={[typography.captionSm, { color: colors.muted, marginTop: 2 }]}>
+                <Text
+                  style={[typography.captionSm, { color: colors.muted, marginTop: 2 }]}
+                  testID={`timeline-note-${i}`}
+                >
                   {s.note}
+                </Text>
+              )}
+              {segmentChip != null && (
+                <Text
+                  style={[typography.micro, { color: colors.subtle, marginTop: spacing.xs }]}
+                  testID={`timeline-segment-${i}`}
+                >
+                  {segmentChip}
                 </Text>
               )}
             </View>
 
             <View style={{ alignItems: 'flex-end' }}>
               {!isIntermediate && s.line != null && <LineBadge line={s.line} color={lineC} />}
-              {s.stopsFromPrev != null && (
-                <Text style={[typography.mono, { color: colors.subtle, marginTop: 2 }]}>
-                  {s.stopsFromPrev}
-                </Text>
-              )}
-              {quickExitDoor != null && (
-                <Text
-                  style={[typography.micro, { color: colors.muted, marginTop: 2 }]}
-                  testID={`quick-exit-door-${i}-${quickExitDoor}`}
-                >
-                  {t('route.quickExitDoor', { door: quickExitDoor })}
-                </Text>
-              )}
               {boardingDoor != null && (
                 <Text
                   style={[typography.micro, { color: colors.muted, marginTop: 2 }]}
                   testID={`boarding-door-${i}-${boardingDoor}`}
                 >
                   {t('route.boardingDoor', { door: boardingDoor })}
+                </Text>
+              )}
+              {boardingDoorNote != null && (
+                <Text
+                  style={[typography.micro, { color: colors.subtle, marginTop: 1 }]}
+                  testID={`boarding-door-note-${i}`}
+                >
+                  {boardingDoorNote}
                 </Text>
               )}
             </View>

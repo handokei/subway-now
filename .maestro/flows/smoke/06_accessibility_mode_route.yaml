@@ -46,18 +46,18 @@ name: "smoke - 거동 불편자 모드가 경로 화면 문번호 라벨에 반�
 - tapOn:
     id: "suggestion-item-3-019"
 
-# 기본 모드: stairs 우선 — 도착역(경복궁) 라벨에 "8-3번 문" 표시
+# 기본 모드: stairs 우선 — 출발 노드의 "탑승 8-3번 문"(도착역 경복궁 하차 빠른 칸, #3258: 도착 노드엔 칸 표시 없음)
 # Hero + Hr + route header + segment control + 3-row timeline이 iPhone 16 viewport를 초과해
 # 마지막 row(경복궁)가 fold 아래로 떨어지는 타이밍이 있다 (#1125). scroll로 결정적 노출.
-# testID는 quick-exit-door-{index}-{door} 형식(#1230) — door 값을 id에 인코딩해 i18n 텍스트 변경
+# testID는 boarding-door-{index}-{door} 형식(#1230, #3258에서 quick-exit-door → boarding-door) — door 값을 id에 인코딩해 i18n 텍스트 변경
 # 회귀를 차단. index는 timeline에서 가변(직통/환승)이라 정규식으로 매칭.
 - scrollUntilVisible:
     element:
-      id: "quick-exit-door-.*-8-3"
+      id: "boarding-door-.*-8-3"
     timeout: 10000
 - extendedWaitUntil:
     visible:
-      id: "quick-exit-door-.*-8-3"
+      id: "boarding-door-.*-8-3"
     timeout: 10000
 
 # 설정 탭으로 이동해 거동 불편자 모드 ON
@@ -79,11 +79,11 @@ name: "smoke - 거동 불편자 모드가 경로 화면 문번호 라벨에 반�
     point: "12%,95%"
 - scrollUntilVisible:
     element:
-      id: "quick-exit-door-.*-6-2"
+      id: "boarding-door-.*-6-2"
     timeout: 10000
 - extendedWaitUntil:
     visible:
-      id: "quick-exit-door-.*-6-2"
+      id: "boarding-door-.*-6-2"
     timeout: 10000
 - assertNotVisible:
-    id: "quick-exit-door-.*-8-3"
+    id: "boarding-door-.*-8-3"
