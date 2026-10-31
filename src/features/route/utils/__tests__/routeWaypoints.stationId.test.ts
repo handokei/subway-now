@@ -1,5 +1,5 @@
 import { routeToWaypoints } from '../routeWaypoints';
-import { findRoute, findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
+import { findRoute, findStationByNameAndLine, type Route } from '../../../../shared/utils/stationRoute';
 import { findStationById } from '../../../../shared/utils/stationLookup';
 import type { LineNumber } from '../../../../shared/types/station';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
@@ -77,14 +77,15 @@ describe('routeToWaypoints — stationId (#3177 PR-10)', () => {
 
   it('id가 없는 구 route(고정 fixture)는 이름으로 대체 조회하지 않는다 — transfer/destination의 stationId 부재, 중간역은 Station 객체 id', () => {
     const origin = findStationByNameAndLine('대방', '1')!;
-    const route = makeTransferRoute({
+    // PR-1 이전 빌드가 저장한 구 route(id 없음) — fixture 기본값의 id를 떼어 재현한다.
+    const { transferStationId: _t, destinationStationId: _d, ...legacy } = makeTransferRoute({
       transferName: '신도림',
       fromLine: '1',
       toLine: '2',
       stopsToTransfer: 3,
       stopsFromTransfer: 1,
     });
-    const waypoints = routeToWaypoints(route, '문래', origin);
+    const waypoints = routeToWaypoints(legacy as unknown as NonNullable<Route>, '문래', origin);
     const transfer = waypoints.find(({ kind }) => kind === 'transfer')!;
     const destination = waypoints.find(({ kind }) => kind === 'destination')!;
     expect(transfer).not.toHaveProperty('stationId');
@@ -94,7 +95,8 @@ describe('routeToWaypoints — stationId (#3177 PR-10)', () => {
   });
 
   it('currentStation 없이(legacy) direct 구 route: id 없으면 stationId 키 자체가 없다', () => {
-    const [destination] = routeToWaypoints(makeDirectRoute(5, '2'), '강남');
+    const { destinationStationId: _d, ...legacy } = makeDirectRoute(5, '2');
+    const [destination] = routeToWaypoints(legacy as unknown as NonNullable<Route>, '강남');
     expect(destination).not.toHaveProperty('stationId');
   });
 });

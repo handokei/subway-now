@@ -278,7 +278,9 @@ describe('resolveOriginStop — 출발역 시간표 슬롯 (#1480)', () => {
   });
 
   it('transferStationId가 없으면 환승역명+fromLine으로 찾는다', () => {
-    const route = makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 });
+    // 구 저장 경로(id 없음) — fixture 기본값의 transferStationId를 떼어 재현한다.
+    const { transferStationId: _omit, ...legacy } = makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 });
+    const route = legacy as unknown as Parameters<typeof resolveOriginStop>[0];
     expect(resolveOriginStop(route, '7-015')).toMatchObject({ line: '7', direction: 'down' });
   });
 
