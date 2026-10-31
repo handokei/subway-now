@@ -80,7 +80,7 @@ describe('calculateStaticEtaDetail — 표시 플래그', () => {
     expect(calculateStaticEtaDetail(null)).toBeNull(); // options 기본값
   });
 
-  it('하한(U2)이면 waitUnknown, 막차 종료면 lastTrainEnded', () => {
+  it('운행 시간 밖(배차간격 closed)이면 waitUnknown이 아니라 lastTrainEnded (#1480)', () => {
     const route = makeTransferRoute({
       transferName: '홍대입구',
       fromLine: '2',
@@ -90,8 +90,8 @@ describe('calculateStaticEtaDetail — 표시 플래그', () => {
     });
     const closed = Date.UTC(2026, 9, 27, 18, 0, 0); // 03:00 KST (배차간격 closed)
     expect(calculateStaticEtaDetail(route, { nowMs: closed, excludeOriginWait: true })).toMatchObject({
-      waitUnknown: true,
-      lastTrainEnded: false,
+      waitUnknown: false,
+      lastTrainEnded: true,
     });
   });
 });
