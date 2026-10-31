@@ -3,7 +3,7 @@ import {
   arrivalInfoToArrivalTrain,
   nearestResultToNearest,
 } from '../journeyAdapter';
-import type { Stop, StopArrivalContext } from '../journeyAdapter';
+import type { Stop, StopArrivalContext, StopSegment } from '../journeyAdapter';
 import { findRoute, buildJourneyDisplay } from '../../../../shared/utils/stationRoute';
 import type { JourneyDisplay } from '../../../../shared/utils/stationRoute';
 import type { LineNumber, Station } from '../../../../shared/types/station';
@@ -16,21 +16,22 @@ function expectedStop(
   mark: 'transfer' | 'dest',
   station: string,
   line: string,
-  stopsFromPrev: string,
   note: string,
   arrivalContext: StopArrivalContext,
   transferTargetToLine?: LineNumber,
+  // #3258 — 환승 노드가 시작하는 구간(연결선) 칩 데이터. 정거장 수는 노드가 아니라 구간에 둔다.
+  segmentToNext?: StopSegment,
 ): Stop {
   return {
     station,
     line,
-    stopsFromPrev,
     mark,
     note,
     arrivalContext,
     // #3073 — connectorLine = 그 stop으로 타고 들어온 노선 = arrivalContext.line
     connectorLine: arrivalContext.line,
     ...(transferTargetToLine && { transferTarget: { toLine: transferTargetToLine } }),
+    ...(segmentToNext && { segmentToNext }),
   };
 }
 function ctx(line: LineNumber, fromName: string, toName: string): StopArrivalContext {
@@ -41,17 +42,17 @@ describe('journeyDisplayToStops', () => {
   it('should convert a direct route (single segment)', () => {
     const stops = journeyDisplayToStops(MOCK_JOURNEYS.direct);
     expect(stops).toEqual([
-      { station: '강남', line: '2', mark: 'filled' },
-      expectedStop('dest', '역삼', '2', '1정거장', '도착', ctx('2', '강남', '역삼')),
+      { station: '강남', line: '2', mark: 'filled', segmentToNext: { line: '2', stops: 1 } },
+      expectedStop('dest', '역삼', '2', '도착', ctx('2', '강남', '역삼')),
     ]);
   });
 
   it('should convert a transfer route (two segments)', () => {
     const stops = journeyDisplayToStops(MOCK_JOURNEYS.transfer);
     expect(stops).toEqual([
-      { station: '효창공원앞', line: '6', mark: 'filled' },
-      expectedStop('transfer', '공덕', '5', '2정거장', '환승', ctx('6', '효창공원앞', '공덕'), '5'),
-      expectedStop('dest', '여의나루', '5', '3정거장', '도착', ctx('5', '공덕', '여의나루')),
+      { station: '효창공원앞', line: '6', mark: 'filled', segmentToNext: { line: '6', stops: 2 } },
+      expectedStop('transfer', '공덕', '5', '6호선 → 5호선 환승', ctx('6', '효창공원앞', '공덕'), '5', { line: '5', stops: 3 }),
+      expectedStop('dest', '여의나루', '5', '도착', ctx('5', '공덕', '여의나루')),
     ]);
   });
 
@@ -66,15 +67,15 @@ describe('journeyDisplayToStops', () => {
     };
     const stops = journeyDisplayToStops(journey);
     expect(stops).toHaveLength(4);
-    expect(stops[0]).toEqual({ station: '서울역', line: '1', mark: 'filled' });
+    expect(stops[0]).toEqual({ station: '서울역', line: '1', mark: 'filled', segmentToNext: { line: '1', stops: 1 } });
     expect(stops[1]).toEqual(
-      expectedStop('transfer', '시청', '2', '1정거장', '환승', ctx('1', '서울역', '시청'), '2'),
+      expectedStop('transfer', '시청', '2', '1호선 → 2호선 환승', ctx('1', '서울역', '시청'), '2', { line: '2', stops: 2 }),
     );
     expect(stops[2]).toEqual(
-      expectedStop('transfer', '을지로3가', '3', '2정거장', '환승', ctx('2', '시청', '을지로3가'), '3'),
+      expectedStop('transfer', '을지로3가', '3', '2호선 → 3호선 환승', ctx('2', '시청', '을지로3가'), '3', { line: '3', stops: 4 }),
     );
     expect(stops[3]).toEqual(
-      expectedStop('dest', '경복궁', '3', '4정거장', '도착', ctx('3', '을지로3가', '경복궁')),
+      expectedStop('dest', '경복궁', '3', '도착', ctx('3', '을지로3가', '경복궁')),
     );
   });
 
@@ -105,16 +106,16 @@ describe('journeyDisplayToStops', () => {
     };
     const stops = journeyDisplayToStops(journey);
     expect(stops).toHaveLength(3);
-    expect(stops[0]).toEqual({ station: '삼성', line: '2', mark: 'filled' });
+    expect(stops[0]).toEqual({ station: '삼성', line: '2', mark: 'filled', segmentToNext: { line: '2', stops: 7 } });
     expect(stops[1]).toEqual(
-      expectedStop('transfer', '건대입구', '7', '7정거장', '환승', ctx('2', '삼성', '건대입구'), '7'),
+      expectedStop('transfer', '건대입구', '7', '2호선 → 7호선 환승', ctx('2', '삼성', '건대입구'), '7', { line: '7', stops: 2 }),
     );
     // 흡수 케이스: 마지막 0정거장 segment가 직전 transfer를 dest로 승격.
     // arrivalContext는 직전 segment(7호선 건대입구→군자) — 사용자가 실제로 그 노선으로 내림.
     // transferTarget은 흡수 시에도 보존된다 — UI가 mark==='transfer'에만 적용하므로 무해.
     expect(stops[2]).toEqual(
       // #3086 — 흡수 dest 배지 line = 실제 탑승 노선(7). to-line(5)은 타지 않았다.
-      expectedStop('dest', '군자', '7', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자'), '5'),
+      expectedStop('dest', '군자', '7', '환승 → 도착', ctx('7', '건대입구', '군자'), '5'),
     );
   });
 
@@ -172,7 +173,7 @@ describe('journeyDisplayToStops', () => {
     // 출발 노드 1개 + 도착 노드 1개 = 2개. transfer 노드는 출발에 흡수되어 별도 노드 없음.
     expect(stops).toHaveLength(2);
     // 출발 line이 첫 seg('7') 아니라 다음 seg('gyeongui') — 환승 후 노선 시각 표시.
-    expect(stops[0]).toEqual({ station: '상봉', line: 'gyeongui', mark: 'filled' });
+    expect(stops[0]).toEqual({ station: '상봉', line: 'gyeongui', mark: 'filled', segmentToNext: { line: 'gyeongui', stops: 7 } });
     expect(stops[1].mark).toBe('dest');
     expect(stops[1].station).toBe('용산');
   });
@@ -192,7 +193,7 @@ describe('journeyDisplayToStops', () => {
     const stops = journeyDisplayToStops(journey);
     // 출발 노드 1개 + 도착 노드 1개 = 2개. phantom/중복 환승 노드가 없어야 한다.
     expect(stops).toHaveLength(2);
-    expect(stops[0]).toEqual({ station: '건대입구', line: 'gyeongui', mark: 'filled' });
+    expect(stops[0]).toEqual({ station: '건대입구', line: 'gyeongui', mark: 'filled', segmentToNext: { line: 'gyeongui', stops: 5 } });
     expect(stops[1].mark).toBe('dest');
     expect(stops[1].station).toBe('용산');
   });
@@ -233,8 +234,8 @@ describe('journeyDisplayToStops', () => {
       expect(intermediates).toHaveLength(1);
       expect(intermediates[0].station).toBe('교대(법원.검찰청)');
       expect(intermediates[0].line).toBe('2');
-      // intermediate는 stopsFromPrev/note/arrivalContext가 없는 슬림 형태
-      expect(intermediates[0].stopsFromPrev).toBeUndefined();
+      // intermediate는 segmentToNext/note/arrivalContext가 없는 슬림 형태
+      expect(intermediates[0].segmentToNext).toBeUndefined();
       expect(intermediates[0].note).toBeUndefined();
       expect(intermediates[0].arrivalContext).toBeUndefined();
     });

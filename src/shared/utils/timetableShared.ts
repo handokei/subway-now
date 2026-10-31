@@ -254,7 +254,10 @@ export function findBoardableDeparture(params: DepartureLookupParams): Departure
     });
   }
 
-  return { status: 'ok', departure: result };
+  // 자정~첫차 전 새벽: 전날 꼬리가 이미 끝났고(위 tail 미적중) 오늘 시간표의 첫 열차(놓친 열차 0)를 찾은 것이므로
+  // 이는 같은 운행일의 다음 출발이 아니라 다음 운행일 첫차다 — 대기 합산 대상이 아니다.
+  const startsNextServiceDay = fromMinutes < OVERNIGHT_TAIL_WINDOW_MINUTES && result.missedCount === 0;
+  return { status: 'ok', departure: { ...result, isNextDayFallback: startsNextServiceDay } };
 }
 
 function positiveMod(value: number, modulus: number): number {

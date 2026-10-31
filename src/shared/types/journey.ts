@@ -22,16 +22,23 @@ export interface StopTransferTarget {
   toLine: LineNumber;
 }
 
+// #3258 — 구간(segment) 단위 정거장 정보. 노드가 아니라 연결선에 표시한다.
+export interface StopSegment {
+  line: LineNumber;
+  stops: number;
+}
+
 export interface Stop {
   station: string;
   line: string | null;
-  stopsFromPrev?: string;
   mark: 'filled' | 'transfer' | 'dest' | 'intermediate';
   note?: string;
   arrivalContext?: StopArrivalContext;
   /** #3073 — 이 stop으로 타고 들어온 노선. 직전 stop→이 stop connector 색. 출발역(filled)은 없음. */
   connectorLine?: LineNumber;
   transferTarget?: StopTransferTarget;
+  /** #3258 — 이 노드에서 출발하는 구간(연결선) 정보. "{노선} N정거장" 칩의 데이터. 도착 노드는 없음. */
+  segmentToNext?: StopSegment;
 }
 
 export interface ArrivalTrain {
