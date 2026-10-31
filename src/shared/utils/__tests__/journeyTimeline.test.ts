@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { computeJourneyEta } from '../journeyTimeline';
+import { computeJourneyEta, formatFirstTrainTime, resolveOriginStop } from '../journeyTimeline';
 import { findStationByNameAndLine } from '../stationRoute';
 import type { Route } from '../stationRoute';
 import { makeDirectRoute, makeTransferRoute } from '../../../testUtils/routeFixtures';
@@ -162,6 +162,19 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
     expect(eta.lastTrainEnded).toBe(true);
     expect(eta.waits[0]).toMatchObject({ source: 'ended', seconds: 0 });
     expect(eta.minutes).toBe(7); // 도보 180 + buffer 20 + 주행 240 = 440초, 대기 0
+    // 막힌 지점이 출발이 아니라 환승역이면 첫차 시각을 싣지 않는다(환승역 첫차로 출발 시각을 오도하지 않음).
+    expect(eta.firstTrainAtMs).toBeUndefined();
+  });
+
+  it('출발역(originStop)이 막힌 첫 지점이면 출발역 시간표 첫차 시각 (용마산 7호선 하행, 목요일 02:25 → 05:42)', () => {
+    const route = makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 });
+    const eta = computeJourneyEta({
+      route,
+      nowMs: kstMs(2026, 10, 29, 2, 25),
+      originStop: { stationName: '용마산', line: '7', direction: 'down' },
+    });
+    expect(eta.lastTrainEnded).toBe(true);
+    expect(formatFirstTrainTime(eta.firstTrainAtMs!)).toBe('05:42');
   });
 });
 
@@ -255,5 +268,45 @@ describe('computeJourneyEta — 환승 실시간 boardable 후보 (#1480 PR-D)',
     expect(computeJourneyEta({ ...base, transferBoardableArrivalsMs: [null] })).toEqual(plain);
     expect(computeJourneyEta({ ...base, transferBoardableArrivalsMs: [[]] })).toEqual(plain);
     expect(plain.waits[0].source).toBe('timetable');
+  });
+});
+
+describe('resolveOriginStop — 출발역 시간표 슬롯 (#1480)', () => {
+  it('환승 경로: 출발역명·첫 leg 노선·환승역 방향 (용마산 → 건대입구 = 7호선 하행)', () => {
+    const route: NonNullable<Route> = { ...makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 }), transferStationId: '7-019' };
+    expect(resolveOriginStop(route, '7-015')).toEqual({ stationName: '용마산', line: '7', direction: 'down' });
+  });
+
+  it('transferStationId가 없으면 환승역명+fromLine으로 찾는다', () => {
+    const route = makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 });
+    expect(resolveOriginStop(route, '7-015')).toMatchObject({ line: '7', direction: 'down' });
+  });
+
+  it('직통: 목적지 방향', () => {
+    const route: NonNullable<Route> = { ...makeDirectRoute(1, '2'), destinationStationId: '2-010' };
+    expect(resolveOriginStop(route, '2-011')).toMatchObject({ stationName: '성수', line: '2' });
+  });
+
+  it('다중 환승: 첫 환승역 방향', () => {
+    const route: NonNullable<Route> = {
+      type: 'multi-transfer',
+      transfers: [{ transferName: '건대입구', transferStationId: '7-019', fromLine: '7', toLine: '2', stopsToTransfer: 3, secondsToTransfer: 330 }],
+      stopsAfterLastTransfer: 2,
+      secondsAfterLastTransfer: 210,
+      destinationStationId: '2-010',
+    };
+    expect(resolveOriginStop(route, '7-015')).toMatchObject({ line: '7', direction: 'down' });
+  });
+
+  it.each([
+    ['출발역 id 미상', 'zz-999'],
+    ['출발역이 첫 leg 노선이 아님', '2-011'],
+  ])('판정 불가 → null (%s)', (_label, originId) => {
+    const route: NonNullable<Route> = { ...makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 }), transferStationId: '7-019' };
+    expect(resolveOriginStop(route, originId)).toBeNull();
+  });
+
+  it('다음 waypoint를 알 수 없으면(직통인데 destinationStationId 없음) null', () => {
+    expect(resolveOriginStop(makeDirectRoute(1, '2'), '2-011')).toBeNull();
   });
 });

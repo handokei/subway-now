@@ -147,3 +147,31 @@ describe('shareTripIntent', () => {
     spy.mockRestore();
   });
 });
+
+describe('buildShareTripText — 대기 포함 소요 시간 표기 (#1480)', () => {
+  const echo = (key: string, o?: Record<string, unknown>) => `${key}|${o?.minutes}`;
+  const base = {
+    route: directRoute,
+    currentStation: makeStation(),
+    destination: makeStation({ id: '2-216', name: '잠실' }),
+    totalStops: 5,
+    travelMinutes: 20,
+    t: echo,
+  };
+
+  it.each([
+    [undefined, 'share.trip.bodyTemplate|20'],
+    ['exact' as const, 'share.trip.bodyTemplate|20'],
+    ['unknownWait' as const, 'share.trip.bodyTemplatePlus|20'],
+    ['lastTrainEnded' as const, 'share.trip.bodyTemplateEnded|20'],
+  ])('etaKind=%s → 본문 템플릿 선택', (etaKind, expected) => {
+    expect(buildShareTripText({ ...base, etaKind })).toBe(expected);
+  });
+
+  it('막차 종료 + 첫차 시각이 있으면 첫차 템플릿에 time 전달', () => {
+    const t = (key: string, o?: Record<string, unknown>) => `${key}|${o?.time}`;
+    expect(
+      buildShareTripText({ ...base, t, etaKind: 'lastTrainEnded', firstTrainAtMs: Date.UTC(2026, 9, 27, 20, 34, 0) }),
+    ).toBe('share.trip.bodyTemplateFirstTrain|05:34');
+  });
+});

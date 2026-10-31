@@ -10,7 +10,7 @@ import { directionOnLine } from './directionOnLine';
 import { classifyDayType, classifyPeriod, lookupHeadwaySeconds } from './lineHeadway';
 import type { Route } from './stationRoute';
 import { findStationByNameAndLine, getStationById } from './stationRoute';
-import { findBoardableDeparture } from './timetableShared';
+import { findBoardableDeparture, formatMinutesAsHHmm } from './timetableShared';
 import type { Direction } from './timetableShared';
 import { getTransferSeconds } from './transferTimes';
 
@@ -42,6 +42,8 @@ import { getTransferSeconds } from './transferTimes';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
+const MS_PER_MINUTE = MS_PER_SECOND * SECONDS_PER_MINUTE;
+const KST_OFFSET_MS = 9 * 60 * MS_PER_MINUTE;
 /** 배차간격 기반 평균 대기 = 간격의 절반. */
 const HEADWAY_WAIT_DIVISOR = 2;
 
@@ -55,6 +57,8 @@ export interface JourneyWait {
   stationName: string | null;
   source: WaitSource;
   seconds: number;
+  /** source='ended'이고 시간표가 첫 운행을 알려줄 때 그 첫차 출발 시각(절대 epoch ms). 판정에는 쓰지 않는다. */
+  firstTrainAtMs?: number;
 }
 
 /** 시간표 조회 결과 관측 — alarmLog `boardable-lookup` → boardableMissRatio 입력. */
@@ -73,6 +77,8 @@ export interface JourneyEta {
   waitUnknown: boolean;
   /** 막차 이후 — 표시는 "막차 종료". */
   lastTrainEnded: boolean;
+  /** lastTrainEnded이고 막힌 첫 지점이 출발역일 때 그 시간표 첫차 시각(epoch ms). 환승역에서 막혔거나 시간표 미커버면 undefined → "막차 종료". */
+  firstTrainAtMs?: number;
   waits: JourneyWait[];
   lookups: BoardableLookup[];
 }
@@ -132,6 +138,26 @@ function shapeOf(route: NonNullable<Route>): JourneyShape {
     tailSeconds: route.secondsAfterLastTransfer,
     firstLine: transfers[0].fromLine,
   };
+}
+
+function firstTransferStationId(route: Exclude<NonNullable<Route>, { type: 'direct' }>, firstLine: LineNumber): string | undefined {
+  const first = route.type === 'transfer' ? route : route.transfers[0];
+  return first.transferStationId ?? findStationByNameAndLine(first.transferName, firstLine)?.id;
+}
+
+export type OriginStop = NonNullable<JourneyEtaInput['originStop']>;
+
+/**
+ * 출발역 시간표 슬롯 (#1480). 출발역·첫 leg 노선·진행 방향(출발역 → 첫 waypoint)을 route와 출발역 id로 구한다.
+ * 출발역이 첫 leg 노선 위가 아니거나 방향을 판정할 수 없으면 null — 엔진은 배차간격/2 → floor로 폴백한다.
+ */
+export function resolveOriginStop(route: NonNullable<Route>, originStationId: string): OriginStop | null {
+  const origin = getStationById(originStationId);
+  const { firstLine } = shapeOf(route);
+  if (!origin || origin.line !== firstLine) return null;
+  const nextId = route.type === 'direct' ? route.destinationStationId : firstTransferStationId(route, firstLine);
+  const direction = nextId ? directionOnLine(firstLine, originStationId, nextId) : null;
+  return direction ? { stationName: origin.name, line: firstLine, direction } : null;
 }
 
 /**
@@ -212,7 +238,7 @@ function resolveWait(request: WaitRequest): WaitResolution {
     if (result?.status === 'ok') {
       const { departure } = result;
       return departure.isNextDayFallback
-        ? { wait: wait('ended', 0), lookup }
+        ? { wait: { ...wait('ended', 0), firstTrainAtMs: atMs + departure.waitSeconds * MS_PER_SECOND }, lookup }
         : { wait: wait('timetable', departure.waitSeconds), lookup };
     }
   }
@@ -225,6 +251,15 @@ function resolveWait(request: WaitRequest): WaitResolution {
   return period === 'closed'
     ? { wait: wait('ended', 0), lookup }
     : { wait: wait('floor', UNKNOWN_WAIT_FLOOR_SECONDS), lookup };
+}
+
+/**
+ * 여정에서 처음 막히는(ended) 지점이 출발역일 때만 그 첫차 시각을 쓴다.
+ * 출발역은 운행 중인데 환승역에서 막차가 끊기면 환승역 첫차는 "출발 시각"이 아니므로 싣지 않는다 → "막차 종료".
+ */
+function firstTrainAtMsOf(waits: readonly JourneyWait[]): number | undefined {
+  const firstEnded = waits.find((w) => w.source === 'ended');
+  return firstEnded?.kind === 'origin' ? firstEnded.firstTrainAtMs : undefined;
 }
 
 export function computeJourneyEta(input: JourneyEtaInput): JourneyEta {
@@ -283,9 +318,15 @@ export function computeJourneyEta(input: JourneyEtaInput): JourneyEta {
     totalSeconds,
     waitUnknown: waits.some((w) => w.source === 'floor'),
     lastTrainEnded: waits.some((w) => w.source === 'ended'),
+    firstTrainAtMs: firstTrainAtMsOf(waits),
     waits,
     lookups,
   };
+}
+
+/** 첫차 시각(epoch ms) → KST "HH:mm". */
+export function formatFirstTrainTime(epochMs: number): string {
+  return formatMinutesAsHHmm(Math.floor((epochMs + KST_OFFSET_MS) / MS_PER_MINUTE));
 }
 
 export type EtaDisplayKind = 'exact' | 'unknownWait' | 'lastTrainEnded';

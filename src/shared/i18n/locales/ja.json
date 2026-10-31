@@ -35,6 +35,7 @@
     "minuteUnit": "分",
     "minuteUnitPlus": "分+",
     "lastTrainEnded": "終電終了",
+    "firstTrainAt": "始発 {{time}}",
     "originEstimated": "現在の推定駅",
     "originStaleDemote": "移動中・現在駅を確認中",
     "routeTo": "目的地まで",
@@ -302,6 +303,9 @@
     "minutesAndTransfers_one": "{{min}}分 · 乗換{{count}}回",
     "minutesAndTransfers_other": "{{min}}分 · 乗換{{count}}回",
     "directOnly": "{{min}}分 · 直通",
+    "directOnlyPlus": "{{min}}分+ · 直通",
+    "minutesAndTransfersPlus_one": "{{min}}分+ · 乗換{{count}}回",
+    "minutesAndTransfersPlus_other": "{{min}}分+ · 乗換{{count}}回",
     "currentStation": "{{name}}",
     "atCurrentStation": "現在 {{name}}",
     "approximateDistance": "約{{m}}m",
@@ -430,7 +434,10 @@
     "trip": {
       "title": "地下鉄ルート",
       "buttonLabel": "ルートを共有",
-      "bodyTemplate": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}} 分 ({{stops}} 駅)"
+      "bodyTemplate": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}} 分 ({{stops}} 駅)",
+      "bodyTemplatePlus": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}} 分+ ({{stops}} 駅)",
+      "bodyTemplateEnded": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n終電終了 ({{stops}} 駅)",
+      "bodyTemplateFirstTrain": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n始発 {{time}} ({{stops}} 駅)"
     }
   },
   "debug": {

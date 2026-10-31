@@ -13,7 +13,7 @@ import { getTransferSeconds } from './transferTimes';
 import { getStopSecondsFromDistance } from './lineSpeeds';
 import { shortestLinePathIndices, isClosedLoopMainStation } from './lineLoopPath';
 import { isReversedOrientationLine } from './lineOrientation';
-import { computeJourneyEta } from './journeyTimeline';
+import { computeJourneyEta, resolveOriginStop } from './journeyTimeline';
 import type { BoardableLookup, JourneyEta } from './journeyTimeline';
 
 const logger = createLogger('StationRoute');
@@ -219,6 +219,8 @@ export interface RouteCandidate {
   totalStops: number;
   transferCount: number;
   travelMinutes: number;
+  /** 이 후보를 산출한 출발역 id — 표시용 ETA의 출발 대기(시간표) 조회에 쓴다. 정렬·선택에는 쓰지 않는다. */
+  originStationId?: string;
 }
 
 export interface RouteCategory {
@@ -692,10 +694,10 @@ export function getRouteTotalStops(route: NonNullable<Route>): number {
   return transferStops + route.stopsAfterLastTransfer;
 }
 
-function toCandidate(route: NonNullable<Route>): RouteCandidate {
+function toCandidate(route: NonNullable<Route>, originStationId: string): RouteCandidate {
   const travelMinutes = getTravelMinutes(route);
   const transferCount = route.type === 'direct' ? 0 : route.type === 'transfer' ? 1 : route.transfers.length;
-  return { route, totalStops: getRouteTotalStops(route), transferCount, travelMinutes };
+  return { route, totalStops: getRouteTotalStops(route), transferCount, travelMinutes, originStationId };
 }
 
 export function findRoutes(currentId: string, destinationId: string): RouteCandidate[] {
@@ -721,7 +723,7 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     };
     const duration = performance.now() - start;
     logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
-    return [toCandidate(direct)];
+    return [toCandidate(direct, currentId)];
   }
 
   // 다른 노선: 단일 환승 + 2회 환승 모두 탐색
@@ -770,9 +772,9 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
   // 후보 수집 + 정렬 — 도미네이션 필터는 적용하지 않음.
   // 카테고리별 선택은 findRouteCandidatesByCategory에서 책임진다.
   const candidates: RouteCandidate[] = [];
-  if (bestSingle) candidates.push(toCandidate(bestSingle));
+  if (bestSingle) candidates.push(toCandidate(bestSingle, currentId));
   /* istanbul ignore next -- 실제 서울 지하철 데이터에서 2회 환승 불가 노선 조합은 없음 */
-  if (multiRoute) candidates.push(toCandidate(multiRoute));
+  if (multiRoute) candidates.push(toCandidate(multiRoute, currentId));
 
   candidates.sort((a, b) => a.travelMinutes - b.travelMinutes);
 
@@ -1076,6 +1078,11 @@ export interface StaticEtaOptions {
    * 엔진이 fresh 후보 중 T_platform(도착+도보+buffer) 이후 첫 열차를 고른다. 없으면 시간표 → 배차간격/2.
    */
   boardableArrivalsAtTransfers?: BoardableArrivalsAtTransfers;
+  /**
+   * #1480 — 출발역 id. 있으면 출발 대기를 출발역·첫 leg 노선·진행 방향 시간표로 구한다(→ 배차간격/2 → floor).
+   * 막차 종료 시 "첫차 HH:mm"도 이 출발역 기준이다. 없으면 출발 대기는 배차간격/2.
+   */
+  originStationId?: string;
   /** freshness·시간표 조회용 현재 시각(ms). 미지정 시 Date.now() — 테스트는 KST 고정값을 주입한다. */
   nowMs?: number;
   /**
@@ -1156,6 +1163,7 @@ export function calculateStaticEtaDetail(route: Route, options: StaticEtaOptions
     originWalkSeconds: calculateWalkingSeconds(options.currentLocation, options.originStation),
     destinationWalkSeconds: calculateWalkingSeconds(options.destinationStation, options.destination),
     excludeOriginWait: options.excludeOriginWait,
+    originStop: options.originStationId ? resolveOriginStop(route, options.originStationId) : null,
     originRealtimeWaitSeconds: freshArrivalSeconds(options.arrivalAtOrigin, nowMs),
     transferRealtimeWaitSeconds: options.arrivalsAtTransfers?.map((a) => freshArrivalSeconds(a, nowMs)),
     transferBoardableArrivalsMs: toBoardableEpochs(options.boardableArrivalsAtTransfers, nowMs),
