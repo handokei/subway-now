@@ -37,7 +37,7 @@ const bgStation: Station = {
   lng: 127.04,
 };
 
-const directRoute: Route = { type: 'direct', line: '2', stops: 3, travelSeconds: 240 };
+const directRoute: Route = { type: 'direct', line: '2', stops: 3, travelSeconds: 240, destinationStationId: '2-001' };
 
 function setupStorage(values: Partial<Record<string, string | null>>): void {
   (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {

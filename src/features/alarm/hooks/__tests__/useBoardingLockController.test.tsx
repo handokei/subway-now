@@ -1578,6 +1578,8 @@ describe('useBoardingLockController', () => {
           stopsFromTransfer: 5,
           secondsToTransfer: 0,
           secondsFromTransfer: 600,
+          transferStationId: '7-019',
+          destinationStationId: '2-001',
         };
         useLegAdvanceStore.setState({ nextLine: '2', stampedAt: SUGGESTION.decidedAt - 1_000 });
         readSpy.mockResolvedValue({
