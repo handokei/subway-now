@@ -312,6 +312,8 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
   sentAt: number;
   // Epic #1204 그룹 2 D3 (#1273) — 구 client 호환을 위해 optional.
   hopIndex?: number;
+  // #3177 — 구 device 등록은 부재.
+  stationId?: string;
 } {
   const body = JSON.parse(call[1].body as string) as {
     data: {
@@ -322,6 +324,7 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
       pushId: string;
       sentAt: number;
       hopIndex?: number;
+      stationId?: string;
     };
   };
   return body.data;
@@ -3663,6 +3666,37 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         (body) => body.data?.kind === 'sleep-alarm-companion',
       );
       expect(companionCall).toBeDefined();
+    });
+
+    // #3177 PR-9c — retry queue payload도 waypoint.stationId를 보존한다(재발사 시 device가 하차문 id를 받도록).
+    it('#3177 visible alert 503 실패 → retry-push payload에 target waypoint stationId(군자 7-017) 보존', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeSleepAlarmTrip({
+          waypoints: [
+            { stationName: '중곡', line: '7', kind: 'intermediate', stationId: '7-016' },
+            { stationName: '군자', line: '7', kind: 'transfer', stationId: '7-017' },
+            { stationName: '아차산', line: '5', kind: 'destination', stationId: '5-036' },
+          ],
+        }),
+      );
+      let callCount = 0;
+      const fetchImpl = vi.fn(async () => {
+        callCount += 1;
+        return callCount === 1 ? new Response('', { status: 503 }) : new Response('', { status: 200 });
+      });
+      await runScheduled(makeEnv(kv, kv), {
+        seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-sleep-alarm-sid',
+      });
+      const entry = JSON.parse((await kv.get('retry-push:p-sleep-alarm-sid')) as string);
+      expect(entry.payload.nextWaypoint).toBe('군자');
+      expect(entry.payload.stationId).toBe('7-017');
     });
 
     // PR #2085 리뷰 P2-1 — companion(보조 채널) 실패는 dedup을 건드리지 않는다(alert이 주
@@ -8203,6 +8237,32 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     });
     const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]);
     expect(data.hopIndex).toBe(4);
+  });
+
+  // #3177 PR-9c — waypoint.stationId(실제 하차 승강장 id)를 silent push data에 forward (값이 있을 때만).
+  it('#3177 payload.stationId 포함 — waypoint.stationId가 그대로 forward (7호선 중곡 7-016)', async () => {
+    const tripWithStationId = makeLockTripFixture('arvl-tok', {
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate', stationId: '7-016' },
+        { stationName: '군자', line: '7', kind: 'destination', stationId: '7-017' },
+      ],
+    });
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: tripWithStationId,
+      pushId: 'p-arvl-station-id',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]);
+    expect(data.stationId).toBe('7-016');
+  });
+
+  it('#3177 payload.stationId 누락 — waypoint.stationId 부재(구 device 등록)면 wire에 필드 자체가 없다', async () => {
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-arvl-no-station-id',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]);
+    expect(data).not.toHaveProperty('stationId');
   });
 
   it('payload.hopIndex 누락 — waypoint.hopIndex 부재 시 silent push 본문에서도 누락', async () => {
