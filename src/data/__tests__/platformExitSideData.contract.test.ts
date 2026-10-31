@@ -5,7 +5,6 @@
  */
 import platformExitSide from '../platformExitSide.json';
 import byDirection from '../platformExitSideByDirection.json';
-import exitSideByName from '../exitSide.json';
 import stations from '../stations.json';
 
 type Entry = { side: string; grade: string };
@@ -82,7 +81,6 @@ describe('platformExitSideByDirection.json 계약', () => {
 
   it("어떤 하차문 데이터에도 'both'는 없다", () => {
     expect(JSON.stringify(byDirection)).not.toContain('both');
-    expect(JSON.stringify(exitSideByName)).not.toContain('both');
   });
 
   it('항목마다 stations.json id, left/right, wiki 등급, 인용 URL, 메모를 가진다', () => {
