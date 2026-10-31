@@ -314,6 +314,11 @@ jest.mock('i18next', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import {
+  STATION_PUSH_WIRE_FIXTURE,
+  STATION_PUSH_WIRE_FIXTURE_NO_STATION_ID,
+} from '../../../../shared/types/__fixtures__/stationPushStationIdWireFixture';
+import { resolveExitSideForStation } from '../../../../shared/utils/resolveExitSideForStation';
+import {
   extractPayload,
   getSilentPushRegistrationStatus,
   handleSilentPush,
@@ -782,6 +787,22 @@ describe('silentPushTask', () => {
           expect(extracted).not.toBeNull();
           expect((extracted as { stationId?: string }).stationId).toBeUndefined();
         }
+      });
+    });
+
+    // backend wire 계약 fixture(backend wire_20261030_station_id.test.ts와 공유)를 device가 그대로 소비한다.
+    describe('stationId backend wire fixture 소비 (#3177)', () => {
+      it('backend가 싣는 shape에서 stationId를 파싱하고, 그 id로 하차문이 오른쪽(사당 2호선 상대식)으로 풀린다', () => {
+        const extracted = extractPayload(bgTaskData({ ...STATION_PUSH_WIRE_FIXTURE }));
+        expect(extracted).toMatchObject({ nextWaypoint: '사당', stationId: STATION_PUSH_WIRE_FIXTURE.stationId });
+        const { stationId } = extracted as { stationId: string };
+        expect(resolveExitSideForStation({ stationId, terminus: 'unknown' })).toMatchObject({ side: 'right' });
+      });
+
+      it('stationId 없는 wire(구 device 등록)는 stationId undefined — 하차문 조회 대상 아님', () => {
+        const extracted = extractPayload(bgTaskData({ ...STATION_PUSH_WIRE_FIXTURE_NO_STATION_ID }));
+        expect(extracted).not.toBeNull();
+        expect((extracted as { stationId?: string }).stationId).toBeUndefined();
       });
     });
 
