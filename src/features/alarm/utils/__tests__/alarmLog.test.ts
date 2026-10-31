@@ -560,7 +560,7 @@ describe('alarmLog', () => {
       lat: 37.498,
       lng: 127.028,
     };
-    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
+    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청', stationId: '1-033' };
 
     beforeEach(() => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
@@ -603,7 +603,7 @@ describe('alarmLog', () => {
 
       it('destination + imminent 발사 시 flag가 true로 세워지고 1회 소비 후 리셋된다', () => {
         expect(consumeAccurateDestinationFire()).toBe(false);
-        logFiredAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '뚝섬' });
+        logFiredAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '뚝섬', stationId: '2-010' });
         expect(consumeAccurateDestinationFire()).toBe(true);
         // 소비 직후 리셋 — 다음 trip으로 새지 않는다.
         expect(consumeAccurateDestinationFire()).toBe(false);
@@ -615,7 +615,7 @@ describe('alarmLog', () => {
       });
 
       it('kind가 transfer/station-passed면 phaseId=imminent여도 flag를 세우지 않는다', () => {
-        logFiredAlarm('fg', { phaseId: 'imminent', type: 'transfer', stationName: '건대입구' });
+        logFiredAlarm('fg', { phaseId: 'imminent', type: 'transfer', stationName: '건대입구', stationId: '2-012' });
         expect(consumeAccurateDestinationFire()).toBe(false);
       });
     });

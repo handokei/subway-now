@@ -181,7 +181,7 @@ const mockNearestResult: NearestStationResult = {
 };
 
 const mockRoute = makeDirectRoute(3, '2');
-const mockAlarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
+const mockAlarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청', stationId: '1-033' };
 
 function call(overrides: Partial<Parameters<typeof processLocationUpdate>[0]> = {}) {
   return processLocationUpdate({
@@ -373,7 +373,7 @@ describe('processLocationUpdate', () => {
         mockFindNearestStation.mockReturnValue(mockNearestResult);
         mockFindRoute.mockReturnValue(mockRoute);
         mockGetBoardingLock.mockResolvedValue(lockAtNearestStation);
-        const heldEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '뚝섬' };
+        const heldEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '뚝섬', stationId: '2-010' };
         mockEvaluateAlarmPhase.mockImplementation((...args: unknown[]) => {
           const heldOut = args[4] as AlarmEvent[];
           heldOut.push(heldEvent);
@@ -1018,6 +1018,7 @@ describe('processLocationUpdate', () => {
       phaseId: 'early',
       type: 'transfer',
       stationName: '교대',
+      stationId: '2-023',
     };
 
     beforeEach(() => {
@@ -1078,7 +1079,8 @@ describe('processLocationUpdate', () => {
       mockEvaluateAlarmPhase.mockReturnValue({
         phaseId: 'early',
         type: 'transfer',
-        stationName: '시청', // 둘째 hop
+        stationName: '시청',
+        stationId: '1-033', // 둘째 hop
       });
       await call({ sleepMode: true });
       expect(mockLogFiredAlarm).toHaveBeenCalled();
@@ -1596,6 +1598,7 @@ describe('processLocationUpdate', () => {
         phaseId: 'early',
         type: 'transfer',
         stationName: '건대입구',
+        stationId: '2-012',
       });
     });
 
@@ -1702,6 +1705,7 @@ describe('processLocationUpdate', () => {
         phaseId: 'early',
         type: 'destination',
         stationName: '시청',
+        stationId: '1-033',
       });
       mockGetBgHopWindowStation.mockResolvedValue(lineStationB); // 기준 = index 1
       mockFindNearestStation.mockReturnValue({ station: lineStationD, distanceKm: 0.1 }); // candidate = index 3
@@ -1939,7 +1943,7 @@ describe('processLocationUpdate', () => {
         mockFindRoute.mockReturnValue(mockRoute);
         mockGetBoardingLock.mockResolvedValue(lockSleeping);
         mockGetFirstLeg.mockReturnValue({ line: '2', endName: '시청' });
-        mockEvaluateAlarmPhase.mockReturnValue({ phaseId: 'early', type: 'transfer', stationName: '시청' });
+        mockEvaluateAlarmPhase.mockReturnValue({ phaseId: 'early', type: 'transfer', stationName: '시청', stationId: '1-033' });
 
         await call({ sleepMode: true });
 

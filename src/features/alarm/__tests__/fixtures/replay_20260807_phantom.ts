@@ -43,6 +43,7 @@ export const PHANTOM_ALARM_EVENT: AlarmEvent = {
   phaseId: 'early',
   type: 'destination',
   stationName: PHANTOM_DESTINATION.name,
+  stationId: PHANTOM_DESTINATION.id,
 };
 
 /**
