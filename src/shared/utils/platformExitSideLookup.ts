@@ -16,8 +16,7 @@ const DIRECTIONAL_EXIT_SIDE_MAP = directionalData as DirectionalExitSideMap;
 // 매핑이 없으면 null을 반환해 caller가 graceful fallback 할 수 있게 한다.
 //
 // 본 SSOT는 승강장 구조 기반 정적 데이터로 방향(up/down) 무관.
-// 진행 방향별 fine-grained 정보가 필요하면 features/route/utils/exitSide.ts의
-// lookupExitSide(stationName, direction)을 사용한다.
+// 진행 방향별 fine-grained 정보가 필요하면 lookupDirectionalExitSide(stationId, ...)를 쓴다 — 하차문 조회는 항상 역 id 기준이다.
 export function lookupPlatformExitSide(stationId: string): PlatformExitSide | null {
   return PLATFORM_EXIT_SIDE_MAP[stationId]?.side ?? null;
 }

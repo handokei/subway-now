@@ -18,7 +18,6 @@
     "lint:swift-mirror": "bash scripts/check-swift-mirror.sh",
     "deploy:web": "bash scripts/deploy-web.sh",
     "data:merge": "node scripts/merge-station-names-en.js && node scripts/merge-station-names-multilang.js",
-    "data:fetch-exit-side": "node scripts/fetch-exit-side.js",
     "data:fetch-quick-exit": "node scripts/fetch-quick-exit.js",
     "data:build-transfer-times": "node scripts/build-transfer-times.js",
     "data:build-platform-exit-side": "node scripts/build-platform-exit-side.js",

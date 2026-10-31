@@ -355,7 +355,6 @@
     "imminentArrivalBody": "Get off at this stop",
     "exitSideLeft": "Exit on the left",
     "exitSideRight": "Exit on the right",
-    "exitSideBoth": "Doors open on both sides",
     "quickHintTransfer": "Stand near transfer exit",
     "quickHintArrival": "Stand near station exit",
     "lastTrainTitle": "Last train in {{minutes}} min",

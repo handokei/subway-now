@@ -355,7 +355,6 @@
     "imminentArrivalBody": "이번 역에서 내리세요",
     "exitSideLeft": "왼쪽 문으로 하차하세요",
     "exitSideRight": "오른쪽 문으로 하차하세요",
-    "exitSideBoth": "양쪽 문이 열립니다",
     "quickHintTransfer": "환승이 빠른 위치에서 하차하세요",
     "quickHintArrival": "출구가 빠른 위치에서 하차하세요",
     "lastTrainTitle": "막차 {{minutes}}분 전",

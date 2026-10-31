@@ -5,8 +5,8 @@
 //   'both'는 존재하지 않는다 — 종착역·복합식도 방향마다 한쪽 문만 열린다.
 //
 // 이 SSOT는 진행 방향(up/down)과 무관한 정적 데이터다.
-// 방향별 fine-grained 정보는 src/data/exitSide.json (사용자 검수형) 및
-// src/data/platformExitSideByDirection.json (인용 출처가 있는 방향별 override) 참조.
+// 방향별 fine-grained 정보는 src/data/platformExitSideByDirection.json
+// (인용 출처가 있는 방향별 override) 참조.
 export type PlatformExitSide = 'left' | 'right';
 
 // 항목의 신뢰 출처. 알림 레이어가 표시 여부를 결정할 때 사용한다.
