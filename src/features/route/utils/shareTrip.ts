@@ -2,7 +2,7 @@ import { Share } from 'react-native';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import type { LineNumber } from '../../../shared/types/station';
-import type { EtaDisplayKind } from '../../../shared/utils/journeyTimeline';
+import { formatFirstTrainTime, type EtaDisplayKind } from '../../../shared/utils/journeyTimeline';
 
 /**
  * Share A — 시스템 텍스트 공유.
@@ -32,6 +32,8 @@ export interface ShareTripInput {
   travelMinutes: number;
   /** 소요 시간 표기 종류. 미지정이면 'exact'. */
   etaKind?: EtaDisplayKind;
+  /** 막차 종료 구간의 시간표 첫차 시각(epoch ms) — 있으면 첫차 템플릿을 쓴다. */
+  firstTrainAtMs?: number;
   t: TFunction;
 }
 
@@ -45,10 +47,12 @@ function lineLabel(t: TFunction, line: LineNumber): string {
  * 호출자가 버튼을 비활성화할 수 있게 한다.
  */
 export function buildShareTripText(input: ShareTripInput): string | null {
-  const { route, currentStation, destination, totalStops, travelMinutes, etaKind = 'exact', t } = input;
+  const { route, currentStation, destination, totalStops, travelMinutes, etaKind = 'exact', firstTrainAtMs, t } = input;
   if (!route || !currentStation || !destination) return null;
 
-  return t(BODY_TEMPLATE_KEYS[etaKind], {
+  const withFirstTrain = etaKind === 'lastTrainEnded' && firstTrainAtMs !== undefined;
+  return t(withFirstTrain ? 'share.trip.bodyTemplateFirstTrain' : BODY_TEMPLATE_KEYS[etaKind], {
+    time: withFirstTrain ? formatFirstTrainTime(firstTrainAtMs) : undefined,
     fromName: currentStation.name,
     fromLine: lineLabel(t, currentStation.line),
     toName: destination.name,

@@ -10,7 +10,7 @@ import { directionOnLine } from './directionOnLine';
 import { classifyDayType, classifyPeriod, lookupHeadwaySeconds } from './lineHeadway';
 import type { Route } from './stationRoute';
 import { findStationByNameAndLine, getStationById } from './stationRoute';
-import { findBoardableDeparture } from './timetableShared';
+import { findBoardableDeparture, formatMinutesAsHHmm } from './timetableShared';
 import type { Direction } from './timetableShared';
 import { getTransferSeconds } from './transferTimes';
 
@@ -42,6 +42,8 @@ import { getTransferSeconds } from './transferTimes';
 
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
+const MS_PER_MINUTE = MS_PER_SECOND * SECONDS_PER_MINUTE;
+const KST_OFFSET_MS = 9 * 60 * MS_PER_MINUTE;
 /** 배차간격 기반 평균 대기 = 간격의 절반. */
 const HEADWAY_WAIT_DIVISOR = 2;
 
@@ -55,6 +57,8 @@ export interface JourneyWait {
   stationName: string | null;
   source: WaitSource;
   seconds: number;
+  /** source='ended'이고 시간표가 첫 운행을 알려줄 때 그 첫차 출발 시각(절대 epoch ms). 판정에는 쓰지 않는다. */
+  firstTrainAtMs?: number;
 }
 
 /** 시간표 조회 결과 관측 — alarmLog `boardable-lookup` → boardableMissRatio 입력. */
@@ -73,6 +77,8 @@ export interface JourneyEta {
   waitUnknown: boolean;
   /** 막차 이후 — 표시는 "막차 종료". */
   lastTrainEnded: boolean;
+  /** lastTrainEnded일 때 시간표가 알려주는 첫차 시각(epoch ms, 첫 ended 대기 기준). 시간표 미커버면 undefined → "막차 종료". */
+  firstTrainAtMs?: number;
   waits: JourneyWait[];
   lookups: BoardableLookup[];
 }
@@ -212,7 +218,7 @@ function resolveWait(request: WaitRequest): WaitResolution {
     if (result?.status === 'ok') {
       const { departure } = result;
       return departure.isNextDayFallback
-        ? { wait: wait('ended', 0), lookup }
+        ? { wait: { ...wait('ended', 0), firstTrainAtMs: atMs + departure.waitSeconds * MS_PER_SECOND }, lookup }
         : { wait: wait('timetable', departure.waitSeconds), lookup };
     }
   }
@@ -283,9 +289,15 @@ export function computeJourneyEta(input: JourneyEtaInput): JourneyEta {
     totalSeconds,
     waitUnknown: waits.some((w) => w.source === 'floor'),
     lastTrainEnded: waits.some((w) => w.source === 'ended'),
+    firstTrainAtMs: waits.find((w) => w.firstTrainAtMs !== undefined)?.firstTrainAtMs,
     waits,
     lookups,
   };
+}
+
+/** 첫차 시각(epoch ms) → KST "HH:mm". */
+export function formatFirstTrainTime(epochMs: number): string {
+  return formatMinutesAsHHmm(Math.floor((epochMs + KST_OFFSET_MS) / MS_PER_MINUTE));
 }
 
 export type EtaDisplayKind = 'exact' | 'unknownWait' | 'lastTrainEnded';

@@ -1,5 +1,5 @@
 import { calculateStaticEtaDetail, type Route } from '../../../shared/utils/stationRoute';
-import { etaDisplayKind, type EtaDisplayKind } from '../../../shared/utils/journeyTimeline';
+import { etaDisplayKind, formatFirstTrainTime, type EtaDisplayKind } from '../../../shared/utils/journeyTimeline';
 
 /**
  * #1480 후속 — 경로 목록 칩·공유 문구의 소요 시간(대기 포함).
@@ -10,6 +10,8 @@ import { etaDisplayKind, type EtaDisplayKind } from '../../../shared/utils/journ
 export interface ChipEta {
   minutes: number;
   kind: EtaDisplayKind;
+  /** kind='lastTrainEnded'일 때 시간표 첫차 시각 — 있으면 "첫차 HH:mm"로 표시한다. */
+  firstTrainAtMs?: number;
 }
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
@@ -17,14 +19,18 @@ type TFunction = (key: string, options?: Record<string, unknown>) => string;
 export function computeChipEta(route: NonNullable<Route>, nowMs: number): ChipEta {
   const detail = calculateStaticEtaDetail(route, { nowMs });
   // route가 non-null이므로 detail은 항상 존재한다.
-  const { minutes } = detail!;
-  return { minutes, kind: etaDisplayKind(detail) };
+  const { minutes, firstTrainAtMs } = detail!;
+  return { minutes, kind: etaDisplayKind(detail), firstTrainAtMs };
 }
 
 /** 칩 보조 라벨 — 홈 상단과 같은 i18n 키(`home.lastTrainEnded`)를 재사용한다. */
 export function buildRouteChipLabel(t: TFunction, transferCount: number, eta: ChipEta): string {
-  const { minutes: min, kind } = eta;
-  if (kind === 'lastTrainEnded') return t('home.lastTrainEnded');
+  const { minutes: min, kind, firstTrainAtMs } = eta;
+  if (kind === 'lastTrainEnded') {
+    return firstTrainAtMs === undefined
+      ? t('home.lastTrainEnded')
+      : t('home.firstTrainAt', { time: formatFirstTrainTime(firstTrainAtMs) });
+  }
   const suffix = kind === 'unknownWait' ? 'Plus' : '';
   return transferCount === 0
     ? t(`route.directOnly${suffix}`, { min })

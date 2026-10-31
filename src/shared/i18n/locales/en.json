@@ -35,6 +35,7 @@
     "minuteUnit": "min",
     "minuteUnitPlus": "min+",
     "lastTrainEnded": "Last train ended",
+    "firstTrainAt": "First train {{time}}",
     "originEstimated": "Estimated current station",
     "originStaleDemote": "Moving · confirming current station",
     "routeTo": "Route to",
@@ -435,7 +436,8 @@
       "buttonLabel": "Share route",
       "bodyTemplate": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)",
       "bodyTemplatePlus": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}}+ min ({{stops}} stops)",
-      "bodyTemplateEnded": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nLast train ended ({{stops}} stops)"
+      "bodyTemplateEnded": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nLast train ended ({{stops}} stops)",
+      "bodyTemplateFirstTrain": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nFirst train {{time}} ({{stops}} stops)"
     }
   },
   "debug": {

@@ -32,7 +32,7 @@ import { DestinationPicker } from '../features/route/components/DestinationPicke
 import { PausedNavigationBadge } from '../features/route/components/PausedNavigationBadge';
 import { setNavigationPausedAt } from '../features/alarm/utils/navigationPauseStorage';
 import { resumeNavigation } from '../features/alarm/store/tripBoundCleanups';
-import { etaDisplayKind } from '../shared/utils/journeyTimeline';
+import { etaDisplayKind, formatFirstTrainTime } from '../shared/utils/journeyTimeline';
 import { findRouteCandidatesByCategory, findRoutes, buildJourneyDisplay, calculateEtaDetail, calculateStaticEtaDetail, anchorRouteToCurrentStation, getRouteTotalStops, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { isInTripByEvidence } from '../shared/utils/boardingWait';
 import { getFiredAlarms } from '../features/alarm/utils/notificationState';
@@ -1186,6 +1186,7 @@ export default function HomeScreen() {
   const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
   const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
   const displayEtaKind = etaDisplayKind(isRealtimeEta ? etaDetail : staticEtaDetail);
+  const displayFirstTrainAtMs = (isRealtimeEta ? etaDetail : staticEtaDetail)?.firstTrainAtMs;
 
   // #2179 — 환승 leg의 "전열차" 후보 nextStationName. origin 슬롯의 label 계산(#649)과 동일하게
   // (환승 후 노선, 환승역, 다음 waypoint) 기준 진행 방향 바로 다음 인접역을 산출한다.
@@ -1803,7 +1804,9 @@ export default function HomeScreen() {
                       {displayEta != null && (
                         <>
                           {displayEtaKind === 'lastTrainEnded' ? (
-                            <Text style={[typography.etaBig, { color: colors.ink }]}>{t('home.lastTrainEnded')}</Text>
+                            <Text style={[typography.etaBig, { color: colors.ink }]}>
+                              {displayFirstTrainAtMs === undefined ? t('home.lastTrainEnded') : t('home.firstTrainAt', { time: formatFirstTrainTime(displayFirstTrainAtMs) })}
+                            </Text>
                           ) : (
                             <Text style={[typography.etaBig, { color: colors.ink }]}>
                               {displayEta}
@@ -1917,6 +1920,7 @@ export default function HomeScreen() {
                             totalStops={journey.totalStops}
                             travelMinutes={chipEtaByKey.get(selectedKey)?.minutes ?? selectedCandidate?.travelMinutes ?? 0}
                             etaKind={chipEtaByKey.get(selectedKey)?.kind}
+                            firstTrainAtMs={chipEtaByKey.get(selectedKey)?.firstTrainAtMs}
                           />
                         </View>
                         <EditorialTimeline

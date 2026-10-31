@@ -14,6 +14,7 @@ interface Props {
   totalStops: number;
   travelMinutes: number;
   etaKind?: EtaDisplayKind;
+  firstTrainAtMs?: number;
   testID?: string;
 }
 
@@ -31,6 +32,7 @@ export function ShareTripButton({
   totalStops,
   travelMinutes,
   etaKind,
+  firstTrainAtMs,
   testID,
 }: Props) {
   const { t } = useTranslation();
@@ -44,11 +46,12 @@ export function ShareTripButton({
       totalStops,
       travelMinutes,
       etaKind,
+      firstTrainAtMs,
       // shareTrip util은 (key, options) → string 시그니처만 사용 — react-i18next의
       // 광범위한 오버로드와 좁은 호환만 필요해 cast로 좁힌다.
       t: t as unknown as (key: string, options?: Record<string, unknown>) => string,
     });
-  }, [route, currentStation, destination, totalStops, travelMinutes, etaKind, t]);
+  }, [route, currentStation, destination, totalStops, travelMinutes, etaKind, firstTrainAtMs, t]);
 
   if (!route || !currentStation || !destination) return null;
 

@@ -35,6 +35,7 @@
     "minuteUnit": "分钟",
     "minuteUnitPlus": "分钟+",
     "lastTrainEnded": "末班车已结束",
+    "firstTrainAt": "首班车 {{time}}",
     "originEstimated": "当前推定站",
     "originStaleDemote": "行驶中 · 正在确认当前站",
     "routeTo": "前往",
@@ -435,7 +436,8 @@
       "buttonLabel": "分享路线",
       "bodyTemplate": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}} 分钟 ({{stops}} 站)",
       "bodyTemplatePlus": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}}+ 分钟 ({{stops}} 站)",
-      "bodyTemplateEnded": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n末班车已结束 ({{stops}} 站)"
+      "bodyTemplateEnded": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n末班车已结束 ({{stops}} 站)",
+      "bodyTemplateFirstTrain": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n首班车 {{time}} ({{stops}} 站)"
     }
   },
   "debug": {
