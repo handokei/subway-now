@@ -77,7 +77,7 @@ describe('2호선 seam 출발(시청·충정로) 42쌍 전수 매트릭스 — #
       });
 
       it(`resolveTripDirection (direct route) → ${expected}`, () => {
-        const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0 };
+        const route: DirectRoute = { type: 'direct', stops: 1, line: '2', travelSeconds: 0, destinationStationId: '2-001' };
         expect(resolveTripDirection(route, toName, fromId)).toBe(expected);
       });
     },
