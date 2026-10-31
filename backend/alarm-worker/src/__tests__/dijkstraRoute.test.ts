@@ -18,6 +18,8 @@ import {
   findStationIdByNameAndLine,
   inferWaypointsFromOriginAndDestination,
   __resetStationNameCache,
+  preservesIncomingTransfers,
+  transferWaypointKeys,
 } from '../dijkstraRoute';
 
 describe('#1604 backend Dijkstra adapter', () => {
@@ -225,5 +227,34 @@ describe('#1604 backend Dijkstra adapter', () => {
       });
       expect(first).toEqual(second);
     });
+  });
+});
+
+describe('#1480 transfer 순서 동일성', () => {
+  const t = (stationName: string, line: '2' | '7', stationId?: string) => ({
+    stationName,
+    line,
+    kind: 'transfer' as const,
+    ...(stationId ? { stationId } : {}),
+  });
+  const d = { stationName: '뚝섬', line: '2' as const, kind: 'destination' as const };
+
+  it('incoming에 transfer가 없으면 보존할 선택이 없어 채택 가능', () => {
+    expect(preservesIncomingTransfers([d], [t('건대입구', '7'), d])).toBe(true);
+  });
+  it('transfer 개수가 다르면 불일치', () => {
+    expect(preservesIncomingTransfers([t('대림', '7'), d], [t('대림', '7'), t('건대입구', '2'), d])).toBe(false);
+  });
+  it('id가 양쪽에 있으면 id로 비교(이름 표기가 달라도 일치)', () => {
+    expect(preservesIncomingTransfers([t('대림', '7', '7-1')], [t('대림(구로구청)', '7', '7-1')])).toBe(true);
+    expect(preservesIncomingTransfers([t('건대입구', '7', '7-1')], [t('건대입구', '7', '7-2')])).toBe(false);
+  });
+  it('id가 한쪽에 없으면 역명+노선으로 비교', () => {
+    expect(preservesIncomingTransfers([t('건대입구', '7')], [t('건대입구', '7', '7-9')])).toBe(true);
+    expect(preservesIncomingTransfers([t('건대입구', '7')], [t('건대입구', '2', '2-9')])).toBe(false);
+    expect(preservesIncomingTransfers([t('대림', '7')], [t('건대입구', '7')])).toBe(false);
+  });
+  it('transferWaypointKeys는 transfer만 순서대로 역명|노선', () => {
+    expect(transferWaypointKeys([t('대림', '7'), d, t('건대입구', '2')])).toEqual(['대림|7', '건대입구|2']);
   });
 });

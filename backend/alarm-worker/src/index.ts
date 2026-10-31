@@ -202,7 +202,11 @@ import {
   waypointSignatureKey,
   withTripRegisterLock,
 } from './trips';
-import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
+import {
+  preservesIncomingTransfers,
+  inferWaypointsFromOriginAndDestination,
+  transferWaypointKeys,
+} from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
   TRIP_STATUS_RETENTION_MS,
@@ -1064,7 +1068,29 @@ app.post('/trips', async (c) => {
       destinationId: incoming.destination,
       destinationName: destinationWaypointName,
     });
-    if (inferred !== null && inferred.length > incoming.waypoints.length) {
+    // #1480 — 기기가 고른 환승 경로(예: 대림)를 서버 min-time(건대입구)이 덮어쓰지 않도록, 재합성은
+    // incoming transfer 순서와 같을 때만 채택한다. 다르면 incoming 유지 + D1 거부 기록(KV write 0).
+    if (
+      inferred !== null &&
+      inferred.length > incoming.waypoints.length &&
+      !preservesIncomingTransfers(incoming.waypoints, inferred)
+    ) {
+      scheduleTripEvent(
+        c,
+        recordTripEvent(c.env.DB, {
+          tokenHash: hashTripToken(incoming.token),
+          kind: 'waypoint-resynth-rejected',
+          meta: {
+            reason: 'transfer-mismatch',
+            origin: incoming.promptDisplay.originStation,
+            originLine: incoming.promptDisplay.line,
+            destinationId: incoming.destination,
+            incomingTransfers: transferWaypointKeys(incoming.waypoints),
+            inferredTransfers: transferWaypointKeys(inferred),
+          },
+        }),
+      );
+    } else if (inferred !== null && inferred.length > incoming.waypoints.length) {
       // occurrenceIdx 재stamp — `validateTrip`(types.ts:1723~) 규약과 동일. 중복 stationName
       // (순환선/회차)에 정확한 :n suffix 매칭을 위해 sequence 1-pass로 stamp.
       const occurrenceCount = new Map<string, number>();
