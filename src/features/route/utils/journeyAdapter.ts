@@ -7,6 +7,7 @@ import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { NearestStationResult, LineNumber, Station } from '../../../shared/types/station';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import { parseTrainLineDirection } from './trainLineDirection';
+import { LINE_NAMES } from '../../../shared/constants/lineColors';
 import { arrivalAt } from '../../../shared/utils/arrivalClock';
 import {
   formatArrivalEtaPosition,
@@ -22,11 +23,12 @@ const allStations = stationsData as Station[];
 import type {
   StopArrivalContext,
   StopTransferTarget,
+  StopSegment,
   Stop,
   ArrivalTrain,
   HandoffNearest,
 } from '../../../shared/types/journey';
-export type { StopArrivalContext, StopTransferTarget, Stop, ArrivalTrain, HandoffNearest };
+export type { StopArrivalContext, StopTransferTarget, StopSegment, Stop, ArrivalTrain, HandoffNearest };
 
 const WALK_SPEED_M_PER_MIN = 80;
 
@@ -63,6 +65,11 @@ function resolveOriginLine(fromName: string, intendedLine: LineNumber): LineNumb
   // ADR-038 Phase 1 (#2575) — approachLine(#1325)과 공유하는 역↔노선 정합 SSoT. 별도 구현
   // 중복(drift 위험) 제거: 의도 호선을 그 역이 서비스하면 채택, 아니면 실제 정차 호선으로 교정.
   return resolveConsistentStationLine(fromName, intendedLine);
+}
+
+// #3258 — 구간 칩 데이터. 0정거장 구간(환승역 흡수·동일역)은 칩을 만들지 않는다.
+function segmentChip(seg: JourneySegment): StopSegment | undefined {
+  return seg.stops > 0 ? { line: seg.line, stops: seg.stops } : undefined;
 }
 
 export function journeyDisplayToStops(
@@ -102,10 +109,13 @@ export function journeyDisplayToStops(
         ? nextSeg.line
         : resolveOriginLine(seg.fromName, seg.line);
       connectorLine = originLine;
+      // #3258 — 출발 노드가 시작하는 구간. 환승역 흡수(collapse) 시엔 다음 segment가 첫 구간.
+      const originSegment = segmentChip(isCollapsedZeroFirstHop ? nextSeg : seg);
       stops.push({
         station: getStationDisplayNameByName(seg.fromName, allStations),
         line: originLine,
         mark: 'filled',
+        ...(originSegment && { segmentToNext: originSegment }),
       });
     }
 
@@ -132,20 +142,24 @@ export function journeyDisplayToStops(
 
     if (!isLast) {
       const nextSeg = segments[i + 1];
+      const nextSegment = segmentChip(nextSeg);
       stops.push({
         station: getStationDisplayNameByName(seg.toName, allStations),
         line: nextSeg.line,
-        stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
         mark: 'transfer',
-        note: i18next.t('journey.transferNote'),
+        // #3258 — 환승 노드 문구는 "{from}호선 → {to}호선 환승". 정거장 수는 구간 칩이 맡는다.
+        note: i18next.t('journey.transferLines', {
+          from: LINE_NAMES[seg.line],
+          to: LINE_NAMES[nextSeg.line],
+        }),
         arrivalContext,
         connectorLine,
         transferTarget: { toLine: nextSeg.line },
+        ...(nextSegment && { segmentToNext: nextSegment }),
       });
     } else {
       // 환승역이 곧 목적지인 케이스(0정거장 도착 노드 잉여)는 직전 환승 노드를 도착으로 흡수.
       // 언어 독립성을 위해 표시명이 아닌 원본 역명(toName)으로 비교한다.
-      // stopsFromPrev는 환승 노드의 기존 값(직전 segment의 정거장 수)을 그대로 유지.
       // arrivalContext도 prev(이전 segment의 도착)로 유지 — 사용자가 실제로 그 역에 내릴 때
       // 탑승 중이던 노선은 prevSeg 노선이기 때문.
       const prevSeg = segments[i - 1];
@@ -162,7 +176,6 @@ export function journeyDisplayToStops(
         stops.push({
           station: getStationDisplayNameByName(seg.toName, allStations),
           line: seg.line,
-          stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
           mark: 'dest',
           note: i18next.t('journey.arrivalNote'),
           arrivalContext,

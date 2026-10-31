@@ -50,6 +50,13 @@ export interface Waypoint {
   /** "transfer" — 환승 안내 / "destination" — 최종 도착 / "intermediate" — 중간역 통과 */
   kind: StationWaypointKind;
   /**
+   * #3177 — 실제로 내리는 승강장의 역 id(stations.json `id`, 예: 사당 2호선 쪽 '2-026'). 환승 waypoint는 fromLine 쪽.
+   * 하차문 좌/우는 이름 첫 매칭이 아니라 이 id로 조회해야 환승역에서 다른 노선 값을 집지 않는다.
+   * `validateTrip`이 서버 stations.json에 없거나 `line`과 노선이 다르면 이 필드만 제거한다(트립 거부 아님).
+   * 구 client·backend 추론 경로는 부재 — 기존 동작 100% 유지(ADR-029 optional 추가, 계약 버전 불변).
+   */
+  stationId?: string;
+  /**
    * #1193 — 같은 stationName이 trip 원본 waypoint 시퀀스에 중복 등장(순환선/회차)할 때,
    * 이 waypoint가 몇 번째 등장인지(0-based). reschedule push의 `occurrenceIdx`로 전달돼
    * 클라이언트 `rescheduleTripBoundAlarm`이 정확한 `:n` suffix 알람을 cancel + 재예약한다.

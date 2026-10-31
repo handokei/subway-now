@@ -277,7 +277,8 @@
     }
   },
   "journey": {
-    "transferNote": "乗換",
+    "transferLines": "{{from}} → {{to}} 乗換",
+    "segmentChip": "{{line}} {{stops}}",
     "arrivalNote": "到着",
     "transferArrivalNote": "乗換 → 到着"
   },
@@ -320,8 +321,9 @@
     "stopsRemainingToTransfer_one": "{{destination}}乗換まで残り{{count}}駅",
     "stopsRemainingToTransfer_other": "{{destination}}乗換まで残り{{count}}駅",
     "stopsRemainingViaTransfer": "{{transfer}}乗換まで{{transferStops}}駅 · {{destination}}まで{{totalStops}}駅",
-    "quickExitDoor": "{{door}}番ドア",
-    "boardingDoor": "{{door}}番ドアから乗車"
+    "boardingDoor": "{{door}}番ドアから乗車",
+    "boardingDoorTransfer": "{{station}}乗換に早い車両",
+    "boardingDoorExit": "{{station}}で降りるのに早い車両"
   },
   "lines": {
     "1": "1号線",

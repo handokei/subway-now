@@ -1,5 +1,5 @@
 import lineTopology from '../../../data/lineTopology.json';
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateEtaDetail, calculateStaticETA, calculateStaticEtaDetail, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, getRouteRemainingSeconds, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStations, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateEtaDetail, calculateStaticETA, calculateStaticEtaDetail, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, anchorRouteToCurrentStation, getRouteRemainingSeconds, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute, terminusReachesTarget } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -323,7 +323,8 @@ describe('buildJourneyDisplay', () => {
   });
 
   it('DirectRoute이면 세그먼트 1개를 반환한다', () => {
-    const route: DirectRoute = makeDirectRoute(3, '2');
+    // #3258 — 첫 구간 정거장 수는 표시되는 두 역 사이 실제 경로 길이(강남→잠실 = 6)로 산출된다.
+    const route: DirectRoute = makeDirectRoute(6, '2');
     const current = mockStation({ id: '2-022', name: '강남' });
     const dest = mockStation({ id: '2-025', name: '잠실(송파구청)' });
 
@@ -334,8 +335,8 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments[0].toName).toBe('잠실(송파구청)');
     expect(result!.segments[0].line).toBe('2');
     expect(result!.segments[0].lineColor).toBe('#009D3E');
-    expect(result!.segments[0].stops).toBe(3);
-    expect(result!.totalStops).toBe(3);
+    expect(result!.segments[0].stops).toBe(6);
+    expect(result!.totalStops).toBe(6);
   });
 
   it('DirectRoute 표시는 current.line이 아닌 route.line을 따른다 (환승역 출발)', () => {
@@ -364,7 +365,7 @@ describe('buildJourneyDisplay', () => {
   it('MultiTransferRoute이면 세그먼트 3개를 반환한다', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 4 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -379,7 +380,7 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments[0].fromName).toBe('암사');
     expect(result!.segments[0].toName).toBe('잠실(송파구청)');
     expect(result!.segments[0].line).toBe('8');
-    expect(result!.segments[0].stops).toBe(3);
+    expect(result!.segments[0].stops).toBe(4);
 
     expect(result!.segments[1].fromName).toBe('잠실(송파구청)');
     expect(result!.segments[1].toName).toBe('시청');
@@ -391,7 +392,80 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments[2].line).toBe('1');
     expect(result!.segments[2].stops).toBe(4);
 
-    expect(result!.totalStops).toBe(12);
+    expect(result!.totalStops).toBe(13);
+  });
+
+  describe('#3258 첫 구간 정거장 수 = 표시되는 출발역~환승역 경로 길이', () => {
+    it('route가 현재역 기준으로 재계산돼 stopsToTransfer가 줄어도(재마운트) 표시 출발역 기준 값을 쓴다', () => {
+      // 용마산(7) 표시 출발 → 건대입구 환승 = 4정거장. route는 어린이대공원 기준이라 1.
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '용마산', line: '7', lineColor: '#747F00' });
+      const dest = mockStation({ name: '뚝섬', line: '2', lineColor: '#009D3E' });
+
+      const result = buildJourneyDisplay(route, current, dest)!;
+      expect(result.segments[0].stops).toBe(4);
+      expect(result.segments[1].stops).toBe(2);
+    });
+
+    it('다중 환승: 첫 구간만 재계산하고 이후 구간은 route 값을 유지한다', () => {
+      const route: MultiTransferRoute = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 1 },
+          { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 9 },
+        ],
+        stopsAfterLastTransfer: 4,
+      });
+      const current = mockStation({ name: '용마산', line: '7', lineColor: '#747F00' });
+      const dest = mockStation({ name: '종각', line: '1', lineColor: '#0052A4' });
+
+      const result = buildJourneyDisplay(route, current, dest)!;
+      expect(result.segments.map((seg) => seg.stops)).toEqual([4, 9, 4]);
+    });
+
+    it('표시 출발역이 노선에서 해석되지 않으면 route 값으로 fallback', () => {
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '없는역', line: '7' });
+      const dest = mockStation({ name: '뚝섬', line: '2' });
+      expect(buildJourneyDisplay(route, current, dest)!.segments[0].stops).toBe(3);
+    });
+
+    it('환승역이 노선에서 해석되지 않으면 route 값으로 fallback', () => {
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '없는환승역',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '용마산', line: '7' });
+      const dest = mockStation({ name: '뚝섬', line: '2' });
+      expect(buildJourneyDisplay(route, current, dest)!.segments[0].stops).toBe(3);
+    });
+
+    it('출발역==환승역(환승 후 re-origin)이면 route 값(0) 유지', () => {
+      const route: TransferRoute = makeTransferRoute({
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 0,
+        stopsFromTransfer: 2,
+      });
+      const current = mockStation({ name: '건대입구', line: '2' });
+      const dest = mockStation({ name: '뚝섬', line: '2' });
+      expect(buildJourneyDisplay(route, current, dest)!.segments[0].stops).toBe(0);
+    });
   });
 
   it('TransferRoute이면 세그먼트 2개를 반환한다', () => {
@@ -2250,43 +2324,40 @@ describe('환승역 이름 표기 불일치 회귀 — #401', () => {
   });
 });
 
-describe('getIntermediateStationNames', () => {
+// #3177 PR-10 — 이름 배열(getIntermediateStationNames)을 Station 배열로 교체: waypoint가 id를 싣기 위해.
+describe('getIntermediateStations', () => {
+  const namesOf = (from: string, to: string) => getIntermediateStations(from, to)?.map(({ name }) => name);
+
   it('returns empty array when current and destination are the same', () => {
-    expect(getIntermediateStationNames('1-001', '1-001')).toEqual([]);
+    expect(getIntermediateStations('1-001', '1-001')).toEqual([]);
   });
 
   it('returns empty array for adjacent stations', () => {
     // 1-001(소요산) → 1-002(동두천): 사이에 역 없음
-    expect(getIntermediateStationNames('1-001', '1-002')).toEqual([]);
+    expect(getIntermediateStations('1-001', '1-002')).toEqual([]);
   });
 
-  it('returns intermediate station names in forward direction', () => {
+  it('returns intermediate stations in forward direction (id 포함)', () => {
     // 1-001(소요산) → 1-005(지행): 동두천, 보산, 동두천중앙
-    expect(getIntermediateStationNames('1-001', '1-005')).toEqual([
-      '동두천',
-      '보산',
-      '동두천중앙',
-    ]);
+    expect(namesOf('1-001', '1-005')).toEqual(['동두천', '보산', '동두천중앙']);
+    expect(getIntermediateStations('1-001', '1-005')?.map(({ id }) => id)).toEqual(['1-002', '1-003', '1-004']);
   });
 
-  it('returns intermediate station names in reverse direction', () => {
+  it('returns intermediate stations in reverse direction', () => {
     // 1-005(지행) → 1-001(소요산): 동두천중앙, 보산, 동두천 (역순)
-    expect(getIntermediateStationNames('1-005', '1-001')).toEqual([
-      '동두천중앙',
-      '보산',
-      '동두천',
-    ]);
+    expect(namesOf('1-005', '1-001')).toEqual(['동두천중앙', '보산', '동두천']);
+    expect(getIntermediateStations('1-005', '1-001')?.map(({ id }) => id)).toEqual(['1-004', '1-003', '1-002']);
   });
 
   it('returns null when stations are on different lines', () => {
     const line1 = getStationsOnLine('1')[0];
     const line2 = getStationsOnLine('2')[0];
-    expect(getIntermediateStationNames(line1.id, line2.id)).toBeNull();
+    expect(getIntermediateStations(line1.id, line2.id)).toBeNull();
   });
 
   it('returns null for unknown station id', () => {
-    expect(getIntermediateStationNames('1-001', 'unknown-id')).toBeNull();
-    expect(getIntermediateStationNames('unknown-id', '1-001')).toBeNull();
+    expect(getIntermediateStations('1-001', 'unknown-id')).toBeNull();
+    expect(getIntermediateStations('unknown-id', '1-001')).toBeNull();
   });
 });
 

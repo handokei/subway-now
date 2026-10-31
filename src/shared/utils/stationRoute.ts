@@ -648,12 +648,12 @@ export function getRemainingStops(
   return path.length - 1;
 }
 
-// 같은 노선 위 두 역 사이의 중간역 이름 배열을 진행 방향대로 반환.
+// 같은 노선 위 두 역 사이의 중간역을 진행 방향대로 반환(#3177 — 이름이 아니라 Station이라 호출부가 id를 쓴다).
 // 양 끝점은 제외. 인접 역 또는 같은 역이면 빈 배열. 다른 노선/미존재 id면 null.
-export function getIntermediateStationNames(
+export function getIntermediateStations(
   fromId: string,
   toId: string,
-): string[] | null {
+): Station[] | null {
   const from = stationById.get(fromId);
   const to = stationById.get(toId);
   if (!from || !to) return null;
@@ -668,7 +668,7 @@ export function getIntermediateStationNames(
 
   // #1698 — 2호선 본선 closed loop은 shortestLinePathIndices가 짧은 쪽 path 반환.
   const path = shortestLinePathIndices(lineStations, fromIdx, toIdx, from.line);
-  return path.slice(1, -1).map((i) => lineStations[i].name);
+  return path.slice(1, -1).map((i) => lineStations[i]);
 }
 
 function buildNameIndex(stations: Station[]): Map<string, number> {
@@ -905,6 +905,21 @@ function findMultiTransferRoute(
 // `BoardingTrainList walkingBufferSeconds` 등 다른 호출자와 공유. fallback은 동일 모듈 안에서
 // `TRANSFER_WALKING_BUFFER_SECONDS`(180s)로 처리. import 위치는 파일 상단.
 
+/**
+ * #3258 — 화면에 표시되는 출발역~도착역 경로의 실제 정거장 수.
+ * route.stops류는 "현재 위치" 기준으로 재계산되는데(재마운트 시 어린이대공원→건대입구 = 1),
+ * journey 출발역 이름은 tripOrigin으로 고정되므로 표시 구간과 어긋난다. 표시되는 두 역 사이를
+ * 노선 데이터에서 직접 세어(펼침 중간역과 동일한 shortestLinePathIndices) 일치시킨다.
+ * 노선에서 두 역을 못 찾거나 동일역이면 route 값을 그대로 쓴다.
+ */
+function displayedSegmentStops(line: LineNumber, fromName: string, toName: string, routeStops: number): number {
+  const lineStations = getStationsOnLine(line);
+  const fromIdx = lineStations.findIndex((s) => isSameStationName(s.name, fromName));
+  const toIdx = lineStations.findIndex((s) => isSameStationName(s.name, toName));
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return routeStops;
+  return shortestLinePathIndices(lineStations, fromIdx, toIdx, line).length - 1;
+}
+
 export function buildJourneyDisplay(
   route: Route,
   current: Station,
@@ -922,7 +937,7 @@ export function buildJourneyDisplay(
           lineColor: LINE_COLORS[route.line] ?? current.lineColor,
           fromName: current.name,
           toName: destination.name,
-          stops: route.stops,
+          stops: displayedSegmentStops(route.line, current.name, destination.name, route.stops),
         },
       ],
       totalStops: route.stops,
@@ -937,7 +952,7 @@ export function buildJourneyDisplay(
           lineColor: LINE_COLORS[route.fromLine] ?? current.lineColor,
           fromName: current.name,
           toName: route.transferName,
-          stops: route.stopsToTransfer,
+          stops: displayedSegmentStops(route.fromLine, current.name, route.transferName, route.stopsToTransfer),
         },
         {
           line: route.toLine,
@@ -961,7 +976,8 @@ export function buildJourneyDisplay(
       lineColor: LINE_COLORS[t.fromLine] ?? fallbackColor,
       fromName: prevName,
       toName: t.transferName,
-      stops: t.stopsToTransfer,
+      // #3258 — 첫 구간만 tripOrigin(표시 출발역) 기준으로 재계산. 이후 구간은 환승역 고정이라 route 값이 정확.
+      stops: i === 0 ? displayedSegmentStops(t.fromLine, prevName, t.transferName, t.stopsToTransfer) : t.stopsToTransfer,
     };
   });
   const lastTransfer = transfers[transfers.length - 1];
