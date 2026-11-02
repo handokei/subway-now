@@ -14941,6 +14941,128 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(ssotReads).toEqual([]);
     });
 
+    // #3036 (O3) — trackingOptIn-only 출발역 질문 창. 판정 입력은 trip.originPromptWindow(등록 시 계산), 사유는 D1 outcome.
+    describe('#3036 O3 창 — 사유가 D1 origin outcome으로 남는다', () => {
+      const ORIGIN = { originStationName: '군자(능동)', promptDisplay: { originStation: '군자(능동)', line: '7' } };
+      const windowTrip = (originPromptWindow: Trip['originPromptWindow'], extra: Partial<Trip> = {}): Trip =>
+        makeTrackingOnlyTrip({ ...ORIGIN, originPromptWindow, ...extra });
+      const originCoords = (): { lat: number; lng: number } => {
+        const coords = findStationCoordsByNameAndLine('군자(능동)', '7');
+        if (coords === null) throw new Error('전제 실패 — 군자(능동) 7호선 좌표');
+        return coords;
+      };
+      const storedTrip = async (kv: InMemoryKV, token: string): Promise<Trip> =>
+        JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
+
+      it('창 시작 전 -> window-not-started(+startAt/fireCount), 발사 0, 근접 fail-closed 카운터는 유지', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const stats = await runOrigin(windowTrip({ startAt: NOW + 120_000 }), new InMemoryKV(), db);
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+        expect(stats.trackingOptInProximityMissingBlocked).toBe(1);
+        expect(originMetas(rows())[0]).toMatchObject({
+          outcome: 'window-not-started',
+          windowStartAt: NOW + 120_000,
+          fireCount: 0,
+        });
+      });
+
+      it('창이 열려 있으면 근접 실측 없이 발사 + fired 행에 viaWindow/windowStartAt', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const stats = await runOrigin(windowTrip({ startAt: NOW - 1 }), new InMemoryKV(), db);
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+        expect(stats.trackingOptInProximityMissingBlocked).toBe(0);
+        expect(originMetas(rows())).toEqual([
+          expect.objectContaining({ outcome: 'fired', viaWindow: true, windowStartAt: NOW - 1 }),
+        ]);
+      });
+
+      it('발사 2회(K=2) 소진 -> window-closed:train-cap', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const stats = await runOrigin(
+          windowTrip({ startAt: NOW - 1 }, { boardingPromptState: { fireCount: 2 } } as Partial<Trip>),
+          new InMemoryKV(),
+          db,
+        );
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+        expect(originMetas(rows())[0]).toMatchObject({ outcome: 'window-closed:train-cap', fireCount: 2 });
+      });
+
+      it('시작 후 15분 초과 -> window-closed:expired', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const stats = await runOrigin(windowTrip({ startAt: NOW - 15 * 60_000 - 1 }), new InMemoryKV(), db);
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+        expect(originMetas(rows())[0]).toMatchObject({ outcome: 'window-closed:expired' });
+      });
+
+      it('창 시작 후 신선 원거리 위치 -> window-closed:left-origin + closedAt 영속, series가 낡아도 재개되지 않는다', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        const trip = windowTrip({ startAt: NOW - 1 });
+        const { lat, lng } = originCoords();
+        await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+          lat: lat + 0.0072, lng, accuracy: 10, ts: NOW - 5_000, motion: 'walking',
+        });
+        const stats = await runOrigin(trip, kv, db);
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+        expect(originMetas(rows())[0]).toMatchObject({ outcome: 'window-closed:left-origin' });
+        expect((await storedTrip(kv, trip.token)).originPromptWindow).toEqual({ startAt: NOW - 1, closedAt: NOW });
+        // 10분 뒤: series는 5분 신선도 밖(낡음)이지만 닫힌 창은 영속이라 여전히 차단.
+        const reloaded = await storedTrip(kv, trip.token);
+        const later = await runOrigin(reloaded, kv, db, undefined, NOW + 10 * 60_000);
+        expect(later.originGpsFreeBoardingPromptFired).toBe(0);
+      });
+
+      it('창 시작 전의 원거리 위치는 취소가 아니다(집에서 걸어오는 중) -> closedAt 없음', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        const trip = windowTrip({ startAt: NOW + 120_000 });
+        const { lat, lng } = originCoords();
+        await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+          lat: lat + 0.0072, lng, accuracy: 10, ts: NOW - 5_000, motion: 'walking',
+        });
+        await runOrigin(trip, kv, db);
+        expect(trip.originPromptWindow).toEqual({ startAt: NOW + 120_000 });
+        expect(originMetas(rows())[0]).toMatchObject({ outcome: 'window-not-started' });
+      });
+
+      it('역 근처 신선 위치는 창을 닫지 않는다', async () => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        const trip = windowTrip({ startAt: NOW - 1 });
+        const { lat, lng } = originCoords();
+        await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+          lat, lng, accuracy: 10, ts: NOW - 5_000, motion: 'stationary',
+        });
+        const stats = await runOrigin(trip, kv, db);
+        expect(trip.originPromptWindow?.closedAt).toBeUndefined();
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      });
+
+      it('출발역 좌표를 못 찾으면(lookup 실패) 취소 판정을 건너뛴다 — 창은 닫히지 않는다', async () => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        const trip = windowTrip(
+          { startAt: NOW - 1 },
+          { originStationName: '없는역', promptDisplay: { originStation: '없는역', line: '7' } },
+        );
+        await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+          lat: 0, lng: 0, accuracy: 10, ts: NOW - 5_000, motion: 'walking',
+        });
+        await runOrigin(trip, kv, db);
+        expect(trip.originPromptWindow?.closedAt).toBeUndefined();
+      });
+
+      it('명시 의향(안내 시작) trip은 닫힌 창이 있어도 불변 — 창은 trackingOptIn-only 전용', async () => {
+        const { db } = await makeSqliteD1();
+        const stats = await runOrigin(
+          makeTrip({ ...ORIGIN, originPromptWindow: { startAt: NOW + 1e9, closedAt: NOW } }),
+          new InMemoryKV(),
+          db,
+        );
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      });
+    });
+
     it('⑭ lock 성립 trip(boardingLock)은 기록하지 않는다 — lock 소관, 비용 이유 제외', async () => {
       const { db, rows } = await makeSqliteD1();
       const trip = makeTrip({

@@ -404,6 +404,14 @@ export type OriginBoardingPromptOutcome =
   | 'derivation-failed'
   /** #2851 재오픈 — trackingOptIn-only + 근접 실측 부재(fail-closed, #2997). meta에 근접 진단 필드. */
   | 'proximity-missing'
+  /** #3036 (O3) — trackingOptIn 창이 아직 열리지 않음(등록 시각 + 걷는 시간 - 60s 이전). meta.startAt/msUntilOpen. */
+  | 'window-not-started'
+  /** #3036 (O3) — 창 종료: 발사 2회(K=2) 소진. */
+  | 'window-closed:train-cap'
+  /** #3036 (O3) — 창 종료: 시작 후 상한(15분) 경과. */
+  | 'window-closed:expired'
+  /** #3036 (O3) — 창 종료: 신선 원거리 위치(역을 떠남). 영속(closedAt). */
+  | 'window-closed:left-origin'
   /** #2851 재오픈 — cron 루프 폴링윈도우 게이트가 origin 후보 trip을 통째로 skip. */
   | 'polling-window-skip'
   /** #2851 재오픈 — cron 루프에서 active waypoint가 없어 origin 평가 자체를 건너뜀. */

@@ -626,6 +626,8 @@ export interface Trip {
    * 근접 게이트가 이미 발사를 차단하므로 창을 보수적으로 연장하는 효과가 없다.
    */
   originProximityAt?: number;
+  /** #3036 (O3) — trackingOptIn-only 출발역 질문 허용 창. 부재(구 backend 등록)면 현행 fail-closed 유지. */
+  originPromptWindow?: OriginPromptWindow;
   /**
    * #2230 — destination(또는 마지막 intermediate = effective destination) 도착 advance가 최초로
    * 평가된 시각(epoch ms). `advanceBoardingLockWaypoint`의 cleanup-advance 분기(gps-far
@@ -697,6 +699,32 @@ export interface PromptGeoContext {
    * (오차 고려 보수적 차단 — 정확도가 나쁜 실내 GPS의 false positive 방어).
    */
   originAccuracyM?: number;
+  /**
+   * #3036 (O3) — 위 거리 계산에 쓴 GPS fix를 획득한 뒤 등록 시점까지 경과한 시간(ms). device가 송신한다.
+   * 부재(구 클라/지하) = "나이 모름" -> 도보 지연 없음(창 즉시 개시, miss 방향 차단).
+   */
+  originFixAgeMs?: number;
+  /**
+   * #3036 (O3) — fix 출처. `gps-live`(방금 얻은 실시간 fix)일 때만 도보 지연 계산에 쓴다.
+   * `gps-last-known`(마지막 알려진 좌표)은 지하에서 고정된 낡은 좌표일 수 있어 신뢰하지 않는다.
+   */
+  originFixSource?: OriginFixSource;
+}
+
+/** #3036 (O3) — `PromptGeoContext.originFixSource` 허용 값. */
+export const ORIGIN_FIX_SOURCES = ['gps-live', 'gps-last-known'] as const;
+export type OriginFixSource = (typeof ORIGIN_FIX_SOURCES)[number];
+
+/**
+ * #3036 (O3) — trackingOptIn(목적지만 설정) trip의 출발역 탑승 질문 허용 창. 등록 시 backend가 계산해 저장한다
+ * (device가 보내지 않는 backend-only state, 같은 세션 재등록 시 보존/당김). 창은 permission만 바꾼다 — 발사
+ * 순간은 #3057 도착 확정 그대로.
+ */
+export interface OriginPromptWindow {
+  /** 창 시작 시각(epoch ms) = 등록 시각 + 걷는 시간 - 1 cron tick. */
+  startAt: number;
+  /** 창이 닫힌 시각(취소 신호 — 신선 원거리 위치). 한 번 닫히면 같은 앵커로 재개하지 않는다. */
+  closedAt?: number;
 }
 
 /** boarding-prompt 사용자 표시 컨텍스트. */

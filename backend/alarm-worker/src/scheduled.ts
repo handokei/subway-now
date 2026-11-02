@@ -42,6 +42,7 @@ import {
   evaluateBoardingPromptRepeatGate,
   isPromptSilencedForTrain,
   evaluateHopEndPromptGates,
+  evaluateOriginPromptWindow,
   hasFreshOriginProximityCorroboration,
   isExactDuplicateFire,
   isArrivalConfirmedDecision,
@@ -8955,6 +8956,17 @@ async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaA
   }
 }
 
+/** #3036 (O3) — 창 판정 사유 -> D1 origin outcome. */
+const ORIGIN_WINDOW_OUTCOME = {
+  'not-started': 'window-not-started',
+  'train-cap': 'window-closed:train-cap',
+  expired: 'window-closed:expired',
+  'left-origin': 'window-closed:left-origin',
+} as const satisfies Record<
+  Exclude<ReturnType<typeof evaluateOriginPromptWindow>, { open: true }>['reason'],
+  OriginBoardingPromptOutcome
+>;
+
 export async function maybeFireOriginBoardingPromptGpsFree(
   trip: Trip,
   env: Env,
@@ -9132,12 +9144,59 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     }
   }
 
+  // #3036 (O3, 사용자 결정 "이거는 설계로 수정하자" / "03으로 진행해") — 취소 신호 C3: 창이 시작된 뒤 **신선 원거리
+  // 위치**(떠남)가 보이면 창을 영속 종료한다. 스냅샷 유무·hasProximityReading과 무관하게 매 cycle 평가한다 — 스냅샷이
+  // 근접으로 남은 trip도 이후 series가 낡아 창 경로로 떨어질 수 있으므로, 떠남을 한 번 본 사실이 사라지면 안 된다
+  // (closedAt 영속). 창 시작 **전**의 원거리는 취소가 아니다(집에서 걸어오는 중 — 걷는 시간은 startAt이 이미 반영).
+  // 알려진 갭: 스냅샷이 근접이고 series가 신선하면 hasProximityReading=true라 기존 근접 경로(#2653)가 발사를 허용한다 —
+  // 그 경로의 판정은 이 변경의 범위 밖(창 경로에만 영향).
+  const originWindow = hasExplicitIntent ? undefined : trip.originPromptWindow;
+  if (
+    originWindow !== undefined &&
+    originWindow.closedAt === undefined &&
+    now >= originWindow.startAt &&
+    seriesFresh &&
+    newest !== undefined
+  ) {
+    const originCoords = findStationCoordsByNameAndLine(display.originStation, display.line);
+    if (originCoords !== null) {
+      const distanceM = haversineKm(newest.lat, newest.lng, originCoords.lat, originCoords.lng) * 1000;
+      if (!isNearOrigin(distanceM, newest.accuracy)) {
+        trip.originPromptWindow = { ...originWindow, closedAt: now };
+        await putTrip(env.TRIPS, trip);
+        log('origin-boarding-prompt-gps-free: o3 window closed (fresh far position, left origin)', {
+          token: trip.token.slice(0, 8),
+          distanceM: Math.round(distanceM),
+          seriesAccuracyM: newest.accuracy,
+        });
+      }
+    }
+  }
+  const windowDecision =
+    trip.originPromptWindow === undefined || hasExplicitIntent
+      ? null
+      : evaluateOriginPromptWindow({
+          window: trip.originPromptWindow,
+          now,
+          fireCount: trip.boardingPromptState?.fireCount ?? 0,
+        });
+
   // #2997 (S3 v2) — `trackingOptIn` 단독(명시 의향 없음) trip은 근접 실측
   // (hasProximityReading)이 없으면 fail-closed로 skip한다. 명시 의향 trip은 바로 위
   // `hasProximityReading` 판정이 false일 때 아래 `isTooFarFromOrigin`이 자동으로 false가 되어
   // (기존 fail-open, #2653 "함정 고정" 테스트가 그 동작을 고정) 그대로 발사로 진행한다 —
   // 이 가드는 그 경로를 건드리지 않고 `!hasExplicitIntent` 조건으로만 추가 분기한다.
-  if (!hasExplicitIntent && !hasProximityReading) {
+  //
+  // #3036 (O3) — 단 O3 창이 열려 있으면(등록 시각 + 걷는 시간 - 60s 이후, 발사 2회 미만, 상한 15분 이내, 떠남 없음)
+  // 근접 실측 없이도 통과한다. 발사 순간은 #3057 도착 확정 그대로 — 창은 permission만 연다.
+  const windowPassed = !hasExplicitIntent && !hasProximityReading && windowDecision?.open === true;
+  if (windowPassed) {
+    log('origin-boarding-prompt-gps-free: trackingOptIn-only trip passed by O3 window (#3036)', {
+      token: trip.token.slice(0, 8),
+      originStation: display.originStation,
+      line: display.line,
+    });
+  } else if (!hasExplicitIntent && !hasProximityReading) {
     stats.trackingOptInProximityMissingBlocked += 1;
     log('origin-boarding-prompt-gps-free: trackingOptIn-only trip blocked (no proximity reading, fail-closed)', {
       token: trip.token.slice(0, 8),
@@ -9146,14 +9205,18 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     });
     // #2851 재오픈 — 11/02 아침 "질문 미발사 + 원인 0건"의 가장 유력한 지점. 왜 근접 실측이 없었는지
     // (series가 없었나/낡았나/부정확했나/스냅샷이 없었나)를 이 행 하나로 판정할 수 있게 진단 필드를 싣는다.
+    // #3036 (O3) — 창이 있는 trip은 차단 사유를 창 상태로 남긴다(왜 안 물었는지 D1 한 줄로 판정). 창 없는 trip은 기존 그대로.
     await recordOriginBoardingPromptTransition(
       env,
       trip,
       display.originStation,
       display.line,
-      'proximity-missing',
+      windowDecision === null || windowDecision.open ? 'proximity-missing' : ORIGIN_WINDOW_OUTCOME[windowDecision.reason],
       now,
       {
+        ...(windowDecision === null || windowDecision.open
+          ? {}
+          : { windowStartAt: windowDecision.startAt, fireCount: trip.boardingPromptState?.fireCount ?? 0 }),
         trackingOptIn: trip.trackingOptIn === true,
         promptOptIn: trip.promptOptIn === true,
         snapshotPresent: staticSnapshotPresent,
@@ -9399,6 +9462,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       promptOutcome,
       now,
       {
+        ...(windowPassed ? { viaWindow: true, windowStartAt: trip.originPromptWindow?.startAt } : {}),
         ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}),
         // #3132 — candidateEtaSeconds: null = 시간 모름, 0 = 진짜 0초.
         ...(candidateEtaSeconds !== undefined ? { candidateEtaSeconds } : {}),

@@ -2015,6 +2015,111 @@ describe('POST /trips — promptGeoContext/promptDisplay 보존 (same-session me
   });
 });
 
+// #3036 (O3) — 등록 시 trackingOptIn trip의 출발역 질문 창(`originPromptWindow`)을 계산·저장한다. 창 시작 =
+// 등록 시각(server clock) + 걷는 시간(max(0, 거리-정확도)/1.2m/s, live fix <=5분일 때만) - 60s.
+describe('POST /trips — originPromptWindow 등록 배선 (#3036 O3)', () => {
+  const CREATED = 1_700_000_000_000;
+  const REG1 = 1_800_000_000_000;
+  const geo = (extra: Record<string, unknown> = {}) => ({
+    origin: { lat: 37.1, lng: 127.1 },
+    nextStation: { lat: 37.2, lng: 127.2 },
+    direction: 'down' as const,
+    ...extra,
+  });
+  const LIVE = { originDistanceM: 300, originAccuracyM: 20, originFixAgeMs: 30_000, originFixSource: 'gps-live' };
+  function body(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    // Date.now를 REG1대로 고정하므로 만료/알람 시각도 그 시계 기준으로 둔다.
+    return {
+      ...base(),
+      token: 'tok-o3',
+      createdAt: CREATED,
+      expiresAt: REG1 + 3_600_000,
+      alarmAtEpochMs: REG1 + 600_000,
+      trackingOptIn: true,
+      ...overrides,
+    };
+  }
+  async function postAt(now: number, payload: Record<string, unknown>, env: Env): Promise<void> {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      expect((await post('/trips', payload, env)).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+  const stored = async (env: Env) => JSON.parse((await env.TRIPS.get('trip:tok-o3')) as string);
+
+  it('live fix 300m(acc 20) -> startAt = 등록 + 280/1.2초 - 60s, fix 나이/출처도 geo에 저장', async () => {
+    const env = makeKvEnv();
+    await postAt(REG1, body({ promptGeoContext: geo(LIVE) }), env);
+    const trip = await stored(env);
+    expect(trip.originPromptWindow).toEqual({ startAt: REG1 + (280 / 1.2) * 1000 - 60_000 });
+    expect(trip.promptGeoContext.originFixAgeMs).toBe(30_000);
+    expect(trip.promptGeoContext.originFixSource).toBe('gps-live');
+  });
+
+  it('geo 없음(지하) -> 지연 없음: startAt = 등록 - 60s', async () => {
+    const env = makeKvEnv();
+    await postAt(REG1, body(), env);
+    expect((await stored(env)).originPromptWindow).toEqual({ startAt: REG1 - 60_000 });
+  });
+
+  it('거부: 알 수 없는 출처/음수 나이는 버려져 도보 지연이 적용되지 않는다', async () => {
+    const env = makeKvEnv();
+    await postAt(
+      REG1,
+      body({ promptGeoContext: geo({ ...LIVE, originFixSource: 'wifi', originFixAgeMs: -5 }) }),
+      env,
+    );
+    const trip = await stored(env);
+    expect(trip.promptGeoContext.originFixSource).toBeUndefined();
+    expect(trip.promptGeoContext.originFixAgeMs).toBeUndefined();
+    expect(trip.originPromptWindow).toEqual({ startAt: REG1 - 60_000 });
+  });
+
+  it('거부: trackingOptIn이 아니면(안내 시작만) 창을 만들지 않는다', async () => {
+    const env = makeKvEnv();
+    await postAt(REG1, body({ trackingOptIn: false, promptOptIn: true, promptGeoContext: geo(LIVE) }), env);
+    expect((await stored(env)).originPromptWindow).toBeUndefined();
+  });
+
+  it('같은 세션 재등록: 더 가깝다는 live 증거만 창을 당기고, fix 없는 재등록은 기존 창을 지우지 않는다', async () => {
+    const env = makeKvEnv();
+    const far = { ...LIVE, originDistanceM: 1020 }; // dEff 1000m -> 833.3s
+    await postAt(REG1, body({ promptGeoContext: geo(far) }), env);
+    const first = (await stored(env)).originPromptWindow.startAt;
+    expect(first).toBe(REG1 + (1000 / 1.2) * 1000 - 60_000);
+    // fix 없는 재등록(race/지하) — 증거 아님, 창 불변
+    await postAt(REG1 + 5_000, body(), env);
+    expect((await stored(env)).originPromptWindow.startAt).toBe(first);
+    // 더 가까워진 live 재등록 — 당긴다
+    await postAt(REG1 + 120_000, body({ promptGeoContext: geo({ ...LIVE, originDistanceM: 120 }) }), env);
+    expect((await stored(env)).originPromptWindow.startAt).toBe(REG1 + 120_000 + (100 / 1.2) * 1000 - 60_000);
+    // 더 멀어진 live 재등록 — 늦추지 않는다(min)
+    const nearStart = (await stored(env)).originPromptWindow.startAt;
+    await postAt(REG1 + 130_000, body({ promptGeoContext: geo(far) }), env);
+    expect((await stored(env)).originPromptWindow.startAt).toBe(nearStart);
+  });
+
+  it('같은 세션 재등록이 trackingOptIn을 끄면(안내 시작 전환) 기존 창은 그대로 보존된다', async () => {
+    const env = makeKvEnv();
+    await postAt(REG1, body({ promptGeoContext: geo(LIVE) }), env);
+    const first = (await stored(env)).originPromptWindow;
+    await postAt(REG1 + 1_000, body({ trackingOptIn: false, promptOptIn: true }), env);
+    expect((await stored(env)).originPromptWindow).toEqual(first);
+  });
+
+  it('닫힌 창(closedAt)은 재등록으로 다시 열리지 않는다', async () => {
+    const env = makeKvEnv();
+    await postAt(REG1, body({ promptGeoContext: geo(LIVE) }), env);
+    const trip = await stored(env);
+    trip.originPromptWindow = { ...trip.originPromptWindow, closedAt: REG1 + 500_000 };
+    await env.TRIPS.put('trip:tok-o3', JSON.stringify(trip));
+    await postAt(REG1 + 600_000, body({ promptGeoContext: geo({ ...LIVE, originDistanceM: 20 }) }), env);
+    expect((await stored(env)).originPromptWindow.closedAt).toBe(REG1 + 500_000);
+  });
+});
+
 describe('POST /position (#819)', () => {
   it('valid payload → KV에 series append + 200', async () => {
     const env = makeKvEnv();
