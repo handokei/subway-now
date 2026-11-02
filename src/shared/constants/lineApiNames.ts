@@ -29,6 +29,16 @@ export function getLineApiName(line: LineNumber): string {
 }
 
 /**
+ * #3055 — 정식 노선명('7호선') → LineNumber 코드('7'). 탑승 LA(split) 버튼은 content.line(정식명)을
+ * 그대로 보내므로 앱 브릿지가 lock/store에 넣기 전에 코드로 환원한다. `LINE_API_NAMES` 역조회(데이터 주도) —
+ * 이미 코드이거나 모르는 값은 그대로 반환(기존 동작 보존).
+ */
+export function lineCodeFromApiName(line: string): string {
+  const entry = Object.entries(LINE_API_NAMES).find(([, name]) => name === line);
+  return entry?.[0] ?? line;
+}
+
+/**
  * #2278 (PR #2287 리뷰 P2-1) — LineNumber 검증 단일 SSoT.
  *
  * `LINE_API_NAMES` key 집합(데이터 주도)으로 임의 문자열이 유효한 LineNumber인지 narrow한다.

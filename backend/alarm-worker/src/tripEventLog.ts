@@ -258,7 +258,11 @@ export type TripEventKind =
   // #2747 PR-2 — 여정 LA push(update/advance/station-passed/prompt-alert/end) 관측. 직전 행과 digest
   // (path, stationName, stopsRemaining, etaMinutes 유무)가 다를 때만 1행(`laPushLog.ts`). KV write 0.
   // meta={ activity:'journey', path, stationName, stopsRemaining, hasEta, etaMinutes? }.
-  | 'la-push';
+  | 'la-push'
+  // #1480 PR-0 — POST /trips 서버 waypoint 재합성(Dijkstra min-time)이 기기가 보낸 transfer 순서와 달라 채택을 거부한 1건.
+  // meta={ reason:'transfer-mismatch', origin, originLine, destinationId, incomingTransfers[], inferredTransfers[] }.
+  // register당 최대 1행, KV write 0. 관측 전용 — 거부 시 incoming이 그대로 저장된다.
+  | 'waypoint-resynth-rejected';
 
 /** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
 export type LockAttachPath =
@@ -388,6 +392,18 @@ export type HopEndPromptOutcome = 'silenced' | 'fired';
  * - `fired` = 실제 발사 성공.
  */
 export type OriginBoardingPromptOutcome =
+  /** #2851 재오픈 — `maybeFireOriginBoardingPromptGpsFree` 조기 return(의향 0개). */
+  | 'no-intent'
+  /** #2851 재오픈 — display(`resolvePromptAnchor`) 파생 실패. meta.failureReason. */
+  | 'derivation-failed'
+  /** #2851 재오픈 — trackingOptIn-only + 근접 실측 부재(fail-closed, #2997). meta에 근접 진단 필드. */
+  | 'proximity-missing'
+  /** #2851 재오픈 — cron 루프 폴링윈도우 게이트가 origin 후보 trip을 통째로 skip. */
+  | 'polling-window-skip'
+  /** #2851 재오픈 — cron 루프에서 active waypoint가 없어 origin 평가 자체를 건너뜀. */
+  | 'no-active-waypoint'
+  /** #2851 재오픈 — origin 평가가 throw(cron 루프 catch). meta.error. */
+  | 'evaluation-error'
   | 'too-far'
   | 'silenced'
   /** #3200 — 열차 단위 무음 차단(leg-2 `silenced-train`과 동일 의미). */
@@ -439,6 +455,54 @@ export async function recordTripEvent(
     // #2283 리뷰 P2-1 — D1 write 자체가 실패한 상황이라 D1 sink(trip_events)로는 escalate할 수
     // 없어 Sentry-only(d1ErrorLog.ts와 동일 패턴).
     captureXEvent('D1-write-failure', { table: 'trip_events', kind: input.kind, err: String(e) });
+  }
+}
+
+/**
+ * #2851 — 전이 시에만 append: 같은 trip(`ts >= tripCreatedAt` — token_hash는 기기 단위라 트립 간
+ * 공유되므로 createdAt로 트립 경계를 자른다)·같은 `kind`+`meta.leg`의 직전 행 `meta.outcome`이
+ * 이번 outcome과 다를 때만 INSERT한다. 판정이 SSoT(KV)에 의존하면 lock 전 트립에서 영구 no-op이었다
+ * (SSoT는 lock 경로에서만 seed) — 마커를 KV가 아니라 D1 행 자체로 삼아 KV write/read 0.
+ * 조건부 INSERT ... SELECT 한 문장이라 read-then-write race도 없다.
+ */
+export async function recordTripEventOnTransition(
+  db: D1Database | undefined,
+  input: TripEventInput & { meta: { leg: string; outcome: string } },
+  tripCreatedAt: number,
+  now: number = Date.now(),
+): Promise<void> {
+  if (!db) return;
+  const { tokenHash, kind, station, line, meta } = input;
+  try {
+    await db
+      .prepare(
+        `INSERT INTO trip_events (token_hash, ts, kind, station, line, meta)
+         SELECT ?, ?, ?, ?, ?, ?
+         WHERE NOT EXISTS (
+           SELECT 1 FROM (
+             SELECT meta FROM trip_events
+             WHERE token_hash = ? AND kind = ? AND ts >= ? AND json_extract(meta, '$.leg') = ?
+             ORDER BY ts DESC, id DESC LIMIT 1
+           ) WHERE json_extract(meta, '$.outcome') = ?
+         )`,
+      )
+      .bind(
+        tokenHash,
+        now,
+        kind,
+        station ?? null,
+        line ?? null,
+        JSON.stringify(meta),
+        tokenHash,
+        kind,
+        tripCreatedAt,
+        meta.leg,
+        meta.outcome,
+      )
+      .run();
+  } catch (e) {
+    console.warn(JSON.stringify({ msg: 'tripEventLog transition write failed', kind, err: String(e) }));
+    captureXEvent('D1-write-failure', { table: 'trip_events', kind, err: String(e) });
   }
 }
 

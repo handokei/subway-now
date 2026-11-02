@@ -106,7 +106,7 @@ describe('deriveSafetyNetWaypoints', () => {
     const route = makeDirectRoute(5, '2');
     const waypoints = deriveSafetyNetWaypoints(route, GANGNAM);
     expect(waypoints).toEqual([
-      { stationName: GANGNAM, kind: 'destination', stops: 5, legMs: 5 * 120_000 },
+      { stationName: GANGNAM, kind: 'destination', stops: 5, legMs: 5 * 120_000, stationId: expect.any(String) },
     ]);
   });
 
@@ -202,7 +202,7 @@ describe('registerSafetyNetAlarms', () => {
     // bg-scheduled 관례)로 예약 시점 기록. 취소되면 이 entry가 그대로 남는 known limitation은
     // 구 3종 스케줄러 시절부터 존재하던 동일 특성(신규 도입 아님).
     expect(mockLogScheduledAlarm).toHaveBeenCalledWith(
-      { phaseId: 'early', type: 'destination', stationName: GANGNAM },
+      { phaseId: 'early', type: 'destination', stationName: GANGNAM, stationId: expect.any(String) },
       expect.objectContaining({ expectedStationAtFire: GANGNAM }),
     );
   });
@@ -613,7 +613,7 @@ describe('rescheduleSafetyNetAlarm', () => {
     // 고정돼 fireMs가 항상 newArrivalMs보다 미래 — "재예약 시각도 과거" 분기가 구조적으로 불가능.
     // earlyLead(=legMs/stops)가 버퍼보다 큰 route를 직접 구성해 fireMs < newArrivalMs를 만든다.
     // travelSeconds=1000s, stops=2 → legMs=1_000_000, earlyLead=500_000 > 180_000 버퍼.
-    const bigLeadRoute = { type: 'direct' as const, stops: 2, line: '2' as const, travelSeconds: 1000 };
+    const bigLeadRoute = { type: 'direct' as const, stops: 2, line: '2' as const, travelSeconds: 1000, destinationStationId: '2-001' };
     // newArrivalMs > now(첫 past-time 가드 통과)이지만 fireMs(=newArrival-earlyLead+buffer)가
     // now보다 과거가 되도록 now를 fireMs~newArrivalMs 사이로 둔다.
     const newArrival = START_TIME + 700_000;

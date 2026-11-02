@@ -1,4 +1,5 @@
 import { evaluateBackendSsotCrossLineGuard, getApproachLine } from '../approachLine';
+import { placeholderStationId } from '../../../../testUtils/routeFixtures';
 import type {
   Route,
   DirectRoute,
@@ -33,7 +34,7 @@ function makeLock(boardingLine: BoardingLock['boardingLine'], overrides: Partial
 }
 
 function makeDirect(line: DirectRoute['line'], stops = 5): DirectRoute {
-  return { type: 'direct', stops, line, travelSeconds: 0 };
+  return { type: 'direct', stops, line, travelSeconds: 0, destinationStationId: placeholderStationId(line) };
 }
 
 function makeTransfer(
@@ -44,6 +45,8 @@ function makeTransfer(
   return {
     type: 'transfer',
     transferName: '군자',
+    transferStationId: placeholderStationId(fromLine),
+    destinationStationId: placeholderStationId(toLine),
     fromLine,
     toLine,
     stopsToTransfer,
@@ -61,6 +64,7 @@ function makeMulti(
     type: 'multi-transfer',
     transfers: segments.map((s) => ({
       transferName: s.name,
+      transferStationId: placeholderStationId(s.from),
       fromLine: s.from,
       toLine: s.to,
       stopsToTransfer: s.stops,
@@ -68,6 +72,7 @@ function makeMulti(
     })),
     stopsAfterLastTransfer,
     secondsAfterLastTransfer: 0,
+    destinationStationId: placeholderStationId(segments[segments.length - 1].to),
   };
 }
 
@@ -129,6 +134,7 @@ describe('getApproachLine', () => {
       const route: MultiTransferRoute = {
         type: 'multi-transfer',
         transfers: [],
+        destinationStationId: placeholderStationId('2'),
         stopsAfterLastTransfer: 0,
         secondsAfterLastTransfer: 0,
       };

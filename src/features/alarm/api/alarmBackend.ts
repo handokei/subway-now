@@ -326,7 +326,6 @@ function buildRegisterHash(body: {
    */
   etaWithinPollingWindow: boolean;
   promptDisplay?: { originStation: string; line: string };
-  subsurface?: boolean;
   locale?: 'ko' | 'en' | 'ja' | 'zh';
   infoModeEnabled?: boolean;
   promptOptIn?: boolean;
@@ -359,7 +358,7 @@ function buildRegisterHash(body: {
   //     우연히 다른 필드(route/destination/apnsEnv 등)만 같을 때 hash가 일치해 조용히
   //     skip되어 heal 자체가 무력화된다(진짜 필요한 재등록을 죽이지 말 것 — 이슈 요구사항 3).
   //     반면 raw `subsurface`가 만들던 실제 폭주(29~37회/trip)는 이 hash가 아니라 register
-  //     effect deps 자체(dwell 게이트로 해결, `useApnsTripRegistration.ts`)가 원인이었다.
+  //     effect deps 자체가 원인이었다(#2699 quarantine → #3006에서 deps·hash 모두에서 제거).
   return JSON.stringify({
     token: body.token,
     route: body.route,
@@ -373,10 +372,8 @@ function buildRegisterHash(body: {
     promptDisplayKey: body.promptDisplay
       ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
       : null,
-    // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2, 재정정) — subsurface는 device의
-    // flap-quarantine을 거친 confirmed 값이므로(RegisterTripPayload 주석 참고) 그대로 hash에
-    // 써도 안전하다 — 경계 flapping 자체는 device 레이어에서 이미 흡수됐다.
-    subsurface: body.subsurface === true,
+    // #3006 — subsurface는 hash 입력이 아니다. backend는 trip.subsurface를 판단에 쓰지 않아
+    // (관측 전용) 이것만 바뀐 재호출은 skip돼야 한다. body에는 계속 실린다.
     // #1895 — locale 전환 (사용자가 device 언어 변경 후 재등록) 시 즉시 backend로 propagate되도록 hash에 포함.
     // 같은 trip 중 locale 변경 빈도는 낮으므로 폭주 위험 없음.
     locale: body.locale ?? null,
@@ -640,7 +637,6 @@ export function registerActiveTrip(
     apnsEnv: payload.apnsEnv,
     etaWithinPollingWindow: payload.etaWithinPollingWindow,
     promptDisplay: payload.promptDisplay,
-    subsurface: payload.subsurface,
     // #1895 — locale 변경 시 hash 갱신해 재등록 보장.
     locale: payload.locale,
     // #1923 — infoModeEnabled 변경 시 hash 갱신해 재등록 보장 (의향 표명 직후 backend gate 즉시 활성화).

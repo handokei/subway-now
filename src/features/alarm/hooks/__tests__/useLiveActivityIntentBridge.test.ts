@@ -142,6 +142,19 @@ describe('parsePendingBoardingIntent', () => {
     });
   });
 
+  // #3055 — 탑승 LA(split) 버튼은 content.line(정식 노선명 '7호선')을 그대로 보낸다 → 노선 코드로 환원.
+  it("line이 정식 노선명('7호선')이면 노선 코드 '7'로 정규화한다", () => {
+    const raw = JSON.stringify({ ...JSON.parse(validBoardedRaw), line: '7호선' });
+    expect(parsePendingBoardingIntent(raw)?.line).toBe('7');
+  });
+
+  it('line이 이미 코드이거나 모르는 값이면 그대로 둔다', () => {
+    const known = JSON.stringify({ ...JSON.parse(validBoardedRaw), line: 'gyeongui' });
+    const unknown = JSON.stringify({ ...JSON.parse(validBoardedRaw), line: '알수없음' });
+    expect(parsePendingBoardingIntent(known)?.line).toBe('gyeongui');
+    expect(parsePendingBoardingIntent(unknown)?.line).toBe('알수없음');
+  });
+
   it('malformed JSON → null', () => {
     expect(parsePendingBoardingIntent('not-json{')).toBeNull();
   });
@@ -295,6 +308,21 @@ describe('useLiveActivityIntentBridge', () => {
       expect.objectContaining({ ...baseDeps, createLock: mockCreateLock }),
     );
     expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('trip-1-100');
+  });
+
+  it("[#3055] 탑승 LA 버튼 line '7호선' → handleResponse에 노선 코드 '7' 전달", async () => {
+    mockReadPendingBoardingIntent.mockReturnValue(
+      JSON.stringify({ ...JSON.parse(validBoardedRaw), line: '7호선' }),
+    );
+    renderHook(() => useLiveActivityIntentBridge(baseDeps, () => 100 + 1000));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockHandleResponse).toHaveBeenCalledWith(
+      BOARDING_PROMPT_ACTION_BOARDED,
+      expect.objectContaining({ kind: 'boarding-prompt', line: '7' }),
+      expect.anything(),
+    );
   });
 
   it('DISEMBARK_DISEMBARKED → handleResponse(DISEMBARKED, hopEndKind=disembark) 호출 후 clear', async () => {

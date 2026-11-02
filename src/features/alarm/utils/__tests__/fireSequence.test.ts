@@ -107,7 +107,6 @@ jest.mock('../../../widget/api/widgetStorage', () => ({
   clearWidgetStation: jest.fn().mockResolvedValue(undefined),
 }));
 
-jest.mock('../../../../data/exitSide.json', () => ({}));
 jest.mock('../../../../data/platformExitSide.json', () => ({}));
 jest.mock('../../../../data/quickExit.json', () => ({}));
 

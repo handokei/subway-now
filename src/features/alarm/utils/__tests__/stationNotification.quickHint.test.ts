@@ -67,7 +67,7 @@ describe('buildAlarmContent 빠른하차 힌트 — event.stationId 기반 (#317
 
   it('stationId가 없으면 이름이 같아도 힌트를 생략한다 (이름 대체 조회 금지)', () => {
     const { stationId: _omit, ...withoutId } = eventOf('4-025');
-    expect(hintLines(withoutId)).toEqual([]);
+    expect(hintLines(withoutId as unknown as AlarmEvent)).toEqual([]);
   });
 
   it('stations.json에 없는 stationId도 힌트를 생략한다', () => {

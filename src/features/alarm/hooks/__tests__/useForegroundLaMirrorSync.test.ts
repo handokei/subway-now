@@ -40,7 +40,7 @@ const yeoksam = {
   lng: 127.04,
   lineColor: '#00A84D',
 };
-const directRoute = { type: 'direct' as const, line: '2' as const, stops: 1, travelSeconds: 120 };
+const directRoute = { type: 'direct' as const, line: '2' as const, stops: 1, travelSeconds: 120, destinationStationId: '2-001' };
 const mirrorEntry = {
   currentStationId: '역삼',
   motionState: 'moving' as const,

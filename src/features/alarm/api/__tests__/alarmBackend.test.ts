@@ -284,7 +284,7 @@ describe('alarmBackend', () => {
       // 보내도 네트워크 없이 skipped:true가 돌아와 회복을 영영 감지하지 못한다.
       it('1-dedup: 200(H1) → 503 kv(H2) → 다시 H1 은 skip되지 않고 네트워크로 나간다', async () => {
         const h1 = SAMPLE_PAYLOAD;
-        const h2 = { ...SAMPLE_PAYLOAD, subsurface: true };
+        const h2 = { ...SAMPLE_PAYLOAD, locale: 'en' as const };
         (global.fetch as jest.Mock)
           .mockResolvedValueOnce({ ok: true, status: 200 } as Response)
           .mockResolvedValueOnce(kvResponse('60'))
@@ -302,7 +302,7 @@ describe('alarmBackend', () => {
       });
 
       it('1-dedup (거부): 503이 아닌 실패(500)는 직전 성공 hash를 유지한다', async () => {
-        const h2 = { ...SAMPLE_PAYLOAD, subsurface: true };
+        const h2 = { ...SAMPLE_PAYLOAD, locale: 'en' as const };
         (global.fetch as jest.Mock)
           .mockResolvedValueOnce({ ok: true, status: 200 } as Response)
           .mockResolvedValueOnce({ ok: false, status: 500 } as Response);
@@ -454,18 +454,16 @@ describe('alarmBackend', () => {
       // #903 (Seam G) → #2699 (리뷰 지적, "각도 C" 항목 2, 재정정) — subsurface는 device의
       // flap-quarantine을 거친 confirmed 값 하나만 쓴다(raw/confirmed 이중 필드 설계는
       // raw가 스스로 register를 트리거하지 못해 명분이 성립하지 않아 되돌렸다).
-      it('subsurface=true 송신 + 토글 변경 시 재등록', async () => {
+      // #3006 — subsurface는 body에는 싣지만 dedup hash 입력이 아니다: 이것만 다른 재호출은 skip.
+      it('subsurface=true 송신 + subsurface만 바뀐 재호출은 dedup skip (#3006)', async () => {
         const first = await registerActiveTrip({ ...SAMPLE_PAYLOAD, subsurface: true });
         expect(first.ok).toBe(true);
         const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
         expect(body.subsurface).toBe(true);
 
-        // subsurface OFF로 재호출 → hash 달라져서 재등록 (dedup 미적용)
         const off = await registerActiveTrip({ ...SAMPLE_PAYLOAD, subsurface: false });
-        expect(off).toEqual({ ok: true, status: 200 });
-        expect(global.fetch).toHaveBeenCalledTimes(2);
-        const offBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
-        expect(offBody.subsurface).toBeUndefined();
+        expect(off).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
       });
 
       it('subsurface=false/미설정이면 body에 미포함 (graceful)', async () => {

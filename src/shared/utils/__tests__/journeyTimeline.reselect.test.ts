@@ -47,6 +47,11 @@ describe('planTransferReselect', () => {
     expect(planTransferReselect(makeDirectRoute(5, '2'), kstMs(6, 34, 21))).toBeNull();
   });
 
+  it('거부: 목적지 id가 없는 구 경로는 방향 판정 불가 -> null (시간표를 쓰지 않는다)', () => {
+    const { destinationStationId: _d, ...legacy } = atTransfer as Extract<NonNullable<Route>, { type: 'transfer' }>;
+    expect(planTransferReselect(legacy as unknown as NonNullable<Route>, kstMs(6, 34, 21))).toBeNull();
+  });
+
   it('거부: 환승이 모두 완료돼 남은 대기가 없으면 null', () => {
     const done: NonNullable<Route> = { ...atTransfer, completedTransfers: 1 };
     expect(planTransferReselect(done, kstMs(6, 34, 21))).toBeNull();

@@ -202,7 +202,11 @@ import {
   waypointSignatureKey,
   withTripRegisterLock,
 } from './trips';
-import { inferWaypointsFromOriginAndDestination } from './dijkstraRoute';
+import {
+  preservesIncomingTransfers,
+  inferWaypointsFromOriginAndDestination,
+  transferWaypointKeys,
+} from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
   TRIP_STATUS_RETENTION_MS,
@@ -219,7 +223,7 @@ import {
   recordPositionKvSample,
   shouldSamplePositionKv,
 } from './positionKvSample';
-import { subwayIdForLine } from './lineAlias';
+import { lineCodeForName, subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import {
   LA_BOARDING_START_MODES,
@@ -1064,7 +1068,29 @@ app.post('/trips', async (c) => {
       destinationId: incoming.destination,
       destinationName: destinationWaypointName,
     });
-    if (inferred !== null && inferred.length > incoming.waypoints.length) {
+    // #1480 — 기기가 고른 환승 경로(예: 대림)를 서버 min-time(건대입구)이 덮어쓰지 않도록, 재합성은
+    // incoming transfer 순서와 같을 때만 채택한다. 다르면 incoming 유지 + D1 거부 기록(KV write 0).
+    if (
+      inferred !== null &&
+      inferred.length > incoming.waypoints.length &&
+      !preservesIncomingTransfers(incoming.waypoints, inferred)
+    ) {
+      scheduleTripEvent(
+        c,
+        recordTripEvent(c.env.DB, {
+          tokenHash: hashTripToken(incoming.token),
+          kind: 'waypoint-resynth-rejected',
+          meta: {
+            reason: 'transfer-mismatch',
+            origin: incoming.promptDisplay.originStation,
+            originLine: incoming.promptDisplay.line,
+            destinationId: incoming.destination,
+            incomingTransfers: transferWaypointKeys(incoming.waypoints),
+            inferredTransfers: transferWaypointKeys(inferred),
+          },
+        }),
+      );
+    } else if (inferred !== null && inferred.length > incoming.waypoints.length) {
       // occurrenceIdx 재stamp — `validateTrip`(types.ts:1723~) 규약과 동일. 중복 stationName
       // (순환선/회차)에 정확한 :n suffix 매칭을 위해 sequence 1-pass로 stamp.
       const occurrenceCount = new Map<string, number>();
@@ -3063,7 +3089,8 @@ export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmP
     if (typeof obj.trainCode !== 'string' || obj.trainCode.length === 0) return null;
     trainCode = obj.trainCode;
   }
-  return { action: obj.action, station: obj.station, line: obj.line, trainCode };
+  // #3055 — 탑승 LA 버튼은 정식 노선명('7호선')을 보낸다. 이후 전 경로가 코드 기준이므로 진입에서 환원.
+  return { action: obj.action, station: obj.station, line: lineCodeForName(obj.line), trainCode };
 }
 
 /**
@@ -4193,7 +4220,7 @@ export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayloa
     result.trainCode = obj.trainCode;
   }
   if (typeof obj.boardingLine === 'string' && obj.boardingLine.length > 0) {
-    result.boardingLine = obj.boardingLine;
+    result.boardingLine = lineCodeForName(obj.boardingLine); // #3055 형제 경로 — 같은 탭 유래 line 정규화
   }
   return result;
 }

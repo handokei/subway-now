@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createLogger } from '../../../shared/utils/logger';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
-import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
+import { DESTINATION_KEY, ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { FusedRouteContext } from '../../../features/nearest-station/hooks/useFusedNearestStation';
 import {
@@ -85,6 +85,7 @@ import {
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
 // #2268 (C1) — pending→confirmed lock 정정 measurement infra(#1166). fired count 는
 // BoardingTrainList가 이미 기록하지만 DebugModal에 섹션이 없어 관측 불가했다.
+import { readStoredRouteLogged } from '../../alarm/utils/readStoredRouteLogged';
 import { getLockCorrectionMetrics } from '../../alarm/utils/lockCorrectionMetrics';
 import { getConsensusMismatchMetrics } from '../../alarm/utils/consensusMismatchMetrics';
 import {
@@ -2407,14 +2408,13 @@ function DebugModalInner({
       setPersistedRoute(null);
       return;
     }
-    void AsyncStorage.getItem(ROUTE_KEY).then((raw) => {
-      if (cancelled) return;
-      try {
-        setPersistedRoute(raw ? (JSON.parse(raw) as Route) : null);
-      } catch {
-        setPersistedRoute(null);
-      }
-    });
+    // #3177 PR-2b — 구버전 저장 경로(id 없음)는 공용 파서가 하차 승강장 id를 채운다.
+    void Promise.all([AsyncStorage.getItem(ROUTE_KEY), AsyncStorage.getItem(DESTINATION_KEY)]).then(
+      ([routeRaw, destinationRaw]) => {
+        if (cancelled) return;
+        setPersistedRoute(readStoredRouteLogged(routeRaw, destinationRaw));
+      },
+    );
     return () => {
       cancelled = true;
     };

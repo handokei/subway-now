@@ -4,7 +4,22 @@ import {
   subwayIdToLine,
   lineToSubwayId,
   isValidLineNumber,
+  lineCodeFromApiName,
 } from '../lineApiNames';
+
+describe('lineCodeFromApiName (#3055)', () => {
+  it('LINE_API_NAMES의 모든 호선명은 자기 코드로 환원된다', () => {
+    for (const [code, name] of Object.entries(LINE_API_NAMES)) {
+      expect(lineCodeFromApiName(name)).toBe(code);
+    }
+  });
+
+  it('이미 코드이거나 모르는 값은 그대로 돌려준다', () => {
+    expect(lineCodeFromApiName('7')).toBe('7');
+    expect(lineCodeFromApiName('gyeongui')).toBe('gyeongui');
+    expect(lineCodeFromApiName('알수없음')).toBe('알수없음');
+  });
+});
 
 describe('lineApiNames', () => {
   it('1~9호선 매핑 + 특수 노선', () => {

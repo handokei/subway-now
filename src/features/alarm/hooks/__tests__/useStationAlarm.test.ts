@@ -236,9 +236,9 @@ const makeStation = (id: string, name: string, lat = 37.5, lng = 127.0): Station
 const destination = makeStation('D1', '강남', 37.498, 127.028);
 const altDestination = makeStation('D2', '잠실', 37.513, 127.100);
 
-const earlyDest: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
-const earlyTransfer: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '시청' };
-const imminentDest: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: '강남' };
+const earlyDest: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' };
+const earlyTransfer: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '시청', stationId: '1-033' };
+const imminentDest: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: '강남', stationId: '2-022' };
 
 // #1816 — 테스트 기본 lock. lock 활성 trip은 paradigm shift 가드를 통과해 fire path에 진입.
 // lock=null(lockless)을 명시적으로 테스트하는 케이스는 개별적으로 mockGetBoardingLock.mockResolvedValue(null) 재설정.
@@ -1291,7 +1291,7 @@ describe('useStationAlarm', () => {
     await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1));
     expect(mockGetFiredAlarms).toHaveBeenCalledWith(destination.id);
 
-    const altEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '잠실' };
+    const altEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '잠실', stationId: '2-016' };
     mockEvaluateAlarmPhase.mockReturnValue(altEvent);
     rerender({ dest: altDestination });
     await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledTimes(2));
@@ -2535,6 +2535,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
         type: 'destination',
         stationName: '강남',
+        stationId: '2-022',
       };
       mockEvaluateAlarmPhase.mockImplementation(
         (_src: unknown, _fired: unknown, _phases: unknown, suppressed: AlarmEvent[]) => {
@@ -3091,6 +3092,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
         type: 'destination',
         stationName: '강남',
+        stationId: '2-022',
       });
       renderHook(() =>
         useStationAlarm(
@@ -3237,6 +3239,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
         type: 'destination',
         stationName: '강남',
+        stationId: '2-022',
       });
 
       renderTrainProgressingAlarm({
@@ -3271,6 +3274,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
         type: 'destination',
         stationName: '강남',
+        stationId: '2-022',
       });
 
       renderTrainProgressingAlarm({
@@ -3295,6 +3299,7 @@ describe('useStationAlarm', () => {
         phaseId: 'early',
         type: 'destination',
         stationName: '강남',
+        stationId: '2-022',
       });
 
       renderTrainProgressingAlarm({
@@ -6641,6 +6646,7 @@ describe('useStationAlarm', () => {
         phaseId: 'imminent',
         type: 'destination',
         stationName: '강남',
+        stationId: '2-022',
       });
 
       renderHook(() =>
@@ -6672,6 +6678,7 @@ describe('useStationAlarm', () => {
         phaseId: 'imminent',
         type: 'destination',
         stationName: '강남',
+        stationId: '2-022',
       });
 
       renderHook(() =>

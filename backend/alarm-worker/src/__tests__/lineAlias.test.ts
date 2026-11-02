@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { LINE_ALIAS_MAP, canonicalLineName, matchLine, subwayIdForLine } from '../lineAlias';
+import { LINE_ALIAS_MAP, canonicalLineName, lineCodeForName, matchLine, subwayIdForLine } from '../lineAlias';
+
+describe('lineCodeForName (#3055)', () => {
+  it.each([
+    ['7호선', '7'],
+    ['지하철7호선', '7'],
+    ['경의중앙', 'gyeongui'],
+    ['공항철도', 'airport'],
+    ['7', '7'],
+    ['gyeongui', 'gyeongui'],
+  ])('"%s" → "%s"', (input, expected) => {
+    expect(lineCodeForName(input)).toBe(expected);
+  });
+
+  it('모르는 값은 그대로 돌려준다(기존 동작 보존)', () => {
+    expect(lineCodeForName('전혀다른')).toBe('전혀다른');
+  });
+});
 
 describe('canonicalLineName (#585)', () => {
   it.each([

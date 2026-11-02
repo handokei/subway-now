@@ -355,7 +355,6 @@
     "imminentArrivalBody": "请在本站下车",
     "exitSideLeft": "请从左侧车门下车",
     "exitSideRight": "请从右侧车门下车",
-    "exitSideBoth": "两侧车门都会开启",
     "quickHintTransfer": "请在靠近换乘的位置下车",
     "quickHintArrival": "请在靠近出口的位置下车",
     "lastTrainTitle": "末班车还有{{minutes}}分钟",

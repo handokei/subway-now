@@ -1,4 +1,5 @@
 import { resolveJourneyOriginStation } from '../journeyOrigin';
+import { placeholderStationId } from '../../../../testUtils/routeFixtures';
 import { getStationById } from '../../../../shared/utils/stationRoute';
 import type {
   DirectRoute,
@@ -34,7 +35,7 @@ function makeLock(overrides: Partial<BoardingLock> = {}): BoardingLock {
 }
 
 function makeDirect(line: DirectRoute['line'], stops = 5): DirectRoute {
-  return { type: 'direct', stops, line, travelSeconds: 0 };
+  return { type: 'direct', stops, line, travelSeconds: 0, destinationStationId: placeholderStationId(line) };
 }
 
 function makeTransfer(
@@ -46,6 +47,8 @@ function makeTransfer(
   return {
     type: 'transfer',
     transferName,
+    transferStationId: placeholderStationId(fromLine),
+    destinationStationId: placeholderStationId(toLine),
     fromLine,
     toLine,
     stopsToTransfer,
@@ -68,6 +71,7 @@ function makeMulti(
     type: 'multi-transfer',
     transfers: segments.map((s) => ({
       transferName: s.name,
+      transferStationId: placeholderStationId(s.from),
       fromLine: s.from,
       toLine: s.to,
       stopsToTransfer: s.stops,
@@ -75,6 +79,7 @@ function makeMulti(
     })),
     stopsAfterLastTransfer,
     secondsAfterLastTransfer: 0,
+    destinationStationId: placeholderStationId(segments[segments.length - 1].to),
   };
 }
 

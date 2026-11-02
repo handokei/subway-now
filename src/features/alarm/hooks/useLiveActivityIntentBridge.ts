@@ -35,6 +35,7 @@ import {
   readPendingBoardingIntent,
 } from 'live-activity';
 import { usePolling } from '../../../shared/hooks/usePolling';
+import { lineCodeFromApiName } from '../../../shared/constants/lineApiNames';
 import {
   LIVE_ACTIVITY_INTENT_POLL_MS,
   LIVE_ACTIVITY_INTENT_STALE_MS,
@@ -110,7 +111,8 @@ export function parsePendingBoardingIntent(raw: string): PendingBoardingIntent |
     tripToken: o.tripToken,
     action: o.action as PendingBoardingIntent['action'],
     originStation: o.originStation,
-    line: o.line,
+    // #3055 — 탑승 LA(split) 버튼은 content.line(정식 노선명 '7호선')을 보낸다. 코드로 환원.
+    line: lineCodeFromApiName(o.line),
     atMs: o.atMs,
   };
 }

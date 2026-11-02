@@ -53,7 +53,7 @@ function renderAlarm(
   line?: LineNumber | null,
   sleepMode = true,
 ) {
-  const event: AlarmEvent = { phaseId, type, stationName };
+  const event: AlarmEvent = { phaseId, type, stationName, stationId: '2-022' };
   return render(
     <SleepAlarmOverlay sleepMode={sleepMode} event={event} onDismiss={mockDismiss} line={line} />,
   );
@@ -141,7 +141,7 @@ describe('SleepAlarmOverlay', () => {
 
   describe('#3100 — N역 전 칸(band) 오버레이', () => {
     function renderBand(type: AlarmEvent['type'], stationName: string, band?: number) {
-      const event: AlarmEvent = { phaseId: 'early', type, stationName, ...(band === undefined ? {} : { band }) };
+      const event: AlarmEvent = { phaseId: 'early', type, stationName, stationId: '2-022', ...(band === undefined ? {} : { band }) };
       return render(<SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} />);
     }
 
@@ -197,7 +197,7 @@ describe('SleepAlarmOverlay', () => {
     });
 
     it('line 전달 시 출구 안내 섹션이 렌더되고 출구 카드가 나타난다', async () => {
-      const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
+      const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' };
       const { getByTestId, findByTestId } = render(
         <SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} line="2" />,
       );
@@ -240,7 +240,7 @@ describe('SleepAlarmOverlay', () => {
   });
 
   describe('#3174 Line Glass 테마', () => {
-    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
+    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' };
 
     it('line 전달 시 노선 칩이 렌더되고 노선 라벨을 포함한다', () => {
       const { getByTestId, getByText } = renderAlarm('destination', '강남', 'early', '2');

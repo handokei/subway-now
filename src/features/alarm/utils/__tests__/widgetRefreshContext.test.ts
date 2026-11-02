@@ -37,7 +37,9 @@ const bgStation: Station = {
   lng: 127.04,
 };
 
-const directRoute: Route = { type: 'direct', line: '2', stops: 3, travelSeconds: 240 };
+const directRoute: Route = { type: 'direct', line: '2', stops: 3, travelSeconds: 240, destinationStationId: '2-001' };
+// 구 저장 형식(경로 id 없음) — readStoredRoute의 id 채움을 검증한다.
+const { destinationStationId: _omitted, ...legacyDirectRoute } = directRoute;
 
 function setupStorage(values: Partial<Record<string, string | null>>): void {
   (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
@@ -54,12 +56,13 @@ describe('readWidgetRefreshContext', () => {
     const bg = { station: bgStation, distanceKm: 0.15, timestamp: 1_700_000_000_000 };
     setupStorage({
       [DESTINATION_KEY]: JSON.stringify(destination),
-      [ROUTE_KEY]: JSON.stringify(directRoute),
+      [ROUTE_KEY]: JSON.stringify(legacyDirectRoute),
       [BG_LAST_STATION_KEY]: JSON.stringify(bg),
     });
     const result = await readWidgetRefreshContext();
     expect(result.destination).toEqual(destination);
-    expect(result.route).toEqual(directRoute);
+    // #3177 — id 없이 저장된 구 경로는 readStoredRoute를 거쳐 목적지 id가 채워진다.
+    expect(result.route).toEqual({ ...legacyDirectRoute, destinationStationId: destination.id });
     expect(result.bgContext).toEqual(bg);
   });
 
@@ -86,6 +89,36 @@ describe('readWidgetRefreshContext', () => {
   });
 
   describe('route narrow', () => {
+    const legacyTransfer = {
+      type: 'transfer',
+      transferName: '사당',
+      fromLine: '2',
+      toLine: '4',
+      stopsToTransfer: 3,
+      stopsFromTransfer: 2,
+      secondsToTransfer: 360,
+      secondsFromTransfer: 240,
+    };
+    const sadang4 = { ...destination, id: '4-025', name: '사당', line: '4' };
+
+    it('#3177 — 구버전 저장 경로(id 없음)는 하차 승강장 id를 채워 반환 (사당 2호선 2-026 / 목적지 4-025)', async () => {
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(sadang4),
+        [ROUTE_KEY]: JSON.stringify(legacyTransfer),
+      });
+      const result = await readWidgetRefreshContext();
+      expect(result.route).toMatchObject({ transferStationId: '2-026', destinationStationId: '4-025' });
+    });
+
+    it('#3177 — 환승역 id를 못 구하는 구버전 경로는 null', async () => {
+      setupStorage({
+        [DESTINATION_KEY]: JSON.stringify(sadang4),
+        [ROUTE_KEY]: JSON.stringify({ ...legacyTransfer, transferName: '없는역' }),
+      });
+      const result = await readWidgetRefreshContext();
+      expect(result.route).toBeNull();
+    });
+
     it('손상 JSON → null', async () => {
       setupStorage({ [ROUTE_KEY]: '{{ broken' });
       const result = await readWidgetRefreshContext();

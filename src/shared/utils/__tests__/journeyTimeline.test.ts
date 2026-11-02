@@ -157,6 +157,7 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
       secondsToTransfer: 0,
       secondsFromTransfer: 240,
       destinationStationId: dongducheon.id,
+      transferStationId: '3-001',
     };
     const eta = computeJourneyEta({ route, nowMs: kstMs(2026, 10, 29, 23, 50), excludeOriginWait: true });
     expect(eta.lastTrainEnded).toBe(true);
@@ -278,7 +279,9 @@ describe('resolveOriginStop — 출발역 시간표 슬롯 (#1480)', () => {
   });
 
   it('transferStationId가 없으면 환승역명+fromLine으로 찾는다', () => {
-    const route = makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 });
+    // 구 저장 경로(id 없음) — fixture 기본값의 transferStationId를 떼어 재현한다.
+    const { transferStationId: _omit, ...legacy } = makeTransferRoute({ transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 2 });
+    const route = legacy as unknown as Parameters<typeof resolveOriginStop>[0];
     expect(resolveOriginStop(route, '7-015')).toMatchObject({ line: '7', direction: 'down' });
   });
 
@@ -307,6 +310,7 @@ describe('resolveOriginStop — 출발역 시간표 슬롯 (#1480)', () => {
   });
 
   it('다음 waypoint를 알 수 없으면(직통인데 destinationStationId 없음) null', () => {
-    expect(resolveOriginStop(makeDirectRoute(1, '2'), '2-011')).toBeNull();
+    const { destinationStationId: _d, ...legacy } = makeDirectRoute(1, '2');
+    expect(resolveOriginStop(legacy as unknown as NonNullable<Route>, '2-011')).toBeNull();
   });
 });

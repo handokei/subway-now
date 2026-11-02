@@ -3907,6 +3907,26 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
         expect(stored.boardingLock?.trainCode).not.toBe('3001');
       });
 
+      // #3055 — 같은 body 승격인데 line이 정식 노선명('7호선', 탑승 LA content.line 유래)이어도
+      // R-4 게이트(currentLegAnchor.line '7' 대조)를 통과해 2701이 lock된다.
+      it("①-b #3055 line '7호선' + body trainCode=2701 → R-4 통과, 2701 lock(leg2)", async () => {
+        const env = makeKvEnv();
+        const body = corroboratedTripBody();
+        await env.TRIPS.put(
+          `trip:tok-bc`,
+          JSON.stringify({ ...body, legBoardingFireStamp: validStamp(body, { trainCode: '3001' }) }),
+        );
+
+        const res = await post(
+          '/trips/tok-bc/boarding-confirm',
+          confirmBody({ station: '건대입구', line: '7호선', trainCode: '2701' }),
+          env,
+        );
+        expect(await res.json()).toEqual({ ok: true, lockState: 'leg2', resolvedTrainCode: '2701' });
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+        expect(stored.boardingLock?.trainCode).toBe('2701');
+      });
+
       // R-1 (회귀 가드, 하위호환) — trainCode 미전송이면 기존 stamp 경로 그대로.
       it('② R-1 — trainCode 미전송 → stamp(3001) 경로 그대로(회귀 없음)', async () => {
         const env = makeKvEnv();
@@ -4380,6 +4400,30 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
     it('기존-lock 분기 no-anchor(leg-1 FG 재POST) → 응답에 기존 lock trainCode 포함', async () => {
       const { json } = await confirm(confirmBody(), tripBody({ boardingLock: lockOf('7246'), infoModeEnabled: true }));
+      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
+    });
+
+    // #3055 / #3221 — 탑승 LA(split) 버튼은 content.line(정식 노선명 '7호선')을 그대로 보낸다.
+    // backend는 노선 코드('7')로 정규화해야 한다(정규화 없으면 subwayIdForLine null / lock.line 불일치).
+    it("[#3055] LA 버튼 line '7호선' + promptDisplay 없음(탭 앵커) → live 해소로 lock(leg1) + resolvedTrainCode, lock.line은 코드", async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(JSON.stringify({ realtimePositionList: [positionEntry()] }), { status: 200 }),
+      );
+      const { json, env } = await confirm(
+        confirmBody({ line: '7호선' }),
+        tripBody({ promptDisplay: undefined, originStationName: '중곡' }),
+      );
+      expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7246');
+      expect(stored.boardingLock?.line).toBe('7');
+    });
+
+    it("[#3055] LA 버튼 line '7호선' + 기존 lock(line '7') no-anchor → echo 포함(PENDING 동결 아님)", async () => {
+      const { json } = await confirm(
+        confirmBody({ line: '7호선' }),
+        tripBody({ boardingLock: lockOf('7246'), infoModeEnabled: true }),
+      );
       expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
     });
 
@@ -5344,6 +5388,17 @@ describe('POST /trips — #2547 leg-2 anchor fields carry over same session', ()
 // ──────────────────────────────────────────────────────────────────────────
 // Seam E (#901) — POST /boarding-lock/sync
 // ──────────────────────────────────────────────────────────────────────────
+
+describe('validateBoardingLockSync boardingLine 정규화 (#3055)', () => {
+  const base = { token: 't', observedStationName: '건대입구', observedAtMs: 1, accuracy: 10, trainCode: '7246' };
+  it.each([
+    ['7호선', '7'],
+    ['7', '7'],
+    ['알수없음', '알수없음'],
+  ])("boardingLine '%s' → '%s'", (input, expected) => {
+    expect(validateBoardingLockSync({ ...base, boardingLine: input })?.boardingLine).toBe(expected);
+  });
+});
 
 describe('validateBoardingLockSync (#901)', () => {
   it('정상 payload 통과', () => {
@@ -7713,7 +7768,7 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
       '/trips',
       collapseBody1604(
         [
-          { stationName: '건대입구', line: '2', kind: 'transfer' },
+          { stationName: '건대입구', line: '7', kind: 'transfer' },
           { stationName: '뚝섬', line: '2', kind: 'destination' },
         ],
         {
@@ -7763,6 +7818,101 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     // intermediate 이미 존재 → 재합성 트리거 안 됨. device가 보낸 3개 그대로.
     expect(stored.waypoints.length).toBe(3);
     expect(stored.waypoints[0].stationName).toBe('중곡');
+  });
+});
+
+// #1480 (경로 추천 plan PR-0) — backend 재합성 가드. 기기가 고른 환승 경로(예: 대림)를 서버 Dijkstra min-time
+// (건대입구)가 덮어쓰면 기기 홈이 보여준 경로와 추적 경로가 갈린다. 재합성은 incoming transfer 순서와 같을 때만 채택.
+describe('POST /trips — 재합성 transfer 일치 가드 (#1480 PR-0)', () => {
+  function captureEvents(): { db: Env['DB']; inserts: unknown[][] } {
+    const inserts: unknown[][] = [];
+    const run = vi.fn().mockResolvedValue({ success: true });
+    const prepare = vi.fn().mockImplementation((sql: string) => ({
+      bind: (...args: unknown[]) => {
+        if (sql.includes('trip_events')) inserts.push(args);
+        return { run };
+      },
+    }));
+    return { db: { prepare } as unknown as Env['DB'], inserts };
+  }
+
+  function rejectedEvents(inserts: unknown[][]): Array<Record<string, unknown>> {
+    return inserts
+      .filter((a) => a[2] === 'waypoint-resynth-rejected')
+      .map((a) => JSON.parse(a[5] as string) as Record<string, unknown>);
+  }
+
+  const YONGMASAN_TO_DDUKSEOM = {
+    destination: '2-010',
+    route: { type: 'transfer', fromLine: '7', toLine: '2', transferName: '대림', stops: 6, stopsToTransfer: 4, stopsFromTransfer: 2 },
+    promptDisplay: { originStation: '용마산', line: '7' },
+    promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+  };
+
+  it('[red] incoming 환승(대림)이 재합성(건대입구)과 다르면 incoming 유지 + 거부 기록(사유)', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+    await post(
+      '/trips',
+      collapseBody1604(
+        [
+          { stationName: '대림(구로구청)', line: '7', kind: 'transfer' },
+          { stationName: '뚝섬', line: '2', kind: 'destination' },
+        ],
+        YONGMASAN_TO_DDUKSEOM,
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
+    expect(stored.waypoints.map((w: { stationName: string }) => w.stationName)).toEqual(['대림(구로구청)', '뚝섬']);
+    const rejected = rejectedEvents(inserts);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBe('transfer-mismatch');
+    expect(rejected[0].incomingTransfers).toEqual(['대림(구로구청)|7']);
+    expect(rejected[0].inferredTransfers).toEqual(['건대입구|7']);
+  });
+
+  it('incoming 환승이 재합성과 같으면 재합성 채택(현행) + 거부 기록 없음', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+    await post(
+      '/trips',
+      collapseBody1604(
+        [
+          { stationName: '건대입구', line: '7', kind: 'transfer' },
+          { stationName: '뚝섬', line: '2', kind: 'destination' },
+        ],
+        YONGMASAN_TO_DDUKSEOM,
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
+    expect(stored.waypoints.length).toBeGreaterThan(2);
+    expect(stored.waypoints[0].stationName).toBe('중곡');
+    expect(rejectedEvents(inserts)).toHaveLength(0);
+  });
+
+  it('intermediate 있는 incoming은 재합성 자체를 안 하므로 무변경 + 거부 기록 없음', async () => {
+    const { db, inserts } = captureEvents();
+    const env = makeKvEnv();
+    env.DB = db;
+    await post(
+      '/trips',
+      collapseBody1604(
+        [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '대림(구로구청)', line: '7', kind: 'transfer' },
+          { stationName: '뚝섬', line: '2', kind: 'destination' },
+        ],
+        YONGMASAN_TO_DDUKSEOM,
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
+    expect(stored.waypoints.length).toBe(3);
+    expect(rejectedEvents(inserts)).toHaveLength(0);
   });
 });
 

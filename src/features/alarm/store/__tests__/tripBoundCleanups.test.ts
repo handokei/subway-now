@@ -451,6 +451,7 @@ describe('tripBoundCleanups', () => {
           phaseId: 'imminent',
           type: 'destination',
           stationName: '강남',
+          stationId: '2-022',
         },
         dismissSilence: { sinceTs: Date.now(), sinceLat: null, sinceLng: null },
       });

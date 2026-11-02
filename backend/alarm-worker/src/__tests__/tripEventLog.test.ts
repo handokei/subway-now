@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupTripEvents, recordTripEvent, TRIP_EVENT_RETENTION_MS } from '../tripEventLog';
+import {
+  cleanupTripEvents,
+  recordTripEvent,
+  recordTripEventOnTransition,
+  TRIP_EVENT_RETENTION_MS,
+} from '../tripEventLog';
 import { captureXEvent } from '../sentry';
 
 vi.mock('../sentry', async (importOriginal) => {
@@ -154,6 +159,30 @@ describe('cleanupTripEvents (#2283)', () => {
     expect(captureXEvent).toHaveBeenCalledWith(
       'D1-write-failure',
       expect.objectContaining({ table: 'trip_events', kind: 'cleanup' }),
+    );
+  });
+});
+
+describe('recordTripEventOnTransition (#2851)', () => {
+  const input = {
+    tokenHash: 'abc',
+    kind: 'leg-boarding-prompt' as const,
+    meta: { leg: 'origin', outcome: 'proximity-missing' },
+  };
+
+  it('db가 undefined일 때 no-op (graceful)', async () => {
+    await expect(recordTripEventOnTransition(undefined, input, 1)).resolves.toBeUndefined();
+  });
+
+  it('D1 write 실패는 호출 흐름을 막지 않고 Sentry로 관측 승격한다', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('d1 down'));
+    const db = { prepare: vi.fn().mockReturnValue({ bind: vi.fn().mockReturnValue({ run }) }) } as unknown as D1Database;
+    vi.mocked(captureXEvent).mockClear();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(recordTripEventOnTransition(db, input, 1)).resolves.toBeUndefined();
+    expect(captureXEvent).toHaveBeenCalledWith(
+      'D1-write-failure',
+      expect.objectContaining({ table: 'trip_events', kind: 'leg-boarding-prompt' }),
     );
   });
 });
