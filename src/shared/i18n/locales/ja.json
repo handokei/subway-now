@@ -355,7 +355,6 @@
     "imminentArrivalBody": "この駅で降りてください",
     "exitSideLeft": "左側のドアから降りてください",
     "exitSideRight": "右側のドアから降りてください",
-    "exitSideBoth": "両側のドアが開きます",
     "quickHintTransfer": "乗り換えに近い位置で降りてください",
     "quickHintArrival": "出口に近い位置で降りてください",
     "lastTrainTitle": "終電まで{{minutes}}分",

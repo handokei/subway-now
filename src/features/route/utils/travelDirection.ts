@@ -5,8 +5,7 @@ import { isReversedOrientationLine } from '../../../shared/utils/lineOrientation
 import lineTopology from '../../../data/lineTopology.json';
 
 // 단조(상행 종점 → 하행 종점)로 stations.json에 표현 가능한 노선만 인덱스 비교로 방향을 결정한다.
-// 화이트리스트는 src/data/lineTopology.json 단일 출처에서 가져온다 — 데이터 수집 스크립트
-// (scripts/fetch-exit-side.js)도 동일 JSON을 참조해 좌/우 라벨 채택 정책을 공유한다.
+// 화이트리스트는 src/data/lineTopology.json 단일 출처에서 가져온다.
 const MONOTONIC_LINES = new Set<LineNumber>(lineTopology.monotonicLines as LineNumber[]);
 
 // #788: 노선별 운영 종점명(transferExit.fromTerminal과 정렬). stations.json은 신규 연장
