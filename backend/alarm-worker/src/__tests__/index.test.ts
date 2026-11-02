@@ -3237,6 +3237,61 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toMatchObject({ trainCodeSource: 'body' });
     });
+
+    // #3055 PR-0 — 계측: confirm meta의 source / laCandidatePresent (D1만으로 LA 버튼 경로 구분).
+    describe('#3055 PR-0 — confirm meta source / laCandidatePresent', () => {
+      async function confirmMeta(bodyOverrides: Record<string, unknown>) {
+        fetchSpy.mockResolvedValue(
+          new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
+        );
+        const inserts: unknown[][] = [];
+        const run = vi.fn().mockResolvedValue({ success: true });
+        const prepare = vi.fn().mockImplementation((sql: string) => ({
+          bind: (...args: unknown[]) => {
+            if (sql.includes('trip_events')) inserts.push(args);
+            return { run };
+          },
+        }));
+        const env = makeKvEnv();
+        env.DB = { prepare } as unknown as Env['DB'];
+        await env.TRIPS.put('trip:tok-bc', JSON.stringify(leg1TripWithPromptHistory()));
+        const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(bodyOverrides), env);
+        const events = inserts.filter((a) => a[2] === 'boarding-confirm-result');
+        expect(events).toHaveLength(1);
+        return { status: res.status, meta: JSON.parse(events[0][5] as string) as Record<string, unknown> };
+      }
+
+      it.each(['la-native', 'la-bridge', 'notification'])('source=%s 가 meta에 그대로 기록된다', async (source) => {
+        const { status, meta } = await confirmMeta({ source });
+        expect(status).toBe(200);
+        expect(meta.source).toBe(source);
+      });
+
+      it('source 미전송 -> meta.source 키 없음', async () => {
+        const { meta } = await confirmMeta({});
+        expect('source' in meta).toBe(false);
+      });
+
+      it.each([['unknown-kind'], [123], [null], [''], [{ a: 1 }]])(
+        '형식 불량 source(%j)는 400이 아니라 무시 -> 200 + meta.source 없음',
+        async (source) => {
+          const { status, meta } = await confirmMeta({ source });
+          expect(status).toBe(200);
+          expect('source' in meta).toBe(false);
+        },
+      );
+
+      it('laCandidate 객체 동봉 -> laCandidatePresent=true', async () => {
+        const { meta } = await confirmMeta({ laCandidate: { trainCode: '2701', issuedAtMs: 1 } });
+        expect(meta.laCandidatePresent).toBe(true);
+      });
+
+      it.each([[undefined], [null], ['x'], [5]])('laCandidate=%j (없음/불량) -> laCandidatePresent=false, 400 아님', async (laCandidate) => {
+        const { status, meta } = await confirmMeta(laCandidate === undefined ? {} : { laCandidate });
+        expect(status).toBe(200);
+        expect(meta.laCandidatePresent).toBe(false);
+      });
+    });
   });
 
     it('none(0개 매칭) → 락 생성 금지, lockState none', async () => {
