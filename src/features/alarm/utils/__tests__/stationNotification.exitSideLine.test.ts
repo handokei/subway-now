@@ -147,7 +147,7 @@ describe('buildAlarmContent 본문 줄 — event.stationId 기반', () => {
   });
 
   it('stationId가 없는 이벤트는 이름이 같아도 좌/우 줄 0개 + unknown 로그', () => {
-    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '사당', direction: 'up' };
+    const event = { phaseId: 'early', type: 'destination', stationName: '사당', direction: 'up' } as unknown as AlarmEvent;
     expect(exitSideLines(event)).toEqual([]);
     expect(mockLogExitSideUnknownStationId).toHaveBeenCalledWith('사당');
   });
