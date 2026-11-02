@@ -118,3 +118,49 @@
 - 지상 역 앞(<150m) 정지 사용자는 hold가 꺼진다 — 현행 동작이므로 회귀는 아니다.
 - BG 주입된 오래된 fix(키가 하루 전 값)가 FG 콜드스타트 직후 L이 될 수 있다 — 이 구간은 기압계 워밍업(첫 reading 후 30초)이 hold를 막고, FG watch의 첫 fix가 곧 L을 교체한다.
 - `backgroundLocationTask.ts:175` 주석("기압계는 BG에서 무용")은 W BG 행(hpa·baroEvt 갱신)과 어긋난다 — #2345 proxy 전제 재검토를 후속으로 남긴다.
+
+---
+
+# 경로 arc 밖 후보 제외 — PR-1(A) (#3191, 2026-11-03)
+
+## 배경 (off-arc)
+
+2026-10-31 09:37~09:39 사용자는 용마산(7-015)에 있었고 trip route는 용마산→논현(하행)이었다. fix는 2분 가까이 묵었고(acc 86~87m, distM 34) 현재역이 **출발역보다 상류인 사가정(7-014)** 으로 두 번 튀었다(덤프 3DCCD Raw L614-616·L622-623, `arrival/arrival-arriving`·`arrival-confirmed`). 사가정의 도착 신호는 열차 신호(규칙상 lock 없는 trip에 허용된 신호)라 신선도·방향 게이트를 통과했다. 사용자는 arc(출발역~목적지) 밖 열차를 탈 수 없다.
+
+## 이 ADR(PR-1 A 부분)이 수정·대체·모순하는 결정
+
+- **ADR-044 방향 필터 절의 "본 필터는 GPS를 쓰지 않는다"는 A에는 해당하지 않는다(정정).** A의 arc 시작점은 tripOrigin이고, tripOrigin은 목적지 설정 시 `effectiveOrigin`(fused 결과 포함)에서 복사된다 — 10/31 origin 7-015도 `gps/gps-only` 결과에서 왔다(GPS 유래). 또 A로 열차 신호가 제외된 셀의 결과는 묵은 fix의 최근접(gps-only)이다. 사용자 방향(2026-11-03): memory 규칙 "GPS로 현재역 판정 금지"는 **판단(알림 발사·lock 생성·backend 진행 입력)에만 적용**하고 **표시는 허용**한다(plan §3 (a)). 따라서 A는 표시 한정 변경이며, 판단 경로로의 누수는 PR-S(#3289, sync 관측역 신선도 조건)가 막는다.
+- **ADR-039 §D 핵심 1 ("GPS는 단독 거부권을 갖지 않는다", :117)**: A는 GPS 유래 tripOrigin이 만든 arc로 열차 신호 후보를 배제한다. GPS 좌표가 직접 거부하는 것이 아니라 **trip 경로(사용자 의향)** 가 거부하는 구조이며 표시 한정이다. 재배정 축: "arc 밖 후보의 열차 신호 점수" = 경로 기반 제외(표시 역 결정에 한함).
+- **ADR-044 방향 필터 (PR-2D)**: 같은 fail-closed 방식(점수 0, 모두 0이면 candidates[0] gps-only)으로 `FusionCandidate.excluded` 를 추가한다. 방향 필터를 대체하지 않는다(둘 다 적용).
+- **ADR-044:35·:23 (tier6 미변경)**: 유지. 아래 셀 M9.
+- **#2125 (현재역 표시 고착 정직 강등)**: A로 lock 없는 trip이 출발역에 머무는 시간이 늘어 3분 강등이 더 자주 걸릴 수 있다. 강등 판정 규칙은 불변. 코드 주석(`lockless에서 positionTrain dormant`)은 `positionTrainConsensus.ts`(automotive ∧ cellular surface 합의면 채택 가능)와 어긋나 같은 PR에서 정정했다.
+
+## 결정 (off-arc)
+
+1. `FusionCandidate.excluded?: 'off-arc'` — 값이 있으면 arrival·position 두 신호 모두 점수 0. 모든 후보가 0이면 기존대로 `candidates[0]`(GPS 최근접) gps-only.
+2. 호출자(`useFusedNearestStation`)가 `arcStations.length > 0 ∧ boardingLock 없음 ∧ arcIndexOfStation(arcStations, station) === -1`이면 `'off-arc'`을 준다. route 없음(arc 없음)과 lock 있는 trip은 대상이 아니다(lock trip은 기존 lock 가드).
+3. 제외 전 점수>0이던 신호는 후보·종류당 1건을 reason `candidate-off-arc`로 candidateRejectBuffer에 적재한다(`signal: arrival|position`, observer 제외).
+
+## 선언하는 미커버·위험 셀 (plan v5 §6)
+
+- **M8 — tripOrigin이 실제 위치보다 하류로 캡처된 경우**: 실제 역(상류)이 arc 밖이 되어 0점 처리된다. A의 고유 위험이다(L797 유형, 실제 위치 미확정). 완화 없음 — 선언만 한다. 정체가 가짜 진행보다 낫다는 #3083 원칙 하에 허용.
+- **M9 — lockless positionTrain(tier6) 상류역 채택**: `checkStationProgression`이 arc 밖 후보를 면제하므로 tier6가 상류역을 채택할 수 있고 A는 이를 막지 않는다(fused tier만 대상). 실측 결함 행 중 position-train 0건. ADR-044:35에 따라 변경하지 않는다.
+- **M2' — 묵은 fix(>5분) + 상류 신호**: gps-only 탈락 → 강등 경로도 null → Home은 tripOrigin을 쓴다. 실측 0행.
+- **M11 — observer(DebugModal) 인스턴스**: lock 인자를 받지 않아 lock trip 중에도 A가 적용된다. DebugModal 표시가 Home과 다를 수 있다(기존 lock 의존 로직 전부 동일한 한계).
+- 환승역에서 route에 없는 다른 노선 변형 후보도 arc 밖으로 제외된다(사용자가 그 노선 열차를 탈 수 없다).
+
+## 대안 (기각, off-arc)
+
+- **연속성 가드(직전 역을 지났는가)**: 전방 이웃은 직전에 현재역을 지나므로 "사용자가 탔는가"를 못 가른다. 기각(plan §5).
+- **GPS 거리 게이트로 상류 후보 거부**: 규칙 충돌(GPS 단독 거부)·묵은 fix 의존. 기각.
+- **정확성 게이트 보강(신규)**: 후보 열차가 사용자 쪽으로 오는 중인지 판정하는 별도 게이트. 현재 코드에 없고 신규 작업이 필요하다 — 후속 후보.
+
+## 결과 (off-arc)
+
+- 10/31 결함 행 5개(Raw L614-616·L622-623) replay에서 사가정 도착 신호가 있어도 fused는 용마산(출발역)이고 Debug 'Candidate rejects'에 `candidate-off-arc`가 `signal` 태그와 함께 보인다.
+- arc 위 다음 역(중곡)·출발역 자체의 신호는 같은 조건에서 그대로 채택된다.
+
+## 리스크 (off-arc)
+
+- M8: origin이 하류로 잘못 캡처된 trip에서 실제 역이 0점이 된다.
+- Raw에 비최근접 후보 열차 신호가 없어 replay의 사가정 arrival은 합성이다(fix 시각·정확도는 실측 원문).
