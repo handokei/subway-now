@@ -357,6 +357,14 @@ export async function runCaptureReplay(opts: {
    * 충실히 재현한다.
    */
   seedPositionSeries?: Record<string, PositionPoint[]>;
+  /**
+   * #2308 — KV 구현 주입. 기본은 `InMemoryKV`(미지정 시 거동 100% 무변경). 하네스가 쓰는 시계 두 개(trip 키 고정 시계 /
+   * self-poll 키 simNow 시계)를 그대로 넘겨 주므로, KV 엣지 캐시 지연을 재현하는 `CacheLagKV`가 같은 만료 의미를 유지한다.
+   */
+  makeKv?: (clocks: {
+    now: () => number;
+    prefixClocks: ReadonlyArray<{ prefix: string; now: () => number }>;
+  }) => InMemoryKV;
 }): Promise<ReplayRunResult> {
   const phaseOffsetMs = opts.phaseOffsetMs ?? 0;
   const freshMs = opts.freshMs ?? DEFAULT_FRESH_MS;
@@ -382,9 +390,11 @@ export async function runCaptureReplay(opts: {
   // "시뮬레이션 시계가 흐른다"는 사실 자체와도 완전히 독립되는 동급 해법.
   // #3057 — self-poll 키만 simNow 시계(위 trip 고정 시계 설명 참고): 90s TTL이 실제로 만료돼야
   // cron이 매 cycle 새 position을 fetch한다(고정하면 영구 cache-hit로 이후 position 유실).
-  const kv = new InMemoryKV(() => startMs, [
-    { prefix: 'realtime-position:', now: () => simNow },
-  ]);
+  const kvClocks = {
+    now: () => startMs,
+    prefixClocks: [{ prefix: 'realtime-position:', now: () => simNow }],
+  };
+  const kv = opts.makeKv ? opts.makeKv(kvClocks) : new InMemoryKV(kvClocks.now, kvClocks.prefixClocks);
   for (const trip of opts.seedTrips) {
     await putTrip(kv as unknown as KVNamespace, trip);
   }
