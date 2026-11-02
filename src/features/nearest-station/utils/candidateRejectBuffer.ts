@@ -39,6 +39,8 @@ import type { LineNumber } from '../../../shared/types/station';
  *    무효화한 횟수(trainCode 정확 일치만 예외). 양방향 merge 재발 방지(#2696 불변식 ②).
  *  - `candidate-early-terminus` (#2914): lock.trainCode와 다른 trainNo이면서 종착역이
  *    사용자 목적지에 도달하지 못해 제외한 횟수(10/3 성수 3174 내선·성수종착 패턴).
+ *  - `candidate-off-arc` (#3191 PR-1 A): route 활성 ∧ lock 없음 trip에서 fused 후보가 경로 arc 밖
+ *    (출발역보다 상류 포함)이라 점수>0 arrival/position 신호가 점수에서 빠진 횟수(`signal` 태그로 구분).
  *
  * 일곱 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
  * 신호로 진단 시점에 비교 관찰이 유효. DebugModal에서 reason 키별 분포 표시.
@@ -54,7 +56,8 @@ export type CandidateRejectReason =
   | 'candidate-arc'
   | 'candidate-opposite-direction'
   | 'candidate-direction-unresolved'
-  | 'candidate-early-terminus';
+  | 'candidate-early-terminus'
+  | 'candidate-off-arc';
 
 export interface CandidateRejectEntry {
   kind: 'candidate-reject';
@@ -84,7 +87,7 @@ export interface CandidateRejectEntry {
    */
   count?: number;
   /**
-   * #3191 PR-2D — `candidate-opposite-direction` reason 한정. 방향 필터(fused 후보 점수)에서 빠진
+   * #3191 PR-2D — `candidate-opposite-direction`(PR-1 A: `candidate-off-arc`) reason 한정. 방향 필터(fused 후보 점수)에서 빠진
    * 신호 종류. position-train enumeration 경로(#2696/#2914)의 entry에는 없다. 집계 윈도우 안에서는
    * 첫 push의 종류가 유지된다.
    */
