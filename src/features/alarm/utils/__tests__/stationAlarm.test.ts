@@ -56,7 +56,7 @@ function source(overrides: Partial<AlarmSource> & Pick<AlarmSource, 'route' | 'd
 
 describe('alarmKey', () => {
   it('returns phaseId:stationName format', () => {
-    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
+    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' };
     expect(alarmKey(event)).toBe('early:강남');
   });
 
