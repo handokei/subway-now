@@ -47,7 +47,12 @@ export type BackendXEventName =
    * 매일 1회 스캔해 발견 시 emit (`tripMetricsRegressionScan.ts`). 2026-09-23 매역 알림 전멸
    * 회귀(#2794)의 재발을 하루 안에 잡기 위한 결과 기반 신호.
    */
-  | 'X12-trip-metrics-fired-zero';
+  | 'X12-trip-metrics-fired-zero'
+  /**
+   * #3006 PR-0 — 재진행(같은 역 재소비) 감시. 한 트립 창에서 같은 역 `prepare-alarm`이
+   * 2회 이상 기록된 (token, station)을 `tripMetricsRegressionScan.ts`가 매일 1회 집계해 emit.
+   */
+  | 'X13-trip-reconsume';
 
 export type BackendXEventContext = Record<
   string,
