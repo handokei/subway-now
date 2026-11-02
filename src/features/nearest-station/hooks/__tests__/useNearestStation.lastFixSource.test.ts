@@ -54,14 +54,14 @@ describe('useNearestStation — lastFixSource (#3036 PR-3a)', () => {
   });
 
   it('cold-start last-known으로 hydrate된 fix -> gps-last-known', async () => {
-    setup({ ageMs: 20_000, accuracy: 30 });
+    setup({ ageMs: 5_000, accuracy: 30 });
     const { result } = renderHook(() => useNearestStation());
     await waitFor(() => expect(result.current.lastFixAtMs).not.toBeNull());
     expect(result.current.lastFixSource).toBe('gps-last-known');
   });
 
   it('이후 FG watch live fix가 채택되면 gps-live로 돌아온다', async () => {
-    setup({ ageMs: 20_000, accuracy: 30 });
+    setup({ ageMs: 5_000, accuracy: 30 });
     const { result } = renderHook(() => useNearestStation());
     await waitFor(() => expect(result.current.lastFixSource).toBe('gps-last-known'));
     await waitFor(() => expect(watchCallback).not.toBeNull());

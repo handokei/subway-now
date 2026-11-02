@@ -90,6 +90,8 @@ interface RunOpts {
   noTrain?: boolean;
   /** gps.lastFixFromBg 패스스루 확인용. */
   fixFromBg?: boolean;
+  /** gps.lastFixSource 패스스루 확인용(미지정=undefined, 구형 mock). */
+  fixSource?: 'gps-live' | 'gps-last-known';
 }
 
 function seedBarometer(row: ParsedRawRow, opts: RunOpts) {
@@ -129,6 +131,7 @@ function run(opts: RunOpts) {
     gpsActive: 'bg' as const,
     lastFixAtMs: row.fixAtMs,
     lastFixFromBg: opts.fixFromBg ?? false,
+    lastFixSource: opts.fixSource,
     isWatchActive: () => false,
     refresh: jest.fn(),
   });
@@ -242,6 +245,18 @@ describe('#3191 PR-2 (3) BG 주입 출처 패스스루', () => {
   it.each([true, false])('gps.lastFixFromBg=%s -> useFusedNearestStation 반환값 그대로 (HomeScreen 업로드 skip 입력)', (fixFromBg) => {
     const { hook } = run({ fixture: T_21_OCT_HOME, row: T_21_OCT_HOME.rows[0], fixFromBg });
     expect(hook.result.current.lastFixFromBg).toBe(fixFromBg);
+  });
+});
+
+describe('#3036 PR-3a lastFixSource 패스스루', () => {
+  it.each(['gps-live', 'gps-last-known'] as const)('gps.lastFixSource=%s -> 반환값 그대로 (등록 스냅샷 originFixSource 입력)', (fixSource) => {
+    const { hook } = run({ fixture: T_21_OCT_HOME, row: T_21_OCT_HOME.rows[0], fixSource });
+    expect(hook.result.current.lastFixSource).toBe(fixSource);
+  });
+
+  it('gps.lastFixSource 부재(undefined) -> null', () => {
+    const { hook } = run({ fixture: T_21_OCT_HOME, row: T_21_OCT_HOME.rows[0] });
+    expect(hook.result.current.lastFixSource).toBeNull();
   });
 });
 

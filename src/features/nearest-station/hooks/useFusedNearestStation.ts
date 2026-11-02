@@ -44,6 +44,7 @@ import {
   getLastBarometerReadingAtMs,
 } from '../../../shared/utils/barometerState';
 import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
+import type { GpsFixSource } from '../../../shared/constants/gpsFixSource';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import {
@@ -217,6 +218,8 @@ interface UseFusedNearestStationReturn {
   lastFixAtMs: number | null;
   /** #3191 PR-2 — 마지막 채택 fix가 BG task fix 주입분인가(FG 업로드 skip 입력). */
   lastFixFromBg: boolean;
+  /** #3036 PR-3a — 마지막 채택 fix의 출처(등록 스냅샷 originFixSource 입력). */
+  lastFixSource: GpsFixSource | null;
   /**
    * #733 — 위치 이력 기반 정적/이동/판정불가. iOS가 speed=-1(미측정)을 보고하는 정적 케이스에서
    * movementGate fallback 신호로 사용. 호출자(useStationAlarm 등)가 evaluateMovement에 전달해
@@ -2866,6 +2869,7 @@ export function useFusedNearestStation(
     lastFixAtMs: gps.lastFixAtMs,
     // #3191 PR-2 — L이 BG task fix 주입분이면 FG 업로드(useFgPositionUpload)가 건너뛴다.
     lastFixFromBg: gps.lastFixFromBg === true,
+    lastFixSource: gps.lastFixSource ?? null,
     positionStability,
     estimatorStrategy: estimate?.strategy ?? null,
     // D2(#1208) + #1235 (D9 wire) — useStationAlarm hop window 게이트 + DebugModal Trip/Fusion/GPS 섹션 SSOT.
