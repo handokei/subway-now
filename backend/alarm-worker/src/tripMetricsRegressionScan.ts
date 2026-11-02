@@ -111,7 +111,7 @@ function emitReconsumeAlert(reconsumes: ReconsumedStation[], windowStartMs: numb
   const sample = reconsumes.slice(0, REGRESSION_SAMPLE_LIMIT);
   console.error(
     JSON.stringify({
-      msg: 'trip_events reconsume detected — same station prepare-alarm consumed 2+ times in one trip',
+      msg: 'trip_events reconsume detected — same-station reconsume signal (prepare-alarm x2+ / sync-dedup x2+ / progress-reconcile) in one trip',
       count: reconsumes.length,
       windowStartMs,
       sample,

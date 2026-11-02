@@ -62,7 +62,7 @@ describe('findReconsumedStations 술어 (#3006)', () => {
 });
 
 describe('SQL (#3006)', () => {
-  it('buildReconsumeSql 은 advance 를 조회 대상에서 제외하고 3종 kind 만 읽는다', () => {
+  it('buildReconsumeSql 은 advance 를 조회 대상에서 제외한다', () => {
     const sql = buildReconsumeSql('?');
     expect(sql).toMatch(/FROM trip_events/);
     expect(sql).toMatch(/ts\s*>\s*\?/);

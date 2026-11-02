@@ -49,8 +49,8 @@ export type BackendXEventName =
    */
   | 'X12-trip-metrics-fired-zero'
   /**
-   * #3006 PR-0 — 재진행(같은 역 재소비) 감시. 한 트립 창에서 같은 역 `prepare-alarm`이
-   * 2회 이상 기록된 (token, station)을 `tripMetricsRegressionScan.ts`가 매일 1회 집계해 emit.
+   * #3006 PR-0 — 재진행(같은 역 재소비) 감시. 한 트립 창에서 같은 역 재소비 신호(`prepare-alarm` 2회+ /
+   * `sync-station-passed-dedup` 2회+ / `progress-reconcile` 1회+)가 잡힌 (token, station)을 `tripMetricsRegressionScan.ts`가 매일 1회 집계해 emit.
    */
   | 'X13-trip-reconsume';
 

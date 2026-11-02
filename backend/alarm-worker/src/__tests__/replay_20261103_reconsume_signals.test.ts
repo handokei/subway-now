@@ -16,8 +16,8 @@ describe('replay 2026-11-03 reconsume 술어 교체 (#3006)', () => {
   it('prepare-alarm 이 있는 세계: 기존 2건 유지 + 같은 사건의 sync-dedup 신호(성수 x2) 추가', () => {
     expect(pick(ALL)).toEqual([
       { station: '강남구청', count: 4, signal: 'prepare-alarm-repeat' },
-      { station: '건대입구', count: 2, signal: 'prepare-alarm-repeat' },
       { station: '성수', count: 2, signal: 'sync-dedup-repeat' },
+      { station: '건대입구', count: 2, signal: 'prepare-alarm-repeat' },
     ]);
   });
 
