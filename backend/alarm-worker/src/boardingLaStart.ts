@@ -67,6 +67,11 @@ export interface FireBoardingLaStartInputs {
   body?: string;
   /** #3055 PR-0 — 탑승 질문 발사 계측(D1 meta 전용, 동작 무변경). 탑승 질문 경로에서만 채운다. */
   promptInstrumentation?: PromptFireInstrumentation;
+  /**
+   * #3221 PR-3a — **이번 발사 열차**(탑승 질문 경로만). 값이 있으면 content에 `trainCode`와
+   * `trainCodeIssuedAtMs`(=이 발사의 `now`, 알림 sentAt과 동일)를 싣는다. null/미지정(ambiguity·하차/종료 제안) = 미기재.
+   */
+  trainCode?: string | null;
 }
 
 export interface FireBoardingLaStartResult {
@@ -81,7 +86,7 @@ function canonicalLineName(line: string): string {
 }
 
 function buildBoardingContentState(inputs: FireBoardingLaStartInputs): LiveActivityContentState {
-  const { phase, station, line, nextLine, title, trainInfo, body } = inputs;
+  const { phase, station, line, nextLine, title, trainInfo, body, trainCode, now } = inputs;
   const lineName = canonicalLineName(line);
   return {
     phase,
@@ -94,6 +99,7 @@ function buildBoardingContentState(inputs: FireBoardingLaStartInputs): LiveActiv
     ...(trainInfo === undefined ? {} : { trainInfo }),
     ...(body === undefined ? {} : { body }),
     ...(nextLine ? { nextLine: canonicalLineName(nextLine) } : {}),
+    ...(trainCode ? { trainCode, trainCodeIssuedAtMs: now } : {}),
   };
 }
 
