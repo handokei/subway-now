@@ -86,6 +86,7 @@ import { readSsot, seedSsot, ssotKey, writeSsot, type MotionEvidence, type TripP
 import { END_PROMPT_STATIONARY_MS } from '../motionState';
 import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Route, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
+import { makeSqliteD1, type TripEventRow } from './helpers/sqliteD1';
 
 let apnsConfig: ApnsConfig;
 
@@ -14855,6 +14856,287 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       expect(findOriginOutcomeInserts(inserts)).toEqual([
         { leg: 'origin', outcome: 'silenced', gateDecision: 'imminent' },
       ]);
+    });
+  });
+
+  // #2851 재오픈 (2026-11-02) — origin 판정 계측이 lock 전 트립(= origin 판정이 일어나는 유일한
+  // 시점)에서 항상 no-op이던 결함. 구 recorder는 SSoT가 null이면 return했는데 SSoT는 lock 경로에서만
+  // seed된다. 이제 recorder는 SSoT/KV와 무관하게 D1(`trip_events`)만 본다 — 같은 trip(ts ≥
+  // createdAt)·같은 kind+leg의 직전 행 outcome과 다를 때만 INSERT. 아래는 SSoT를 **seed하지 않은**
+  // (= 실 lock 전 트립과 동일한) 상태에서 분기마다 1개씩 검증한다.
+  describe('#2851 재오픈 — lock 전 트립(SSoT 없음)에서도 origin 판정이 D1에 남는다', () => {
+    function originMetas(rows: TripEventRow[]): Array<Record<string, unknown>> {
+      return rows
+        .filter((r) => r.kind === 'leg-boarding-prompt')
+        .map((r) => JSON.parse(r.meta as string) as Record<string, unknown>)
+        .filter((m) => m.leg === 'origin');
+    }
+
+    function makeTrackingOnlyTrip(overrides: Partial<Trip> = {}): Trip {
+      return makeTrip({
+        promptOptIn: false,
+        infoModeEnabled: false,
+        trackingOptIn: true,
+        ...overrides,
+      } as Partial<Trip>);
+    }
+
+    async function runOrigin(
+      trip: Trip,
+      kv: InMemoryKV,
+      db: D1Database,
+      fetchImpl: typeof fetch = makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]),
+      now: number = NOW,
+    ): Promise<ScheduledStats> {
+      const stats = makeStats();
+      await maybeFireOriginBoardingPromptGpsFree(
+        trip,
+        makeEnv(kv, undefined, db),
+        makeDeps(fetchImpl),
+        stats,
+        now,
+        () => {},
+        () => 'pid-origin',
+      );
+      return stats;
+    }
+
+    const FAR_GEO = {
+      origin: { lat: 0, lng: 0 },
+      nextStation: { lat: 0, lng: 0 },
+      direction: null,
+      originDistanceM: 222,
+      originAccuracyM: 6.7,
+    };
+
+    it('① no-intent — 의향 0개 trip → outcome=no-intent 1행', async () => {
+      const { db, rows } = await makeSqliteD1();
+      await runOrigin(makeTrip({ promptOptIn: false, infoModeEnabled: false }), new InMemoryKV(), db);
+      expect(originMetas(rows())).toEqual([{ leg: 'origin', outcome: 'no-intent' }]);
+    });
+
+    it('② derivation-failed — display 파생 재료 없음 → outcome=derivation-failed + failureReason', async () => {
+      const { db, rows } = await makeSqliteD1();
+      await runOrigin(
+        makeTrackingOnlyTrip({ promptDisplay: undefined, originStationName: undefined }),
+        new InMemoryKV(),
+        db,
+      );
+      expect(originMetas(rows())).toEqual([
+        { leg: 'origin', outcome: 'derivation-failed', failureReason: 'no-origin-station-name' },
+      ]);
+    });
+
+    it('③ proximity-missing — trackingOptIn-only + 근접 정보 없음 → 1행 + 진단 meta (이슈 테스트 ①)', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const stats = await runOrigin(makeTrackingOnlyTrip(), new InMemoryKV(), db);
+      expect(stats.trackingOptInProximityMissingBlocked).toBe(1);
+      expect(originMetas(rows())).toEqual([
+        {
+          leg: 'origin',
+          outcome: 'proximity-missing',
+          trackingOptIn: true,
+          promptOptIn: false,
+          snapshotPresent: false,
+          seriesAgeMs: null,
+          seriesAccuracyM: null,
+          derivedDistanceM: null,
+          anchorAgeMs: null,
+        },
+      ]);
+    });
+
+    it('③-b proximity-missing meta — 신선하지만 먼 series는 seriesAgeMs/accuracy/derivedDistanceM을 싣는다', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const kv = new InMemoryKV();
+      const trip = makeTrackingOnlyTrip();
+      // 군자역 좌표에서 멀리 떨어진 (0,0) 신선 series — 스냅샷 부재 → series로 거리 파생, 근접 아님.
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0,
+        lng: 0,
+        accuracy: 12,
+        ts: NOW - 30_000,
+        motion: 'stationary',
+      });
+      await runOrigin(trip, kv, db);
+      const [meta] = originMetas(rows());
+      expect(meta).toMatchObject({
+        outcome: 'proximity-missing',
+        snapshotPresent: false,
+        seriesAgeMs: 30_000,
+        seriesAccuracyM: 12,
+        anchorAgeMs: null,
+      });
+      expect(typeof meta.derivedDistanceM).toBe('number');
+      expect(meta.derivedDistanceM as number).toBeGreaterThan(1_000_000);
+    });
+
+    it('④ 같은 outcome이 3 cycle 연속 → 1행 (이슈 테스트 ②) / outcome이 바뀌면 새 행', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const kv = new InMemoryKV();
+      const trip = makeTrackingOnlyTrip();
+      await runOrigin(trip, kv, db, undefined, NOW);
+      await runOrigin(trip, kv, db, undefined, NOW + 30_000);
+      await runOrigin(trip, kv, db, undefined, NOW + 60_000);
+      expect(originMetas(rows()).map((m) => m.outcome)).toEqual(['proximity-missing']);
+      // 근접 정보가 생겨 outcome이 too-far로 바뀌면 전이 → 새 행.
+      const tooFar = makeTrackingOnlyTrip({ promptGeoContext: FAR_GEO });
+      await appendPositionPoint(kv as unknown as KVNamespace, tooFar.token, {
+        lat: 0, lng: 0, accuracy: 6.7, ts: NOW + 90_000, motion: 'stationary',
+      });
+      await runOrigin(tooFar, kv, db, undefined, NOW + 90_000);
+      expect(originMetas(rows()).map((m) => m.outcome)).toEqual(['proximity-missing', 'too-far']);
+    });
+
+    it('④-b dedup은 같은 trip 안에서만 — 같은 token_hash의 이전 트립 행(ts < createdAt)은 무시', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const kv = new InMemoryKV();
+      const oldTrip = makeTrackingOnlyTrip({ createdAt: NOW - 3_600_000 });
+      await runOrigin(oldTrip, kv, db, undefined, NOW - 3_000_000);
+      // 같은 기기 token(token_hash 공유), 새 트립(createdAt이 이전 행보다 뒤) — 같은 outcome이어도 1행 추가.
+      const newTrip = makeTrackingOnlyTrip({ createdAt: NOW - 60_000 });
+      await runOrigin(newTrip, kv, db, undefined, NOW);
+      expect(originMetas(rows()).map((m) => m.outcome)).toEqual(['proximity-missing', 'proximity-missing']);
+    });
+
+    it('⑤ too-far — 먼 거리 스냅샷 + 신선 GPS → outcome=too-far', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ promptGeoContext: FAR_GEO });
+      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+        lat: 0, lng: 0, accuracy: 6.7, ts: NOW, motion: 'stationary',
+      });
+      await runOrigin(trip, kv, db);
+      expect(originMetas(rows())).toEqual([{ leg: 'origin', outcome: 'too-far' }]);
+    });
+
+    it('⑥ silenced — repeat gate silenced → outcome=silenced', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const trip = makeTrip({
+        boardingPromptState: { silencedUntil: NOW + 60_000 },
+      } as Partial<Trip>);
+      await runOrigin(trip, new InMemoryKV(), db);
+      expect(originMetas(rows())).toEqual([{ leg: 'origin', outcome: 'silenced' }]);
+    });
+
+    it('⑥-b silenced — repeat gate max-fires-reached → outcome=silenced', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const trip = makeTrip({
+        boardingPromptState: { fireCount: 99 },
+      } as Partial<Trip>);
+      await runOrigin(trip, new InMemoryKV(), db);
+      expect(originMetas(rows())).toEqual([{ leg: 'origin', outcome: 'silenced' }]);
+    });
+
+    it('⑦ 후보 단계 outcome(suppressed-not-imminent) — SSoT 없이도 기록', async () => {
+      const { db, rows } = await makeSqliteD1();
+      await runOrigin(
+        makeTrip(),
+        new InMemoryKV(),
+        db,
+        makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 5 }]),
+      );
+      expect(originMetas(rows()).map((m) => m.outcome)).toEqual(['suppressed-not-imminent']);
+    });
+
+    it('⑧ fired — 발사 → fired 행 + 기존 prompt-sound-channel 행 (이슈 테스트 ③)', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const stats = await runOrigin(makeTrip(), new InMemoryKV(), db);
+      expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      expect(originMetas(rows())).toEqual([
+        { leg: 'origin', outcome: 'fired', candidateArvlCds: [1], candidateEtaSeconds: [120], gateDecision: 'imminent' },
+      ]);
+      expect(rows().some((r) => r.kind === 'prompt-sound-channel')).toBe(true);
+    });
+
+    it('⑨ KV write 증가 0 — 판정 기록(proximity-missing)은 KV put을 하지 않는다 (이슈 테스트 ④)', async () => {
+      const { db } = await makeSqliteD1();
+      const kv = new InMemoryKV();
+      const putSpy = vi.spyOn(kv, 'put');
+      await runOrigin(makeTrackingOnlyTrip(), kv, db, undefined, NOW);
+      await runOrigin(makeTrackingOnlyTrip(), kv, db, undefined, NOW + 30_000);
+      expect(putSpy).not.toHaveBeenCalled();
+    });
+
+    it('⑩ SSoT readSsot 제거 — origin 판정 cycle이 SSoT 키를 읽지 않는다 (cycle당 KV read 1회 절감)', async () => {
+      const { db } = await makeSqliteD1();
+      const kv = new InMemoryKV();
+      const getSpy = vi.spyOn(kv, 'get');
+      await runOrigin(makeTrackingOnlyTrip(), kv, db);
+      const ssotReads = getSpy.mock.calls.filter(([key]) => String(key).startsWith('ssot:'));
+      expect(ssotReads).toEqual([]);
+    });
+
+    it('⑭ lock 성립 trip(boardingLock)은 기록하지 않는다 — lock 소관, 비용 이유 제외', async () => {
+      const { db, rows } = await makeSqliteD1();
+      const trip = makeTrip({
+        boardingLock: { trainCode: '7246', line: '7', lockedAt: NOW, segmentStations: ['군자', '용마산'] },
+      } as unknown as Partial<Trip>);
+      await runOrigin(trip, new InMemoryKV(), db);
+      expect(originMetas(rows())).toEqual([]);
+    });
+
+    describe('cron 루프 조기 return (runScheduled)', () => {
+      const cronDeps = (): ScheduledDeps => ({
+        seoul: new SeoulArrivalClient({
+          host: 'seoul.api',
+          apiKey: 'KEY',
+          fetchImpl: (async () =>
+            new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+        }),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+      });
+
+      function cronTrip(overrides: Partial<Trip> = {}): Trip {
+        return {
+          token: 'trip-cron-origin',
+          route: { type: 'direct', line: '7', stops: 3 },
+          destination: 'dst',
+          waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+          expiresAt: NOW + 3_600_000,
+          createdAt: NOW - 60_000,
+          alarmAtEpochMs: NOW + 60_000,
+          apnsEnv: 'production',
+          registeredAt: NOW,
+          trackingOptIn: true,
+          promptDisplay: { originStation: '군자', line: '7' },
+          ...overrides,
+        } as unknown as Trip;
+      }
+
+      it('⑪ polling-window-skip — 알람 한참 전 + 명시 의향 없음(lock/infoMode 없음) → outcome=polling-window-skip', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await putTrip(kv as unknown as KVNamespace, cronTrip({ alarmAtEpochMs: NOW + 60 * 60_000 }));
+        await runScheduled(makeEnv(kv, undefined, db), cronDeps());
+        expect(originMetas(rows())).toEqual([{ leg: 'origin', outcome: 'polling-window-skip' }]);
+      });
+
+      it('⑫ no-active-waypoint — waypoints 비어 있음 → outcome=no-active-waypoint', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await putTrip(kv as unknown as KVNamespace, cronTrip({ waypoints: [] }));
+        await runScheduled(makeEnv(kv, undefined, db), cronDeps());
+        expect(originMetas(rows())).toEqual([{ leg: 'origin', outcome: 'no-active-waypoint' }]);
+      });
+
+      it('⑬ evaluation-error — origin 평가가 throw → outcome=evaluation-error (+ error 문자열)', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await putTrip(kv as unknown as KVNamespace, cronTrip());
+        const realGet = kv.get.bind(kv);
+        vi.spyOn(kv, 'get').mockImplementation((async (key: string, options?: { cacheTtl?: number }) => {
+          if (key.startsWith('pos:')) throw new Error('boom-series');
+          return realGet(key, options);
+        }) as unknown as typeof kv.get);
+        await runScheduled(makeEnv(kv, undefined, db), cronDeps());
+        const [meta] = originMetas(rows());
+        expect(meta).toMatchObject({ leg: 'origin', outcome: 'evaluation-error' });
+        expect(String(meta.error)).toContain('boom-series');
+      });
     });
   });
 
