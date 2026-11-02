@@ -1,4 +1,4 @@
-# ADR-053: LA 탑승 버튼은 "LA에 보이는 열차"를 확정한다 — 발사 열차 동봉, cron 전용 발사 기록(`prompt_fires`), 최신 발사 + 3분 창 검증, live는 fallback
+# ADR-054: LA 탑승 버튼은 "LA에 보이는 열차"를 확정한다 — 발사 열차 동봉, cron 전용 발사 기록(`prompt_fires`), 최신 발사 + 3분 창 검증, live는 fallback
 
 - **상태**: **Proposed** (2026-11-03)
 - **관련**: #3221, #3055, #3044, ADR-042, ADR-051, ADR-010, `tasks/plan-2026-11-02-la-button-train-refresh.md`(v6) §3.2·§4
