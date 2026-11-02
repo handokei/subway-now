@@ -42,6 +42,7 @@ async function mirrorBoardingLine(line: string | undefined): Promise<void> {
 // 백엔드 Trip.Waypoint와 동일 구조. backend/alarm-worker/src/types.ts와 동기화.
 import type { AlarmWaypoint } from '../../../shared/types/alarm';
 import type { TripEndReason } from '../../../shared/types/tripEnd';
+import type { GpsFixSource } from '../../../shared/constants/gpsFixSource';
 export type { AlarmWaypoint };
 
 export interface RegisterTripPayload {
@@ -87,6 +88,10 @@ export interface RegisterTripPayload {
     originDistanceM?: number;
     /** #2130 (B-2) — GPS fix 정확도(m). originDistanceM과 항상 짝으로만 존재. */
     originAccuracyM?: number;
+    /** #3036 PR-3a — originDistanceM을 만든 fix의 나이(ms, 등록 시점 기준). fix 없음/구형이면 생략. */
+    originFixAgeMs?: number;
+    /** #3036 PR-3a — 그 fix의 출처. backend는 'gps-live'일 때만 도보시간 계산에 쓴다(계획 §17.5). */
+    originFixSource?: GpsFixSource;
   };
   /**
    * #819 — boarding-prompt push 본문에 노출할 출발역/노선 표시명.

@@ -325,7 +325,7 @@ export default function HomeScreen() {
   // 안 지워지고 zombie station-passed 알림이 계속 발사됐다. 기존 BG-only pull-death backstop을
   // FG poll 주기에도 배선 — 신규 판정/cleanup 로직 없음(기존 checkTripDeathByPull 재사용).
   useTripDeathForegroundBackstop();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted, lastFixFromBg, lastFixAtMs } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted, lastFixFromBg, lastFixAtMs, lastFixSource } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
@@ -1338,7 +1338,14 @@ export default function HomeScreen() {
     // fix 없으면(GPS 미해소/권한거절) undefined 대신 null로 명시 전달 — 필드 자체 생략은 hook이 처리.
     gpsFix:
       userLocation && accuracyMeters != null
-        ? { lat: userLocation.lat, lng: userLocation.lng, accuracyM: accuracyMeters }
+        ? {
+            lat: userLocation.lat,
+            lng: userLocation.lng,
+            accuracyM: accuracyMeters,
+            // #3036 PR-3a — fix 나이·출처. null이면 필드 생략(buildOriginGpsStamp) — backend는 "나이 모름"으로 처리.
+            ...(lastFixAtMs != null ? { fixTs: lastFixAtMs } : {}),
+            ...(lastFixSource != null ? { source: lastFixSource } : {}),
+          }
         : null,
     // #2130 (B-1 Tier 2) — 지하 fallback heal의 route 출발역. effectiveOrigin은 GPS pause에도
     // customOrigin/lastFusedStation/boardingLockStation/tripOrigin 순으로 fallback해 currentStation이
