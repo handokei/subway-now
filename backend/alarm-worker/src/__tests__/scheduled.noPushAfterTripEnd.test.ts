@@ -118,7 +118,7 @@ async function runOneCycle(opts: {
   await putTrip(kv as unknown as KVNamespace, opts.tripOverride ? opts.tripOverride(baseTrip) : baseTrip);
   if (opts.farGpsSeries) {
     // 서울 도심(목적지 어린이대공원에서 수 km 밖), 신선한 fix.
-    await appendPositionPoint(kv as unknown as KVNamespace, TOKEN, { lat: 37.5, lng: 126.9, accuracy: 10, ts: NOW });
+    await appendPositionPoint(kv as unknown as KVNamespace, TOKEN, { lat: 37.5, lng: 126.9, accuracy: 10, ts: NOW, motion: 'automotive' });
   }
   await seedSsot(kv as unknown as KVNamespace, TOKEN, opts.ssotStation, { line: '7' });
 
@@ -244,7 +244,7 @@ describe('audit-sides — gps-far backstop 종료는 겸용하지 않는다 (사
   it('취침: 목적지 도달 후 GPS가 계속 멀어 backstop으로 끝나면 종료 alert 무음, alarm.wav 0', async () => {
     const { mainCalls, midCalls } = await runOneCycle({
       sleep: true,
-      ssotStation: DESTINATION,
+      ssotStation: OTHER_STATION,
       farGpsSeries: true,
       tripOverride: (trip) => ({ ...trip, destinationImminentFirstAt: NOW - 16 * 60_000 }),
     });

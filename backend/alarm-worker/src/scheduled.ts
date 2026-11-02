@@ -2922,6 +2922,22 @@ async function isStationPassedFired(
 }
 
 /**
+ * #3100 F-S2 — 종료 alert가 하차 도착 알림을 겸해야 하는가. lock-active 종료(`lock-active-destination`,
+ * waypoints 소진) 공용. 도착 push가 게이트/무발사로 안 나갔다면(dedup 마커 없음) 겸한다 — 소리는 정책 표가 정한다.
+ * 이미 나갔으면 false(알람 정확히 1회). lock 없음 = 알림 없음(2026-10-24) -> false. read 실패는 miss 회피로 true.
+ * gps-far backstop(사용자가 멀리 있음)과 lockless 종료는 이 함수를 쓰지 않는다 -> 무음 유지.
+ */
+async function shouldCombineArrivalAlert(env: Env, trip: Trip, stationName: string): Promise<boolean> {
+  const { boardingLock } = trip;
+  if (boardingLock === undefined) return false;
+  try {
+    return !(await isStationPassedFired(env, trip, boardingLock, stationName));
+  } catch {
+    return true;
+  }
+}
+
+/**
  * #1370 — station-passed imminent push payload 빌더. arvlCd path와 vanish-fallback path가
  * 같은 payload 모양을 공유 (lock self-describing, subsurface flag, hopIndex forward 등). SonarCloud
  * 중복 차단 + 새 필드 추가 시 단일 지점 갱신을 위해 헬퍼로 추출.
@@ -6616,17 +6632,7 @@ export async function advanceBoardingLockWaypoint(
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
     await beforeDestinationEnd?.();
-    // #3100 F-S2 — 도착 push가 게이트/무발사로 안 나갔다면 종료 alert가 하차 도착 알림을 겸한다(취침=알람 소리).
-    // 이미 나갔다면(dedup 마커 존재) 종료 alert는 기존대로 무음 — 알람 정확히 1회.
-    const { boardingLock } = trip;
-    let arrivalAlert = false;
-    try {
-      // lock 없음 = 알림 없음(2026-10-24 결정) — 겸용하지 않는다.
-      arrivalAlert = boardingLock !== undefined && !(await isStationPassedFired(env, trip, boardingLock, waypoint.stationName));
-    } catch {
-      // read 실패 -> 도착 알림 유실(miss)을 피해 겸용한다. lock이 없으면 read 자체가 없으므로 여기 오지 않는다.
-      arrivalAlert = true;
-    }
+    const arrivalAlert = await shouldCombineArrivalAlert(env, trip, waypoint.stationName);
     await cleanupTripWithLa(trip, env, deps, stats, now, log, {
       reason: 'destination-arrived',
       endPath: 'lock-active-destination',
@@ -7097,6 +7103,7 @@ export async function completeWaypointAdvance(
     await cleanupTripWithLa(trip, env, deps, stats, now, log, {
       reason: 'destination-arrived',
       endPath,
+      arrivalAlert: await shouldCombineArrivalAlert(env, trip, waypoint.stationName),
     });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
     await deleteSsot(env.TRIPS, trip.token);
