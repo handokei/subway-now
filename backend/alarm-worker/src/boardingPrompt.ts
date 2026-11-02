@@ -21,7 +21,7 @@ import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import { canonicalLineName, matchLine } from './lineAlias';
 import { evaluateWindow, type WindowedMetrics } from './positionSeries';
 import type { ArrivalEntry, PositionEntry } from './seoul';
-import type { BoardingPromptState } from './types';
+import type { BoardingPromptState, OriginPromptWindow, PromptGeoContext } from './types';
 
 // #2844 — 구 게이트 #4(ORIGIN_RADIUS_KM)/#5(DIRECTION_COSINE_THRESHOLD)/#6(MIN_WINDOW_SAMPLES)/
 // #7(MIN_FUSED_SPEED_KMH)는 은퇴한 `evaluateBoardingPromptGates`(GPS 9단) 전용 상수였다 —
@@ -107,6 +107,87 @@ export const MIN_FIRE_INTERVAL_MS = 5 * 60 * 1000;
  * 신선도 게이트(15분) 만료 전이라도 즉시 skip한다.
  */
 export const MAX_FIRE_COUNT = 3;
+
+/**
+ * #3036 (O3) — 도보 평균 속도(m/s). **device `src/shared/constants/eta.ts`의 `WALKING_SPEED_M_PER_S`와 같은 값의
+ * 복제**다(backend는 device 상수를 import하지 않는다). 값 drift는 `walkingSpeed.deviceParity.test.ts`가 차단한다
+ * (ADR-029 경계 계약 방식).
+ */
+export const WALKING_SPEED_M_PER_S = 1.2;
+/** #3036 (O3) — 창 시작 여유: cron 양자화 1 tick(60s). 창이 일찍 열리는 쪽(miss 방향 오차 없음)으로만 틀린다. */
+export const ORIGIN_PROMPT_WINDOW_LEAD_MS = 60_000;
+/** #3036 (O3, 사용자 결정 K=2) — 창 안 최대 발사 수. `boardingPromptState.fireCount`로 센다(추가 KV write 0). */
+export const ORIGIN_PROMPT_MAX_FIRES = 2;
+/**
+ * #3036 (O3) — 창 길이 상한(시작 기준). 계획 §17.3은 `2 x 배차 + 3분`(7호선 평일 비첨두 = 15분)을 제안하나 노선
+ * 배차 출처(U7: device 송신 / backend json 복제 / 고정)가 미결이라 **보수적 기본값 15분**으로 시작한다. 15분은
+ * #2844에서 은퇴한 신선도 게이트의 부활이 아니라 신규 파라미터다.
+ */
+export const ORIGIN_PROMPT_WINDOW_CAP_MS = 15 * 60 * 1000;
+/** #3036 (O3) — 걷는 시간 상한. 창 상한과 같은 값(상한 없으면 사실상 영구 침묵). */
+export const ORIGIN_PROMPT_WALK_CAP_MS = ORIGIN_PROMPT_WINDOW_CAP_MS;
+/** #3036 (O3) — fix 나이 신뢰 상한. 이보다 오래된 fix로는 창을 늦추지 않는다(`DEVICE_SYNC_STALE_THRESHOLD_MS`와 같은 5분). */
+export const ORIGIN_FIX_MAX_AGE_MS = 5 * 60 * 1000;
+
+type OriginWindowGeoInput = Pick<
+  PromptGeoContext,
+  'originDistanceM' | 'originAccuracyM' | 'originFixAgeMs' | 'originFixSource'
+>;
+
+/** live fix(출처 gps-live, 나이 <= 5분)로 거리와 정확도가 모두 있을 때만 도보 지연 계산에 쓴다. */
+function trustedWalkDistanceM(geo: OriginWindowGeoInput | undefined): number | null {
+  const { originDistanceM, originAccuracyM, originFixAgeMs, originFixSource } = geo ?? {};
+  if (originDistanceM === undefined || originAccuracyM === undefined) return null;
+  if (originFixSource !== 'gps-live') return null;
+  if (originFixAgeMs === undefined || originFixAgeMs > ORIGIN_FIX_MAX_AGE_MS) return null;
+  return Math.max(0, originDistanceM - originAccuracyM);
+}
+
+/**
+ * #3036 (O3) — 등록 시점의 창 시작 시각. `registeredAt + walkMs - LEAD`, walkMs = max(0, 거리-정확도) / 1.2m/s
+ * (15분 상한). fix가 `gps-live`이고 나이 <= 5분일 때만 걷는 시간을 반영한다 — 필드 부재(구 클라)/오래됨/last-known/
+ * fix 없음(지하)은 walkMs = 0(창 즉시 개시, miss 방향 차단). 거리는 지상 GPS의 **타이밍 전용** 입력이다(identity 결정 아님).
+ */
+export function computeOriginPromptWindowStartAt(registeredAt: number, geo: OriginWindowGeoInput | undefined): number {
+  const effectiveM = trustedWalkDistanceM(geo);
+  if (effectiveM === null) return registeredAt - ORIGIN_PROMPT_WINDOW_LEAD_MS;
+  const walkMs = Math.min((effectiveM / WALKING_SPEED_M_PER_S) * 1000, ORIGIN_PROMPT_WALK_CAP_MS);
+  return registeredAt + walkMs - ORIGIN_PROMPT_WINDOW_LEAD_MS;
+}
+
+/**
+ * #3036 (O3) — 재등록 병합. 새 등록이 **더 가깝다는 증거**(신뢰할 수 있는 live fix)일 때만 창을 앞으로 당긴다(`min`).
+ * fix 없는/낡은 재등록은 증거가 아니므로 기존 창을 그대로 둔다(첫 등록의 "원거리" 판단을 지우지 않는다). 이미 닫힌
+ * 창(closedAt)은 재등록으로 다시 열지 않는다(같은 앵커로 재개 금지).
+ */
+export function mergeOriginPromptWindow(
+  existing: OriginPromptWindow | undefined,
+  registeredAt: number,
+  geo: OriginWindowGeoInput | undefined,
+): OriginPromptWindow {
+  if (existing === undefined) return { startAt: computeOriginPromptWindowStartAt(registeredAt, geo) };
+  if (trustedWalkDistanceM(geo) === null) return existing;
+  return { ...existing, startAt: Math.min(existing.startAt, computeOriginPromptWindowStartAt(registeredAt, geo)) };
+}
+
+export type OriginPromptWindowDecision =
+  | { open: true }
+  | { open: false; reason: 'left-origin' | 'not-started' | 'train-cap' | 'expired'; startAt: number };
+
+/** #3036 (O3) — 창 판정 순수 함수. 우선순위: 떠남(영속) > 시작 전 > 발사 K회 소진 > 상한 경과. */
+export function evaluateOriginPromptWindow(input: {
+  window: OriginPromptWindow;
+  now: number;
+  fireCount: number;
+}): OriginPromptWindowDecision {
+  const { window, now, fireCount } = input;
+  const { startAt, closedAt } = window;
+  if (closedAt !== undefined) return { open: false, reason: 'left-origin', startAt };
+  if (now < startAt) return { open: false, reason: 'not-started', startAt };
+  if (fireCount >= ORIGIN_PROMPT_MAX_FIRES) return { open: false, reason: 'train-cap', startAt };
+  if (now - startAt > ORIGIN_PROMPT_WINDOW_CAP_MS) return { open: false, reason: 'expired', startAt };
+  return { open: true };
+}
 
 /**
  * #3057 (2026-10-19 사용자 결정, #2801 임박집합 {0,1,2}·3차 reopen approaching {3,5} 타이밍 결정 대체)

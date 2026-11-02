@@ -32,6 +32,7 @@ import {
   isNearOrigin,
   markPromptFired,
   markPromptSilenced,
+  mergeOriginPromptWindow,
   shouldStampOriginProximity,
 } from './boardingPrompt';
 import {
@@ -227,12 +228,14 @@ import { lineCodeForName, subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import {
   LA_BOARDING_START_MODES,
+  ORIGIN_FIX_SOURCES,
   type AccelSummary,
   type BoardingLockMeta,
   type Env,
   type LaClientCapability,
   type PositionPoint,
   type PromptDisplay,
+  type OriginPromptWindow,
   type PromptGeoContext,
   type Trip,
 } from './types';
@@ -1495,6 +1498,10 @@ app.post('/trips', async (c) => {
     const mergedTrip: Trip = {
       ...baseTrip,
       routeWaypoints: isSameSession ? (existing.routeWaypoints ?? existing.waypoints) : incoming.waypoints,
+      // #3036 (O3) — trackingOptIn(목적지만 설정) trip의 출발역 질문 허용 창. 등록 시각(server clock)과 이번 등록의
+      // 출발역 거리/fix(타이밍 전용)로 시작 시각을 정하고, 같은 세션 재등록은 "더 가깝다는 증거"만 창을 당긴다.
+      // 기존 putTrip에 편승하므로 KV write 추가 0. 의향이 trackingOptIn이 아니면(안내 시작 등) 창은 쓰이지 않는다.
+      ...originPromptWindowPatch(isSameSession ? existing.originPromptWindow : undefined, incoming, Date.now()),
     };
     // #3023 — 재등록도 활동성 핸들러. same-session 재등록이 짧은 잔여 TTL로 들어와도
     // 여기서 sliding 연장을 적용한다(대부분은 incoming.expiresAt이 이미 새 값이라 no-op).
@@ -4853,6 +4860,19 @@ function parseLaClient(raw: unknown): LaClientCapability | undefined {
   return mode === undefined ? undefined : { split: true, boardingStart: mode };
 }
 
+/** #3036 (O3) — 등록 시 `originPromptWindow` 병합 결과. trackingOptIn이 아니면 기존 창만 유지(없으면 필드 생략). */
+function originPromptWindowPatch(
+  existingWindow: OriginPromptWindow | undefined,
+  incoming: Trip,
+  registeredAt: number,
+): { originPromptWindow?: OriginPromptWindow } {
+  const next =
+    incoming.trackingOptIn === true
+      ? mergeOriginPromptWindow(existingWindow, registeredAt, incoming.promptGeoContext)
+      : existingWindow;
+  return next === undefined ? {} : { originPromptWindow: next };
+}
+
 function parsePromptGeoContext(raw: unknown): PromptGeoContext | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const o = raw as Record<string, unknown>;
@@ -4878,12 +4898,20 @@ function parsePromptGeoContext(raw: unknown): PromptGeoContext | undefined {
     typeof o.originAccuracyM === 'number' && Number.isFinite(o.originAccuracyM)
       ? o.originAccuracyM
       : undefined;
+  // #3036 (O3) — fix 나이/출처. 둘 다 부재(구 클라)면 backend는 "나이 모름"으로 보고 도보 지연을 적용하지 않는다.
+  const originFixAgeMs =
+    typeof o.originFixAgeMs === 'number' && Number.isFinite(o.originFixAgeMs) && o.originFixAgeMs >= 0
+      ? o.originFixAgeMs
+      : undefined;
+  const originFixSource = ORIGIN_FIX_SOURCES.find((source) => source === o.originFixSource);
   return {
     origin: { lat: oc.lat, lng: oc.lng },
     nextStation: { lat: nc.lat, lng: nc.lng },
     direction: dir,
     ...(originDistanceM !== undefined ? { originDistanceM } : {}),
     ...(originAccuracyM !== undefined ? { originAccuracyM } : {}),
+    ...(originFixAgeMs !== undefined ? { originFixAgeMs } : {}),
+    ...(originFixSource !== undefined ? { originFixSource } : {}),
   };
 }
 

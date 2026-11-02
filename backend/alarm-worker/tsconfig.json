@@ -45,6 +45,7 @@
   "exclude": [
     "node_modules",
     "src/__tests__/legDirection.deviceParity.test.ts",
-    "src/__tests__/journeyLaFields.deviceParity.test.ts"
+    "src/__tests__/journeyLaFields.deviceParity.test.ts",
+    "src/__tests__/walkingSpeed.deviceParity.test.ts"
   ]
 }
