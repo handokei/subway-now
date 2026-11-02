@@ -126,12 +126,6 @@ export interface ReplayLibraryEntry {
      * 발생하지 않는 채널).
      */
     locklessIntermediateStations?: string[];
-    /**
-     * #2718 — "1정거장 전" 준비 알림(`maybeFirePrepareAlarm`, `firedPrepareAlarmTargets`)이
-     * 발사돼야 하는 목적지(prepare target) 역들. lock 활성/lockless 무관 채널. 미지정 시
-     * 검증하지 않는다.
-     */
-    prepareAlarmTargets?: string[];
   };
 }
 
@@ -327,7 +321,7 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       ' `runLocklessIntermediate`가 `kind===\'destination\'` waypoint를 코드로 명시 skip하고' +
       ' (types.ts:184), `infoModeEnabled=true`(실측)는 대안 경로(`tryFireConsensusTrainLeg`,' +
       ' auto-lock)를 원천 비활성화한다 — motion 데이터와 무관한 구조적 gap. "1정거장 전" 준비' +
-      ' 알림(`maybeFirePrepareAlarm`, 아래 `prepareAlarmTargets`)은 정상 발사되지만 "곧 도착"' +
+      ' 알림(`maybeFirePrepareAlarm`, #2510 반전으로 2026-11-02 철거)은 당시 발사됐으나 "곧 도착"' +
       ' 경고일 뿐 "지금 하차" 확정이 아니다. lock 부착 시 비교는 아래' +
       ' `replay_20260918_lock_seeded_contrast.test.ts`(REPLAY_LIBRARY 비등록) 참고.' +
       ' #2751(4차 정정) — `resolveTrainCodeFromPositions`의 recptnMs 파싱 결함이 고쳐지면서' +
@@ -409,7 +403,6 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // lockless 매역 "통과" push와 목적지 "1정거장 전" 준비 알림은 이제 발사되지 않는다(waypoint
       // advance·종료는 그대로). 위 3개 역 서술은 #3140 이전 동작의 이력이다.
       locklessIntermediateStations: [],
-      prepareAlarmTargets: [],
       // #2720 fix — lockless 경로가 destination waypoint를 arvlCd ground truth로 처리해
       // `cleanupTripWithLa(reason:'destination-arrived')`로 수렴한다. #2754 fix 후 lock이
       // 형성되지 않아(위 설명) lockless 경로가 다시 목적지까지 완주하므로 이 완결도 복원된다.

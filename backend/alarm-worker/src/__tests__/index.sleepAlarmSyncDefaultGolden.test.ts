@@ -6,7 +6,7 @@
  * 기대값은 변경 전 실측 출력이며 통과시키려 조정하지 않는다.
  */
 import { describe, expect, it } from 'vitest';
-import { prepareAlarmCollapseId, sleepAlarmCollapseId } from '../collapseId';
+import { sleepAlarmCollapseId } from '../collapseId';
 import { useApnsHarness, wp } from './helpers/sleepAlarmHarness';
 import {
   FF_CHAIN_NAMES,
@@ -41,9 +41,9 @@ describe('#3100 PR-2 golden — 순수 점프(/boarding-lock/sync), 기본 설�
     if (fires === 1) expect(r.companions[0].body.data).not.toHaveProperty('remainingStops');
   });
 
-  it('취침 OFF 점프 3: 준비 알람 1회(취침 알람 키 접근 0)', async () => {
+  it('[#2510 반전] 취침 OFF 점프 3: 1정거장 전 알람 0(취침 알람 키 접근 0)', async () => {
     const r = await syncObserved(lockActiveTrip(chain(), { sleepModeEnabled: false }), FF_CHAIN_NAMES[2]);
-    expect(r.alarms.map((a) => a.collapseId)).toEqual([prepareAlarmCollapseId(SYNC_TOKEN, TARGET)]);
+    expect(r.alarms.map((a) => a.collapseId)).toEqual([]);
     expect(r.alarmKeyCalls).toEqual(NO_KEY_CALLS);
   });
 

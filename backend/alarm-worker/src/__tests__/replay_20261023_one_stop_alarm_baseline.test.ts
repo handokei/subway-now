@@ -80,9 +80,11 @@ const promptPayload = (push: CapturedPush) => {
 /** #3100 PR-1 — 설정 주입: 취침 ON + 설정만 seed한다(caps·D1은 불변 실측). */
 interface ReplayOpts {
   sleepAlarm?: SleepAlarmConfig;
+  /** #2510 반전 — 설정 주입 없이 취침 ON(기본 설정 = 1역 전 한 칸). */
+  sleep?: boolean;
 }
 const sleepOverrides = (opts: ReplayOpts) =>
-  opts.sleepAlarm ? { sleepModeEnabled: true, sleepAlarm: opts.sleepAlarm } : {};
+  opts.sleepAlarm ? { sleepModeEnabled: true, sleepAlarm: opts.sleepAlarm } : opts.sleep ? { sleepModeEnabled: true } : {};
 
 async function replay173(opts: ReplayOpts = {}) {
   const dir = 'replay_20261021_trip173';
@@ -253,10 +255,18 @@ async function replay171(opts: ReplayOpts = {}) {
   return { fixture, d1, result, seedWaypoints, httpPushes: stub.httpPushes };
 }
 
-// ── 트립 173 (비취침 = 준비 알람, lock 활성) ────────────────────────────────────────────────
-describe('#3100 선행 — 트립 173 실측 replay: 1역 전 알람 (준비 알람)', () => {
-  it('leg-1 환승역(건대입구) 알람이 정확히 1회, 추적 열차(7031)가 2역 전 진입 이후 ~ 1역 전 출발 이전에 발사된다', async () => {
+// ── 트립 173 (lock 활성) — 1역 전 알람은 취침 전용 (#2510 반전) ────────────────────────────────
+describe('#3100 선행 — 트립 173 실측 replay: 1역 전 알람 (취침 기본 설정)', () => {
+  it('[#2510 반전] 비취침: 환승역(건대입구)·하차역 1역 전 알람 0회', async () => {
     const r = await replay173();
+    const destination = r.seedWaypoints[r.seedWaypoints.length - 1].stationName;
+    const transfer = r.seedWaypoints.find((w) => w.kind === 'transfer') as Waypoint;
+    expect(cronAlarms(r.result.cycles, transfer.stationName)).toEqual([]);
+    expect(cronAlarms(r.result.cycles, destination)).toEqual([]);
+  });
+
+  it('취침 기본 설정: leg-1 환승역(건대입구) 알람이 정확히 1회, 추적 열차(7031)가 2역 전 진입 이후 ~ 1역 전 출발 이전에 발사된다', async () => {
+    const r = await replay173({ sleep: true });
     const transferIdx = r.seedWaypoints.findIndex((w) => w.kind === 'transfer');
     const transfer = r.seedWaypoints[transferIdx].stationName;
     const oneBefore = r.seedWaypoints[transferIdx - 1].stationName;
@@ -271,7 +281,7 @@ describe('#3100 선행 — 트립 173 실측 replay: 1역 전 알람 (준비 알
   });
 
   it('leg-2 하차역(뚝섬) 알람은 캡처 안에서 0 — 추적 열차(3009)가 캡처 종료까지 1역 전(성수)에 도달하지 않았기 때문(결함 아님)', async () => {
-    const r = await replay173();
+    const r = await replay173({ sleep: true });
     const destination = r.seedWaypoints[r.seedWaypoints.length - 1].stationName;
     const oneBefore = r.seedWaypoints[r.seedWaypoints.length - 2].stationName;
     expect(firstSightingMs(r.fixture, '3009', oneBefore)).toBeUndefined();
@@ -372,7 +382,7 @@ function cronSleepAlarmRemainings(cycles: { simNowMs: number; pushes: CapturedPu
 
 describe('#3100 PR-1 — 트립 173 실측 replay + 설정 {매 역, MAX} 주입 (취침 ON)', () => {
   it('leg-1 환승역(건대입구): 남은 칸이 각각 정확히 1회, 시간순으로 줄어들고, 기본 칸은 기본값 발사 시각과 같다', async () => {
-    const base = await replay173();
+    const base = await replay173({ sleep: true });
     const transferIdx = base.seedWaypoints.findIndex((w) => w.kind === 'transfer');
     const transfer = base.seedWaypoints[transferIdx].stationName;
     const defaultFiredAt = cronAlarms(base.result.cycles, transfer);
@@ -387,7 +397,7 @@ describe('#3100 PR-1 — 트립 173 실측 replay + 설정 {매 역, MAX} 주입
       expect(fired[i].at).toBeGreaterThanOrEqual(fired[i - 1].at);
       expect(fired[i].remaining).toBeLessThan(fired[i - 1].remaining);
     }
-    // 기본 칸(1역 전)은 기본값(준비 알람)이 발사하던 바로 그 cron tick
+    // 기본 칸(1역 전)은 기본 설정(취침 ON)이 발사하던 바로 그 cron tick
     const oneBefore = fired.find((f) => f.remaining === SLEEP_ALARM_MIN_STOPS_BEFORE);
     expect(oneBefore?.at).toBe(defaultFiredAt[0]);
     // fixture에서 도출한 정확한 기대: 시드 경로의 환승역 앞 중간역 수 m -> 남은 [min(m, MAX) .. MIN] 전부 1회

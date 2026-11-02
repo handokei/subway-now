@@ -12,7 +12,7 @@ import {
   SLEEP_ALARM_MIN_STOPS_BEFORE as MIN,
   type SleepAlarmConfig,
 } from '../../../../../src/shared/constants/sleepAlarm';
-import { prepareAlarmCollapseId, sleepAlarmCollapseId } from '../../collapseId';
+import { sleepAlarmCollapseId } from '../../collapseId';
 import { fireSyncConsumedPrecedingAlarms, sleepAlarmFireKey, type SyncSkippedFireDeps } from '../../scheduled';
 import type { Trip, Waypoint } from '../../types';
 import { InMemoryKV } from '../inMemoryKv';
@@ -196,9 +196,7 @@ export function registerSleepAlarmSyncTable(): void {
             () => 'p',
           );
           expect(sleepAlerts(f.calls)).toEqual([]);
-          expect(alarmAlerts(f.calls).map((a) => a.collapseId)).toEqual(
-            k === MAX ? [prepareAlarmCollapseId(TOKEN, TARGET)] : [],
-          );
+          expect(alarmAlerts(f.calls).map((a) => a.collapseId)).toEqual([]);
         }
       });
     }
@@ -239,11 +237,11 @@ export function registerSleepAlarmSyncTable(): void {
       }
     }
 
-    it.each(syncConfigCases())('취침 OFF / $name: 설정을 무시하고 바로 앞 역 소비에서만 준비 알람 1회', async ({ sleepAlarm }) => {
+    it.each(syncConfigCases())('[#2510 반전] 취침 OFF / $name: 설정과 무관하게 알람 0회 (알람은 취침 전용)', async ({ sleepAlarm }) => {
       const waypoints = legWaypoints(m, 'destination');
       for (const k of range(MIN, m)) {
         const r = await syncObserved(lockActiveTrip(waypoints, { sleepModeEnabled: false, sleepAlarm }), waypoints[k - 1].stationName);
-        expect(r.alarms.map((a) => a.collapseId)).toEqual(k === m ? [prepareAlarmCollapseId(SYNC_TOKEN, TARGET)] : []);
+        expect(r.alarms.map((a) => a.collapseId)).toEqual([]);
         expect(r.sleepRows).toEqual([]);
       }
     });

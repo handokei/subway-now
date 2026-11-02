@@ -160,10 +160,9 @@ describe('fireSyncConsumedPrecedingAlarms — 선택 모드 clamp는 준비 알�
     expect(d1.rows.filter((r) => r.kind === 'sleep-alarm').map((r) => r.meta?.cells)).toEqual([[MAX]]);
   });
 
-  it('대조 — 기본값(칸 = MIN 하나): 기존대로 prepare-alarm skipped/sleep 행 1건 (동작 불변)', async () => {
-    const { d1 } = await runSync(undefined);
-    expect(d1.rows.filter((r) => r.kind === 'prepare-alarm').map((r) => r.meta)).toEqual([
-      expect.objectContaining({ outcome: 'skipped', reason: 'sleep' }),
-    ]);
+  it('[#2510 반전] 대조 — 기본값(칸 = MIN 하나): 취침 알람 1회, prepare-alarm D1 행 0 (경로 철거)', async () => {
+    const { d1, f } = await runSync(undefined);
+    expect(sleepAlerts(f.calls)).toHaveLength(1);
+    expect(d1.rows.filter((r) => r.kind === 'prepare-alarm')).toEqual([]);
   });
 });
