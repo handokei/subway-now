@@ -131,6 +131,21 @@ describe('#2307 backend-ssot line guard — device 확정 노선과 mirror line 
     expect(entriesAfter).toHaveLength(1);
   });
 
+  // #3191 PR-0 — observer(DebugModal) 인스턴스는 같은 mismatch에서도 Fusion log에 push하지 않는다.
+  it("observer 인스턴스 — 같은 mismatch에서 ssot-line-guard-reject push 0 (판정은 동일하게 거부)", async () => {
+    setupPositionTrainAt(gangnam2, '2');
+    mockRead.mockResolvedValue(makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name }));
+    const hook = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 'observer'),
+    );
+    await flushBackendSsotMirrorTick();
+    await waitFor(() => {
+      expect(hook.result.current.ssotLineGuardRejectCount).toBeGreaterThan(0);
+    });
+    expect(hook.result.current.source).not.toBe('backend-ssot');
+    expect(getFusionDebugEntries().filter((e) => e.kind === 'ssot-line-guard-reject')).toHaveLength(0);
+  });
+
   it('device position-train이 2호선(강남) 확정 + mirror가 7호선(용마산) 주입 → line2 유지 (mirror 거부)', async () => {
     setupPositionTrainAt(gangnam2, '2');
     mockRead.mockResolvedValue(makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name }));

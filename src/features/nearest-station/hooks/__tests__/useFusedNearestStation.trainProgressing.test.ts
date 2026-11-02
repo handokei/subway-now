@@ -347,6 +347,20 @@ describe('useFusedNearestStation — #1015 forward-only 검증', () => {
       expect(typeof lastCall.onFilteredBackward).toBe('function');
     });
 
+    // #3191 PR-0 — observer(DebugModal) 인스턴스는 lockless 측정(alarm log)도 하지 않는다.
+    it('observer 인스턴스 — lockless여도 onFilteredBackward는 undefined (alarm log 적재 0)', () => {
+      mockComputeRouteArc.mockReturnValue({ stations: FWD_ARC_STATIONS });
+      mockTrackProgress.mockReturnValue(trainProgressFor(FWD_ARC_STATION_C));
+
+      renderHook(() =>
+        useFusedNearestStation(undefined, undefined, fwdRouteContext, null, null, undefined, undefined, undefined, undefined, 'observer'),
+      );
+
+      const calls = mockTrackProgress.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls[calls.length - 1][0].onFilteredBackward).toBeUndefined();
+    });
+
     it('boardingLock 활성 시 onFilteredBackward는 undefined (lockless 측정만 함)', () => {
       mockTrackProgress.mockReturnValue(trainProgressFor(FWD_ARC_STATION_C));
 

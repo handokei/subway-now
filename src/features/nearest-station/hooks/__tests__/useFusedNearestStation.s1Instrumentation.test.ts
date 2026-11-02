@@ -168,6 +168,7 @@ describe('useFusedNearestStation — #3191 PR-0 Raw 계측 필드', () => {
 // #3191 PR-0 — 기압계 관측 필드(B 원인 확정용). 관측 전용: 판정 입력 아님.
 describe('useFusedNearestStation — #3191 PR-0 Raw 기압 관측 필드', () => {
   beforeEach(() => {
+    jest.useFakeTimers();
     jest.clearAllMocks();
     resetBarometerState();
     resetBarometerInstrumentationForTest();
@@ -177,19 +178,21 @@ describe('useFusedNearestStation — #3191 PR-0 Raw 기압 관측 필드', () =>
     mockUseNearest.mockReturnValue(gpsWith({}));
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   function renderWithBaro(signal: { unavailableReason?: string } | null) {
-    jest.useFakeTimers();
     const barometer = signal === null ? undefined : { subsurface: false, signal };
     renderHook(() =>
       useFusedNearestStation(
-        undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined, undefined,
         barometer as never,
       ),
     );
     act(() => {
       jest.advanceTimersByTime(0);
     });
-    jest.useRealTimers();
     return mockPushRawSignal.mock.calls.map(([e]: [Dumped]) => e);
   }
 
@@ -270,13 +273,11 @@ describe('useFusedNearestStation — #3191 PR-0 Raw 기압 관측 필드', () =>
   });
 
   it('동작 불변 — 기압 관측 필드 값이 달라도 현재역 판정은 동일', () => {
-    jest.useFakeTimers();
     const a = renderHook(() => useFusedNearestStation()).result.current;
     const t = Date.now();
     appendBarometerReading({ t: t - 100_000, pressureHpa: 1013.0 });
     appendBarometerReading({ t: t - 10_000, pressureHpa: 1013.5 });
     const b = renderHook(() => useFusedNearestStation()).result.current;
-    jest.useRealTimers();
     expect(b.result?.station.id).toBe(a.result?.station.id);
     expect(b.source).toBe(a.source);
   });

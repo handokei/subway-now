@@ -39,6 +39,7 @@ import {
   makeBackendSsotMirrorEntry,
 } from '../../../../testUtils/backendSsotMirrorFixtures';
 import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
+import * as alarmLog from '../../../alarm/utils/alarmLog';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
 jest.mock('../useNearestStation');
@@ -242,7 +243,7 @@ describe('#2414 — backend-ssot 채택 시 lastObservedRef 갱신', () => {
   // 얼어붙은 채(lastAdvanceAt 고정) 같은 station을 재전송하는 동안, device의 reanchored-hop
   // (본 파일이 검증하는 lastObserved 앵커 + 시간 적분, source 무관)은 실제로 계속 전진한다 —
   // 2026-09-17 저녁 라이드에서 이 되감김이 17분 동안 3바퀴 반복됐다.
-  it('#2686 — GPS 저하(지하) + reanchored-hop이 경로상 앞 → displayOnlyEstimate가 backend-ssot로 되감기지 않는다', async () => {
+  async function runRegression2686(role?: 'primary' | 'observer') {
     // 지하 — GPS 저하(gpsQualityDegraded=true). #2669 GPS 전용 가드는 이 상태에서 항상 무력화된다.
     const live = { station: yongmasan, distanceKm: 0 };
     mockNearest.mockReturnValue({
@@ -283,7 +284,7 @@ describe('#2414 — backend-ssot 채택 시 lastObservedRef 갱신', () => {
       );
     });
     const hook = renderHook(() =>
-      useFusedNearestStation(undefined, undefined, routeContext, null, lock),
+      useFusedNearestStation(undefined, undefined, routeContext, null, lock, undefined, undefined, undefined, undefined, role),
     );
     await flushBackendSsotMirrorTick(); // 1st tick(now=T0+5000) — lastObservedRef 앵커=idx0 set.
 
@@ -304,5 +305,21 @@ describe('#2414 — backend-ssot 채택 시 lastObservedRef 갱신', () => {
     // 있으므로 표시 채널(displayOnlyEstimate)이 backend-ssot-override로 되감기면 안 된다.
     expect(hook.result.current.displayOnlyEstimate?.strategy).not.toBe('backend-ssot-override');
     expect(hook.result.current.displayOnlyEstimate?.station.id).not.toBe(yongmasan.id);
+  }
+
+  it('#2686 — GPS 저하(지하) + reanchored-hop이 경로상 앞 → displayOnlyEstimate가 backend-ssot로 되감기지 않는다', async () => {
+    const spy = jest.spyOn(alarmLog, 'logBackendSsotRouteRegressionReject');
+    await runRegression2686();
+    // #3191 PR-0 — primary는 회귀 reject를 alarm log에 남긴다 (observer 변형 테스트의 유효성 전제).
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  // #3191 PR-0 — observer(DebugModal) 인스턴스는 같은 reject 판정을 하되 alarm log에는 남기지 않는다.
+  it('#2686 observer 인스턴스 — 회귀 reject 판정은 동일, logBackendSsotRouteRegressionReject 호출 0', async () => {
+    const spy = jest.spyOn(alarmLog, 'logBackendSsotRouteRegressionReject');
+    await runRegression2686('observer');
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
