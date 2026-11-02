@@ -35,6 +35,17 @@ export function hasBoardingStartTarget(trip: Trip): boolean {
   return trip.laClient?.split === true && Boolean(trip.boardingPushToStartToken);
 }
 
+/**
+ * #3055 PR-0 — 탑승 질문 발사 계측 필드(`prompt-sound-channel`·`la-boarding-start` meta 공용).
+ * `selectedArvlCd===2 && arrivedTrainPresent` 건수로 "출발 열차 선택 + 도착 열차 동시 존재"를 측정한다.
+ */
+export interface PromptFireInstrumentation {
+  selectedTrainCode: string | null;
+  issuedAt: number;
+  selectedArvlCd: number | null;
+  arrivedTrainPresent: boolean;
+}
+
 export interface FireBoardingLaStartInputs {
   trip: Trip;
   env: Pick<Env, 'DB'>;
@@ -54,6 +65,8 @@ export interface FireBoardingLaStartInputs {
   trainInfo?: string;
   /** 보조 설명(하차/종료 제안). */
   body?: string;
+  /** #3055 PR-0 — 탑승 질문 발사 계측(D1 meta 전용, 동작 무변경). 탑승 질문 경로에서만 채운다. */
+  promptInstrumentation?: PromptFireInstrumentation;
 }
 
 export interface FireBoardingLaStartResult {
@@ -140,6 +153,7 @@ export async function fireBoardingLaStart(inputs: FireBoardingLaStartInputs): Pr
         status: result.status,
         ok: result.ok,
         ...(result.ok || result.reason === undefined ? {} : { reason: result.reason }),
+        ...(inputs.promptInstrumentation ?? {}),
       },
     },
     now,

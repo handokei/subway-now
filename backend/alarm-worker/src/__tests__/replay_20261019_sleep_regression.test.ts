@@ -205,8 +205,8 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
     const r = await replaySleepTrip();
     const confirmEvents = r.events.filter((e) => e.kind === 'boarding-confirm-result').map((e) => e.meta);
     expect(confirmEvents.slice(0, 2)).toEqual([
-      { lockState: 'none', outcome: 'walk-gated' },
-      { lockState: 'none', outcome: 'walk-gated' },
+      { lockState: 'none', outcome: 'walk-gated', laCandidatePresent: false }, // #3055 PR-0 계측 필드
+      { lockState: 'none', outcome: 'walk-gated', laCandidatePresent: false },
     ]);
     expect(confirmEvents[2]).toMatchObject({ lockState: 'leg2', anchorSource: 'currentLegAnchor', trainCodeSource: 'body' });
     // D1 실측과 동일(탭 3회: walk-gated, walk-gated, leg2/body).
