@@ -786,7 +786,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expectAutoLockLogged('autolock-lock-failed');
     // #2852 — createLock 예외(storage/network)로 로컬 lock이 완전히 실패해도 backend
     // boarding-confirm은 여전히 무조건 forward된다(fire-and-forget, critical path 무영향).
-    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { source: 'notification' });
   });
 
   // #2408 — 위험1 guard: stale prompt → 잘못된 lock 방지. BG_LAST_STATION mock helper.
@@ -1288,7 +1288,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         'boarded',
         '강남',
         '2',
-        'EMB1',
+        { trainCode: 'EMB1', source: 'notification' },
       );
     });
 
@@ -1334,14 +1334,14 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         'boarded',
         '강남',
         '2',
-        'T1',
+        { trainCode: 'T1', source: 'notification' },
       );
       expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalledWith(
         'tok',
         'boarded',
         '강남',
         '2',
-        'SHOULD-BE-IGNORED',
+        { trainCode: 'SHOULD-BE-IGNORED', source: 'notification' },
       );
     });
   });
@@ -1357,7 +1357,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
       const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
       await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { source: 'notification' });
     });
 
     // 케이스 ③′ — fresh 재조회 실패하지만 embed(payload.trainCode)가 있으면 그 값이 재확정
@@ -1371,7 +1371,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         'boarded',
         '강남',
         '2',
-        'EMB1',
+        { trainCode: 'EMB1', source: 'notification' },
       );
     });
 
@@ -1408,7 +1408,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       });
       await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
       expectPendingFallbackLockCalled('2');
-      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { source: 'notification' });
     });
   });
 });

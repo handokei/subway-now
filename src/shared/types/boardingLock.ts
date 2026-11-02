@@ -8,6 +8,18 @@ import type { LineNumber } from './station';
 export const BOARDING_RESOLVE_TIERS = ['assertion-departed'] as const;
 export type BoardingResolveTier = (typeof BOARDING_RESOLVE_TIERS)[number];
 
+/** #3055 — boarding-confirm 요청의 채널 라벨(backend body `source`, D1 meta 집계 키). */
+export type BoardingConfirmSource = 'la-native' | 'la-bridge' | 'notification';
+
+/**
+ * #3055 — LA 카드가 싣고 있던 "그 발사의 열차"(`trainCode` + 발사 시각). 버튼이 backend에
+ * `laCandidate`로 보내 최신 발사 검증(PR-3b)에 쓴다. 기기는 해석하지 않고 전달만 한다.
+ */
+export interface LaCandidate {
+  trainCode: string;
+  issuedAtMs: number;
+}
+
 /**
  * BoardingLock — 사용자가 명시적으로 탑승한 열차/노선/시각을 확정 (#584).
  *

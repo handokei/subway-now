@@ -161,7 +161,7 @@ function deferred<T>() {
 }
 
 const flush = async () => {
-  for (let i = 0; i < 12; i++) await Promise.resolve();
+  for (let i = 0; i < 60; i++) await Promise.resolve();
 };
 
 describe('replay 2026-11-02 19:54:57 — LA 버튼 브릿지 재진입 + PENDING 승격', () => {

@@ -181,6 +181,7 @@ describe('#2889 재현 — 탑승 확정 vs 하차(hop-end) 확정 채널 경계
       'boarded',
       '성수',
       '2',
+      { source: 'notification' },
     );
   });
 

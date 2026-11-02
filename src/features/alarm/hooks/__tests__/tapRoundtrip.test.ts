@@ -319,7 +319,7 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
 
   it('postBoardingConfirm이 undefined를 돌려줘도(mock/예외 경로) throw 없이 PENDING 유지', async () => {
     postBoardingConfirmMock.mockResolvedValue(undefined);
-    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps())).resolves.toBeUndefined();
+    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps())).resolves.toEqual({ posted: true });
     expect(useBoardingLockStore.getState().lock?.trainCode).toBe(PENDING_TRAIN_CODE);
   });
 });
