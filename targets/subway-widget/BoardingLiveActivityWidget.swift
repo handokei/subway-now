@@ -198,7 +198,8 @@ private struct BoardingButtonRow: View {
                 key: "widget.boardingPrompt.boarded.button",
                 primary: true,
                 intent: BoardingConfirmIntent(
-                    tripToken: tripToken, originStation: state.originStation, line: state.line, trainCode: nil)
+                    tripToken: tripToken, originStation: state.originStation, line: state.line,
+                    trainCode: state.trainCode, trainCodeIssuedAtMs: state.trainCodeIssuedAtMs)
             )
         }
     }
