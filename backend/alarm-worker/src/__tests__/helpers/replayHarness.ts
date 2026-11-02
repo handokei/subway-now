@@ -54,10 +54,18 @@ export interface CapturedPush {
   headers: { pushType?: string; priority?: string; collapseId?: string };
 }
 
+/** #3036 PR-3c — cycle 안에서 실제로 나간 Seoul 요청(캐시 miss만 fetchImpl까지 온다). */
+export interface SeoulCall {
+  kind: 'arrival' | 'position';
+  target: string;
+}
+
 export interface ReplayCycleResult {
   simNowMs: number;
   stats: ScheduledStats;
   pushes: CapturedPush[];
+  /** 이 cycle의 1차 pass Seoul 요청 목록 — "arrival 호출 수 감소" 같은 비용 assert용(순수 관측, 동작 불변). */
+  seoulCalls: SeoulCall[];
 }
 
 /**
@@ -450,11 +458,17 @@ export async function runCaptureReplay(opts: {
     const ceilingMs = isRecordedCadence
       ? (recordedCycleStarts[tickIdx + 1] ?? opts.fixture.window.toMs + 1)
       : undefined;
+    const seoulCalls: SeoulCall[] = [];
+    const captureFetch = makeCaptureFetch(opts.fixture, () => tick, { freshMs, ceilingMs });
     const seoul = new SeoulArrivalClient({
       apiKey: 'KEY',
       host: 'seoul.api',
       now: () => tick,
-      fetchImpl: makeCaptureFetch(opts.fixture, () => tick, { freshMs, ceilingMs }),
+      fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) => {
+        const classified = classifyUrl(String(input));
+        if (classified) seoulCalls.push({ kind: classified.kind, target: classified.target });
+        return captureFetch(input, init);
+      }) as typeof fetch,
     });
 
     const pushCountBefore = capturedPushes.length;
@@ -468,7 +482,7 @@ export async function runCaptureReplay(opts: {
       generatePushId: () => `replay-${tick}-${pushSeq++}`,
     });
 
-    cycles.push({ simNowMs: tick, stats, pushes: capturedPushes.slice(pushCountBefore) });
+    cycles.push({ simNowMs: tick, stats, pushes: capturedPushes.slice(pushCountBefore), seoulCalls });
 
     // #2615 (재설계) — production `index.ts:scheduleMidCyclePass`와 동일 게이트(1차
     // `polled>0` + 스냅샷 non-empty에만 실행) + 동일 함수(`runMidCycleFireOnly`, fire-only,

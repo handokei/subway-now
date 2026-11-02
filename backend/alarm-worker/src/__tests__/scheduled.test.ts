@@ -15063,6 +15063,121 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
       });
     });
 
+    // #3036 PR-3c — arrival 조회 스케줄: 발사 cycle이 다음 같은 방향 열차 ETA - 120s를 trip에 저장하고(onFired -> 기존 putTrip 편승),
+    // 그 시각 전까지 position 확정이 없으면 arrival 조회를 건너뛴다. position 읽기는 매 cycle 유지.
+    describe('#3036 PR-3c — origin arrival 조회 스케줄', () => {
+      const countArrivalCalls = (fetchImpl: ReturnType<typeof vi.fn>): number =>
+        fetchImpl.mock.calls.filter(([url]) => String(url).includes('realtimeStationArrival')).length;
+      const FIRING_AND_NEXT = [
+        { btrainNo: '7246', isUp: true, arvlCd: 1, arrivalSeconds: 0 },
+        { btrainNo: '7248', isUp: true, arvlCd: 99, arrivalSeconds: 400 },
+      ];
+      const stampSnapshot = async (
+        kv: InMemoryKV,
+        positions: unknown[],
+        fetchedAt: number = NOW - 5_000,
+      ): Promise<void> => {
+        await kv.put('realtime-position:7', JSON.stringify({ fetchedAt, positions }));
+      };
+      const farTrain = { trainCode: '7300', stationName: '중곡', trainSttus: 1, isUp: true, recptnMs: NOW - 5_000 };
+      const arrivedAtOrigin = { trainCode: '7246', stationName: '군자', trainSttus: 1, isUp: true, recptnMs: NOW - 5_000 };
+      const storedTrip = async (kv: InMemoryKV, token: string): Promise<Trip> =>
+        JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
+
+      it('발사 cycle: 다음 열차(7248) ETA 400s - 120s를 trip에 저장하고 같은 putTrip으로 영속(추가 KV put 없음)', async () => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        const trip = makeTrip();
+        await putTrip(kv as unknown as KVNamespace, trip);
+        const putSpy = vi.spyOn(kv, 'put');
+        const stats = await runOrigin(trip, kv, db, makeArrivalsResponse(FIRING_AND_NEXT));
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+        expect(trip.originPromptNextLookupAt).toBe(NOW + 400_000 - 120_000);
+        expect((await storedTrip(kv, trip.token)).originPromptNextLookupAt).toBe(NOW + 280_000);
+        const tripPuts = putSpy.mock.calls.filter(([key]) => String(key) === `trip:${trip.token}`);
+        expect(tripPuts).toHaveLength(1);
+      });
+
+      it('다음 열차 ETA를 모르면 저장하지 않고, 이전 저장값도 지운다(매 cycle 조회로 복귀)', async () => {
+        const { db } = await makeSqliteD1();
+        const trip = makeTrip({ originPromptNextLookupAt: NOW - 1 });
+        await runOrigin(trip, new InMemoryKV(), db, makeArrivalsResponse([FIRING_AND_NEXT[0]]));
+        expect(trip.originPromptNextLookupAt).toBeUndefined();
+      });
+
+      it('보류 중 + position 확정 없음(신선 스냅샷) -> arrival 조회 0, 발사 0, outcome=lookup-deferred(전이 시 1행)', async () => {
+        const { db, rows } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await stampSnapshot(kv, [farTrain]);
+        const fetchImpl = vi.fn(makeArrivalsResponse(FIRING_AND_NEXT));
+        const trip = makeTrip({ originPromptNextLookupAt: NOW + 60_000 });
+        const stats = await runOrigin(trip, kv, db, fetchImpl);
+        await runOrigin(trip, kv, db, fetchImpl, NOW + 30_000);
+        expect(countArrivalCalls(fetchImpl)).toBe(0);
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(0);
+        expect(stats.originGpsFreeArrivalLookupDeferred).toBe(1);
+        const metas = originMetas(rows());
+        expect(metas).toHaveLength(1);
+        expect(metas[0]).toMatchObject({ outcome: 'lookup-deferred', nextLookupAt: NOW + 60_000 });
+      });
+
+      it('보류 중이어도 출발역에 도착 확정 열차가 position에 있으면 그 cycle에 조회하고 발사', async () => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await stampSnapshot(kv, [farTrain, arrivedAtOrigin]);
+        const fetchImpl = vi.fn(makeArrivalsResponse(FIRING_AND_NEXT));
+        const trip = makeTrip({ originPromptNextLookupAt: NOW + 600_000 });
+        const stats = await runOrigin(trip, kv, db, fetchImpl);
+        expect(countArrivalCalls(fetchImpl)).toBe(1);
+        expect(stats.originGpsFreeBoardingPromptFired).toBe(1);
+      });
+
+      it('보류 중 도착 확정 열차가 이미 발사 소진된 열차뿐이면(떠나는 중 잔존) 계속 보류', async () => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await stampSnapshot(kv, [arrivedAtOrigin]);
+        const fetchImpl = vi.fn(makeArrivalsResponse(FIRING_AND_NEXT));
+        const trip = makeTrip({
+          originPromptNextLookupAt: NOW + 60_000,
+          boardingPromptState: { fired: true, lastFiredAt: NOW - 90_000, fireCount: 1, firedTrainCodes: ['7246:imminent'] },
+        } as Partial<Trip>);
+        await runOrigin(trip, kv, db, fetchImpl);
+        expect(countArrivalCalls(fetchImpl)).toBe(0);
+      });
+
+      it.each([
+        ['position 스냅샷 없음', async () => undefined],
+        ['position 스냅샷이 비어 있음(self-poll 실패)', async (kv: InMemoryKV) => stampSnapshot(kv, [])],
+        ['position 스냅샷이 낡음(120s 전)', async (kv: InMemoryKV) => stampSnapshot(kv, [farTrain], NOW - 120_000)],
+      ])('보류 중이라도 %s -> 보류 무시하고 조회(현행)', async (_label, seed) => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await seed(kv);
+        const fetchImpl = vi.fn(makeArrivalsResponse(FIRING_AND_NEXT));
+        const stats = await runOrigin(makeTrip({ originPromptNextLookupAt: NOW + 60_000 }), kv, db, fetchImpl);
+        expect(countArrivalCalls(fetchImpl)).toBe(1);
+        expect(stats.originGpsFreeArrivalLookupDeferred).toBe(0);
+      });
+
+      it('저장된 재개 시각이 지났으면(now >= nextLookupAt) 조회', async () => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await stampSnapshot(kv, [farTrain]);
+        const fetchImpl = vi.fn(makeArrivalsResponse(FIRING_AND_NEXT));
+        await runOrigin(makeTrip({ originPromptNextLookupAt: NOW }), kv, db, fetchImpl);
+        expect(countArrivalCalls(fetchImpl)).toBe(1);
+      });
+
+      it('저장값이 없는 trip(첫 발사 전/구 trip)은 현행 그대로 조회', async () => {
+        const { db } = await makeSqliteD1();
+        const kv = new InMemoryKV();
+        await stampSnapshot(kv, [farTrain]);
+        const fetchImpl = vi.fn(makeArrivalsResponse(FIRING_AND_NEXT));
+        await runOrigin(makeTrip(), kv, db, fetchImpl);
+        expect(countArrivalCalls(fetchImpl)).toBe(1);
+      });
+    });
+
     it('⑭ lock 성립 trip(boardingLock)은 기록하지 않는다 — lock 소관, 비용 이유 제외', async () => {
       const { db, rows } = await makeSqliteD1();
       const trip = makeTrip({
