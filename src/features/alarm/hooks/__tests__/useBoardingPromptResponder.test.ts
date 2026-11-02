@@ -431,7 +431,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     // #3028 (case ①) — fresh 재확정(chosen='T1')이 성공했으면 그 값을 5번째 인자로 forward한다.
     // payload.trainCode가 없다는 이유로 trainCode 없이 보내던 기존 동작이 이 RCA의 결함
     // (device 로컬 lock과 backend forward가 분리됨)이었다.
-    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', 'T1');
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { trainCode: 'T1', source: 'notification' });
   });
 
   // #2961 (→ #3028로 재확정) — payload.trainCode(#2819 push payload embed 값, 발사 시점
@@ -466,8 +466,126 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       'boarded',
       '강남',
       '2',
-      'T1',
+      { trainCode: 'T1', source: 'notification' },
     );
+  });
+
+  // #3055 PR-1 — handleResponse outcome / confirm 옵션 인자 / hop-end forward 생략 (plan v6 §3.3).
+  describe('#3055 PR-1 — outcome · 옵션 인자 · skipBackendForward', () => {
+    const CANDIDATE = { trainCode: '7320', issuedAtMs: 1_700_000_000_000 };
+
+    beforeEach(() => {
+      (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    });
+
+    it('POST 성공 → outcome {posted, status, resolvedTrainCode}', async () => {
+      (positionUpload.postBoardingConfirm as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        resolvedTrainCode: 'T9',
+      });
+      await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, makeDeps())).resolves.toEqual({
+        posted: true,
+        status: 200,
+        resolvedTrainCode: 'T9',
+      });
+    });
+
+    it('서버 오류(status 있음, ok:false) → posted true + status 보존(네트워크 실패와 구분)', async () => {
+      (positionUpload.postBoardingConfirm as jest.Mock).mockResolvedValueOnce({ ok: false, status: 500 });
+      await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, makeDeps())).resolves.toEqual({
+        posted: true,
+        status: 500,
+      });
+    });
+
+    it('네트워크 실패(ok:false, status 없음) → posted true, status 없음 = 브릿지 재시도 신호', async () => {
+      (positionUpload.postBoardingConfirm as jest.Mock).mockResolvedValueOnce({ ok: false });
+      const outcome = await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, makeDeps());
+      expect(outcome).toEqual({ posted: true });
+      expect(outcome.status).toBeUndefined();
+    });
+
+    it('POST 예외 → posted true, status 없음(throw 금지)', async () => {
+      (positionUpload.postBoardingConfirm as jest.Mock).mockRejectedValueOnce(new Error('down'));
+      await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, makeDeps())).resolves.toEqual({
+        posted: true,
+      });
+    });
+
+    it('URL 미설정으로 POST가 skip되면 posted false(재시도 무의미)', async () => {
+      (positionUpload.postBoardingConfirm as jest.Mock).mockResolvedValueOnce({ ok: false, skipped: true });
+      await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, makeDeps())).resolves.toEqual({
+        posted: false,
+      });
+    });
+
+    it.each([
+      ['[미탑승]', BOARDING_PROMPT_ACTION_NOT_BOARDED],
+      ['dismiss', 'SOME_OTHER_ACTION'],
+    ])('POST 안 나가는 분기 %s → posted false', async (_label, action) => {
+      await expect(handleResponse(action, PAYLOAD, makeDeps())).resolves.toEqual({ posted: false });
+    });
+
+    it('LA 브릿지 payload의 laCandidate·source가 옵션 인자로 forward된다(알림 listener는 source 기본값 notification)', async () => {
+      await handleResponse(
+        BOARDING_PROMPT_ACTION_BOARDED,
+        { ...PAYLOAD, laCandidate: CANDIDATE, source: 'la-bridge' },
+        makeDeps(),
+      );
+      expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', {
+        trainCode: 'T1',
+        laCandidate: CANDIDATE,
+        source: 'la-bridge',
+      });
+    });
+
+    it('laCandidate 없고 trainCode도 재확정 못 하면 옵션엔 source만(키 자체를 넣지 않는다)', async () => {
+      await handleResponse(
+        BOARDING_PROMPT_ACTION_BOARDED,
+        PAYLOAD,
+        makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) }),
+      );
+      const [, , , , options] = (positionUpload.postBoardingConfirm as jest.Mock).mock.calls[0];
+      expect(options).toEqual({ source: 'notification' });
+      expect(options).not.toHaveProperty('laCandidate');
+      expect(options).not.toHaveProperty('trainCode');
+    });
+
+    describe('hop-end 목적지 하차 + skipBackendForward', () => {
+      const DEST_PAYLOAD = {
+        kind: 'boarding-prompt' as const,
+        originStation: '왕십리',
+        line: '2',
+        tripToken: 'tok-dest',
+        hopEndKind: 'disembark' as const,
+      };
+      const mockDestination = () => {
+        findStationByNameAndLine.mockReturnValue({ id: 'D-왕십리', line: '2', name: '왕십리' });
+        readWidgetRefreshContextMock.mockResolvedValueOnce({
+          destination: { id: 'D-왕십리', line: '2', name: '왕십리' },
+          route: makeDirectRoute(3, '2'),
+          bgContext: null,
+        });
+      };
+
+      it('skipBackendForward=true → 로컬 처리(releaseLock)는 하되 backend forward는 생략', async () => {
+        mockDestination();
+        await handleResponse(
+          DISEMBARK_ACTION_DISEMBARKED,
+          { ...DEST_PAYLOAD, skipBackendForward: true },
+          makeDeps(),
+        );
+        expect(releaseLockMock).toHaveBeenCalled();
+        expect(positionUpload.postBoardingConfirm).not.toHaveBeenCalled();
+      });
+
+      it('[거부] skipBackendForward 미지정 → 기존대로 forward', async () => {
+        mockDestination();
+        await handleResponse(DISEMBARK_ACTION_DISEMBARKED, DEST_PAYLOAD, makeDeps());
+        expect(positionUpload.postBoardingConfirm).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   // #2696 — route/destination widget context가 존재할 때 "다음 목표역" 계산 경로
@@ -496,7 +614,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     (positionUpload.postBoardingConfirm as jest.Mock).mockRejectedValueOnce(new Error('network down'));
     const deps = makeDeps();
-    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toBeUndefined();
+    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toEqual({ posted: true });
     expect(createLockMock).toHaveBeenCalled();
   });
 
@@ -537,7 +655,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(createLockMock).not.toHaveBeenCalled();
     // #2852 — tryAutoLock의 이 내부 조기-return(트립 종료 판정)과 무관하게, 사용자가 [탑승]
     // 응답을 한 사실 자체는 무조건 backend로 forward된다(ADR-014 명시 의향=lock 동급).
-    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { source: 'notification' });
   });
 
   // #2430 (cold-start race) — 알림의 "탑승했어요" 액션은 opensAppToForeground:true라
@@ -577,7 +695,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
     // #2852 — tryAutoLock의 재조회 실패(arrivals null, PENDING fallback)에서도 backend
     // boarding-confirm은 무조건 forward된다 — 로컬 lock 정밀도와 backend 신호는 독립.
-    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { source: 'notification' });
   });
 
   // #2524 — PENDING fallback lock 생성 = 탑승 커밋 시그널. infoModeEnabled와 별도로 stamp돼야
@@ -622,7 +740,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expectPendingFallbackLockCalled('2');
     // #2852 — ambiguity(train 확정 실패)도 tryAutoLock 실패 모드 중 하나 — boarding-confirm은
     // 여전히 무조건 forward.
-    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2');
+    expect(positionUpload.postBoardingConfirm).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { source: 'notification' });
   });
 
   // #2407 — pending fallback lock도 payload.line이 유효 LineNumber가 아니면 생성 불가(극히
@@ -664,7 +782,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       fetchArrivalsForStation: jest.fn(async () => null),
       createLock: failingCreateLock,
     });
-    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toBeUndefined();
+    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps)).resolves.toEqual({ posted: true });
     expectAutoLockLogged('autolock-lock-failed');
     // #2852 — createLock 예외(storage/network)로 로컬 lock이 완전히 실패해도 backend
     // boarding-confirm은 여전히 무조건 forward된다(fire-and-forget, critical path 무영향).
@@ -1011,7 +1129,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     const deps = makeDeps(setup());
     await expect(
       handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ posted: true });
     expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
       reason,
       originStation: '강남',
@@ -1851,7 +1969,7 @@ describe('handleResponse — #1888 RC-13 onBannerTap navigation', () => {
     // onBannerTap 없이도 정상 진행.
     await expect(
       handleResponse(Notifications.DEFAULT_ACTION_IDENTIFIER, HANDLE_RESPONSE_PAYLOAD, deps),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ posted: true });
     // autolock은 정상 실행.
     expect(createLockMock).toHaveBeenCalled();
   });
