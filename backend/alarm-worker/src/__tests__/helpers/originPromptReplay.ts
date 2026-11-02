@@ -31,9 +31,10 @@ export async function replayRide20261102(build: (registeredAt: number) => Trip):
 }
 
 /** 실제 APNs 요청 중 boarding-prompt alert -> `[KST tick, trainCode]`. */
-export function boardingPromptsOf(result: ReplayRunResult): Array<[string, string]> {
+export function boardingPromptsOf(result: ReplayRunResult, originStation?: string): Array<[string, string]> {
   return result.pushes
     .filter((p) => p.headers.pushType === 'alert' && p.body.body !== undefined)
     .filter((p) => (p.body.body as Record<string, unknown>).kind === 'boarding-prompt')
+    .filter((p) => originStation === undefined || (p.body.body as Record<string, unknown>).originStation === originStation)
     .map((p) => [kstOf(p.simNowMs), String((p.body.body as Record<string, unknown>).trainCode)]);
 }

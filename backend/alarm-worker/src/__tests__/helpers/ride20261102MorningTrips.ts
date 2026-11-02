@@ -43,7 +43,13 @@ export function makeRide20261102GeoContext(snapshot?: {
 export function makeRide20261102MorningTrip(
   token: string,
   createdAt: number,
-  opts: { intent: Ride20261102Intent; alarm?: Ride20261102AlarmVariant; geo?: PromptGeoContext },
+  opts: {
+    intent: Ride20261102Intent;
+    alarm?: Ride20261102AlarmVariant;
+    geo?: PromptGeoContext;
+    /** #3036 O3 — 등록 시점에 계산돼 trip에 저장되는 창 시작 시각(`originPromptWindow.startAt`). */
+    windowStartAt?: number;
+  },
 ): Trip {
   return {
     token,
@@ -66,5 +72,6 @@ export function makeRide20261102MorningTrip(
     activityPushToken: undefined,
     ...(opts.intent === 'promptOptIn' ? { promptOptIn: true } : { trackingOptIn: true }),
     ...(opts.geo !== undefined ? { promptGeoContext: opts.geo } : {}),
+    ...(opts.windowStartAt !== undefined ? { originPromptWindow: { startAt: opts.windowStartAt } } : {}),
   } as Trip;
 }
