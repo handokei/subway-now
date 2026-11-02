@@ -38,6 +38,7 @@ import {
   boardingPromptFireOnceKey,
   canBypassRepeatIntervalForTrainTransition,
   canFireForTrainCode,
+  computeOriginNextLookupAt,
   decideBoardingPromptFire,
   evaluateBoardingPromptRepeatGate,
   isPromptSilencedForTrain,
@@ -47,6 +48,7 @@ import {
   isExactDuplicateFire,
   isArrivalConfirmedDecision,
   isNearOrigin,
+  isOriginArrivalLookupDeferred,
   markPromptFired,
   mergePositionConfirmedIntoPool,
   pickAutoTrainCode,
@@ -151,6 +153,7 @@ import {
   pollLinesAndStamp,
   readFreshSelfPollPosition,
   readSelfPollPosition,
+  SELF_POLL_POSITION_MAX_AGE_SEC,
 } from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import {
@@ -968,6 +971,11 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   originGpsFreeSnapshotDistrusted: number;
   /**
+   * #3036 PR-3c — 출발역 arrival 조회를 건너뛴 누적 cycle 수(`originPromptNextLookupAt` 전 + 신선한 position 스냅샷에
+   * 도착 확정 열차 없음). Seoul arrival 호출 절감량의 직접 지표 — D1 `lookup-deferred`는 전이 시 1행이라 cycle 수는 이 카운터로 본다.
+   */
+  originGpsFreeArrivalLookupDeferred: number;
+  /**
    * #2997 (S3 v2) — `trackingOptIn` 단독(명시 의향 promptOptIn/infoModeEnabled 둘 다 없음) trip이
    * 근접 실측(hasProximityReading) 부재로 GPS-free origin 프롬프트를 fail-closed skip한 누적
    * 횟수. 명시 의향 trip의 기존 fail-open(위 originGpsFreeSnapshotDistrusted)과는 반대 방향 —
@@ -1619,6 +1627,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     originGpsFreeBoardingPromptFired: 0,
     originGpsFreeBoardingPromptBlocked: 0,
     originGpsFreeSnapshotDistrusted: 0,
+    originGpsFreeArrivalLookupDeferred: 0,
     trackingOptInProximityMissingBlocked: 0,
     trackingOptInNoBoardingEvidenceBlocked: 0,
     originGpsFreeDisplayDerived: 0,
@@ -8382,13 +8391,18 @@ async function readPositionConfirmedTrains(
     now: number;
   },
   log: Logger,
-): Promise<PositionEntry[]> {
+): Promise<{ trains: PositionEntry[]; snapshotTrusted: boolean }> {
   try {
     // raw read — entry별 `recptnMs` 신선창(`PROMPT_POSITION_FRESH_MS`)이 `selectPositionConfirmedTrains`에
     // 있으므로 `readFreshSelfPollPosition`의 60s fetchedAt 게이트(90s TTL과 겹쳐 같은 데이터를 이중
     // 판정)는 쓰지 않는다.
     const snapshot = await readSelfPollPosition(env.TRIPS, line);
-    return snapshot ? selectPositionConfirmedTrains(snapshot.positions, inputs) : [];
+    if (!snapshot) return { trains: [], snapshotTrusted: false };
+    // #3036 PR-3c — "확정 없음"을 믿어도 되는 스냅샷인가(arrival 조회 보류의 전제). self-poll이 실패하면 빈 배열이 stamp되고
+    // (seoul.ts error -> []), 낡은 스냅샷은 지금의 도착을 말해 주지 못한다 -> 둘 다 신뢰하지 않는다.
+    const ageSec = (inputs.now - snapshot.fetchedAt) / 1000;
+    const snapshotTrusted = snapshot.positions.length > 0 && ageSec <= SELF_POLL_POSITION_MAX_AGE_SEC;
+    return { trains: selectPositionConfirmedTrains(snapshot.positions, inputs), snapshotTrusted };
   } catch (error) {
     // 침묵 degrade 금지 — KV 장애가 position 확정 부재로 오인되지 않도록 관측 가능하게 남긴다.
     log('boarding-prompt: position read failed (arrival 판정 단독으로 degrade)', {
@@ -8396,7 +8410,7 @@ async function readPositionConfirmedTrains(
       line,
       error: error instanceof Error ? error.message : String(error),
     });
-    return [];
+    return { trains: [], snapshotTrusted: false };
   }
 }
 
@@ -8504,6 +8518,14 @@ async function fireBoardingPromptForAnchor(inputs: {
     decision: BoardingFireDecision['decision'],
     selectedTrainCode: string | null,
   ) => void;
+  /**
+   * #3036 PR-3c — (origin 전용) 이 시각 전에는 arrival 조회(`fetchArrivals`)를 건너뛴다. 단 신선한 position 스냅샷에서 아직 발사
+   * 소진되지 않은 도착 확정 열차가 보이면 그 cycle에는 조회하고 발사한다(조기 도착 보호). 스냅샷을 못 믿으면(부재/빈/낡음) 무시.
+   * 미지정(leg-2 등) = 매 cycle 조회(현행).
+   */
+  deferArrivalLookupUntil?: number;
+  /** #3036 PR-3c — 조회를 건너뛴 cycle에 caller가 D1 outcome(`lookup-deferred`)을 기록할 수 있게 알린다. */
+  onLookupDeferred?: (nextLookupAt: number) => void;
 }): Promise<void> {
   const {
     trip,
@@ -8525,6 +8547,8 @@ async function fireBoardingPromptForAnchor(inputs: {
     onFireOnceSuppressed,
     shouldProceedToSend,
     onFired,
+    deferArrivalLookupUntil,
+    onLookupDeferred,
   } = inputs;
 
   let etaSeconds: number | null = null;
@@ -8543,6 +8567,31 @@ async function fireBoardingPromptForAnchor(inputs: {
   // #2944 (H-6) — candidateTrains가 0건일 때 "방향을 몰라서"(matchingLine은 있었는데
   // direction===null이라 decisionPool을 fail-closed로 비움)인지 구분하기 위한 플래그.
   let emptiedByDirectionUnknown = false;
+  // #3057 — 도착 확정 position 배선. cron이 매 cycle 활성 trip 노선을 self-poll(#1614)해 KV에
+  // stamp하므로 신규 Seoul 호출 없이 재사용한다(API 호출 수 불변). arrival 피드가 비었거나
+  // 전역출발(3) 등을 말해도, anchor 역 trainSttus 1/2(fresh)면 도착 확정 + 그 열차가 lock 대상.
+  // #3036 PR-3c — arrival 조회 **앞**으로 올렸다(조회 보류 판정이 이 결과를 먼저 필요로 한다). 읽기 자체·인자는 불변.
+  const { trains: positionConfirmedTrains, snapshotTrusted } = await readPositionConfirmedTrains(env, line, {
+    station,
+    direction,
+    directionUnavailable,
+    now,
+  }, log);
+  // #3057 — 열차당 상한이 소진된 열차는 판정/선택에서 제외한다(위 `firedTrainCodes` 설명).
+  const isEligible = (entry: { trainCode: string }): boolean =>
+    canFireForTrainCode(firedTrainCodes, entry.trainCode);
+  // #3036 PR-3c — arrival 조회 보류. 질문을 트리거하는 건 position 확정(위)이라 그게 없고 스냅샷을 믿을 수 있는 cycle의 조회만
+  // 건너뛴다. 아직 발사 가능한(소진 안 된) 확정 열차가 있으면 보류하지 않는다 -> 도착 확정 순간은 그대로.
+  if (
+    deferArrivalLookupUntil !== undefined &&
+    isOriginArrivalLookupDeferred(deferArrivalLookupUntil, now) &&
+    snapshotTrusted &&
+    positionConfirmedTrains.filter(isEligible).length === 0
+  ) {
+    stats.originGpsFreeArrivalLookupDeferred += 1;
+    onLookupDeferred?.(deferArrivalLookupUntil);
+    return;
+  }
   try {
     const arrivals = await deps.seoul.fetchArrivals(station);
     const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, line));
@@ -8567,15 +8616,6 @@ async function fireBoardingPromptForAnchor(inputs: {
     // Seoul API 장애 — ETA 없이 push 발사 (leg-1/leg-2 동일 degradation 정책).
   }
 
-  // #3057 — 도착 확정 position 배선. cron이 매 cycle 활성 trip 노선을 self-poll(#1614)해 KV에
-  // stamp하므로 신규 Seoul 호출 없이 재사용한다(API 호출 수 불변). arrival 피드가 비었거나
-  // 전역출발(3) 등을 말해도, anchor 역 trainSttus 1/2(fresh)면 도착 확정 + 그 열차가 lock 대상.
-  const positionConfirmedTrains = await readPositionConfirmedTrains(env, line, {
-    station,
-    direction,
-    directionUnavailable,
-    now,
-  }, log);
   pool = mergePositionConfirmedIntoPool(feedPool, positionConfirmedTrains, line);
   // 표시용 ETA는 merge된 pool에서 계산한다 — 이미 도착 확정된 열차(arrivalSeconds=0)에 arrival 피드의
   // 미래 ETA가 붙어 "곧 진입" 시각이 틀리게 나가는 것을 막는다.
@@ -8599,9 +8639,6 @@ async function fireBoardingPromptForAnchor(inputs: {
 
   // #2801 (REOPENED 2026-09-30 정정 스펙 §2/§3.2) — 임박 게이트. candidateTrains(payload)는
   // 위에서 이미 pool 그대로 구성됐다 — 여기서는 fire 여부만 판정(하드 필터 아님, §4 금지사항).
-  // #3057 — 열차당 상한이 소진된 열차는 판정/선택에서 제외한다(위 `firedTrainCodes` 설명).
-  const isEligible = (entry: { trainCode: string }): boolean =>
-    canFireForTrainCode(firedTrainCodes, entry.trainCode);
   const eligibleFeedPool = feedPool.filter(isEligible);
   const eligibleConfirmedTrains = positionConfirmedTrains.filter(isEligible);
   const eligiblePool = mergePositionConfirmedIntoPool(eligibleFeedPool, eligibleConfirmedTrains, line);
@@ -9321,6 +9358,8 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   let candidateEtaSeconds: readonly (number | null)[] | undefined;
   // #2801 (3차 reopen) — decideBoardingPromptFire decision 라벨. D1 meta(gateDecision)로 전파.
   let gateDecision: BoardingFireDecision['decision'] | undefined;
+  // #3036 PR-3c — arrival 조회를 건너뛴 cycle의 재개 예정 시각(D1 meta).
+  let deferredUntil: number | undefined;
 
   await fireBoardingPromptForAnchor({
     trip,
@@ -9330,6 +9369,12 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     now,
     log,
     generatePushId,
+    // #3036 PR-3c — origin 전용 arrival 조회 스케줄(발사 cycle onFired가 기록한 다음 조회 시각).
+    deferArrivalLookupUntil: trip.originPromptNextLookupAt,
+    onLookupDeferred: (nextLookupAt) => {
+      promptOutcome = 'lookup-deferred';
+      deferredUntil = nextLookupAt;
+    },
     station: display.originStation,
     line: display.line,
     nextStation: trip.waypoints[0]?.stationName ?? null,
@@ -9446,6 +9491,12 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       // `recentPromptCandidates`가 leg-1에서 영구히 undefined가 되어 그 게이트가 항상
       // backward-safe(true) fallback으로만 동작해 corroboration 검증력을 잃는다.
       trip.recentPromptCandidates = buildRecentPromptCandidates(pool, now);
+      // #3036 PR-3c — 다음 같은 방향 열차 ETA - 120s까지 arrival 조회 보류. 이 콜백 뒤 기존 putTrip이 영속한다(KV 쓰기 +0).
+      // 다음 열차 ETA를 모르면 undefined로 덮어 매 cycle 조회(현행)로 복귀한다.
+      trip.originPromptNextLookupAt = computeOriginNextLookupAt(pool, {
+        now,
+        excludeTrainCodes: selectedTrainCode === null ? [] : [selectedTrainCode],
+      });
       promptOutcome = 'fired';
       candidateArvlCds = pool.map((entry) => entry.arvlCd);
       candidateEtaSeconds = pool.map((entry) => entry.arrivalSeconds);
@@ -9467,6 +9518,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
         // #3132 — candidateEtaSeconds: null = 시간 모름, 0 = 진짜 0초.
         ...(candidateEtaSeconds !== undefined ? { candidateEtaSeconds } : {}),
         ...(gateDecision !== undefined ? { gateDecision } : {}),
+        ...(deferredUntil !== undefined ? { nextLookupAt: deferredUntil } : {}),
       },
     );
   }
