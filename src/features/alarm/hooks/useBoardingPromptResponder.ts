@@ -43,7 +43,12 @@ import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
-import { dismissBoardingPrompt, postBoardingConfirm } from '../../nearest-station/api/positionUpload';
+import {
+  dismissBoardingPrompt,
+  postBoardingConfirm,
+  type BoardingConfirmOptions,
+} from '../../nearest-station/api/positionUpload';
+import type { BoardingConfirmSource, LaCandidate } from '../../../shared/types/boardingLock';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { useUserIntentStore } from '../store/useUserIntentStore';
 import { resumeNavigation } from '../store/tripBoundCleanups';
@@ -119,7 +124,32 @@ export interface BoardingPromptPayload {
    * 우선이며 이 필드는 무시된다 — 정상 경로 무변경(회귀 안전).
    */
   trainCode?: string;
+  /**
+   * #3055 PR-1 — **LA 브릿지 전용**. 알림 payload 파서(`extractBoardingPromptPayload`)는 이 3개를 절대
+   * 채우지 않는다(push data가 이 경로를 오염시키지 못하게 명시 필드만 복사). LA 카드가 싣던 발사 열차 —
+   * boarding-confirm body로 전달만 한다(해석은 backend, 기기 로컬 pick 없음).
+   */
+  laCandidate?: LaCandidate;
+  /** #3055 — boarding-confirm 채널 라벨. 미지정 = 'notification'(알림 listener 경로). */
+  source?: BoardingConfirmSource;
+  /** #3055 — hop-end 목적지 하차 backend forward 생략(native LA intent가 이미 반영한 경우). */
+  skipBackendForward?: boolean;
 }
+
+/**
+ * #3055 PR-1 — `handleResponse` 결과. LA 브릿지가 POST 성패를 알아 재시도/clear를 결정한다.
+ * - `posted`: boarding-confirm POST를 시도했는가(URL 미설정으로 skip되면 false).
+ * - `status`: HTTP status. **부재 + posted = 네트워크 실패/예외**(응답을 못 받음 → 재시도 대상).
+ * - `resolvedTrainCode`: backend가 해소한 열차(있으면).
+ * 알림 listener는 반환을 무시한다 — 알림 동작 불변.
+ */
+export interface BoardingResponseOutcome {
+  posted: boolean;
+  status?: number;
+  resolvedTrainCode?: string;
+}
+
+const NOT_POSTED: BoardingResponseOutcome = { posted: false };
 
 export function extractBoardingPromptPayload(
   raw: unknown,
@@ -264,7 +294,7 @@ export async function handleResponse(
   actionIdentifier: string,
   payload: BoardingPromptPayload,
   deps: HandleDeps,
-): Promise<void> {
+): Promise<BoardingResponseOutcome> {
   // #1888 (RC-13) — Interactive UI 작동 evidence. 사용자가 액션 버튼을 탭했거나 banner를 직접 탭한
   // 경로(BOARDED / NOT_BOARDED / $default)에서 1회 발사. UNNotificationCategory가 비활성이면 OS가
   // 액션 자체를 노출하지 않으므로 이 breadcrumb의 존재 자체가 "Interactive UI 작동 확인" 신호.
@@ -281,7 +311,7 @@ export async function handleResponse(
     // #3221 PR-4 (B3) — 하차 질문에 답했으므로(어느 응답이든) hop-end 탑승 LA 카드를 닫는다.
     await endBoardingActivity('hop-end-response');
     await handleHopEndResponse(actionIdentifier, payload, deps);
-    return;
+    return NOT_POSTED;
   }
 
   if (
@@ -319,17 +349,28 @@ export async function handleResponse(
     // (fire 시점 stale embed)보다 우선 forward한다. 둘 다 없으면(PENDING fallback 등) 기존대로
     // trainCode 없이 forward — 로컬 lock과 backend lock이 같은 값을 보게 된다(RCA 9/11·9/21·10/7).
     const forwardTrainCode = reconfirmedTrainCode ?? payload.trainCode;
+    const confirmOptions: BoardingConfirmOptions = {
+      ...(forwardTrainCode !== undefined ? { trainCode: forwardTrainCode } : {}),
+      ...(payload.laCandidate !== undefined ? { laCandidate: payload.laCandidate } : {}),
+      source: payload.source ?? 'notification',
+    };
+    // #3055 PR-1 — POST 성패를 호출자(LA 브릿지)에 돌려준다. 예외/네트워크 실패는 status 없는 posted.
+    let outcome: BoardingResponseOutcome = { posted: true };
     try {
-      const confirmResult =
-        forwardTrainCode !== undefined
-          ? await postBoardingConfirm(
-              payload.tripToken,
-              'boarded',
-              payload.originStation,
-              payload.line,
-              forwardTrainCode,
-            )
-          : await postBoardingConfirm(payload.tripToken, 'boarded', payload.originStation, payload.line);
+      const confirmResult = await postBoardingConfirm(
+        payload.tripToken,
+        'boarded',
+        payload.originStation,
+        payload.line,
+        confirmOptions,
+      );
+      outcome = {
+        posted: confirmResult?.skipped !== true,
+        ...(confirmResult?.status !== undefined ? { status: confirmResult.status } : {}),
+        ...(confirmResult?.resolvedTrainCode !== undefined
+          ? { resolvedTrainCode: confirmResult.resolvedTrainCode }
+          : {}),
+      };
       // #3055 C — backend가 탭 시각 기준으로 해소한 열차를 응답으로 받아 PENDING lock을 교체한다
       // (device 자신의 표명에 대한 권위적 회신). **이번 사이클이 만든 PENDING일 때만**(createdPending) —
       // skip 분기에서 남은 이전 탭의 stale PENDING에 이번 탭 열차를 덮으면 혼합 lock이 된다.
@@ -349,7 +390,7 @@ export async function handleResponse(
     ) {
       deps.onBannerTap();
     }
-    return;
+    return outcome;
   }
   // [미탑승] 또는 dismiss — 5분 silence.
   // #3221 PR-4 (B3) — 승차 질문에 "안 탔어요"/dismiss로 답했다. 이 경로는 lock을 만들지 않으므로 lock primitive가
@@ -358,6 +399,7 @@ export async function handleResponse(
   // #1170 — dismissed 측정. dismiss POST 결과(네트워크 성공/실패)와 무관하게 사용자 인지 기준 적재.
   logBoardingPromptResponded({ outcome: 'dismissed' });
   await dismissBoardingPrompt(payload.tripToken);
+  return NOT_POSTED;
 }
 
 /**
@@ -421,7 +463,11 @@ async function handleHopEndResponse(
       // identity(현재 하차 역 === trip의 최종 목적지)로 둘을 가른다 — 환승역은 결코 최종
       // 목적지와 같은 station일 수 없으므로 이 식별자 비교가 유일하게 안전한 판정 신호다.
       const { isDestinationHopEnd, derivedLine } = await resolveHopEndRouteContext(payload);
-      if (isDestinationHopEnd) {
+      if (isDestinationHopEnd && payload.skipBackendForward) {
+        // #3055 PR-1 — native LA intent가 이미 backend에 'disembarked'를 반영했다(응답 2xx 확인).
+        // 로컬 처리(위 releaseLock)는 끝났고 같은 신호를 두 번 보내지 않는다.
+        log.info('destination disembark forward skipped — native LA intent already posted');
+      } else if (isDestinationHopEnd) {
         // #2923 (Wire-completion #1582) — 목적지 하차 확인은 사용자가 방금 [하차함]으로 명시한
         // ground truth다. backend `POST /trips/:token/boarding-confirm`(action='disembarked')로
         // forward해야 7분 유예 타임아웃을 기다리지 않고 즉시 종료(#2920/PR #2922의 "질문" 단계가
