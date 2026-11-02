@@ -44,6 +44,21 @@ export interface FusionCandidate {
    * - `undefined`: route 없음(방향 정의 불가) → 필터 미적용(현행).
    */
   direction?: 'up' | 'down' | null;
+  /**
+   * #3191 PR-1(A) — 호출자가 "이 후보는 사용자 경로 밖"이라 판정한 경우 `'off-arc'`.
+   * 모든 신호 점수 0(fail-closed — direction===null과 같은 방식)이고, 제외 전 점수>0이었으면
+   * `onExcludedDrop`으로 후보·종류당 1회 보고한다. 판정(route 활성 ∧ lock 없음 ∧ arc 밖)은 호출자 소관 —
+   * 본 함수는 사유를 모른 채 제외만 한다. 모든 후보가 0이면 기존대로 `candidates[0]`(gps-only) 폴백.
+   */
+  excluded?: 'off-arc';
+}
+
+/** `excluded`로 점수에서 빠진 "점수>0" 신호 1건(후보·종류당 1회) — 관측용. */
+export interface ExcludedCandidateDrop {
+  reason: NonNullable<FusionCandidate['excluded']>;
+  kind: 'arrival' | 'position';
+  stationName: string;
+  line: LineNumber;
 }
 
 /** 방향 필터로 점수에서 빠진 "점수>0 반대 방향" 신호 1건(후보·종류당 1회) — 관측용. */
@@ -161,6 +176,9 @@ function confidenceFromPriority(
  * 6) #3191 PR-2D — `candidate.direction`이 있으면 반대 방향 신호를 점수에서 제외한다(`FusionCandidate.direction`).
  *    제외된 점수>0 신호는 `onOppositeDirectionDrop`로 후보·종류당 1회 보고한다.
  *
+ * 7) #3191 PR-1(A) — `candidate.excluded`(경로 arc 밖)이면 두 신호 모두 점수 0. 제외된 점수>0 신호는
+ *    `onExcludedDrop`으로 보고한다.
+ *
  * @param prevHighPriorityStationId #2204 — temporal consensus 추적용. 호출자가 직전 cycle
  *   결과의 `highPriorityStationId`를 그대로 넘기면 arrival-confirmed 확정에 연속 2 cycle 합의를
  *   요구한다. 미제공(undefined)이면 기존 단일 폴링 즉시 확정 동작 유지(backward compat).
@@ -169,6 +187,7 @@ export function pickFusedStation(
   candidates: FusionCandidate[],
   prevHighPriorityStationId?: string | null,
   onOppositeDirectionDrop?: (drop: OppositeDirectionDrop) => void,
+  onExcludedDrop?: (drop: ExcludedCandidateDrop) => void,
 ): FusedStationResult | null {
   if (candidates.length === 0) return null;
 
@@ -179,8 +198,15 @@ export function pickFusedStation(
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     const { arrival, trains } = applyDirection(c, onOppositeDirectionDrop);
-    const arrScore = bestPriorityForArrival(arrival);
-    const posScore = bestPriorityForPosition(trains);
+    let arrScore = bestPriorityForArrival(arrival);
+    let posScore = bestPriorityForPosition(trains);
+    if (c.excluded) {
+      const { name: stationName, line } = c.candidate.station;
+      if (arrScore > 0) onExcludedDrop?.({ reason: c.excluded, kind: 'arrival', stationName, line });
+      if (posScore > 0) onExcludedDrop?.({ reason: c.excluded, kind: 'position', stationName, line });
+      arrScore = 0;
+      posScore = 0;
+    }
     const p = Math.max(arrScore, posScore);
     if (p > winnerPriority) {
       winnerIdx = i;

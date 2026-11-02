@@ -8594,7 +8594,7 @@ async function fireBoardingPromptForAnchor(inputs: {
   // #2819 — 발사 시점 단일 확정(ambiguity 없음) trainCode를 payload에 embed. device 재조회
   // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경). #2898 — shouldProceedToSend/
   // fire-once key/onFired가 모두 이 단일 계산 결과를 공유한다(재계산 드리프트 방지).
-  const selectedTrainCode = eligiblePool.length > 0 ? pickAutoTrainCode(eligiblePool, line, direction) : null;
+  const selectedTrainCode = eligiblePool.length > 0 ? pickAutoTrainCode(eligiblePool, line, direction, { preferArrivedOverDeparted: true }) : null;
   // #3055 PR-0 — 발사 계측(동작 무변경): 선택 열차의 arvlCd와 같은 tick 도착(1) 열차 존재 여부.
   const promptInstrumentation: PromptFireInstrumentation = {
     selectedTrainCode,

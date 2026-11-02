@@ -52,6 +52,7 @@ import {
   type FusionConfidence,
   type FusionSource,
   type OppositeDirectionDrop,
+  type ExcludedCandidateDrop,
 } from '../utils/pickFusedStation';
 import { isBarometerObservable, stationaryHoldBlock } from '../utils/stationaryFixHold';
 import { shouldDowngradeFusion, STATIC_SPEED_THRESHOLD_MPS } from '../utils/movementGate';
@@ -846,9 +847,12 @@ export function useFusedNearestStation(
   // 방향 필터에서 빠진 점수>0 반대 방향 신호. fused memo 본문에서는 ref에 모으기만 하고 push는 아래
   // effect가 한다(memo가 커밋 없이 재실행될 수 있어 memo 본문 side-effect를 피한다 — #2594 P5 리뷰 동일 사유).
   const oppositeDirectionDropsRef = useRef<OppositeDirectionDrop[]>([]);
+  // #3191 PR-1(A) — 경로 arc 밖이라 점수에서 빠진 점수>0 신호(같은 handoff 방식).
+  const excludedDropsRef = useRef<ExcludedCandidateDrop[]>([]);
 
   const fused = useMemo(() => {
     oppositeDirectionDropsRef.current = [];
+    excludedDropsRef.current = [];
     if (candidates.length === 0) return null;
     const arrivals = [a0.arrival, a1.arrival, a2.arrival];
     const positions = [p0.positions, p1.positions, p2.positions];
@@ -859,11 +863,18 @@ export function useFusedNearestStation(
         positionMatches: matchPositionsForCandidate(cand, positions),
         // route가 있으면: 맵에 있는 노선은 'up'|'down'|null(미해결 fail-closed), 경로에 없는 노선은 undefined.
         direction: legDirections?.get(cand.station.line),
+        // #3191 PR-1(A) — route 활성 ∧ lock 없음일 때 경로 arc 밖(출발역보다 상류 포함) 후보는 점수 0.
+        // arc는 출발역~목적지라 사용자가 그 열차를 탈 수 없다. lock 있는 trip은 기존 lock 가드가 담당(범위 밖).
+        excluded:
+          arcStations.length > 0 && !boardingLock && arcIndexOfStation(arcStations, cand.station) === -1
+            ? ('off-arc' as const)
+            : undefined,
       })),
       prevHighPriorityStationIdRef.current,
       (drop) => oppositeDirectionDropsRef.current.push(drop),
+      (drop) => excludedDropsRef.current.push(drop),
     );
-  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions, legDirections]);
+  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions, legDirections, arcStations, boardingLock]);
 
   // #3191 PR-2D — 방향 필터 관측. 기존 reason 'candidate-opposite-direction'(#2696)을 재사용한다.
   // observer(DebugModal) 인스턴스는 push하지 않는다(primary와 중복 집계 방지).
@@ -874,6 +885,21 @@ export function useFusedNearestStation(
         kind: 'candidate-reject',
         ts: Date.now(),
         reason: 'candidate-opposite-direction',
+        stationName,
+        line,
+        signal: kind,
+      });
+    }
+  }, [fused, resolvedInstrumentationRole, pushCandidateReject]);
+
+  // #3191 PR-1(A) — arc 밖 후보 제외 관측(reason 'candidate-off-arc'). observer는 push하지 않는다.
+  useEffect(() => {
+    if (resolvedInstrumentationRole === 'observer') return;
+    for (const { kind, stationName, line } of excludedDropsRef.current) {
+      pushCandidateReject({
+        kind: 'candidate-reject',
+        ts: Date.now(),
+        reason: 'candidate-off-arc',
         stationName,
         line,
         signal: kind,
@@ -2263,8 +2289,10 @@ export function useFusedNearestStation(
   //   - adoptedTier: cascade가 채택한 tier (상위 tier advance 여부 판정)
   //   - locklessTripStartRef: lockless trip 시작 시각 (#1207 앵커, 위에서 이미 산출)
   //
-  // lock 활성 trip은 범위 밖 — RCA 시나리오(positionTrain은 lock 필요, 즉 lockless에서만
-  // positionTrain 자체가 dormant)가 lockless 전용이라 locklessTripStartRef가 자연 게이트 역할.
+  // lock 활성 trip은 범위 밖 — RCA 시나리오(sticky가 출발역에 고착)가 lockless 전용이라
+  // locklessTripStartRef가 자연 게이트 역할. (lockless positionTrain tier6은 dormant가 아니다:
+  // positionTrainConsensus.requiresPositionTrainConsensus — automotive ∧ cellular surface 합의면 채택 가능,
+  // checkStationProgression은 arc 밖 후보를 면제한다. #3191 PR-1(A)는 이를 바꾸지 않는다 — ADR-044:35, 셀 M9 선언.)
   const tripOriginForDemote = routeContext?.origin ?? null;
   const stickyLockedStation = gps.stickyDisplayOnly;
   const resultStuckAtStickyOrigin =
