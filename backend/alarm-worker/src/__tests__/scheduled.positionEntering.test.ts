@@ -365,7 +365,7 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     }
   });
 
-  it('취침 모드여도 transfer·destination 은 mute 대상이 아니다 — 진입 발사 (isSleepMutedStationNotif intermediate 한정)', async () => {
+  it('취침 모드여도 transfer·destination 은 mute 대상이 아니다 — 진입 발사 (취침 mute는 intermediate 한정 — 정책 표)', async () => {
     for (const waypoints of [
       [GEONDAE_TRANSFER, { stationName: '성수', line: '2', kind: 'destination' } as Waypoint],
       [GEONDAE_DEST],
@@ -377,7 +377,7 @@ describe('runScheduled 메인 pass — intermediate 매역 진입 발사', () =>
     }
   });
 
-  it('거부 — 취침 모드 intermediate 는 진입 발사도 무음 skip (isSleepMutedStationNotif 공유)', async () => {
+  it('거부 — 취침 모드 intermediate 는 진입 발사도 무음 skip (같은 정책 표 셀 공유)', async () => {
     const world = makeWorld();
     await world.seed(tripOf([GUNJA, AEDAE, GEONDAE_TRANSFER], { sleepModeEnabled: true }));
     const tick = await world.runTick([{ stationName: '군자(능동)', sttus: STATUS.ENTERING }]);

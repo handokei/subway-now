@@ -366,11 +366,10 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
     expect(sent.map((e) => e.station)).toEqual(['사가정']);
     expect(sent.length).toBeLessThanOrEqual(SYNC_SKIPPED_STATION_FIRE_CAP);
     expect(attempts.filter((e) => (e.meta as { outcome?: string }).outcome === 'skipped-by-shift')).toHaveLength(4);
-    // 1역 전 알람 catch-up(#3157)은 그대로 정확히 1회 (면목 -> "곧 상봉").
+    // [#2510 반전] 비취침은 1역 전 알람 catch-up(#3157)도 발사하지 않는다 — 알람은 취침 전용.
     const prepare = events.filter(
       (e) => e.kind === 'prepare-alarm' && (e.meta as { outcome?: string }).outcome === 'fired',
     );
-    expect(prepare).toHaveLength(1);
-    expect(prepare[0].meta).toMatchObject({ targetStation: '상봉' });
+    expect(prepare).toEqual([]);
   });
 });

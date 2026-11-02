@@ -138,7 +138,7 @@ describe('#3100 golden — 기본값 KV 호출 수 / D1 행', () => {
     expect(kv.store.has(sleepAlarmFireKey(TOKEN, '어린이대공원'))).toBe(false);
   });
 
-  it('취침 OFF: 알람 키 접근 0 (준비 알람 키만)', async () => {
+  it('취침 OFF: 알람 키 접근 0 (#2510 반전 — 준비 알람 키 접근도 0)', async () => {
     const kv = new InMemoryKV(() => NOW);
     const spy = spyKv(kv);
     const f = captureFetch();

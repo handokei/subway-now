@@ -29,7 +29,6 @@ import { isLossyFixture } from '../replayFixture';
 import { runCaptureReplay, type CapturedPush } from './helpers/replayHarness';
 import {
   firedLocklessIntermediateStations,
-  firedPrepareAlarmTargets,
   firedStationOccurrences,
 } from './helpers/pushAssertions';
 
@@ -171,10 +170,14 @@ for (const entry of REPLAY_LIBRARY) {
           );
         }
 
-        if (entry.expect.prepareAlarmTargets !== undefined) {
-          const firedPrepare = firedPrepareAlarmTargets(result.pushes);
-          expect([...firedPrepare].sort()).toEqual([...entry.expect.prepareAlarmTargets].sort());
-        }
+        // #2510 반전(2026-11-02) — 알람(alarm.wav)은 취침 전용. 라이브러리 엔트리는 전부 비취침 trip이므로
+        // 어떤 엔트리에서도 1정거장 전 알람(`prepare-`/`alarm-` collapse)과 alarm.wav 소리가 나가면 안 된다.
+        const alarmLike = result.pushes.filter(
+          (p) =>
+            /^(prepare|alarm)-/.test(p.headers.collapseId ?? '') ||
+            (p.body.aps as { sound?: string } | undefined)?.sound === 'alarm.wav',
+        );
+        expect(alarmLike).toEqual([]);
       });
     }
   });

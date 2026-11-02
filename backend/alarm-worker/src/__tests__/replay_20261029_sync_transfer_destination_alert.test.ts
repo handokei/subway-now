@@ -219,7 +219,7 @@ describe('POST /boarding-lock/sync — lock 활성 transfer/destination visible 
     expect(attempts[0].meta).toMatchObject({ outcome: 'failed' });
   });
 
-  it('취침 모드: transfer는 mute 아님 — 취침 trip에서도 visible 1건 발사(isSleepMutedStationNotif는 intermediate만)', async () => {
+  it('취침 모드: transfer는 mute 아님 — 취침 trip에서도 visible 1건 발사(취침 mute 정책 셀 sleep x arrival-intermediate는 intermediate만)', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip({ sleepModeEnabled: true }));
 
     await sync(TRANSFER);

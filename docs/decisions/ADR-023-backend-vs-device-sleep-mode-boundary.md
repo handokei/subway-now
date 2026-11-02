@@ -123,3 +123,7 @@ Epic #2061 audit(2026-07-29)로 다음이 확정되면서 전제가 깨졌다:
 
 - 개정 근거 ADR: **ADR-024** (알림≠알람 분리 스펙, §2 단일 결정권자 정의, §4 self-contained 경계).
 - 구현 이슈: #2063(Phase 1-backend), #2066(Phase 2-backend).
+
+## 개정 이력 (2026-11-02)
+
+환승·하차 도착 `station-` push의 **sound** 축에서 backend 취침 분기를 다시 허용한다: 취침 = alarm.wav·time-sensitive, 일반 = 정책 표 `NORMAL_ARRIVAL_ALERT`(`backend/alarm-worker/src/alertSoundPolicy.ts`). 발사 여부는 계속 취침 무관(intermediate 매역 mute만 예외)이다 — ADR-048:26이 "환승·하차 도착에 한해 복원"했던 첫 원칙을 sound 축에서만 해제한다. 2026-07-29 개정이 이미 허용한 "알림 계열 backend sleep 분기" 범위 안이다. 근거와 충돌 목록: ADR-024 개정 이력(2026-11-02, #2510 재오픈).

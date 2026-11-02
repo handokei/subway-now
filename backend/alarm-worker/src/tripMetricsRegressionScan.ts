@@ -35,7 +35,13 @@
  * `sampleJson`)으로 emit한다. `console.error`도 트립별이 아니라 요약 1줄.
  */
 
-import { buildRegressionSql } from './tripMetricsRegressionQuery';
+import {
+  buildReconsumeSql,
+  buildRegressionSql,
+  findReconsumedStations,
+  type ReconsumeEventRow,
+  type ReconsumedStation,
+} from './tripMetricsRegressionQuery';
 import { captureBackendException, captureXEvent } from './sentry';
 import type { Env } from './types';
 
@@ -92,6 +98,32 @@ export async function findTripMetricsRegressions(
   }));
 }
 
+/**
+ * 재진행(같은 역 재소비) 후보를 조회한다 (#3006 PR-0). 실패는 throw — swallow는 호출자 책임.
+ */
+export async function findTripReconsumes(db: D1Database, now: number): Promise<ReconsumedStation[]> {
+  const windowStart = now - REGRESSION_WINDOW_MS;
+  const result = await db.prepare(buildReconsumeSql('?')).bind(windowStart).all<ReconsumeEventRow>();
+  return findReconsumedStations(result.results ?? []);
+}
+
+function emitReconsumeAlert(reconsumes: ReconsumedStation[], windowStartMs: number): void {
+  const sample = reconsumes.slice(0, REGRESSION_SAMPLE_LIMIT);
+  console.error(
+    JSON.stringify({
+      msg: 'trip_events reconsume detected — same station prepare-alarm consumed 2+ times in one trip',
+      count: reconsumes.length,
+      windowStartMs,
+      sample,
+    }),
+  );
+  captureXEvent('X13-trip-reconsume', {
+    count: reconsumes.length,
+    windowStartMs,
+    sampleJson: JSON.stringify(sample),
+  });
+}
+
 function regressionScanKey(date: string): string {
   return `${REGRESSION_SCAN_KV_PREFIX}${date}`;
 }
@@ -134,7 +166,12 @@ function emitRegressionAlert(regressions: RegressionTripSummary[], windowStartMs
 export async function maybeRunTripMetricsRegressionScan(
   env: Env,
   now: number,
-): Promise<{ ran: boolean; date?: string; regressions?: RegressionTripSummary[] }> {
+): Promise<{
+  ran: boolean;
+  date?: string;
+  regressions?: RegressionTripSummary[];
+  reconsumes?: ReconsumedStation[];
+}> {
   try {
     const d = new Date(now);
     if (d.getUTCHours() !== REGRESSION_SCAN_HOUR_UTC) return { ran: false };
@@ -160,7 +197,12 @@ export async function maybeRunTripMetricsRegressionScan(
       emitRegressionAlert(regressions, windowStart);
     }
 
-    return { ran: true, date, regressions };
+    const reconsumes = await findTripReconsumes(env.DB, now);
+    if (reconsumes.length > 0) {
+      emitReconsumeAlert(reconsumes, windowStart);
+    }
+
+    return { ran: true, date, regressions, reconsumes };
   } catch (err) {
     console.warn(JSON.stringify({ msg: 'tripMetricsRegressionScan failed', err: String(err) }));
     void captureBackendException(env, err, { path: 'tripMetricsRegressionScan' });

@@ -3,12 +3,10 @@ import {
   APNS_COLLAPSE_ID_MAX_BYTES,
   BOARDING_PROMPT_COLLAPSE_ID_PREFIX,
   FALLBACK_ALERT_COLLAPSE_ID_PREFIX,
-  PREPARE_ALARM_COLLAPSE_ID_PREFIX,
   SLEEP_ALARM_COLLAPSE_ID_PREFIX,
   STATION_NOTIF_COLLAPSE_ID_PREFIX,
   boardingPromptCollapseId,
   fallbackAlertCollapseId,
-  prepareAlarmCollapseId,
   sleepAlarmCollapseId,
   stationNotifCollapseId,
   truncateUtf8,
@@ -78,13 +76,10 @@ describe('stationNotifCollapseId / boardingPromptCollapseId (station suffix 없�
   });
 });
 
-describe('sleepAlarmCollapseId / prepareAlarmCollapseId / fallbackAlertCollapseId (station suffix)', () => {
+describe('sleepAlarmCollapseId / fallbackAlertCollapseId (station suffix)', () => {
   it('짧은 역명은 절단 없이 그대로', () => {
     expect(sleepAlarmCollapseId('tok-abc', '군자')).toBe(
       `${SLEEP_ALARM_COLLAPSE_ID_PREFIX}tok-abc-군자`,
-    );
-    expect(prepareAlarmCollapseId('tok-abc', '군자')).toBe(
-      `${PREPARE_ALARM_COLLAPSE_ID_PREFIX}tok-abc-군자`,
     );
     expect(fallbackAlertCollapseId('tok-abc', '군자')).toBe(
       `${FALLBACK_ALERT_COLLAPSE_ID_PREFIX}tok-abc-군자`,
@@ -93,10 +88,9 @@ describe('sleepAlarmCollapseId / prepareAlarmCollapseId / fallbackAlertCollapseI
 
   it('#2610 코드리뷰 실측 — 긴 한글 역명(64hex token 결합 시 65~74B)은 64B 이하로 절단', () => {
     const sleepId = sleepAlarmCollapseId(HEX64_TOKEN, LONG_STATION_NAME);
-    const prepareId = prepareAlarmCollapseId(HEX64_TOKEN, LONG_STATION_NAME);
     const fallbackId = fallbackAlertCollapseId(HEX64_TOKEN, LONG_STATION_NAME);
 
-    for (const id of [sleepId, prepareId, fallbackId]) {
+    for (const id of [sleepId, fallbackId]) {
       expect(byteLength(id)).toBeLessThanOrEqual(APNS_COLLAPSE_ID_MAX_BYTES);
     }
     // 절단이 실제로 station suffix에서 일어났는지 — 원본 미절단 문자열보다 짧아야 함.

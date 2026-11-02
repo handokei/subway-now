@@ -11,6 +11,7 @@
  */
 
 import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../src/shared/constants/sleepAlarm';
+import type { OneStopContent } from './alertSoundPolicy';
 
 /** 지원 locale — 디바이스 SUPPORTED_LANGUAGES와 1:1 매핑. */
 export type SupportedLocale = 'ko' | 'en' | 'ja' | 'zh';
@@ -123,7 +124,7 @@ interface I18nStrings {
   ) => string;
   /**
    * #3100 — 취침 알람 N역 전 title/body (`count` = 타깃까지 실제 남은 정거장, 기본 칸 1역 전 제외).
-   * 기본 칸은 `stationNotifTitle`/`stationNotifBody` 그대로 쓰므로(`sleepAlarmContent`) 여기 오지 않는다.
+   * 기본 칸은 `sleepAlarmOneStopTitle`/`sleepAlarmOneStopBody`(#3215)를 쓰므로(`sleepAlarmContent`) 여기 오지 않는다.
    */
   sleepAlarmTitle: (kind: SleepAlarmKind, stationName: string, count: number) => string;
   sleepAlarmBody: (kind: SleepAlarmKind, stationName: string, count: number) => string;
@@ -400,12 +401,12 @@ export function sleepAlarmContent(
   kind: SleepAlarmKind,
   stationName: string,
   remaining: number,
-): { title: string; body: string } {
+): OneStopContent {
   const strings = t(locale);
   if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) {
-    return { title: strings.sleepAlarmOneStopTitle(kind), body: strings.sleepAlarmOneStopBody(kind, stationName) };
+    return { title: strings.sleepAlarmOneStopTitle(kind), body: strings.sleepAlarmOneStopBody(kind, stationName) } as OneStopContent;
   }
-  return { title: strings.sleepAlarmTitle(kind, stationName, remaining), body: strings.sleepAlarmBody(kind, stationName, remaining) };
+  return { title: strings.sleepAlarmTitle(kind, stationName, remaining), body: strings.sleepAlarmBody(kind, stationName, remaining) } as OneStopContent;
 }
 
 /**

@@ -20,6 +20,10 @@
 - **(D) legacy prescheduled 취소** — 구조적 no-op. `silentPushTask.ts:1389-1396`이 `'station-passed'` 취소를 시도하나 `AlarmLocalKind`(`alarmLocalAuthority.ts:29`)에 그 종류가 없어 대상이 존재하지 않음(ADR-026 결정 2).
 - **(E) LA fallback notification** — 덤프에 다수 관측, file:line 미확인. 본 ADR 범위 밖.
 
+## 개정 이력 (2026-11-02)
+
+맥락 (A)의 소리 정책 기록("환승/도착 `alarm.wav`+`time-sensitive`", 모드 무관)은 당시 현황이었다. 2026-11-02 #2510 재오픈으로 **환승/도착 alarm.wav는 취침 한정**, 비취침은 `NORMAL_ARRIVAL_ALERT`(현재 무음 배너 + active; 사용자 S/D 답변 대기)로 바뀌었다. 정책은 `alertSoundPolicy.ts` 한 곳이 소유한다. 본문 원문은 보존한다. 근거: ADR-024 개정 이력(2026-11-02).
+
 ## 이 ADR이 수정·대체·모순하는 결정
 
 **ADR-033 · ADR-035 · ADR-036 세 개를 매역(station-passed) 표시 축에서 supersede한다.** 2026-10-08 초안은 ADR-033 하나만 보고 "실행되지 않았거나 롤백됐다"로 두 가능성을 열어뒀는데, 2026-10-10 조사로 **어느 쪽도 아님**이 확정됐다.

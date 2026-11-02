@@ -1,15 +1,15 @@
 /**
  * `apns-collapse-id` 공유 빌더 (#2610 코드리뷰 P1).
  *
- * 배경: 5개 alert 채널(station-notif/boarding-prompt/sleep-alarm/prepare-alarm/fallback-alert)이
+ * 배경: 4개 alert 채널(station-notif/boarding-prompt/sleep-alarm/fallback-alert)이
  * 각자 `${prefix}${tripToken.slice(0, 16)}(-${station})` 패턴을 중복 구현했다. APNs
  * `apns-collapse-id` 헤더는 UTF-8 64바이트 한도가 있는데(#2086), station을 접미사로 붙이는
- * 4개 빌더(sleep-alarm/prepare-alarm/fallback-alert 및 향후 추가분)는 station 자체가 긴
+ * 3개 빌더(sleep-alarm/fallback-alert 및 향후 추가분)는 station 자체가 긴
  * 한글 역명일 때(예: `남한산성입구(성남법원.검찰청)`) 한도를 넘길 수 있음이 코드리뷰에서
  * 실측됐다 — 기존 구현은 `slice(0, 16)`로 tripToken만 방어하고 station은 무방비였다.
  *
  * 본 모듈은 station suffix를 **UTF-8 바이트 단위로, 문자 경계를 보존하며** 안전 절단하는
- * 단일 빌더로 5개 채널을 통합한다. prefix + tripToken(16자 축약)는 항상 ASCII/hex라 고정
+ * 단일 빌더로 채널들을 통합한다. prefix + tripToken(16자 축약)는 항상 ASCII/hex라 고정
  * 폭이 짧고(최대 33바이트, `boarding-prompt-` 기준), station suffix 쪽만 남는 예산만큼
  * 절단해도 collapse 유니크성(같은 trip·station 조합만 같은 id)은 유지된다.
  */
@@ -106,14 +106,6 @@ export function sleepAlarmCollapseId(
   const suffix = sleepAlarmSuffix(remaining);
   const prefix = suffix === '' ? SLEEP_ALARM_COLLAPSE_ID_PREFIX : `${SLEEP_ALARM_COLLAPSE_ID_PREFIX}${suffix}-`;
   return buildCollapseId(prefix, tripToken, targetStation);
-}
-
-/** #2510 — 준비 알람(prepare-alarm) apns-collapse-id prefix. */
-export const PREPARE_ALARM_COLLAPSE_ID_PREFIX = 'prepare-';
-
-/** #2510 — 준비 알람 apns-collapse-id 빌더. trip·station 조합 단위로 collapse. */
-export function prepareAlarmCollapseId(tripToken: string, targetStation: string): string {
-  return buildCollapseId(PREPARE_ALARM_COLLAPSE_ID_PREFIX, tripToken, targetStation);
 }
 
 /**
