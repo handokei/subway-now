@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env, Trip, Waypoint } from '../types';
 import { sleepAlarmCollapseId } from '../collapseId';
+import { waypointSignatureKey } from '../trips';
 import { runCaptureReplay } from './helpers/replayHarness';
 import {
   createDeviceReplayer,
@@ -146,6 +147,7 @@ async function replayStorm(opts: StormOpts) {
             trainCode: '7077',
             shiftedCount: FULL_ROUTE_NAMES.indexOf(STORM_STATIONS.head),
             headHopIndex: FULL_ROUTE_NAMES.indexOf(STORM_STATIONS.head),
+            headKey: waypointSignatureKey(trip.waypoints[0]),
             ttlBasisExpiresAt: trip.expiresAt,
           },
         });

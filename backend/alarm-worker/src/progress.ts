@@ -11,12 +11,12 @@
  *   - 키: `progress:<token>` (TRIPS KV 재사용 — 새 namespace 도입 비용 회피)
  *   - 값: shiftedCount + 추적 baseline. trainCode를 stamp해 다른 열차로 갈아탄
  *         새 세션이면 fresh start로 동작.
- *   - POST /trips: progress.trainCode가 incoming.boardingLock.trainCode와 같으면
- *     `incoming.waypoints.slice(progress.shiftedCount)`로 진행분을 잘라낸다.
- *     트레인이 다르면 progress는 무시 (호출부가 clearProgress).
- *   - advanceBoardingLockWaypoint: shiftedCount += 1과 baseline reset을 progress에 기록.
+ *   - #2308 (ADR-052) — 작성자는 cron 경로 `mirrorProgress` 하나다. POST /trips·/boarding-lock/sync는
+ *     progress를 쓰지 않고, register는 읽지도 적용·삭제도 하지 않는다(세션 경계에서만 삭제).
+ *     대신 cron이 매 tick `reconcileTripWithProgress`로 trip.waypoints(노선 정의 사본)를 progress head까지
+ *     앞으로만 맞춘다. 이 파일의 설계가 풀려던 race("진정한 격리")를 그렇게 완결한다.
  *   - runTrainCodeTracking: 성공/실패 사이클에서 baseline(consecutiveEtaMissing,
- *     lastTrackedArrivalEpoch, lastLaPushEpoch)도 progress에 mirror해 race에 무관하게 유지.
+ *     lastTrackedArrivalEpoch, lastLaPushEpoch)도 progress에 mirror하고, 맞춤이 trip으로 복원한다.
  */
 
 import { assertKvCacheTtl } from './kvConsistency';
@@ -34,12 +34,8 @@ export interface TripProgress {
   /** advance로 shift한 waypoint 개수. POST의 incoming.waypoints에 slice(shiftedCount) 적용. */
   shiftedCount: number;
   /**
-   * #2308 — advance 시점 head waypoint의 `hopIndex` (원본 시퀀스 0-based 위치, shift와 무관하게
-   * 불변). POST /trips 재등록 시 `incoming.waypoints`가 (route 재계산 등으로) shiftedCount 계산
-   * 당시와 다른 시퀀스라면 count 기반 slice가 엉뚱한 waypoint를 head로 재anchor한다(단조 전진
-   * 불변식 위반, 구노선 head 되감김). `applyProgress`는 이 값이 있으면 count 대신
-   * hopIndex 일치 위치로 slice해 head 정체성을 보존한다. 미지정(구 progress/legacy)이면 기존
-   * count 기반 정책으로 fallback.
+   * advance 시점 head waypoint의 `hopIndex` — 하위호환 기록만(읽는 곳 0). device 재등록 waypoints에는 hopIndex가 없어
+   * backend `validateTrip`이 배열 위치로 다시 매기므로 head 식별자로 쓸 수 없다(#2308 재오픈, `headKey` 참고).
    */
   headHopIndex?: number;
   /**

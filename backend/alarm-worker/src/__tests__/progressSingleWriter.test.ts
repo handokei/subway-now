@@ -114,6 +114,42 @@ describe('cron 진입 progress 읽기 비용 (#2308, test-after)', () => {
   });
 });
 
+describe('cron 맞춤이 기준값을 progress 값으로 복원한다 (#2308 — 재등록이 undefined로 지운 lastLaPushAt)', () => {
+  it('trip.lastLaPushAt이 비어 있어도 tick 뒤 progress.lastLaPushAt이 보존된다 (복원 제거 시 mirror가 undefined로 덮어 red)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = lockActiveTrip([wp('군자', 'intermediate'), wp('중곡', 'intermediate'), wp('학동', 'destination')], {
+      lastLaPushAt: undefined,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const seeded: TripProgress = {
+      trainCode: '7246',
+      shiftedCount: 0,
+      headKey: waypointSignatureKey(trip.waypoints[0]),
+      lastLaPushAt: NOW - 10_000,
+      lastLaPushEpoch: NOW + 120_000,
+      consecutiveEtaMissing: 0,
+      ttlBasisExpiresAt: trip.expiresAt,
+    };
+    await kv.put(progressKey(trip.token), JSON.stringify(seeded));
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response('{"realtimeArrivalList":[],"realtimePositionList":[]}', { status: 200 })) as unknown as typeof fetch,
+    });
+    await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig: getApnsConfig(),
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: captureFetch().fetchImpl,
+      now: () => NOW,
+      generatePushId: () => 'p',
+    });
+    expect(await readProgress(kv, trip.token)).toMatchObject({ lastLaPushAt: NOW - 10_000, lastLaPushEpoch: NOW + 120_000 });
+  });
+});
+
 describe('completeWaypointAdvance — mirrorProgress 옵션 (#2308)', () => {
   const lockTrip = (): Trip => lockActiveTrip([wp('군자', 'intermediate'), wp('중곡', 'intermediate'), wp('학동', 'destination')]);
 
