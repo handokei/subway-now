@@ -255,6 +255,13 @@ describe('#2308 10/31 — 취침 변형: 학동 도착 tick에 논현 1역 전 �
   });
 });
 
+describe('#2308 10/31 — KV 비용: 진입 progress 읽기는 같은 tick mirror가 재사용한다', () => {
+  it('tick별 재사용 못 한 진입 읽기(progressEntryReadUnused) 기록', async () => {
+    const r = await replayStorm({ registerCarriesLock: true });
+    expect(r.result.cycles.map((c) => c.stats.progressEntryReadUnused)).toEqual([0, 0, 0, 0, 0]);
+  });
+});
+
 describe('#2308 10/31 — 재등록은 LA push를 늘리지 않는다 (LA 기준값은 cron 자신의 progress 값으로 복원)', () => {
   const laPushCount = (r: Awaited<ReturnType<typeof replayStorm>>) =>
     r.result.pushes.filter((p) => p.headers.pushType === 'liveactivity').length;

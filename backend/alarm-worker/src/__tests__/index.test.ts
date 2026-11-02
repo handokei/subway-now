@@ -2,7 +2,6 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import * as sentryModule from '../sentry';
 import {
   app,
-  applyProgress,
   buildBoardingConfirmEventMeta,
   computeLockSyncAdvance,
   decideLegLockReleaseForBoardedTap,
@@ -11,7 +10,6 @@ import {
   isSsotSyncAdvanceMonotonic,
   LOCK_TTL_REFRESH_MS,
   RECENT_PROMPT_CANDIDATES_TTL_MS,
-  resolveProgressWaypoints,
   SESSION_DRIFT_WINDOW_MS,
   validateBoardingLockSync,
   validateLiveActivityRegister,
@@ -28,7 +26,7 @@ import {
 import { ARCH_FLAG_KV_KEY } from '../archFlag';
 import { TripDO } from '../tripDO';
 import { TRIP_DO_FLAG_KV_KEY } from '../tripDoFlag';
-import { progressKey, type TripProgress } from '../progress';
+import { progressKey } from '../progress';
 import { pendingKey, putPending, stampReceived } from '../pendingPushes';
 import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
 import type { AnalyticsEngineWriter, Env, Trip } from '../types';
@@ -1259,154 +1257,6 @@ describe('POST /trips — #704 isSameSession (trainCode 기반 + drift window)',
     );
     const finalTrip = await readTrip(env);
     expect(finalTrip.lastEtaSeconds).toBeUndefined();
-  });
-});
-
-describe('POST /trips — #705 progress KV preserves advance across POST race', () => {
-  const { lock: LOCK, tripBody, readTrip } = makeSessionTripFactory('tok-705', 'TP');
-
-  async function seedProgress(env: Env, shiftedCount: number, trainCode = 'TP'): Promise<void> {
-    await env.TRIPS.put(
-      'progress:tok-705',
-      JSON.stringify({
-        trainCode,
-        shiftedCount,
-        lastTrackedArrivalEpoch: 12345,
-        lastLaPushEpoch: 67890,
-        consecutiveEtaMissing: 2,
-      }),
-    );
-  }
-
-  it('restores advance from progress KV even when trip object is freshly POSTed (race)', async () => {
-    const env = makeKvEnv();
-    await post('/trips', tripBody(), env);
-    // 시뮬레이션: scheduled.ts가 advance → progress 기록 (외부 race가 trip object를 reset해도 progress는 남아 있음)
-    await seedProgress(env, 1);
-    // race: 디바이스가 동일 trip을 cold restart로 다시 POST. trip.waypoints는 origin 3건.
-    await post('/trips', tripBody({ createdAt: SESSION_CREATED + 50_000 }), env);
-    const finalTrip = await readTrip(env);
-    // progress.shiftedCount=1 → 중곡(첫 waypoint)이 잘려나가야 함
-    expect(finalTrip.waypoints).toHaveLength(2);
-    expect((finalTrip.waypoints as Array<{ stationName: string }>)[0].stationName).toBe('군자');
-    expect(finalTrip.lastTrackedArrivalEpoch).toBe(12345);
-    expect(finalTrip.consecutiveEtaMissing).toBe(2);
-  });
-
-  it('drops progress when incoming trainCode differs (new train → reset)', async () => {
-    const env = makeKvEnv();
-    await post('/trips', tripBody(), env);
-    await seedProgress(env, 2);
-    // 다른 trainCode로 POST → progress 폐기 + 전체 waypoints 복원
-    await post('/trips', tripBody({ boardingLock: { ...LOCK, trainCode: 'OTHER' } }), env);
-    const finalTrip = await readTrip(env);
-    expect(finalTrip.waypoints).toHaveLength(3);
-    expect(await env.TRIPS.get('progress:tok-705')).toBeNull();
-  });
-
-  it('drops progress when incoming has no boardingLock', async () => {
-    const env = makeKvEnv();
-    await post('/trips', tripBody(), env);
-    await seedProgress(env, 1);
-    await post('/trips', tripBody({ boardingLock: undefined }), env);
-    expect(await env.TRIPS.get('progress:tok-705')).toBeNull();
-  });
-
-  it('ignores corrupted progress entry (graceful)', async () => {
-    const env = makeKvEnv();
-    await post('/trips', tripBody(), env);
-    await env.TRIPS.put('progress:tok-705', 'not-json{');
-    await post('/trips', tripBody(), env);
-    const finalTrip = await readTrip(env);
-    // progress null → progressApplies false → 일반 same-session 경로로 trip 복원
-    expect(finalTrip.waypoints).toHaveLength(3);
-  });
-
-  it('falls back to base waypoints when shiftedCount exceeds incoming.waypoints length', async () => {
-    // 보호: progress가 incoming보다 더 많이 잘릴 경우 빈 배열 회귀 방지 — base.waypoints 유지.
-    const env = makeKvEnv();
-    await post('/trips', tripBody(), env);
-    await seedProgress(env, 10);
-    await post('/trips', tripBody(), env);
-    const finalTrip = await readTrip(env);
-    expect((finalTrip.waypoints as unknown[]).length).toBeGreaterThan(0);
-  });
-});
-
-// #1285 — lockless trip POST /trips 재등록 시 waypoint 진행 보존
-describe('POST /trips — #1285 lockless progress KV 재등록 시 진행 보존', () => {
-  const LOCKLESS_TOKEN = 'tok-1285';
-  const LOCKLESS_WAYPOINTS = [
-    { stationName: '중곡', line: '5', kind: 'intermediate' },
-    { stationName: '군자', line: '5', kind: 'intermediate' },
-    { stationName: '아차산', line: '5', kind: 'destination' },
-  ];
-
-  function locklessTripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
-    return {
-      ...base(),
-      token: LOCKLESS_TOKEN,
-      createdAt: SESSION_CREATED,
-      infoModeEnabled: true,
-      waypoints: LOCKLESS_WAYPOINTS,
-      ...overrides,
-    };
-  }
-
-  async function readLocklessTrip(env: Env): Promise<Record<string, unknown>> {
-    return JSON.parse((await env.TRIPS.get(`trip:${LOCKLESS_TOKEN}`)) as string);
-  }
-
-  async function seedLocklessProgress(env: Env, shiftedCount: number): Promise<void> {
-    await env.TRIPS.put(
-      `progress:${LOCKLESS_TOKEN}`,
-      JSON.stringify({ lockless: true, shiftedCount }),
-    );
-  }
-
-  it('lockless trip 재등록 시 progress.shiftedCount=1 → 중곡 제거, 군자가 첫 waypoint', async () => {
-    const env = makeKvEnv();
-    // 첫 등록
-    await post('/trips', locklessTripBody(), env);
-    // 서버가 중곡 발사 후 progress.shiftedCount=1 기록
-    await seedLocklessProgress(env, 1);
-    // 디바이스 재등록 (GPS 동결로 중곡 포함 full route 재전송)
-    await post('/trips', locklessTripBody({ createdAt: SESSION_CREATED + 50_000 }), env);
-    const finalTrip = await readLocklessTrip(env);
-    expect((finalTrip.waypoints as Array<{ stationName: string }>)).toHaveLength(2);
-    expect((finalTrip.waypoints as Array<{ stationName: string }>)[0].stationName).toBe('군자');
-  });
-
-  it('lockless progress 보존 후 중곡 재발사 안 됨 — waypoint가 군자로 advance 유지', async () => {
-    const env = makeKvEnv();
-    await post('/trips', locklessTripBody(), env);
-    await seedLocklessProgress(env, 1);
-    // 재등록 후에도 진행분 보존 검증
-    await post('/trips', locklessTripBody(), env);
-    const finalTrip = await readLocklessTrip(env);
-    expect((finalTrip.waypoints as Array<{ stationName: string }>)[0].stationName).toBe('군자');
-  });
-
-  it('lockless progress가 있어도 infoModeEnabled=false면 progress 폐기', async () => {
-    const env = makeKvEnv();
-    await post('/trips', locklessTripBody(), env);
-    await seedLocklessProgress(env, 1);
-    // infoModeEnabled가 false인 재등록 — progress 미적용
-    await post('/trips', locklessTripBody({ infoModeEnabled: false }), env);
-    expect(await env.TRIPS.get(`progress:${LOCKLESS_TOKEN}`)).toBeNull();
-  });
-
-  it('lock-mode progress(trainCode stamp)가 lockless 재등록 시 폐기됨', async () => {
-    const env = makeKvEnv();
-    await post('/trips', locklessTripBody(), env);
-    // lock 경로가 남긴 progress (lockless 마커 없음)
-    await env.TRIPS.put(
-      `progress:${LOCKLESS_TOKEN}`,
-      JSON.stringify({ trainCode: 'SOME_TRAIN', shiftedCount: 1 }),
-    );
-    await post('/trips', locklessTripBody(), env);
-    // trainCode 기반 progress는 lockless 재등록 시 progressApplies=false → 삭제
-    expect(await env.TRIPS.get(`progress:${LOCKLESS_TOKEN}`)).toBeNull();
   });
 });
 
@@ -5842,7 +5692,7 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(stored.boardingLock).toBeUndefined();
   });
 
-  it('advance 시 progress KV에 shiftedCount mirror', async () => {
+  it('advance 시 trip.waypoints는 전진하지만 progress KV는 쓰지 않는다 (#2308 b2: progress 작성자는 cron 경로 하나)', async () => {
     const env = makeKvEnv();
     await post('/trips', tripWithLock(), env);
     await post(
@@ -5850,14 +5700,12 @@ describe('POST /boarding-lock/sync (#901)', () => {
       { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1, accuracy: 5 },
       env,
     );
-    const progressRaw = await env.TRIPS.get(progressKey('tok-sync'));
-    expect(progressRaw).not.toBeNull();
-    const progress = JSON.parse(progressRaw as string) as TripProgress;
-    expect(progress.trainCode).toBe('T-1');
-    expect(progress.shiftedCount).toBe(2);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string) as Trip;
+    expect(stored.waypoints.map((w) => w.stationName)).not.toContain('역삼');
+    expect(await env.TRIPS.get(progressKey('tok-sync'))).toBeNull();
   });
 
-  it('advance 누적 — 두 번째 sync도 progress.shiftedCount 누적', async () => {
+  it('advance 누적 — 두 번째 sync도 trip은 전진하고 progress는 여전히 쓰지 않는다', async () => {
     const env = makeKvEnv();
     await post('/trips', tripWithLock(), env);
     // 1차 sync — 강남(0) → 1 hop
@@ -5872,8 +5720,9 @@ describe('POST /boarding-lock/sync (#901)', () => {
       { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 2, accuracy: 5 },
       env,
     );
-    const progress = JSON.parse((await env.TRIPS.get(progressKey('tok-sync'))) as string);
-    expect(progress.shiftedCount).toBe(2);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string) as Trip;
+    expect(stored.waypoints.map((w) => w.stationName)).not.toContain('역삼');
+    expect(await env.TRIPS.get(progressKey('tok-sync'))).toBeNull();
   });
 
   it('boardingLock 없는 trip → progress mirror 안 함 (trainCode 없음)', async () => {
@@ -6960,85 +6809,6 @@ describe('GET /trips/:token/anchor-departures (#3155)', () => {
     const res = await get(env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, departed: [] });
-  });
-});
-
-// #2308 — applyProgress/resolveProgressWaypoints 단조 전진 불변식.
-// 아침 07:37~07:44 trip_events 되감김 재현: count 기반(shiftedCount) slice는 POST /trips 재등록
-// 사이 incoming.waypoints 시퀀스가 바뀌면(route 재계산) 유효 범위 안에서도 완전히 다른(구노선)
-// waypoint로 head를 재anchor한다. headHopIndex 기반 재식별이 이를 차단해야 한다.
-describe('resolveProgressWaypoints / applyProgress — 단조 전진 불변식 (#2308)', () => {
-  function wp(stationName: string, line: string, hopIndex: number): Trip['waypoints'][number] {
-    return { stationName, line, kind: 'intermediate', hopIndex };
-  }
-
-  // 이미 advance된 현재 진행분(2호선 계속 주행 중, 뚝섬이 head).
-  const base = [wp('뚝섬', '2', 1), wp('건대입구', '2', 2), wp('중곡', '7', 5)];
-
-  it(
-    'RED (fixed) — incoming이 되계산된 구노선(7호선) 재전송이라 headHopIndex(1)를 못 찾으면 ' +
-      'count(shiftedCount=1) 기반 slice로 잘못된 7호선 역(군자)에 재anchor하지 않고 base(뚝섬)를 보존한다',
-    () => {
-      // 기기가 recompute한 stale/구노선 route — 자체적으로 hopIndex 10..12로 fresh stamp됨
-      // (원본 시퀀스와 무관한 새 Dijkstra 산출, 값 자체가 원본과 겹치지 않는다).
-      // 실 progress.headHopIndex(=1, 원본 시퀀스의 '뚝섬')는 이 배열에 존재하지 않는다.
-      const incoming = [wp('어린이대공원', '7', 10), wp('군자', '7', 11), wp('중곡', '7', 12)];
-      const progress: TripProgress = { trainCode: 'T-1', shiftedCount: 1, headHopIndex: 1 };
-
-      const result = resolveProgressWaypoints(base, incoming, progress);
-
-      // 되감김 없음: base(뚝섬, 2호선)가 그대로 유지돼야 한다.
-      expect(result).toBe(base);
-      expect(result[0].stationName).toBe('뚝섬');
-      expect(result[0].line).toBe('2');
-    },
-  );
-
-  it('incoming에 headHopIndex가 존재하면(정상 route 연속) 그 지점부터 slice한다', () => {
-    // 같은 원본 시퀀스를 그대로 재전송(hopIndex 보존) — 정상 재등록 케이스.
-    const incoming = [wp('성수', '2', 0), wp('뚝섬', '2', 1), wp('건대입구', '2', 2), wp('중곡', '7', 5)];
-    const progress: TripProgress = { trainCode: 'T-1', shiftedCount: 1, headHopIndex: 1 };
-
-    const result = resolveProgressWaypoints(base, incoming, progress);
-
-    expect(result[0].stationName).toBe('뚝섬');
-    expect(result).toHaveLength(3);
-  });
-
-  it('headHopIndex 없는 legacy progress는 기존 count(shiftedCount) 기반 정책으로 fallback한다', () => {
-    const incoming = [wp('성수', '2', 0), wp('뚝섬', '2', 1), wp('건대입구', '2', 2)];
-    const progress: TripProgress = { trainCode: 'T-1', shiftedCount: 1 };
-
-    const result = resolveProgressWaypoints(base, incoming, progress);
-
-    expect(result[0].stationName).toBe('뚝섬');
-    expect(result).toHaveLength(2);
-  });
-
-  it('applyProgress가 resolveProgressWaypoints 결과를 waypoints에 반영하고 baseline은 progress SSOT를 따른다', () => {
-    const baseTrip = {
-      waypoints: base,
-    } as Trip;
-    const incoming = {
-      waypoints: [wp('어린이대공원', '7', 10), wp('군자', '7', 11), wp('중곡', '7', 12)],
-    } as Trip;
-    const progress: TripProgress = {
-      trainCode: 'T-1',
-      shiftedCount: 1,
-      headHopIndex: 1,
-      lastTrackedArrivalEpoch: 111,
-      lastLaPushEpoch: 222,
-      lastLaPushAt: 333,
-      consecutiveEtaMissing: 4,
-    };
-
-    const result = applyProgress(baseTrip, incoming, progress);
-
-    expect(result.waypoints[0].stationName).toBe('뚝섬'); // 되감김 없음.
-    expect(result.lastTrackedArrivalEpoch).toBe(111);
-    expect(result.lastLaPushEpoch).toBe(222);
-    expect(result.lastLaPushAt).toBe(333);
-    expect(result.consecutiveEtaMissing).toBe(4);
   });
 });
 

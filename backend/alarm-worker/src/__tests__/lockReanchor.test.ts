@@ -32,7 +32,7 @@ describe('planLockReanchor (#2308)', () => {
     expiresAt: 1,
     ...overrides,
   });
-  const tripOf = (waypoints: Waypoint[], boardingLock: BoardingLockMeta, routeWaypoints: Waypoint[] | undefined = ROUTE): Trip =>
+  const tripOf = (waypoints: Waypoint[], boardingLock: BoardingLockMeta, routeWaypoints: Waypoint[] | null = ROUTE): Trip =>
     ({ token: 'tok', waypoints, boardingLock, ...(routeWaypoints ? { routeWaypoints } : {}) }) as unknown as Trip;
 
   it('11/02: 탑승역(건대입구) 다음이 아니라 head가 점프해 있으면 routeWaypoints로 어대부터 다시 깔고 segmentStations를 재생성한다', () => {
@@ -66,7 +66,7 @@ describe('planLockReanchor (#2308)', () => {
   });
 
   it('routeWaypoints가 없으면(구 trip) null — fail-closed', () => {
-    expect(planLockReanchor(tripOf([ROUTE[4], ROUTE[5]], lock(['건대입구', '중곡', '용마산']), undefined), null)).toBeNull();
+    expect(planLockReanchor(tripOf([ROUTE[4], ROUTE[5]], lock(['건대입구', '중곡', '용마산']), null), null)).toBeNull();
   });
 
   it('탑승역이 노선에 없으면(leg-1 출발역) start=0 — 첫 waypoint가 lock 노선이고 head가 그보다 앞서 있을 때만 재고정', () => {

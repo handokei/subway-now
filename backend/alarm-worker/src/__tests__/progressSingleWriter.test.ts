@@ -10,7 +10,19 @@ import { progressKey, type TripProgress } from '../progress';
 import { putTrip, waypointSignatureKey } from '../trips';
 import type { Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
-import { advance, captureFetch, useApnsHarness, wp } from './helpers/sleepAlarmHarness';
+import { appendPositionPoint } from '../positionSeries';
+import { runScheduled } from '../scheduled';
+import { SeoulArrivalClient } from '../seoul';
+import {
+  advance,
+  APNS_HOSTS,
+  captureFetch,
+  getApnsConfig,
+  makeEnv,
+  NOW,
+  useApnsHarness,
+  wp,
+} from './helpers/sleepAlarmHarness';
 import { lockActiveTrip, syncObserved, syncPromote } from './helpers/sleepAlarmSyncHttp';
 import { vi } from 'vitest';
 
@@ -50,6 +62,55 @@ describe('sync는 progress를 쓰지 않는다 (b2, #2308)', () => {
     const r = await syncPromote('destination', {}, { stationName: '군자', trainSttus: 2 });
     expect(r.stored?.waypoints.length).toBeLessThan(4);
     expect(await r.kv.get(progressKey(r.stored?.token ?? 'sync-pr2-tok'))).toBeNull();
+  });
+});
+
+describe('cron 진입 progress 읽기 비용 (#2308, test-after)', () => {
+  async function tickWithEmptySeoul(tripOverrides: Partial<Trip>, stationary: boolean) {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = lockActiveTrip(
+      [wp('군자', 'intermediate'), wp('중곡', 'intermediate'), wp('학동', 'destination')],
+      tripOverrides,
+    );
+    await putTrip(kv as unknown as KVNamespace, trip);
+    if (stationary) {
+      for (let i = 0; i < 8; i += 1) {
+        await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
+          ts: NOW - (8 - i) * 30_000,
+          motion: 'stationary',
+          lat: 37.5,
+          lng: 127.0,
+          accuracy: 10,
+        });
+      }
+    }
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response('{"realtimeArrivalList":[],"realtimePositionList":[]}', { status: 200 })) as unknown as typeof fetch,
+    });
+    return runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig: getApnsConfig(),
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: captureFetch().fetchImpl,
+      now: () => NOW,
+      generatePushId: () => 'p',
+    });
+  }
+
+  it('eta-missing 비종료 tick: 진입 읽기를 mirrorProgress가 재사용한다 -> 추가 읽기 0', async () => {
+    const stats = await tickWithEmptySeoul({}, false);
+    expect(stats.polled).toBe(1);
+    expect(stats.progressEntryReadUnused).toBe(0);
+  });
+
+  it('eta-missing 모션 게이트 차단 tick(정지 중 반복 분기): mirror 없이 return -> 추가 읽기 1로 집계', async () => {
+    const stats = await tickWithEmptySeoul({ consecutiveEtaMissing: 2, lastTrackedArrivalEpoch: NOW - 10 * 60_000 }, true);
+    expect(stats.vanishFallbackMotionGateBlocked).toBe(1);
+    expect(stats.progressEntryReadUnused).toBe(1);
   });
 });
 

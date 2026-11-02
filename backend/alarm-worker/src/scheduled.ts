@@ -138,8 +138,10 @@ import {
   getProgress,
   isProgressWriteRedundant,
   putProgress,
+  reconcileTripWithProgress,
   type TripProgress,
 } from './progress';
+import { planLockReanchor } from './lockReanchor';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import {
   pollLinesAndStamp,
@@ -744,6 +746,11 @@ export interface ScheduledStats extends LiveActivityStats {
    * trainCode 바인딩이 닿지 않는 lockless 정적 구간이 그만큼 있었다는 신호.
    */
   locklessMotionGateBlocked: number;
+  /**
+   * #2308 — cron 맞춤이 lock 활성 trip의 tick 진입에서 progress를 읽었으나 같은 tick의 `mirrorProgress`가 그 읽기를 재사용하지
+   * 않은 횟수(= 현행 대비 추가된 KV 읽기). 모션 게이트 차단·소비 안 됨 등 반복 가능한 분기의 빈도를 1주 측정한다(로그 전용, KV·D1 쓰기 0).
+   */
+  progressEntryReadUnused: number;
   /**
    * #2623 P1-2 리뷰 — `deriveWaypointEnvironment`(stations.json 기반)가 역명/line lookup 실패로
    * 'unknown' fallback을 반환한 누적 횟수. stations.json 실측상 environment 필드 자체가
@@ -1565,6 +1572,7 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     killSwitchLocklessIntermediateSkipped: 0,
     locklessIntermediateFired: 0,
     locklessMotionGateBlocked: 0,
+    progressEntryReadUnused: 0,
     waypointEnvironmentLookupMiss: 0,
     boardingPromptLaAlertFired: 0,
     laPushSent: 0,
@@ -1838,6 +1846,11 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       continue;
     }
 
+    // #2308 — lock 활성 trip만: progress KV(권위)로 trip.waypoints를 앞으로 맞추고 lock 시작 재고정. 맞춤 이후 head가 이번 tick의
+    // 평가 대상이 되도록 pickActiveWaypoint 직전에 둔다(runTrainCodeTracking의 `slice(1)` 전제가 유지된다).
+    if (isBoardingLockActive(trip, now)) {
+      await reconcileLockTripProgress(trip, env, stats, now, log);
+    }
     const waypoint = pickActiveWaypoint(trip);
     if (!waypoint) {
       // #2851 재오픈 — 위와 동일 사유(origin 평가 자체를 건너뜀).
@@ -2377,6 +2390,11 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     }
   }
 
+  // #2308 — 진입 맞춤이 읽었지만 mirrorProgress가 재사용하지 않은 progress 읽기(= 현행 대비 추가 KV 읽기) 집계.
+  for (const trip of trips) {
+    if (tickProgressRead.delete(trip)) stats.progressEntryReadUnused += 1;
+  }
+
   // #2054 — idle skip + heartbeat. scanned=0 (활성 trip 없음) 시 매 cycle 로그를 억제하고,
   // 시간당 1회 `scheduled heartbeat` 로 halt 감지 능력만 유지. 활성 trip 있을 땐 기존대로 상세 log.
   if (stats.scanned > 0) {
@@ -2607,6 +2625,74 @@ export function maybeCountDrift(
  * #705 — trip의 baseline/진행 상태를 progress KV에도 mirror해 POST /trips race에 무관하게 유지.
  * trainCode가 없는 호출(lock 없음)은 no-op — progress KV는 trainCode가 stamp되어야 의미가 있다.
  */
+/**
+ * #2308 — tick 진입 맞춤이 읽은 progress를 같은 tick의 첫 `mirrorProgress`가 재사용하도록 넘기는 단일 사용 handoff.
+ * 키는 trip 객체(tick마다 새로 읽힌다) — 다른 tick으로 새지 않는다. 소비 즉시 삭제하므로 mirror가 두 번 불려도 둘째는 새로 읽는다.
+ */
+const tickProgressRead = new WeakMap<Trip, TripProgress | null>();
+
+/**
+ * #2308 — lock 활성 trip의 tick 진입 맞춤(`pickActiveWaypoint` 직전). progress KV가 진행 위치의 권위, trip.waypoints는 사본:
+ *  1) lock epoch 시작(이 lock의 progress 없음)이면 routeWaypoints로 탑승역 다음부터 waypoints·segment를 재고정(lock-reanchor)
+ *  2) progress.headKey까지 앞으로만 waypoints를 맞추고 LA·추적 기준값을 progress 값으로 덮는다(progress-reconcile)
+ * 맞춤으로 waypoints/segment가 바뀌었을 때만 putTrip 1회. 발사 없음. 읽은 progress는 같은 tick의 mirrorProgress가 재사용한다.
+ * KV 실패는 현행(무맞춤)으로 fail-open.
+ */
+async function reconcileLockTripProgress(
+  trip: Trip,
+  env: Env,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+): Promise<void> {
+  try {
+    const progress = await getProgress(env.TRIPS, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
+    tickProgressRead.set(trip, progress);
+    const tokenHash = hashTripToken(trip.token);
+    const { boardingLock: lock } = trip;
+    let dirty = false;
+    const reanchor = planLockReanchor(trip, progress);
+    if (reanchor !== null && lock !== undefined) {
+      trip.waypoints = reanchor.waypoints;
+      trip.boardingLock = { ...lock, segmentStations: reanchor.segmentStations };
+      dirty = true;
+      await recordTripEvent(env.DB, {
+        tokenHash,
+        kind: 'lock-reanchor',
+        station: reanchor.waypoints[0]?.stationName,
+        line: lock.line,
+        meta: { fromKey: reanchor.fromKey, toKey: reanchor.toKey, trainCode: lock.trainCode },
+      }, now);
+    }
+    const decision = reconcileTripWithProgress(trip, progress);
+    if (decision === null) {
+      if (dirty) await putTrip(env.TRIPS, trip);
+      return;
+    }
+    Object.assign(trip, decision.baseline);
+    if (decision.advancedBy > 0) {
+      trip.waypoints = decision.waypoints;
+      dirty = true;
+      await recordTripEvent(env.DB, {
+        tokenHash,
+        kind: 'progress-reconcile',
+        station: decision.waypoints[0]?.stationName,
+        line: decision.waypoints[0]?.line,
+        meta: {
+          fromKey: decision.fromKey,
+          toKey: decision.toKey,
+          advancedBy: decision.advancedBy,
+          trainCode: lock?.trainCode,
+        },
+      }, now);
+    }
+    if (dirty) await putTrip(env.TRIPS, trip);
+  } catch (e) {
+    stats.errors += 1;
+    log('progress-reconcile: error (fail-open)', { error: String(e), token: trip.token.slice(0, 8) });
+  }
+}
+
 async function mirrorProgress(
   kv: KVNamespace,
   trip: Trip,
@@ -2614,15 +2700,23 @@ async function mirrorProgress(
 ): Promise<void> {
   const trainCode = trip.boardingLock?.trainCode;
   if (!trainCode) return;
-  // #766 — cron path는 cacheTtl=10s로 PUT 직후 stale read 방지.
-  const existing = await getProgress(kv, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
+  let existing: TripProgress | null;
+  if (tickProgressRead.has(trip)) {
+    existing = tickProgressRead.get(trip) ?? null;
+    tickProgressRead.delete(trip);
+  } else {
+    // #766 — cron path는 cacheTtl=30s로 PUT 직후 stale read 방지.
+    existing = await getProgress(kv, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
+  }
   const prevShifted = existing?.trainCode === trainCode ? existing.shiftedCount : 0;
+  const head = trip.waypoints[0];
   const next: TripProgress = {
     trainCode,
     shiftedCount: prevShifted + shiftedCountDelta,
-    // #2308 — head 정체성 anchor. POST /trips 재등록 시 count 대신 hopIndex로 slice해
-    // route 재계산에도 단조 전진을 보장 (applyProgress 참고).
-    headHopIndex: trip.waypoints[0]?.hopIndex,
+    // #2308 — head 정체성. hopIndex는 device 재등록에서 배열 위치로 다시 매겨져 식별자가 못 된다 → 내용 키(headKey)로
+    // cron 맞춤(reconcileTripWithProgress)이 head를 찾는다. headHopIndex는 하위호환 기록만(읽는 곳 0).
+    headHopIndex: head?.hopIndex,
+    headKey: head === undefined ? undefined : waypointSignatureKey(head),
     lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
     lastLaPushEpoch: trip.lastLaPushEpoch,
     // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
@@ -2632,25 +2726,6 @@ async function mirrorProgress(
     ttlBasisExpiresAt: trip.expiresAt,
   };
   if (isProgressWriteRedundant(existing, next)) return;
-  const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
-  await putProgress(kv, trip.token, next, ttlSec);
-}
-
-/**
- * #1285 — lockless trip의 waypoint shift를 progress KV에 mirror해 POST /trips 재등록 race 보존.
- * trip.waypoints는 이미 shift() 완료된 상태로 전달된다 — shiftedCount는 (totalWaypoints - remaining).
- * mirrorProgress(lock 경로)와 동형이지만 trainCode 없이 lockless===true 마커로 저장.
- */
-async function mirrorLocklessProgress(kv: KVNamespace, trip: Trip): Promise<void> {
-  // #766 — cron path는 cacheTtl=10s로 PUT 직후 stale read 방지.
-  const existing = await getProgress(kv, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
-  const prevShifted = existing?.lockless === true ? existing.shiftedCount : 0;
-  const next: TripProgress = {
-    lockless: true,
-    shiftedCount: prevShifted + 1,
-    // #2308 — head 정체성 anchor (lock 경로 mirrorProgress와 동형).
-    headHopIndex: trip.waypoints[0]?.hopIndex,
-  };
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
   await putProgress(kv, trip.token, next, ttlSec);
 }
@@ -6278,6 +6353,8 @@ export async function advanceBoardingLockWaypoint(
   // #2645 PR-3 — destination 소비가 확정되어 cleanup(종료 안내 push)에 들어가기 **직전** 호출. gps-far 유예(consumed=false)
   // 에서는 호출되지 않는다. sync가 도착 alert를 종료 안내보다 먼저 보내기 위한 훅(그 외 호출자는 미전달).
   beforeDestinationEnd?: () => Promise<void>,
+  // #2308 — sync-mixed가 progress mirror를 끄기 위해 `completeWaypointAdvance`로 통과시킨다(기본 켜짐 — cron 호출자 무변경).
+  options?: CompleteWaypointAdvanceOptions,
 ): Promise<AdvanceBoardingLockWaypointResult> {
   // ADR-017 T5 (#1558) — SSoT 통합 게이트.
   // evidence 가 제공되면 `advanceTripPosition`이 동의해야만 trip.waypoints / cleanup 이 진행된다.
@@ -6485,6 +6562,7 @@ export async function advanceBoardingLockWaypoint(
     log,
     generatePushId,
     'lock-active-waypoints-exhausted',
+    options,
   );
   return { consumed: true, tripEnded };
 }
@@ -6660,6 +6738,14 @@ async function maybeStampLegAnchorFromObservation(
 // #2920 — export 사유: `/trips/:token/boarding-confirm`(index.ts)의 `disembarked` 응답이
 // destinationConfirmPendingSince 유예 중인 trip에 한해 이 함수를 직접 호출해 A2e(cron
 // 타임아웃)와 동일한 종료 경로로 즉시 완결한다. 새 종료 로직 신설 없음 — 호출자만 추가.
+export interface CompleteWaypointAdvanceOptions {
+  /**
+   * #2308 — false면 이 전진을 progress KV에 mirror하지 않는다. progress 작성자는 cron 경로 하나(R2 규칙)이고
+   * `/boarding-lock/sync`(sync-mixed)는 trip.waypoints만 전진시킨다 — cron 맞춤이 앞선 쪽을 존중하고 tick 끝 mirror가 기록한다. 기본 true.
+   */
+  mirrorProgress?: boolean;
+}
+
 export async function completeWaypointAdvance(
   trip: Trip,
   waypoint: Waypoint,
@@ -6674,6 +6760,7 @@ export async function completeWaypointAdvance(
   // reason은 모두 'destination-arrived'로 동일해 D1만으로 caller를 구분할 수 없었다 — caller가
   // 자신을 식별하는 endPath를 전달해 그대로 forward한다(이 헬퍼 자체는 호출자를 모른다).
   endPath: TripEndPath,
+  options?: CompleteWaypointAdvanceOptions,
 ): Promise<{ tripEnded: boolean }> {
   // #2066 (Phase 2-backend) — 취침 알람 평가. waypoints shift 전이라 trip.waypoints[1]이
   // waypoint(방금 arvlCd 확정된 직전역 후보) 바로 다음 대상(환승/도착 여부 판정용).
@@ -6943,7 +7030,7 @@ export async function completeWaypointAdvance(
   await putTrip(env.TRIPS, trip);
   // #705 — shift된 진행분을 progress KV에 +1 누적. 이후 POST /trips race가 trip.waypoints를
   // 다시 wipe해도 progress 기반 slice로 복원된다.
-  await mirrorProgress(env.TRIPS, trip, 1);
+  if (options?.mirrorProgress !== false) await mirrorProgress(env.TRIPS, trip, 1);
   return { tripEnded: false };
 }
 
@@ -7875,9 +7962,8 @@ export async function runLocklessIntermediate(
   }
   // 다음 waypoint를 위해 dedup stamp reset (위 shift 직후 첫 waypoint는 새 발사 대상).
   trip.lastFiredPhase = undefined;
-  // #1285 — lockless shift를 progress KV에 mirror해 POST /trips 재등록 race로부터 진행분 보존.
-  // lock 경로의 mirrorProgress와 동형 — token 기준 lockless 마커로 저장.
-  await mirrorLocklessProgress(env.TRIPS, trip);
+  // #2308 — lockless shift는 progress를 쓰지 않는다(옛 mirrorLocklessProgress는 register가 hopIndex로 적용해 앞쪽 점프를 만들었다).
+  // progress는 lock 트립의 cron 맞춤 전용이다.
   await putTrip(env.TRIPS, trip);
 }
 
