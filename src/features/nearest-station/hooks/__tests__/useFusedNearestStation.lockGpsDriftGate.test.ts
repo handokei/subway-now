@@ -35,6 +35,10 @@ import {
 import { makeArrivalInfo } from '../../../../testUtils/fixtures';
 import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
 import { haversine } from '../../../../shared/utils/haversine';
+import {
+  clearBoardingLockDriftEntries,
+  getBoardingLockDriftEntries,
+} from '../../utils/boardingLockDriftBuffer';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { StationArrival } from '../../../../shared/types/arrival';
 import type { LinePositions } from '../../api/positionApi';
@@ -357,6 +361,33 @@ describe('#1896 (RC-8) lockGpsDriftGate — arvlCdArrivedMatch', () => {
     expect(hook.result.current.source).toBe('boarding-lock');
     expect(hook.result.current.confidence).toBe('boarding-lock');
     expect(hook.result.current.result?.station.id).toBe(ddp.id);
+  });
+
+  // #3191 PR-0 — drift block 측정 버퍼: primary는 기록, observer는 기록하지 않는다 (판정은 동일).
+  describe.each([
+    ['primary', 1],
+    ['observer', 0],
+  ] as const)('boardingLockDriftBuffer — %s 인스턴스', (role, expectedEntries) => {
+    it(`drift > threshold → drift entry ${expectedEntries}건, boarding-lock 강등은 동일`, () => {
+      clearBoardingLockDriftEntries();
+      setupGpsDrift({
+        gpsStation: sindang,
+        lockStation: ddp,
+        gpsDistanceM: LOCK_GPS_DRIFT_THRESHOLD_M + 200,
+        arrival: makeArrivedAt('동대문역사문화공원', '2'),
+      });
+
+      const hook = renderHook(() =>
+        useFusedNearestStation(
+          undefined, undefined, undefined, LOCK_TRAIN_CODE, lockOn2,
+          undefined, undefined, undefined, undefined, role,
+        ),
+      );
+
+      expect(hook.result.current.source).not.toBe('boarding-lock');
+      const entries = getBoardingLockDriftEntries().filter((e) => e.branch === 'arvlCdArrived');
+      expect(entries).toHaveLength(expectedEntries);
+    });
   });
 
   it('arvlCdArrivedMatch + GPS drift > threshold → lock 강등 → cascade fallback', () => {
