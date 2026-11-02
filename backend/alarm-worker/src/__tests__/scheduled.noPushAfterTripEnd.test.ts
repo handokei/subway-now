@@ -19,6 +19,7 @@ import { runMidCycleFireOnly, runScheduled } from '../scheduled';
 import { SeoulArrivalClient } from '../seoul';
 import { seedSsot } from '../tripPositionSsot';
 import { putTrip } from '../trips';
+import { appendPositionPoint } from '../positionSeries';
 import type { Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -105,10 +106,20 @@ function seoulEntering(): SeoulArrivalClient {
 }
 
 /** 1차 cron pass + 같은 스냅샷으로 mid-cycle pass 1회. 실제 APNs 요청을 단계별로 분리해 돌려준다. */
-async function runOneCycle(opts: { sleep: boolean; ssotStation: string }) {
+async function runOneCycle(opts: {
+  sleep: boolean;
+  ssotStation: string;
+  tripOverride?: (trip: Trip) => Trip;
+  farGpsSeries?: boolean;
+}) {
   const kv = new InMemoryKV(() => NOW);
   const env = makeEnv(kv);
-  await putTrip(kv as unknown as KVNamespace, makeTrip(opts.sleep));
+  const baseTrip = makeTrip(opts.sleep);
+  await putTrip(kv as unknown as KVNamespace, opts.tripOverride ? opts.tripOverride(baseTrip) : baseTrip);
+  if (opts.farGpsSeries) {
+    // 서울 도심(목적지 어린이대공원에서 수 km 밖), 신선한 fix.
+    await appendPositionPoint(kv as unknown as KVNamespace, TOKEN, { lat: 37.5, lng: 126.9, accuracy: 10, ts: NOW });
+  }
   await seedSsot(kv as unknown as KVNamespace, TOKEN, opts.ssotStation, { line: '7' });
 
   const calls: Captured[] = [];
@@ -183,5 +194,64 @@ describe('#3100 F-S2 — 종료 경로에서도 취침 하차 도착 알람은 �
     expect(alarms(all)).toHaveLength(0);
     expect(all.filter((c) => c.body.aps.sound !== undefined)).toHaveLength(0);
     expect(tripEnded(all)).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// audit-sides — F-S2 형제 종료 경로 판정 (PR 본문 판정표)
+const INTERMEDIATE = '군자';
+const onlyIntermediate = (trip: Trip): Trip => ({
+  ...trip,
+  waypoints: [{ stationName: INTERMEDIATE, line: '7', kind: 'intermediate' }],
+});
+
+describe('audit-sides — waypoints-exhausted 종료(lock-active, 마지막 intermediate 통과)', () => {
+  it('취침: 도착 push 없이 끝나면 종료 alert가 alarm.wav + time-sensitive로 겸한다 (알람 정확히 1, mid-cycle 0)', async () => {
+    const { mainCalls, midCalls } = await runOneCycle({ sleep: true, ssotStation: INTERMEDIATE, tripOverride: onlyIntermediate });
+    const all = [...mainCalls, ...midCalls];
+    expect(tripEnded(all)).toHaveLength(1);
+    expect(alarms(all)).toHaveLength(1);
+    expect(kindOf(alarms(all)[0])).toBe('trip-ended');
+    expect(alarms(all)[0].body.aps['interruption-level']).toBe('time-sensitive');
+    expect(midCalls).toEqual([]);
+  });
+
+  it('비취침: 종료 alert는 무음 배너 1회, 소리 0', async () => {
+    const { mainCalls, midCalls } = await runOneCycle({ sleep: false, ssotStation: INTERMEDIATE, tripOverride: onlyIntermediate });
+    const all = [...mainCalls, ...midCalls];
+    expect(tripEnded(all)).toHaveLength(1);
+    expect(all.filter((c) => c.body.aps.sound !== undefined)).toHaveLength(0);
+  });
+});
+
+describe('audit-sides — lockless 종료는 겸용하지 않는다 (lock 없음 = 알림 없음)', () => {
+  it('취침 lockless 마지막 intermediate 소진: 종료 alert 무음, alarm.wav 0', async () => {
+    const { mainCalls, midCalls } = await runOneCycle({
+      sleep: true,
+      ssotStation: INTERMEDIATE,
+      tripOverride: (trip) => {
+        const { boardingLock: _lock, ...lockless } = onlyIntermediate(trip);
+        return lockless;
+      },
+    });
+    const all = [...mainCalls, ...midCalls];
+    expect(alarms(all)).toHaveLength(0);
+    for (const ended of tripEnded(all)) expect(ended.body.aps.sound).toBeUndefined();
+  });
+});
+
+describe('audit-sides — gps-far backstop 종료는 겸용하지 않는다 (사용자가 멀리 있음)', () => {
+  it('취침: 목적지 도달 후 GPS가 계속 멀어 backstop으로 끝나면 종료 alert 무음, alarm.wav 0', async () => {
+    const { mainCalls, midCalls } = await runOneCycle({
+      sleep: true,
+      ssotStation: DESTINATION,
+      farGpsSeries: true,
+      tripOverride: (trip) => ({ ...trip, destinationImminentFirstAt: NOW - 16 * 60_000 }),
+    });
+    const all = [...mainCalls, ...midCalls];
+    // 전제: backstop 경로로 실제 종료됐다.
+    expect(tripEnded(all)).toHaveLength(1);
+    expect(alarms(all).filter((c) => kindOf(c) === 'trip-ended')).toHaveLength(0);
+    expect(tripEnded(all)[0].body.aps.sound).toBeUndefined();
   });
 });
