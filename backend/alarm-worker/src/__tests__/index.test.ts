@@ -3609,6 +3609,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
+        laCandidatePresent: false,
         lockState: 'none',
         outcome: 'invalid-route',
         anchorSource: 'tap',
@@ -3658,6 +3659,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
+        laCandidatePresent: false,
         lockState: 'leg2',
         outcome: 'resolved',
         anchorSource: 'currentLegAnchor',
@@ -4787,6 +4789,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
+        laCandidatePresent: false,
         lockState: 'leg1',
         outcome: 'resolved',
         anchorSource: 'promptDisplay',
@@ -4815,6 +4818,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
+        laCandidatePresent: false,
         lockState: 'none',
         outcome: 'ambiguous',
         anchorSource: 'promptDisplay',
@@ -4847,6 +4851,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
+        laCandidatePresent: false,
         lockState: 'none',
         outcome: 'walk-gated',
       });
@@ -4876,7 +4881,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
-      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'leg1' });
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'leg1', laCandidatePresent: false });
     });
 
     it('disembarked — meta={lockState:released}, outcome 없음', async () => {
@@ -4907,7 +4912,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
-      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'released' });
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'released', laCandidatePresent: false });
     });
 
     it('not-boarded — meta={lockState:none}, outcome 없음', async () => {
@@ -4924,7 +4929,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
-      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'none' });
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'none', laCandidatePresent: false });
     });
   });
 });

@@ -63,7 +63,7 @@ import {
   runKalmanStep,
   writeKalmanState,
 } from './kalmanFilter';
-import { fireBoardingLaStart, hasBoardingStartTarget } from './boardingLaStart';
+import { fireBoardingLaStart, hasBoardingStartTarget, type PromptFireInstrumentation } from './boardingLaStart';
 import {
   buildLiveActivityContentState,
   buildStationArrivedContentState,
@@ -8681,6 +8681,13 @@ async function fireBoardingPromptForAnchor(inputs: {
   // 실패 fallback 전용(정상 경로는 device fresh pick 우선 — 무변경). #2898 — shouldProceedToSend/
   // fire-once key/onFired가 모두 이 단일 계산 결과를 공유한다(재계산 드리프트 방지).
   const selectedTrainCode = eligiblePool.length > 0 ? pickAutoTrainCode(eligiblePool, line, direction) : null;
+  // #3055 PR-0 — 발사 계측(동작 무변경): 선택 열차의 arvlCd와 같은 tick 도착(1) 열차 존재 여부.
+  const promptInstrumentation: PromptFireInstrumentation = {
+    selectedTrainCode,
+    issuedAt: now,
+    selectedArvlCd: eligiblePool.find((entry) => entry.trainCode === selectedTrainCode)?.arvlCd ?? null,
+    arrivedTrainPresent: eligiblePool.some((entry) => entry.arvlCd === ARRIVAL_CODE.ARRIVED),
+  };
 
   if (shouldProceedToSend && !shouldProceedToSend(pool, gate.decision, selectedTrainCode)) {
     return;
@@ -8749,7 +8756,7 @@ async function fireBoardingPromptForAnchor(inputs: {
         : 'none';
   const laStartedAt = Date.now();
   const la: PromptLaAlertOutcome = laLive
-    ? await firePromptLaAlertWithinBudget({ trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body })
+    ? await firePromptLaAlertWithinBudget({ trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body, promptInstrumentation })
     : { sent: false, dirty: false, budgetExceeded: false };
   const laMs = Date.now() - laStartedAt;
   if (la.dirty) dirty = true;
@@ -8814,6 +8821,7 @@ async function fireBoardingPromptForAnchor(inputs: {
         laPushAgeMs,
         laBudgetExceeded: la.budgetExceeded,
         laMs,
+        ...promptInstrumentation,
       },
     },
     now,
@@ -8885,6 +8893,8 @@ interface PromptLaAlertInputs {
   selectedTrainCode: string | null;
   title: string;
   body: string;
+  /** #3055 PR-0 — 탑승 LA start 경로의 D1 meta 계측용. */
+  promptInstrumentation: PromptFireInstrumentation;
 }
 
 /**
@@ -8910,7 +8920,7 @@ async function firePromptLaAlertWithinBudget(inputs: PromptLaAlertInputs): Promi
  * 호출부는 `sent`로 일반 알림 소리 여부를 결정한다(#3146).
  */
 async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaAlertOutcome> {
-  const { trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body } = inputs;
+  const { trip, env, deps, stats, now, log, logPrefix, station, line, etaSeconds, selectedTrainCode, title, body, promptInstrumentation } = inputs;
   // #3221 PR-3 — split + push-to-start token: 질문은 여정 LA update가 아니라 탑승 LA start로 보낸다(여정 push에 질문 필드 0).
   if (hasBoardingStartTarget(trip)) {
     try {
@@ -8926,6 +8936,7 @@ async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaA
         line,
         title,
         trainInfo: body,
+        promptInstrumentation,
       });
       return { sent: started.sent, dirty: started.dirty, budgetExceeded: false };
     } catch (e) {
