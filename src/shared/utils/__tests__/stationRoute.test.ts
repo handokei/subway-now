@@ -1638,7 +1638,7 @@ describe('findRouteCandidatesByCategory', () => {
 
   it('커스텀 categories 인자를 받아 해당 정렬 기준으로 동작한다', () => {
     const onlyOptimal: RouteCategory[] = [
-      { key: 'optimal', label: '빠른길', comparator: (a, b) => a.travelMinutes - b.travelMinutes },
+      { key: 'optimal', label: '빠른길', comparator: (a, b) => a.travelMinutes - b.travelMinutes, rankMode: 'elapsed' },
     ];
     const result = findRouteCandidatesByCategory(['1-001'], '1-003', onlyOptimal);
     expect(result).toHaveLength(1);

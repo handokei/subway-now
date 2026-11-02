@@ -8,7 +8,7 @@ import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 import { buildRouteChipLabel, computeChipEta } from '../routeChipEta';
 
 // #1480 후속 — 경로 목록 칩의 "N분"은 홈 상단 ETA와 같은 엔진(journeyTimeline, 지금 출발)으로 산출한다.
-// 정렬·선택(travelMinutes = 주행+도보)은 불변, 표시 숫자만 대기를 포함한다.
+// travelMinutes(주행+도보)는 의미 유지. 정렬·선택은 #1480 PR-1부터 엔진 총 소요(routeRanking).
 
 const WED_0625_KST = Date.UTC(2026, 9, 27, 21, 25, 0); // 2026-10-28 06:25 KST
 const WED_0525_KST = Date.UTC(2026, 9, 27, 20, 25, 0); // 2026-10-28 05:25 KST (운행 종료 구간, #3262)
