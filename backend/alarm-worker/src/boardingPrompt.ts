@@ -602,7 +602,30 @@ export interface PickAutoTrainCodeOptions {
    * 앞/뒤 관계를 모른 채 뒤 열차로 옮기게 된다(10/28 3286 -> 2288). 프롬프트(`scheduled.ts`)는 미지정 = 무변경.
    */
   rejectAmbiguousUntiered?: boolean;
+  /**
+   * #3221 PR-4 (D-1a) — tier 순서를 도착(1) > 출발(2) > 진입(0)으로 바꾼다. 탑승 질문 발사
+   * (`scheduled.ts`) 전용 opt-in: 같은 tick에 이미 출발한 열차와 승강장 도착 열차가 함께 있으면
+   * 질문·LA가 떠난 열차를 보여주던 편향 제거("화면에 보이는 열차로 lock"). 도착 열차가 없으면
+   * 기존대로 출발 열차(회고 탭 보존). 다른 호출부(lockSwap·arrivalsFromPositions)는 미지정 = 2>1>0 무변경.
+   */
+  preferArrivedOverDeparted?: boolean;
 }
+
+const PRIORITY_DEPARTED_FIRST: readonly number[] = [
+  /* 2: 출발 */ 2,
+  /* 1: 도착 */ ARRIVAL_CODE.ARRIVED,
+  /* 0: 진입 */ ARRIVAL_CODE.ENTERING,
+  /* 3: 전역출발 */ ARRIVAL_CODE.PREV_DEPARTED,
+  /* 5: 전역도착 */ ARRIVAL_CODE.PREV_ARRIVED,
+];
+
+const PRIORITY_ARRIVED_FIRST: readonly number[] = [
+  /* 1: 도착 */ ARRIVAL_CODE.ARRIVED,
+  /* 2: 출발 */ 2,
+  /* 0: 진입 */ ARRIVAL_CODE.ENTERING,
+  /* 3: 전역출발 */ ARRIVAL_CODE.PREV_DEPARTED,
+  /* 5: 전역도착 */ ARRIVAL_CODE.PREV_ARRIVED,
+];
 
 export function pickAutoTrainCode(
   arrivals: readonly ArrivalEntry[],
@@ -628,13 +651,7 @@ export function pickAutoTrainCode(
   // silent 선택돼 엉뚱한 열차가 lock될 수 있었다. 순서 근거: 2>1>0(기존, 회고형 — 진행도 높은
   // 열차가 탑승 열차일 확률 높음) > 3(전역출발, 도착 60~150s 전으로 5보다 근접) > 5(전역도착).
   // 99-only(운행중만) pool의 `directional[0]` fallback은 무변경(기존 동작, 이 fix의 scope 밖).
-  const priority: readonly number[] = [
-    /* 2: 출발 */ 2,
-    /* 1: 도착 */ ARRIVAL_CODE.ARRIVED,
-    /* 0: 진입 */ ARRIVAL_CODE.ENTERING,
-    /* 3: 전역출발 */ ARRIVAL_CODE.PREV_DEPARTED,
-    /* 5: 전역도착 */ ARRIVAL_CODE.PREV_ARRIVED,
-  ];
+  const priority = options.preferArrivedOverDeparted ? PRIORITY_ARRIVED_FIRST : PRIORITY_DEPARTED_FIRST;
   for (const code of priority) {
     const tier = directional.filter((a) => a.arvlCd === code);
     // ambiguity 임계: 같은 우선순위 후보가 2개 이상이면 자동 판단 불가 → null.
