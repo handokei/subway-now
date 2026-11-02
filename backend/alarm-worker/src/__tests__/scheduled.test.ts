@@ -14750,7 +14750,7 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         motion: 'stationary',
       });
       await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { expiresAt: trip.expiresAt ?? NOW + 3_600_000 });
-      const { db, inserts } = makeFireLogDb();
+      const { db, rows } = await makeSqliteD1();
       const stats = makeStats();
       await maybeFireOriginBoardingPromptGpsFree(
         trip,
@@ -14771,43 +14771,13 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         () => 'pid-origin',
       );
       expect(stats.originGpsFreeBoardingPromptBlocked).toBe(2);
-      expect(findOriginOutcomeInserts(inserts)).toEqual([{ leg: 'origin', outcome: 'too-far' }]);
+      expect(
+        rows().map((r) => (JSON.parse(r.meta as string) as { outcome: string }).outcome),
+      ).toEqual(['too-far']);
     });
 
-    it('SSoT 부재(lazy-seed 이전) → D1 기록 no-op(발사/게이트 판정은 무변경, 여전히 차단)', async () => {
-      const fetchImpl = vi.fn(makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 1 }]));
-      const trip = makeTrip({
-        promptGeoContext: {
-          origin: { lat: 0, lng: 0 },
-          nextStation: { lat: 0, lng: 0 },
-          direction: null,
-          originDistanceM: 222,
-          originAccuracyM: 6.7,
-        },
-      });
-      const kv = new InMemoryKV();
-      await appendPositionPoint(kv as unknown as KVNamespace, trip.token, {
-        lat: 0,
-        lng: 0,
-        accuracy: 6.7,
-        ts: NOW,
-        motion: 'stationary',
-      });
-      // seedSsot 호출 없음 — SSoT 미존재.
-      const { db, inserts } = makeFireLogDb();
-      const stats = makeStats();
-      await maybeFireOriginBoardingPromptGpsFree(
-        trip,
-        makeEnv(kv, undefined, db),
-        makeDeps(fetchImpl),
-        stats,
-        NOW,
-        () => {},
-        () => 'pid-origin',
-      );
-      expect(stats.originGpsFreeBoardingPromptBlocked).toBe(1);
-      expect(findOriginOutcomeInserts(inserts)).toEqual([]);
-    });
+    // (삭제) 'SSoT 부재 → D1 기록 no-op' — 재오픈(2026-11-02) 전 버그를 그대로 고정하던 테스트였다.
+    // SSoT 없는 lock 전 트립에서도 기록되는 것이 정답이며 아래 '#2851 재오픈' describe가 고정한다.
 
     // code-review(medium, #2801) 지시 2 — gate(decideBoardingPromptFire)가 fire-once 체크보다
     // 먼저 실행되므로(:7150 부근 — gate.fire===true 확인 후에만 fire-once 체크 진입) outcome=
