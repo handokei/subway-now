@@ -2941,6 +2941,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       resolveNoneReason,
       trainCodeSource,
       resolveTier,
+      { source: payload.source, laCandidatePresent: payload.laCandidatePresent },
     ),
   });
   return c.json({
@@ -3038,6 +3039,7 @@ export function buildBoardingConfirmEventMeta(
   noneReason?: BoardingResolveNoneReason,
   trainCodeSource?: 'body' | 'stamp',
   resolveTier?: BoardingResolveTier,
+  requestOrigin?: { source?: BoardingConfirmSource; laCandidatePresent: boolean },
 ): {
   lockState: 'leg1' | 'leg2' | 'released' | 'none';
   outcome?: BoardingResolveOutcome;
@@ -3045,6 +3047,8 @@ export function buildBoardingConfirmEventMeta(
   noneReason?: BoardingResolveNoneReason;
   trainCodeSource?: 'body' | 'stamp';
   resolveTier?: BoardingResolveTier;
+  source?: BoardingConfirmSource;
+  laCandidatePresent?: boolean;
 } {
   return {
     lockState,
@@ -3054,6 +3058,9 @@ export function buildBoardingConfirmEventMeta(
     ...(trainCodeSource !== undefined ? { trainCodeSource } : {}),
     // #3056 — resolved일 때만. assertion-departed(탑승 표명 최후 tier) 수용 건 구분자.
     ...(resolveOutcome === 'resolved' && resolveTier !== undefined ? { resolveTier } : {}),
+    // #3055 PR-0 — 요청 출처 계측(LA 버튼 경로를 D1만으로 구분).
+    ...(requestOrigin?.source !== undefined ? { source: requestOrigin.source } : {}),
+    ...(requestOrigin !== undefined ? { laCandidatePresent: requestOrigin.laCandidatePresent } : {}),
   };
 }
 
@@ -3068,6 +3075,18 @@ interface BoardingConfirmPayload {
    * 경로 그대로(R-1 하위호환, LA 버튼/구 클라는 이 필드를 보내지 않는다).
    */
   trainCode?: string;
+  /** #3055 PR-0 — 요청 출처(계측 전용). 형식 불량은 400이 아니라 무시(undefined). */
+  source?: BoardingConfirmSource;
+  /** #3055 PR-0 — body에 `laCandidate` 객체가 실렸는가(계측 전용, 내용은 아직 소비하지 않는다). */
+  laCandidatePresent: boolean;
+}
+
+/** #3055 PR-0 — boarding-confirm 요청 출처 허용값. 데이터 주도: 새 출처는 여기에만 추가. */
+const BOARDING_CONFIRM_SOURCES = ['la-native', 'la-bridge', 'notification'] as const;
+type BoardingConfirmSource = (typeof BOARDING_CONFIRM_SOURCES)[number];
+
+function parseBoardingConfirmSource(value: unknown): BoardingConfirmSource | undefined {
+  return BOARDING_CONFIRM_SOURCES.find((candidate) => candidate === value);
 }
 
 export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmPayload | null {
@@ -3090,7 +3109,14 @@ export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmP
     trainCode = obj.trainCode;
   }
   // #3055 — 탑승 LA 버튼은 정식 노선명('7호선')을 보낸다. 이후 전 경로가 코드 기준이므로 진입에서 환원.
-  return { action: obj.action, station: obj.station, line: lineCodeForName(obj.line), trainCode };
+  return {
+    action: obj.action,
+    station: obj.station,
+    line: lineCodeForName(obj.line),
+    trainCode,
+    source: parseBoardingConfirmSource(obj.source),
+    laCandidatePresent: typeof obj.laCandidate === 'object' && obj.laCandidate !== null,
+  };
 }
 
 /**

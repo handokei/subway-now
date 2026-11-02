@@ -14142,6 +14142,80 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         ]);
       });
 
+      // #3055 PR-0 — 계측 meta: 선택 열차/발사 시각/선택 arvlCd/같은 tick 도착(1) 열차 존재.
+      it('#3055 PR-0: prompt-sound-channel meta에 selectedTrainCode·issuedAt·selectedArvlCd·arrivedTrainPresent (도착 열차 단독)', async () => {
+        const r = await run({});
+        await r.promise;
+        const [row] = soundRows(r.inserts);
+        expect(row).toMatchObject({
+          selectedTrainCode: '7246',
+          issuedAt: NOW,
+          selectedArvlCd: 1,
+          arrivedTrainPresent: true,
+        });
+      });
+
+      it('#3055 PR-0: 출발(2) 열차 선택 + 같은 tick 도착(1) 열차 동시 존재 -> selectedArvlCd=2 && arrivedTrainPresent=true', async () => {
+        const arrivals = makeArrivalsResponse([
+          { btrainNo: '7246', isUp: true, arvlCd: 2 },
+          { btrainNo: '7247', isUp: true, arvlCd: 1 },
+        ]);
+        const { db, inserts } = makeFireLogDb();
+        const trip = makeTrip({
+          activityPushToken: 'la-activity-token',
+          activityState: 'live',
+          originStationName: '용마산',
+          lastLaPushAt: NOW - 30_000,
+        });
+        await maybeFireOriginBoardingPromptGpsFree(
+          trip,
+          makeEnv(new InMemoryKV(), undefined, db),
+          makeDeps(arrivals as unknown as typeof fetch),
+          makeStats(),
+          NOW,
+          () => {},
+          () => 'pid-origin',
+        );
+        const [row] = soundRows(inserts);
+        expect(row).toMatchObject({ selectedTrainCode: '7246', issuedAt: NOW, selectedArvlCd: 2, arrivedTrainPresent: true });
+      });
+
+      it('#3055 PR-0: 출발(2) 열차만 있으면 arrivedTrainPresent=false', async () => {
+        const arrivals = makeArrivalsResponse([{ btrainNo: '7246', isUp: true, arvlCd: 2 }]);
+        const { db, inserts } = makeFireLogDb();
+        const trip = makeTrip({
+          activityPushToken: 'la-activity-token',
+          activityState: 'live',
+          originStationName: '용마산',
+          lastLaPushAt: NOW - 30_000,
+        });
+        await maybeFireOriginBoardingPromptGpsFree(
+          trip,
+          makeEnv(new InMemoryKV(), undefined, db),
+          makeDeps(arrivals as unknown as typeof fetch),
+          makeStats(),
+          NOW,
+          () => {},
+          () => 'pid-origin',
+        );
+        const [row] = soundRows(inserts);
+        expect(row).toMatchObject({ selectedArvlCd: 2, arrivedTrainPresent: false });
+      });
+
+      it('#3055 PR-0: split trip의 la-boarding-start meta에도 같은 4필드', async () => {
+        const r = await run({}, { laClient: { split: true, boardingStart: 'push-to-start' }, boardingPushToStartToken: 'pts-token' });
+        await r.promise;
+        const rows = r.inserts.filter((a) => a[2] === 'la-boarding-start').map((a) => JSON.parse(a[5] as string) as Record<string, unknown>);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          path: 'boarding-prompt',
+          selectedTrainCode: '7246',
+          issuedAt: NOW,
+          selectedArvlCd: 1,
+          arrivedTrainPresent: true,
+        });
+      });
+
       it('경계: lastLaPushAt이 정확히 LA_STALE_AUTO_END_MS 전 → 아직 신선(> 비교) → 무음', async () => {
         const r = await run({}, { lastLaPushAt: NOW - LA_STALE_AUTO_END_MS });
         await r.promise;
