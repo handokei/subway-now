@@ -18,6 +18,10 @@ import os.log
 //     - action: "BOARDING_BOARDED" | "DISEMBARK_DISEMBARKED"
 //     (#3055 A — #2962의 optional trainCode 필드는 제거: JS consumer가 읽지 않았고 stale 값
 //      전파 경로만 남겼다)
+//     #3055 PR-2 — Boarding·Disembark 엔트리는 추가로:
+//       nativePost: "in-flight" → backend 응답 후 { status, resolvedTrainCode?, lockState?, atMs }
+//                   (status 0 = 네트워크 실패/10s 마감. 엔트리 id가 일치할 때만 기록)
+//       laCandidate: { trainCode, issuedAtMs } (Boarding, LA content에 둘 다 있을 때만)
 //
 // 파일 위치 = `_shared/` (fix/#2444): @bacons/apple-targets는 이 디렉토리 파일을 main app
 // target과 widget extension target 양쪽에 자동 링크한다(SubwayActivityAttributes.swift와 동일
@@ -101,18 +105,86 @@ private func postTripEnd(tripToken: String) async {
     }
 }
 
+// #3055 PR-2 — 응답 왕복. 총 소요 마감(초). `URLRequest.timeoutInterval`은 무응답(idle) 기준이라 총 소요를
+// 보장하지 않는다 → `performWithDeadline`이 `URLSession.data`와 `Task.sleep`을 경쟁시킨다.
+// 브릿지 대기 예산(`NATIVE_CONFIRM_WAIT_MS` 15s)보다 짧아야 한다.
+private let NATIVE_POST_DEADLINE_SECONDS: UInt64 = 10
+// App Group 엔트리의 `nativePost` 값: 진행 중 표식(문자열) → 완료 시 {status, resolvedTrainCode?, lockState?, atMs}.
+private let NATIVE_POST_IN_FLIGHT = "in-flight"
+private let SOURCE_LA_NATIVE = "la-native"
+
+/// #3055 PR-2 — LA content가 싣은 발사 열차를 backend `laCandidate`로 만든다. **둘 다** 있을 때만 — 하나라도
+/// 없으면(구 payload·열차 미지정 발사·device writer가 교체한 content) nil → body에 키 자체가 없어 현행과 동일.
+private func makeLaCandidate(trainCode: String?, trainCodeIssuedAtMs: Int?) -> [String: Any]? {
+    if let trainCode = trainCode, !trainCode.isEmpty, let trainCodeIssuedAtMs = trainCodeIssuedAtMs {
+        return ["trainCode": trainCode, "issuedAtMs": trainCodeIssuedAtMs]
+    }
+    return nil
+}
+
+/// 총 마감이 있는 POST. 먼저 끝난 쪽이 이긴다 — 마감(또는 네트워크 실패)은 status 0.
+@available(iOS 17.0, *)
+private func performWithDeadline(_ request: URLRequest) async -> (status: Int, data: Data?) {
+    await withTaskGroup(of: (Int, Data?).self) { group in
+        group.addTask {
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
+            } catch {
+                intentLog.error("boarding-confirm POST failed: \(error.localizedDescription, privacy: .public)")
+                return (0, nil)
+            }
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: NATIVE_POST_DEADLINE_SECONDS * 1_000_000_000)
+            return (0, nil)
+        }
+        let first = await group.next() ?? (0, nil)
+        group.cancelAll()
+        return (first.0, first.1)
+    }
+}
+
+/// #3055 PR-2 — 응답을 App Group 엔트리에 되돌려 쓴다. **저장된 엔트리 id가 자기 id일 때만** —
+/// JS가 이미 clear했거나 새 intent로 덮어쓴 엔트리는 부활시키지 않는다(R7).
+@available(iOS 17.0, *)
+private func recordNativePost(entryId: String, status: Int, resolvedTrainCode: String?, lockState: String?) {
+    guard let defaults = UserDefaults(suiteName: APP_GROUP),
+          let raw = defaults.string(forKey: PENDING_BOARDING_INTENT_KEY),
+          let rawData = raw.data(using: .utf8),
+          var json = try? JSONSerialization.jsonObject(with: rawData) as? [String: Any],
+          let storedId = json["id"] as? String,
+          storedId == entryId else { return }
+    var nativePost: [String: Any] = [
+        "status": status,
+        "atMs": Date().timeIntervalSince1970 * 1000,
+    ]
+    if let resolvedTrainCode = resolvedTrainCode { nativePost["resolvedTrainCode"] = resolvedTrainCode }
+    if let lockState = lockState { nativePost["lockState"] = lockState }
+    json["nativePost"] = nativePost
+    guard let jsonData = try? JSONSerialization.data(withJSONObject: json),
+          let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+    defaults.set(jsonString, forKey: PENDING_BOARDING_INTENT_KEY)
+}
+
 @available(iOS 17.0, *)
 private func postBoardingConfirm(
     tripToken: String,
     action: String,
     station: String,
-    // #3055 A — trainCode 파라미터 제거. LA 버튼 BG 경로는 "탔다" 표명(action/station/line)만
-    // 전송한다. 발사 시점에 임베드된 `state.trainCode`는 늦은 탭 시 stale일 수 있어(#3044),
-    // 열차 해소는 backend가 탭 시각 기준으로 한다(#3059 assertion tier / #2975 stamp 우선순위).
-    // backend 파서는 trainCode를 optional로 받으므로(`validateBoardingConfirmPayload`) 키 부재가
-    // 정상 계약이다. JS responder 경로(#3028 fresh 재확정 forward)는 이 파일과 무관하게 불변.
-    line: String
+    // #3055 A — body에 `trainCode` 키를 싣지 않는다(늦은 탭 stale 전파 방지, #3044 ⓑ). 열차 후보는
+    // #3055 PR-2부터 별도 키 `laCandidate`(발사 시각 동반)로만 전달하고, 권위 판정은 backend가 한다.
+    line: String,
+    // 응답을 기록할 App Group 엔트리 id(`writePendingBoardingIntent` 반환). nil이면 기록하지 않는다.
+    entryId: String? = nil,
+    laCandidate: [String: Any]? = nil
 ) async {
+    // 실패 종료 시에도 in-flight가 영구히 남지 않도록 status 0을 기록한다.
+    func recordFailure() {
+        if let entryId = entryId {
+            recordNativePost(entryId: entryId, status: 0, resolvedTrainCode: nil, lockState: nil)
+        }
+    }
     // #2857 — tripToken이 빈 문자열이면(좀비 LA: state.boardingPromptTripToken ?? ""에서
     // trip이 이미 삭제돼 nil 대신 fallback "" 전달) addingPercentEncoding이 nil을 반환하지
     // 않고 그대로 ""를 통과시켜 아래 guard를 무사통과한다 — 그 결과 `/trips//boarding-confirm`
@@ -122,6 +194,7 @@ private func postBoardingConfirm(
     // (기존 NotBoardedIntent :264 dismiss 패턴 재사용).
     guard !tripToken.isEmpty else {
         intentLog.error("boarding-confirm skipped — tripToken empty (stale/zombie LA button)")
+        recordFailure()
         await markCurrentActivity(boardingPhase: nil)
         return
     }
@@ -129,6 +202,7 @@ private func postBoardingConfirm(
           let url = URL(string: "\(ALARM_BACKEND_URL_BASE)/trips/\(encodedToken)/boarding-confirm")
     else {
         intentLog.error("boarding-confirm invalid URL, tripToken empty or unencodable")
+        recordFailure()
         return
     }
 
@@ -137,22 +211,27 @@ private func postBoardingConfirm(
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.timeoutInterval = 10
 
-    let body: [String: Any] = ["action": action, "station": station, "line": line]
+    var body: [String: Any] = ["action": action, "station": station, "line": line, "source": SOURCE_LA_NATIVE]
+    if let laCandidate = laCandidate { body["laCandidate"] = laCandidate }
     guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
         intentLog.error("boarding-confirm body encode failed")
+        recordFailure()
         return
     }
     request.httpBody = bodyData
 
-    do {
-        let (_, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            intentLog.error("boarding-confirm non-2xx status=\(http.statusCode, privacy: .public)")
-        } else {
-            intentLog.info("boarding-confirm POST ok action=\(action, privacy: .public)")
-        }
-    } catch {
-        intentLog.error("boarding-confirm POST failed: \(error.localizedDescription, privacy: .public)")
+    let result = await performWithDeadline(request)
+    let parsed = (result.data.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+    let resolvedTrainCode = parsed?["resolvedTrainCode"] as? String
+    let lockState = parsed?["lockState"] as? String
+    if (200...299).contains(result.status) {
+        intentLog.info("boarding-confirm POST ok action=\(action, privacy: .public)")
+    } else {
+        intentLog.error("boarding-confirm non-2xx or deadline status=\(result.status, privacy: .public)")
+    }
+    if let entryId = entryId {
+        recordNativePost(
+            entryId: entryId, status: result.status, resolvedTrainCode: resolvedTrainCode, lockState: lockState)
     }
 }
 
@@ -163,28 +242,39 @@ private let PHASE_ARRIVAL = "arrival"
 
 /// (b) App Group에 pending intent를 write — JS가 다음 foreground/폴링 시점에 읽어 lock 생성 등
 /// 실제 도메인 로직을 실행한다(이 파일은 상태 write만, 도메인 처리는 ⑤-JS 담당).
+///
+/// #3055 PR-2 — `trackNativePost`가 true(Boarding·Disembark)면 `nativePost: "in-flight"`를 함께 써서 브릿지가
+/// native POST 완료까지 보류하게 하고, `laCandidate`(Boarding, 있을 때만)를 엔트리에 싣는다(브릿지 fallback POST용).
+/// 반환값 = 엔트리 id — `postBoardingConfirm`이 응답을 이 id의 엔트리에만 기록한다.
 @available(iOS 17.0, *)
+@discardableResult
 private func writePendingBoardingIntent(
     action: String,
     tripToken: String,
     originStation: String,
-    line: String
-) {
-    guard let defaults = UserDefaults(suiteName: APP_GROUP) else { return }
+    line: String,
+    trackNativePost: Bool = false,
+    laCandidate: [String: Any]? = nil
+) -> String? {
+    guard let defaults = UserDefaults(suiteName: APP_GROUP) else { return nil }
     let atMs = Date().timeIntervalSince1970 * 1000
+    let id = "\(tripToken)-\(Int(atMs))"
     // #3055 A — trainCode 필드 제거: JS 소비부(`PendingBoardingIntent`)는 이 필드를 읽지 않았다
     // (소비자 0건 forward-compat이었고, stale 값이 FG 브릿지로 흘러들 여지만 남겼다).
-    let payload: [String: Any] = [
-        "id": "\(tripToken)-\(Int(atMs))",
+    var payload: [String: Any] = [
+        "id": id,
         "tripToken": tripToken,
         "action": action,
         "originStation": originStation,
         "line": line,
         "atMs": atMs,
     ]
+    if trackNativePost { payload["nativePost"] = NATIVE_POST_IN_FLIGHT }
+    if let laCandidate = laCandidate { payload["laCandidate"] = laCandidate }
     guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
-          let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+          let jsonString = String(data: jsonData, encoding: .utf8) else { return nil }
     defaults.set(jsonString, forKey: PENDING_BOARDING_INTENT_KEY)
+    return id
 }
 
 /// (a) 버튼 탭 즉시 시각 피드백. #3221 — 응답한 질문은 **탑승 LA(`Activity<BoardingActivityAttributes>`)를
@@ -224,38 +314,49 @@ struct BoardingConfirmIntent: LiveActivityIntent {
     @Parameter(title: "line")
     var line: String
 
-    // #3055 A — 캡처만 하고 전송하지 않음(늦은 탭의 stale 값 전파 방지, #3044 ⓑ). 렌더부 init 호환용 잔존.
+    // #3055 PR-2 — 이 질문을 발사한 열차(LA content의 `trainCode`/`trainCodeIssuedAtMs`)를 캡처해
+    // backend `laCandidate`로 전달한다(body `trainCode` 키로는 전송하지 않음, #3044 ⓑ 유지). 둘 다 있을 때만.
     @Parameter(title: "trainCode")
     var trainCode: String?
+
+    @Parameter(title: "trainCodeIssuedAtMs")
+    var trainCodeIssuedAtMs: Int?
 
     init() {
         self.tripToken = ""
         self.originStation = ""
         self.line = ""
         self.trainCode = nil
+        self.trainCodeIssuedAtMs = nil
     }
 
-    init(tripToken: String, originStation: String, line: String, trainCode: String?) {
+    init(tripToken: String, originStation: String, line: String, trainCode: String?, trainCodeIssuedAtMs: Int?) {
         self.tripToken = tripToken
         self.originStation = originStation
         self.line = line
         self.trainCode = trainCode
+        self.trainCodeIssuedAtMs = trainCodeIssuedAtMs
     }
 
     func perform() async throws -> some IntentResult {
         intentLog.info("perform BOARDING tapped tripToken=\(tripToken, privacy: .public)")
         await markCurrentActivity(boardingPhase: PHASE_BOARDED)
-        writePendingBoardingIntent(
+        let laCandidate = makeLaCandidate(trainCode: trainCode, trainCodeIssuedAtMs: trainCodeIssuedAtMs)
+        let entryId = writePendingBoardingIntent(
             action: ACTION_BOARDING_BOARDED,
             tripToken: tripToken,
             originStation: originStation,
-            line: line
+            line: line,
+            trackNativePost: true,
+            laCandidate: laCandidate
         )
         await postBoardingConfirm(
             tripToken: tripToken,
             action: CONFIRM_ACTION_BOARDED,
             station: originStation,
-            line: line
+            line: line,
+            entryId: entryId,
+            laCandidate: laCandidate
         )
         return .result()
     }
@@ -298,17 +399,19 @@ struct DisembarkConfirmIntent: LiveActivityIntent {
     func perform() async throws -> some IntentResult {
         intentLog.info("perform DISEMBARK tapped tripToken=\(tripToken, privacy: .public)")
         await markCurrentActivity(boardingPhase: PHASE_ARRIVAL)
-        writePendingBoardingIntent(
+        let entryId = writePendingBoardingIntent(
             action: ACTION_DISEMBARK_DISEMBARKED,
             tripToken: tripToken,
             originStation: originStation,
-            line: line
+            line: line,
+            trackNativePost: true
         )
         await postBoardingConfirm(
             tripToken: tripToken,
             action: CONFIRM_ACTION_DISEMBARKED,
             station: originStation,
-            line: line
+            line: line,
+            entryId: entryId
         )
         return .result()
     }

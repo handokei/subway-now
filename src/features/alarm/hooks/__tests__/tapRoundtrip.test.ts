@@ -236,7 +236,7 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
     postBoardingConfirmMock.mockResolvedValue({ ok: true, status: 200 });
     const deps = { ...pendingDeps(), fetchArrivalsForStation: jest.fn(async () => arrivalWith(['T1'])) };
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(postBoardingConfirmMock).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', 'T1');
+    expect(postBoardingConfirmMock).toHaveBeenCalledWith('tok', 'boarded', '강남', '2', { trainCode: 'T1', source: 'notification' });
   });
 
   // P1-1 소유권 — skip 분기에서 이전 탭의 stale PENDING이 남아 있으면 이번 응답으로 덮지 않는다.
@@ -319,7 +319,7 @@ describe('#3055 C — 응답 소비로 PENDING lock 교체', () => {
 
   it('postBoardingConfirm이 undefined를 돌려줘도(mock/예외 경로) throw 없이 PENDING 유지', async () => {
     postBoardingConfirmMock.mockResolvedValue(undefined);
-    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps())).resolves.toBeUndefined();
+    await expect(handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, pendingDeps())).resolves.toEqual({ posted: true });
     expect(useBoardingLockStore.getState().lock?.trainCode).toBe(PENDING_TRAIN_CODE);
   });
 });

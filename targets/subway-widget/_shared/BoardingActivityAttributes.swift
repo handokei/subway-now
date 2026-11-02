@@ -28,6 +28,10 @@ struct BoardingActivityAttributes: ActivityAttributes {
         var body: String?
         /// hop-end에서 갈아탈 노선(배지/부제 틴트용).
         var nextLine: String?
+        // #3055 PR-2 — 이 질문을 발사한 열차(Seoul btrainNo)와 발사 시각(epoch ms). 버튼이 backend에
+        // `laCandidate`로 전달한다. 둘 다 optional — 구 payload·열차 미지정 발사는 nil(버튼은 후보 없이 현행 POST).
+        var trainCode: String?
+        var trainCodeIssuedAtMs: Int?
     }
 
     /// 같은 promptId의 중복 시작을 막는 식별자(재질문은 새 promptId).

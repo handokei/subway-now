@@ -632,7 +632,7 @@ describe('postBoardingConfirm (#2852)', () => {
   it('trainCode 전달 시 body에 포함(#2961)', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
-    await postBoardingConfirm('tok', 'boarded', '강남', '2', '2701');
+    await postBoardingConfirm('tok', 'boarded', '강남', '2', { trainCode: '2701' });
     const [, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(JSON.parse(init.body)).toEqual({
       action: 'boarded',
@@ -650,6 +650,23 @@ describe('postBoardingConfirm (#2852)', () => {
     await postBoardingConfirm('tok', 'boarded', '강남', '2');
     const [, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(JSON.parse(init.body)).toEqual({ action: 'boarded', station: '강남', line: '2' });
+    expect(JSON.parse(init.body)).not.toHaveProperty('trainCode');
+  });
+
+  // #3055 PR-1 — 5번째 인자는 옵션 객체 {trainCode?, laCandidate?, source?}. 있는 키만 body에 실린다.
+  it('옵션 laCandidate·source는 body에 실리고, 없는 옵션 키는 body에 없다(#3055)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    const laCandidate = { trainCode: '7320', issuedAtMs: 1_793_616_885_000 };
+    await postBoardingConfirm('tok', 'boarded', '건대입구', '7', { laCandidate, source: 'la-bridge' });
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      action: 'boarded',
+      station: '건대입구',
+      line: '7',
+      laCandidate,
+      source: 'la-bridge',
+    });
     expect(JSON.parse(init.body)).not.toHaveProperty('trainCode');
   });
 
