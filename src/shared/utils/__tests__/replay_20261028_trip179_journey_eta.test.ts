@@ -128,6 +128,7 @@ describe('replay 10/28 trip 180 — 저녁 2→7 (known gap, D4)', () => {
     secondsToTransfer: 0,
     secondsFromTransfer: 150,
     destinationStationId: junggok.id,
+    transferStationId: '2-012',
   };
   const arrive3324 = capsPositionEpoch('replay_20261028_trip180', '3324', '건대입구', '1');
   const board7252 = positionEpoch('capture_20261028_trip180_evening_7252.fixture.json', '7252', '건대입구', '1');

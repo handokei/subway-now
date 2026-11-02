@@ -319,7 +319,7 @@ describe('#1723 GPS fallback stale + 환승역 line 보정', () => {
       const origin = findStationByNameAndLine('상수', '6')!;
       const destination = findStationByNameAndLine('망원', '6')!;
       const routeContext = {
-        route: { type: 'direct' as const, line: '6' as const, stops: 2, travelSeconds: 120 },
+        route: { type: 'direct' as const, line: '6' as const, stops: 2, travelSeconds: 120, destinationStationId: '6-001' },
         origin,
         destination,
       };

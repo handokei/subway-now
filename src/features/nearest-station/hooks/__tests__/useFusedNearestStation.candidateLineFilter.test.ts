@@ -148,6 +148,7 @@ describe('#1902 candidate-generator line filter (RC-18)', () => {
       stops: 5,
       line: '2',
       travelSeconds: 600,
+      destinationStationId: '2-001',
     };
     const ctx: FusedRouteContext = {
       route,
@@ -186,6 +187,8 @@ describe('#1902 candidate-generator line filter (RC-18)', () => {
       stopsFromTransfer: 4,
       secondsToTransfer: 300,
       secondsFromTransfer: 400,
+      transferStationId: '2-001',
+      destinationStationId: '7-001',
     };
     const ctx: FusedRouteContext = {
       route,
@@ -212,6 +215,7 @@ describe('#1902 candidate-generator line filter (RC-18)', () => {
       stops: 5,
       line: '2',
       travelSeconds: 600,
+      destinationStationId: '2-001',
     };
     const ctx: FusedRouteContext = {
       route,

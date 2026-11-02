@@ -157,6 +157,7 @@ describe('computeJourneyEta — 환승 대기 = 실시간 → 시간표 → 배�
       secondsToTransfer: 0,
       secondsFromTransfer: 240,
       destinationStationId: dongducheon.id,
+      transferStationId: '3-001',
     };
     const eta = computeJourneyEta({ route, nowMs: kstMs(2026, 10, 29, 23, 50), excludeOriginWait: true });
     expect(eta.lastTrainEnded).toBe(true);
