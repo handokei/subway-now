@@ -1,4 +1,4 @@
-import { findRouteCandidatesByCategory, findStationByNameAndLine } from '../stationRoute';
+import { calculateStaticEtaDetail, findRouteCandidatesByCategory, findRoutes, findStationByNameAndLine, routeSignature } from '../stationRoute';
 
 // #1480 PR-1 acceptance (계획 §5) — 10/28 실측 trip 179/180을 trip-register 시각으로 rank한다.
 // 입력 근거(불변): backend/alarm-worker fixtures replay_20261028_sync_lockless/events_179.json(trip-register ts 1793136401077 = 06:26:41 KST,
@@ -40,13 +40,17 @@ describe('10/28 실측 trip rank (nowMs = trip-register 시각)', () => {
     for (const { candidate } of result) expect(candidate.elapsed).toBeDefined();
   });
 
-  it('대안(다중 환승)의 총 소요는 1순위보다 크다', () => {
-    const nowMs = floorToMinute(REGISTER_179_MS);
-    const [optimal, minTransfer] = findRouteCandidatesByCategory([id('용마산', '7')], id('뚝섬', '2'), undefined, { nowMs });
-    expect(optimal.candidate.elapsed).toBeDefined();
-    // PR-1 단계: minTransfer 칩이 다른 후보면 그 총 소요 > 1순위
-    if (minTransfer.candidate !== optimal.candidate) {
-      expect(minTransfer.candidate.elapsed!.seconds).toBeGreaterThan(optimal.candidate.elapsed!.seconds);
+  it.each([
+    ['trip 179', '용마산', '7', '뚝섬', '2', REGISTER_179_MS],
+    ['trip 180', '성수', '2', '용마산', '7', REGISTER_180_MS],
+  ] as const)('%s: 1순위가 아닌 대안(다중 환승)의 총 소요는 1순위보다 크다', (_n, o, ol, d, dl, ms) => {
+    const nowMs = floorToMinute(ms);
+    const [optimal] = rankFor(o, ol, d, dl, ms);
+    const alternatives = findRoutes(id(o, ol), id(d, dl)).filter((c) => routeSignature(c.route) !== routeSignature(optimal.candidate.route));
+    expect(alternatives.length).toBeGreaterThan(0);
+    for (const alt of alternatives) {
+      const detail = calculateStaticEtaDetail(alt.route, { nowMs, originStationId: alt.originStationId })!;
+      expect(detail.totalSeconds).toBeGreaterThan(optimal.candidate.elapsed!.seconds);
     }
   });
 });

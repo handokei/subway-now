@@ -5,7 +5,8 @@ import { etaDisplayKind, formatFirstTrainTime, type EtaDisplayKind } from '../..
  * #1480 후속 — 경로 목록 칩·공유 문구의 소요 시간(대기 포함).
  *
  * 홈 상단 ETA와 같은 엔진(`journeyTimeline`, `calculateStaticEtaDetail`)으로 "지금 출발" 기준 총 분을 낸다.
- * 후보 정렬·선택에 쓰는 `RouteCandidate.travelMinutes`(주행+환승 도보)는 건드리지 않는다 — 표시 숫자만 대기를 포함한다.
+ * `RouteCandidate.travelMinutes`(주행+환승 도보)는 의미를 유지한다(알람 파이프라인 입력). 후보 정렬·칩 선택은 #1480 PR-1부터
+ * 같은 엔진 총 소요(`RouteCandidate.elapsed`, 세션 계산 시 1회)를 쓴다 — 이 함수는 표시용 분 단위 갱신만 한다.
  */
 export interface ChipEta {
   minutes: number;

@@ -15,8 +15,11 @@ import { shortestLinePathIndices, isClosedLoopMainStation } from './lineLoopPath
 import { isReversedOrientationLine } from './lineOrientation';
 import { computeJourneyEta, resolveOriginStop } from './journeyTimeline';
 import type { BoardableLookup, JourneyEta } from './journeyTimeline';
+import { rankCandidates, type RankMode } from './routeRanking';
 
 const logger = createLogger('StationRoute');
+
+const MS_PER_MINUTE = 60_000;
 
 const allStations = stations as Station[];
 const stationTravelTimes = stationTravelTimesJson as Record<string, number>;
@@ -221,12 +224,19 @@ export interface RouteCandidate {
   travelMinutes: number;
   /** 이 후보를 산출한 출발역 id — 표시용 ETA의 출발 대기(시간표) 조회에 쓴다. 정렬·선택에는 쓰지 않는다. */
   originStationId?: string;
+  /**
+   * #1480 PR-1 — 엔진 총 소요(대기 포함, 세션 계산 시 1회 고정). 있으면 칩 선택(rankCandidates)이 이 값으로 정렬한다.
+   * travelMinutes(주행+환승 도보)는 의미 유지 — 알람 파이프라인(findRoute)·expectedTripDuration 입력이다.
+   */
+  elapsed?: { seconds: number; waitUnknown: boolean; lastTrainEnded: boolean };
 }
 
 export interface RouteCategory {
   key: RoutePreference;
   label: string;
   comparator: (a: RouteCandidate, b: RouteCandidate) => number;
+  /** #1480 PR-1 — elapsed 정렬 시 적용할 모드(routeRanking). comparator는 elapsed 없는 호출자(findRoute 등)용. */
+  rankMode: RankMode;
 }
 
 export interface CategorizedRoute {
@@ -240,12 +250,14 @@ export const ROUTE_CATEGORIES: readonly RouteCategory[] = [
     label: '최적경로',
     comparator: (a, b) =>
       a.travelMinutes - b.travelMinutes || a.transferCount - b.transferCount,
+    rankMode: 'elapsed',
   },
   {
     key: 'minTransfer',
     label: '최소환승',
     comparator: (a, b) =>
       a.transferCount - b.transferCount || a.travelMinutes - b.travelMinutes,
+    rankMode: 'transferFirst',
   },
 ];
 
@@ -783,16 +795,38 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
   return candidates;
 }
 
+/** #1480 PR-1 — 후보에 엔진 총 소요를 붙인다(출발역 시간표 연결, 실시간 미사용 — 후보 간 공정성). */
+function attachElapsed(candidate: RouteCandidate, nowMs: number): RouteCandidate {
+  const { originStationId } = candidate;
+  // route가 non-null이므로 detail은 항상 존재한다.
+  const { totalSeconds, waitUnknown, lastTrainEnded } = calculateStaticEtaDetail(candidate.route, { nowMs, originStationId })!;
+  return { ...candidate, elapsed: { seconds: totalSeconds, waitUnknown, lastTrainEnded } };
+}
+
+export interface CandidateRankOptions {
+  /** 지정하면 후보를 엔진 총 소요(분 내림 시각 기준)로 정렬한다. 없으면 기존 travelMinutes 비교(알람 경로 호환). */
+  nowMs?: number;
+}
+
 export function findRouteCandidatesByCategory(
   originIds: readonly string[],
   destinationId: string,
   categories: readonly RouteCategory[] = ROUTE_CATEGORIES,
+  options: CandidateRankOptions = {},
 ): CategorizedRoute[] {
-  const all = originIds.flatMap((id) => findRoutes(id, destinationId));
-  if (all.length === 0) return [];
+  const found = originIds.flatMap((id) => findRoutes(id, destinationId));
+  if (found.length === 0) return [];
+  const { nowMs } = options;
+  if (nowMs === undefined) {
+    return categories.map((category) => ({
+      category,
+      candidate: [...found].sort(category.comparator)[0],
+    }));
+  }
+  const withElapsed = found.map((c) => attachElapsed(c, Math.floor(nowMs / MS_PER_MINUTE) * MS_PER_MINUTE));
   return categories.map((category) => ({
     category,
-    candidate: [...all].sort(category.comparator)[0],
+    candidate: rankCandidates(withElapsed, category.rankMode)[0],
   }));
 }
 

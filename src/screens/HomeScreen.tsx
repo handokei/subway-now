@@ -241,7 +241,7 @@ export default function HomeScreen() {
   const loadRoutePreference = useDestinationStore((s) => s.loadRoutePreference);
   const [categorized, setCategorized] = useState<CategorizedRoute[]>([]);
   // #1480 후속 — 경로 칩·공유의 "N분"은 홈 상단과 같은 엔진(지금 출발, 대기 포함). 분 단위로만 갱신해 렌더마다 재계산하지 않는다.
-  // 후보 정렬·선택(travelMinutes)은 불변 — 표시 숫자만 바뀐다.
+  // 후보 정렬·선택은 세션 계산 시 1회 고정(#1480 PR-1, 엔진 총 소요) — 여기 분 갱신은 표시 숫자만 바꾼다.
   const chipNowMinute = Math.floor(Date.now() / 60_000);
   const chipEtaByKey = useMemo(
     () => new Map(categorized.map(({ category, candidate }) => [category.key, computeChipEta(candidate.route, chipNowMinute * 60_000, candidate.originStationId)])),
@@ -726,9 +726,12 @@ export default function HomeScreen() {
     }
     const interactionStart = performance.now();
     const interaction = InteractionManager.runAfterInteractions(() => {
+      // #1480 PR-1 — 칩 순위는 엔진 총 소요(대기 포함)로, 세션 계산 시 1회 고정(흔들림 금지). 분 내림은 findRouteCandidatesByCategory가 처리.
       const result = findRouteCandidatesByCategory(
         originVariants.map((o) => o.id),
         destination.id,
+        undefined,
+        { nowMs: Date.now() },
       );
       const total = performance.now() - interactionStart;
       logger.debug(`경로 계산 전체 (InteractionManager 포함): ${total.toFixed(2)}ms`);

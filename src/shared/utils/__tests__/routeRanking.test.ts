@@ -1,5 +1,5 @@
 import type { RouteCandidate } from '../stationRoute';
-import { makeDirectRoute, makeTransferRoute } from '../../../testUtils/routeFixtures';
+import { makeDirectRoute, makeMultiTransferRoute, makeTransferRoute } from '../../../testUtils/routeFixtures';
 import { rankCandidates } from '../routeRanking';
 
 // #1480 PR-1 — 후보 정렬 키 = 엔진 총 소요(대기 포함). 후보는 elapsed가 주입된 상태로 들어온다.
@@ -57,10 +57,33 @@ describe('rankCandidates (elapsed 모드 = 최적경로)', () => {
     expect(tags(rankCandidates([long, short], 'elapsed'))).toEqual(['short', 'long']);
   });
 
+  it('다중 환승도 환승마다 도보를 합산해 비교한다(건대입구 278s x2 > 미등록 180s x2)', () => {
+    const multi = (tag: string, elapsedMin: number, names: [string, string]) => ({
+      ...cand({ tag, elapsedMin, transfers: 1 }),
+      transferCount: 2,
+      route: makeMultiTransferRoute({
+        transfers: [
+          { transferName: names[0], fromLine: '7', toLine: '2', stopsToTransfer: 1 },
+          { transferName: names[1], fromLine: '2', toLine: '7', stopsToTransfer: 1 },
+        ],
+        stopsAfterLastTransfer: 1,
+      }),
+    });
+    const heavy = multi('heavy', 20, ['건대입구', '건대입구']);
+    const light = multi('light', 21, ['없는역', '없는역']);
+    expect(tags(rankCandidates([heavy, light], 'elapsed'))).toEqual(['light', 'heavy']);
+  });
+
   it('근사 동률 + 환승·도보 동일이면 정거장 수가 적은 쪽', () => {
     const many = cand({ tag: 'many', elapsedMin: 20, stops: 9 });
     const few = cand({ tag: 'few', elapsedMin: 21, stops: 4 });
     expect(tags(rankCandidates([many, few], 'elapsed'))).toEqual(['few', 'many']);
+  });
+
+  it('근사 동률 + 환승·도보·정거장 모두 같으면 총 소요가 짧은 쪽', () => {
+    const slower = cand({ tag: 'slower', elapsedMin: 21 });
+    const faster = cand({ tag: 'faster', elapsedMin: 20 });
+    expect(tags(rankCandidates([slower, faster], 'elapsed'))).toEqual(['faster', 'slower']);
   });
 
   it('waitUnknown은 ε(2분)를 넘게 빠를 때만 1위 — 3분 빠르면 1위, 1분 빠르면 확정 후보가 1위', () => {
