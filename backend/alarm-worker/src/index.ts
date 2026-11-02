@@ -225,6 +225,13 @@ import {
   shouldSamplePositionKv,
 } from './positionKvSample';
 import { lineCodeForName, subwayIdForLine } from './lineAlias';
+import {
+  parseLaCandidate,
+  verifyLaCandidate,
+  type LaCandidate,
+  type LaCandidateDecision,
+  type LaCandidateVerdict,
+} from './laCandidate';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import {
   LA_BOARDING_START_MODES,
@@ -2660,6 +2667,9 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // 응답에 기존 lock의 trainCode를 실어도 되는지(`buildBoardingConfirmResolution`) 가르는 입력이다.
   // lock이 없었거나 이번 요청이 release했으면 undefined.
   let keptLockReason: LegLockReleaseReason | undefined;
+  // #3221 PR-3b — LA 버튼 `laCandidate` 판정 결과(D1 meta·resolveTier 생략 판단). laCandidate 없는 요청은 전부 undefined.
+  let laCandidateDecision: LaCandidateDecision | undefined;
+  let laCandidateAgrees: boolean | undefined;
   let working: Trip = existing;
   // #2920 — destinationConfirmPendingSince 유예 trip의 즉시 종료 분기(아래 'disembarked')가
   // completeWaypointAdvance로 trip을 이미 KV에서 삭제했을 때 true. 공통 경로의 putTrip이
@@ -2728,10 +2738,33 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         payload.trainCode !== undefined
           ? resolveBodyTrainCodeLock(working, payload.trainCode, payload.line, payload.station, now)
           : null;
+      // #3221 PR-3b — LA 버튼 `laCandidate`(LA에 보이는 열차)는 prompt_fires 최신 발사 + 도착확정 + leg + 진행도로 검증한다.
+      // trip 레코드 stamp는 재등록·KV 되돌림으로 소실되므로 laCandidate 요청에서는 stamp 직접 승격을 건너뛴다.
+      // body trainCode(알림)가 이미 통과했으면 후보는 평가하지 않는다.
+      const laCandidate = bodyTrainCodeLock === null ? payload.laCandidate : undefined;
+      const laVerdict =
+        laCandidate !== undefined
+          ? await verifyLaCandidate({
+              candidate: laCandidate,
+              tokenHash: hashTripToken(token),
+              station: payload.station,
+              line: payload.line,
+              now,
+              fallbackTtlMs: RECENT_PROMPT_CANDIDATES_TTL_MS,
+              db: c.env.DB,
+              kv: c.env.TRIPS,
+              buildLock: (candidateTrainCode) =>
+                buildAnchoredTrainCodeLock(working, candidateTrainCode, payload.line, payload.station, now),
+            })
+          : undefined;
+      laCandidateDecision = laVerdict && decisionOfVerdict(laVerdict);
+      const trustedLock = laVerdict?.kind === 'trusted' ? laVerdict.lock : null;
       const stampedLock =
-        bodyTrainCodeLock ?? (releasedForLegSwitch ? promoteStampedTrainCode(working, now) : null);
+        bodyTrainCodeLock ??
+        trustedLock ??
+        (releasedForLegSwitch && payload.laCandidate === undefined ? promoteStampedTrainCode(working, now) : null);
       if (stampedLock) {
-        trainCodeSource = bodyTrainCodeLock ? 'body' : 'stamp';
+        trainCodeSource = bodyTrainCodeLock ? 'body' : trustedLock ? undefined : 'stamp';
         // V/X — wrangler tail에서 stamp/body 직접 승격 여부와 출처를 바로 확인(Wire-completion #2).
         console.log(
           JSON.stringify({
@@ -2841,9 +2874,24 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         // (Error 메시지에 요청 파생 문자열이 섞일 수 있어 안전하지 않음).
         console.log(JSON.stringify({ msg: 'boarding-confirm: boarded resolution error' }));
       }
+      // #3221 PR-3b — 3분 초과 후보: live가 먼저, live가 lock을 못 만들었으면(none/ambiguous/오류) 검증된 후보로 fallback.
+      if (laVerdict?.kind === 'fallback' && laCandidate !== undefined) {
+        const { boardingLock: liveLock } = working;
+        if (liveLock === undefined) {
+          const attached = attachBoardedLock(working, laVerdict.lock, now, releasedForLegSwitch);
+          working = attached.working;
+          lockState = attached.lockState;
+          laCandidateDecision = 'window-expired-candidate';
+        } else {
+          laCandidateDecision = 'window-expired-live';
+          laCandidateAgrees = liveLock.trainCode === laCandidate.trainCode;
+        }
+      }
       }
     } else {
       lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
+      // #3221 PR-3b — 먼저 들어온 사용자 행동(기존 lock 유지)이 우선. laCandidate는 평가하지 않는다.
+      if (payload.laCandidate !== undefined) laCandidateDecision = 'existing-lock';
     }
     // #3144 (v8 D3-A, ADR-043) — 응답 마커 writer 1/2(다른 하나는 /boarding-lock/sync 승격 = 수동 목록 탭). lock 해소 성공 여부와 무관하게 "[탑승] 응답이
     // 있었다"를 현재 leg(해소 후 최종 상태 기준, tapAdvance 반영)에 기록한다 — 해소 실패 시 이후
@@ -2926,17 +2974,29 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // ADR-037 D2b (#2535, 진단 계측 only) — 탭 처리 1건당 정확히 1회 D1 append. HTTP 요청 단위라
   // #2073 quota throttle 불필요(매 tick 반복 호출이 아니다). push/advance/lock 동작 무변경 —
   // 위에서 이미 확정된 lockState/resolveOutcome을 관측만 한다.
+  // #3221 PR-3b — 후보가 최종 lock이면 live 결과는 최종 lock의 출처가 아니다: 응답·meta의 resolveTier/outcome을 생략하고
+  // live 결과는 liveOutcome/liveNoneReason으로 분리한다(resolveTier 값 집합·오수용 측정은 "최종 lock이 live인 행"만 센다).
+  const candidateIsFinalLock =
+    laCandidateDecision === 'accepted-trusted' || laCandidateDecision === 'window-expired-candidate';
+  const liveWasAttempted = laCandidateDecision === 'window-expired-candidate';
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(token),
     kind: 'boarding-confirm-result',
     meta: buildBoardingConfirmEventMeta(
       lockState,
-      resolveOutcome,
+      liveWasAttempted ? undefined : resolveOutcome,
       anchorSource,
-      resolveNoneReason,
+      liveWasAttempted ? undefined : resolveNoneReason,
       trainCodeSource,
-      resolveTier,
+      candidateIsFinalLock ? undefined : resolveTier,
       { source: payload.source, laCandidatePresent: payload.laCandidatePresent },
+      laCandidateDecision !== undefined
+        ? {
+            decision: laCandidateDecision,
+            agrees: laCandidateAgrees,
+            ...(liveWasAttempted ? { liveOutcome: resolveOutcome, liveNoneReason: resolveNoneReason } : {}),
+          }
+        : undefined,
     ),
   });
   return c.json({
@@ -2946,7 +3006,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       payload.action,
       working.boardingLock,
       keptLockReason,
-      resolveTier,
+      candidateIsFinalLock ? undefined : resolveTier,
       payload.line,
     ),
   });
@@ -2986,7 +3046,8 @@ const KEPT_LOCK_ECHO_ALLOWED: Record<LegLockReleaseReason, boolean> = {
  * `resolveTier` 계약: **부재 = 일반 tier**(ARRIVED/APPROACHING 등 기존 tier). 유일한 값은
  * `'assertion-departed'`(`boardingAnchorResolver.ts` `BoardingResolveTier`). tier는 live resolve
  * 응답에만 실린다 — body/stamp 승격·기존-lock 분기 응답에는 해소 tier 개념이 없어 생략된다
- * (D1 오수용 감시가 live resolve 건에만 해당하는 이유).
+ * (D1 오수용 감시가 live resolve 건에만 해당하는 이유). #3221 PR-3b: LA `laCandidate`가 최종 lock이면
+ * (3분 창 내 채택 / 창 밖 live none 후 fallback) live를 실행하지 않았거나 결과를 쓰지 않았으므로 마찬가지로 생략한다.
  */
 function buildBoardingConfirmResolution(
   action: 'boarded' | 'disembarked' | 'not-boarded',
@@ -3035,6 +3096,13 @@ export function buildBoardingConfirmEventMeta(
   trainCodeSource?: 'body' | 'stamp',
   resolveTier?: BoardingResolveTier,
   requestOrigin?: { source?: BoardingConfirmSource; laCandidatePresent: boolean },
+  laCandidate?: {
+    decision: LaCandidateDecision;
+    agrees?: boolean;
+    /** 후보가 최종 lock일 때 그 앞에서 시도한 live 해소의 결과(최종 lock의 출처가 아니라 별도 키). */
+    liveOutcome?: BoardingResolveOutcome;
+    liveNoneReason?: BoardingResolveNoneReason;
+  },
 ): {
   lockState: 'leg1' | 'leg2' | 'released' | 'none';
   outcome?: BoardingResolveOutcome;
@@ -3044,6 +3112,10 @@ export function buildBoardingConfirmEventMeta(
   resolveTier?: BoardingResolveTier;
   source?: BoardingConfirmSource;
   laCandidatePresent?: boolean;
+  laCandidateDecision?: LaCandidateDecision;
+  laCandidateAgrees?: boolean;
+  liveOutcome?: BoardingResolveOutcome;
+  liveNoneReason?: BoardingResolveNoneReason;
 } {
   return {
     lockState,
@@ -3056,6 +3128,11 @@ export function buildBoardingConfirmEventMeta(
     // #3055 PR-0 — 요청 출처 계측(LA 버튼 경로를 D1만으로 구분).
     ...(requestOrigin?.source !== undefined ? { source: requestOrigin.source } : {}),
     ...(requestOrigin !== undefined ? { laCandidatePresent: requestOrigin.laCandidatePresent } : {}),
+    // #3221 PR-3b — LA 버튼 후보 판정 결과(분포·창 길이 재검토 신호 `window-expired-live && laCandidateAgrees=false`).
+    ...(laCandidate !== undefined ? { laCandidateDecision: laCandidate.decision } : {}),
+    ...(laCandidate?.agrees !== undefined ? { laCandidateAgrees: laCandidate.agrees } : {}),
+    ...(laCandidate?.liveOutcome !== undefined ? { liveOutcome: laCandidate.liveOutcome } : {}),
+    ...(laCandidate?.liveNoneReason !== undefined ? { liveNoneReason: laCandidate.liveNoneReason } : {}),
   };
 }
 
@@ -3072,8 +3149,13 @@ interface BoardingConfirmPayload {
   trainCode?: string;
   /** #3055 PR-0 — 요청 출처(계측 전용). 형식 불량은 400이 아니라 무시(undefined). */
   source?: BoardingConfirmSource;
-  /** #3055 PR-0 — body에 `laCandidate` 객체가 실렸는가(계측 전용, 내용은 아직 소비하지 않는다). */
+  /** #3055 PR-0 — body에 `laCandidate` 객체가 실렸는가(계측). 형식 불량이어도 true일 수 있다(`laCandidate`와 별개). */
   laCandidatePresent: boolean;
+  /**
+   * #3221 PR-3b — LA 버튼이 보낸 "LA에 보이는 열차"(`prompt_fires` 검증 대상). 형식 불량은 400이 아니라 undefined(무시) ->
+   * 현행 100% 경로. 'boarded' 외 action에서는 소비하지 않는다.
+   */
+  laCandidate?: LaCandidate;
 }
 
 /** #3055 PR-0 — boarding-confirm 요청 출처 허용값. 데이터 주도: 새 출처는 여기에만 추가. */
@@ -3111,6 +3193,7 @@ export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmP
     trainCode,
     source: parseBoardingConfirmSource(obj.source),
     laCandidatePresent: typeof obj.laCandidate === 'object' && obj.laCandidate !== null,
+    laCandidate: parseLaCandidate(obj.laCandidate),
   };
 }
 
@@ -3306,6 +3389,20 @@ function resolveBodyTrainCodeLock(
   now: number,
 ): BoardingLockMeta | null {
   if (!isPromotionCorroborated(trainCode, trip, now)) return null;
+  return buildAnchoredTrainCodeLock(trip, trainCode, boardingLine, boardingStation, now);
+}
+
+/**
+ * 탭 (station, line)이 현재 leg anchor와 정합할 때만 trainCode로 lock을 합성한다 — `resolveBodyTrainCodeLock`의
+ * corroboration 이후 단계(R-4 leg 게이트 + 합성 + waypoint 정합)를 #3221 PR-3b `laCandidate` 검증과 공유한다(사본 금지).
+ */
+function buildAnchoredTrainCodeLock(
+  trip: Trip,
+  trainCode: string,
+  boardingLine: string,
+  boardingStation: string,
+  now: number,
+): BoardingLockMeta | null {
   const { currentLegAnchor } = trip;
   if (
     currentLegAnchor !== undefined &&
@@ -3343,6 +3440,13 @@ function attachBoardedLock(
       : { boardingPromptState: markPromptFired(now, working.boardingPromptState, lock.trainCode) }),
   };
   return { working: nextWorking, lockState: isLeg2 ? 'leg2' : 'leg1' };
+}
+
+/** #3221 PR-3b — 검증 결과의 1차 D1 라벨. fallback(3분 초과)은 live 결과에 따라 호출부가 최종 라벨을 확정한다. */
+function decisionOfVerdict(verdict: LaCandidateVerdict): LaCandidateDecision | undefined {
+  if (verdict.kind === 'trusted') return 'accepted-trusted';
+  if (verdict.kind === 'rejected') return verdict.reason;
+  return undefined;
 }
 
 /**

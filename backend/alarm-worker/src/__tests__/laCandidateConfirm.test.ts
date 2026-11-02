@@ -265,6 +265,28 @@ describe('boarding-confirm laCandidate 판정 (#3221 PR-3b)', () => {
       expect(t.confirmMeta()).toMatchObject({ laCandidateDecision: 'accepted-trusted' });
     });
 
+    it('구간 밖(앵커 이전 뚝섬유원지) 위치 + 앵커 출발 기록 없음 -> 아직 안 지나갔으므로 수용', async () => {
+      const t = await setup(fire(12_000));
+      await putSnapshot(t.env, '7320', '뚝섬유원지');
+      const { json } = await post(body(cand(12_000)), t.env);
+      expect(json).toMatchObject({ resolvedTrainCode: '7320' });
+    });
+
+    it('구간 밖 위치 + 앵커 출발 기록 있음 -> 이미 구간 끝을 넘어선 열차, progressed-past-anchor 거부', async () => {
+      const t = await setup(fire(12_000));
+      await t.env.TRIPS.put(
+        'realtime-position:7',
+        JSON.stringify({
+          fetchedAt: NOW - 10_000,
+          positions: [{ trainCode: '7320', stationName: '중곡다음역', trainSttus: 1, isUp, recptnMs: NOW - 10_000 }],
+          stationLogs: { [ANCHOR]: { present: [], departed: [{ trainCode: '7320', isUp, departedAt: NOW - 120_000 }] } },
+        }),
+      );
+      const { json } = await post(body(cand(12_000)), t.env);
+      expect(json).toEqual({ ok: true, lockState: 'none' });
+      expect(t.confirmMeta()).toMatchObject({ laCandidateDecision: 'progressed-past-anchor' });
+    });
+
     it('스냅샷 없음은 수용 (11/02 실측 케이스와 동일)', async () => {
       const t = await setup(fire(12_000));
       const { json } = await post(body(cand(12_000)), t.env);

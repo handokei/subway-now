@@ -221,6 +221,13 @@ export const IMMINENT_BOARDING_ARVLCD: ReadonlySet<number> = new Set([
 export const PROMPT_POSITION_FRESH_MS = 3 * 60 * 1000;
 
 /**
+ * #3221 PR-3b — LA 버튼 `laCandidate`(LA에 보이는 열차)를 live 해소 없이 그대로 신뢰하는 발사 후 창.
+ * 10/21 F4(`plan-2026-10-21-sleep-trip-quickfixes.md`) "도착확정 발사 + 3분 내 탭이면 프롬프트 열차" 채택.
+ * 이 창을 넘기면 live 재조회가 먼저이고 후보는 live none일 때의 fallback(`RECENT_PROMPT_CANDIDATES_TTL_MS` 한도)이다.
+ */
+export const PROMPT_TRAIN_TRUST_WINDOW_MS = 3 * 60 * 1000;
+
+/**
  * #3057 — 도착 확정으로 인정하는 realtimePosition trainSttus -> 합성 arvlCd 명시 매핑.
  * 두 코드 체계(`TRAIN_STATUS` vs `ARRIVAL_CODE`)는 숫자가 우연히 겹칠 뿐 다른 체계라(alarm.ts 경고)
  * 암묵 대입하지 않고 의미 단위로 매핑한다. 1 도착 -> 1 도착, 2 출발 -> 2 출발.
