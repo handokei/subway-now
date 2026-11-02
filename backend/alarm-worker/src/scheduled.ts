@@ -1683,6 +1683,8 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     pendingActivityPossible: true,
     // #2615 — 아래 main loop에서 lock-active 미확증 trip을 append.
     midCycleSnapshot: [],
+    // #3005 F-E1 — cleanupTripWithLa가 채운다. mid-cycle 후보에서 끝난 트립을 거른다.
+    tripEndedTokens: new Set<string>(),
   };
 }
 
@@ -2385,7 +2387,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // 위치 따라잡기로 head가 열차 위치까지 올라온 뒤에는 새 head의 조기 도착도 mid pass가 확인해야 한다.
     // trip/lock은 이번 tick 중 mutate됐을 수 있는 최신 참조를 그대로 담는다(예: vanish-swap trainCode 교체).
     const postWaypoint = pickActiveWaypoint(trip);
-    if (isBoardingLockActive(trip, now) && postWaypoint !== null) {
+    // #3005 F-E1 — 이 tick에 종료된 트립은 담지 않는다(in-memory 신호, KV read 0). 트립 186: 1차 pass가 게이트로
+    // 도착 push를 막고 같은 tick에 트립을 끝냈는데, 메모리의 trip.boardingLock이 살아 있어 mid-cycle이 또 쐈다.
+    if (isBoardingLockActive(trip, now) && postWaypoint !== null && !stats.tripEndedTokens?.has(trip.token)) {
       stats.midCycleSnapshot.push({ trip, waypoint: postWaypoint, lock: trip.boardingLock });
     }
   }
@@ -2920,6 +2924,22 @@ async function isStationPassedFired(
     codes.map(async (code) => (await env.TRIPS.get(stationPassedFiredKey(trip.token, code, stationName))) !== null),
   );
   return found.some(Boolean);
+}
+
+/**
+ * #3100 F-S2 — 종료 alert가 하차 도착 알림을 겸해야 하는가. lock-active 종료(`lock-active-destination`,
+ * waypoints 소진) 공용. 도착 push가 게이트/무발사로 안 나갔다면(dedup 마커 없음) 겸한다 — 소리는 정책 표가 정한다.
+ * 이미 나갔으면 false(알람 정확히 1회). lock 없음 = 알림 없음(2026-10-24) -> false. read 실패는 miss 회피로 true.
+ * gps-far backstop(사용자가 멀리 있음)과 lockless 종료는 이 함수를 쓰지 않는다 -> 무음 유지.
+ */
+async function shouldCombineArrivalAlert(env: Env, trip: Trip, stationName: string): Promise<boolean> {
+  const { boardingLock } = trip;
+  if (boardingLock === undefined) return false;
+  try {
+    return !(await isStationPassedFired(env, trip, boardingLock, stationName));
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -6619,9 +6639,11 @@ export async function advanceBoardingLockWaypoint(
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
     await beforeDestinationEnd?.();
+    const arrivalAlert = await shouldCombineArrivalAlert(env, trip, waypoint.stationName);
     await cleanupTripWithLa(trip, env, deps, stats, now, log, {
       reason: 'destination-arrived',
       endPath: 'lock-active-destination',
+      arrivalAlert,
     });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT 도 cleanup. cleanupTripWithLa 가 throw 하면
     // SSoT 가 남아있을 수 있으나 본 PR 스코프 외 (다음 cron 의 stale 정리 path 는 후속 PR).
@@ -7088,6 +7110,7 @@ export async function completeWaypointAdvance(
     await cleanupTripWithLa(trip, env, deps, stats, now, log, {
       reason: 'destination-arrived',
       endPath,
+      arrivalAlert: await shouldCombineArrivalAlert(env, trip, waypoint.stationName),
     });
     // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
     await deleteSsot(env.TRIPS, trip.token);
