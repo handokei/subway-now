@@ -629,6 +629,12 @@ export interface Trip {
   /** #3036 (O3) — trackingOptIn-only 출발역 질문 허용 창. 부재(구 backend 등록)면 현행 fail-closed 유지. */
   originPromptWindow?: OriginPromptWindow;
   /**
+   * #3036 PR-3c — 출발역 arrival 조회를 다시 시작할 시각(epoch ms). 발사 성공 `onFired`에서만 기록한다(기존 putTrip 편승 — KV
+   * 쓰기 +0): 발사 cycle pool의 다음 같은 방향 열차 ETA - 120s. 이 시각 전에는 position 확정이 없는 cycle의 arrival 조회를
+   * 건너뛴다(position 읽기는 매 cycle 유지). 부재 = 매 cycle 조회(현행) — ETA 모름/구 trip/첫 발사 전.
+   */
+  originPromptNextLookupAt?: number;
+  /**
    * #2230 — destination(또는 마지막 intermediate = effective destination) 도착 advance가 최초로
    * 평가된 시각(epoch ms). `advanceBoardingLockWaypoint`의 cleanup-advance 분기(gps-far
    * cross-check 대상) 진입 시점에 최초 1회만 stamp된다.

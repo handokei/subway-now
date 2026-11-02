@@ -306,6 +306,41 @@ export function mergePositionConfirmedIntoPool(
   return merged;
 }
 
+/**
+ * #3036 PR-3c — 출발역 arrival 조회 재개 여유(ms). 다음 같은 방향 열차의 예측 도착 `ETA - 이 값`부터 다시 조회한다.
+ * 사용자 아이디어("그 1분 전부터 다시 받아오는거")의 60s를 실측으로 120s에 맞췄다: Seoul arrival ETA는 실제 도착보다
+ * 중앙값 40s 늦고(198건: min -122s / p10 -82s / max +110s), 재개 임계별 "도착 전에 재개되는 비율"이 60s=76% /
+ * 90s=92% / 120s=99.5%(197/198). 어차피 발사 순간은 position 확정이 보장하므로(조회는 본문 ETA·종착역용) 120s로 충분하다.
+ */
+export const ORIGIN_LOOKUP_RESUME_LEAD_MS = 120_000;
+/** #3036 PR-3c — 발사 시각으로부터 조회를 미룰 수 있는 상한. ETA가 비정상으로 크게 나와도 질문 본문이 영구 stale해지지 않게 한다. */
+export const ORIGIN_LOOKUP_DEFER_MAX_MS = 15 * 60_000;
+
+/**
+ * #3036 PR-3c — 발사 cycle의 pool에서 "다음 arrival 조회 시각"을 계산한다. 발사 열차(`excludeTrainCodes`)와 이미 역에 있는
+ * 열차(ETA 0)를 제외한 가장 이른 다음 열차 ETA - `ORIGIN_LOOKUP_RESUME_LEAD_MS`. ETA를 모르거나(null) 후보가 없거나 120s 이내로
+ * 임박해 건너뛸 cycle이 없으면 undefined(= 매 cycle 조회, 현행). 상한은 `ORIGIN_LOOKUP_DEFER_MAX_MS`.
+ */
+export function computeOriginNextLookupAt(
+  pool: readonly Pick<ArrivalEntry, 'trainCode' | 'arrivalSeconds'>[],
+  inputs: { now: number; excludeTrainCodes: readonly string[] },
+): number | undefined {
+  const { now, excludeTrainCodes } = inputs;
+  const etaSeconds = pool
+    .filter((entry) => !excludeTrainCodes.includes(entry.trainCode))
+    .map((entry) => entry.arrivalSeconds)
+    .filter((seconds): seconds is number => seconds !== null && seconds > 0);
+  if (etaSeconds.length === 0) return undefined;
+  const resumeAt = now + Math.min(...etaSeconds) * 1000 - ORIGIN_LOOKUP_RESUME_LEAD_MS;
+  if (resumeAt <= now) return undefined;
+  return Math.min(resumeAt, now + ORIGIN_LOOKUP_DEFER_MAX_MS);
+}
+
+/** #3036 PR-3c — 저장된 다음 조회 시각 전이면 arrival 조회를 보류한다(저장값 없음 = 보류 아님). */
+export function isOriginArrivalLookupDeferred(nextLookupAt: number | undefined, now: number): boolean {
+  return nextLookupAt !== undefined && now < nextLookupAt;
+}
+
 /** #3057 — 도착 확정 발사(imminent/position-confirmed)인가. fallback-unobservable은 미확정이다. */
 export function isArrivalConfirmedDecision(decision: BoardingFireDecision['decision']): boolean {
   return decision === 'imminent' || decision === 'position-confirmed';

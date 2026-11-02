@@ -156,8 +156,8 @@ describe('#3036 PR-3c — 합성 변형(실측 fixture 복제 + 해당 행만 �
 
   it('[합성] position 스냅샷이 비어 있으면(self-poll 실패) 보류를 무시하고 매분 조회', async () => {
     const fixture = cloneFixture(morning1028Fixture());
-    // 7035 발사 이후(06:28:00~)의 7호선 position 유실 -> 보류가 안전하지 않다.
-    fixture.entries = fixture.entries.filter((e) => !(e.kind === 'position' && e.target === '7호선' && e.tMs > fixture.window.fromMs + 90_000));
+    // 첫 cycle 이후 7호선 position 유실(harness의 90s stale 재서빙이 끝난 06:28:46~) -> 스냅샷이 비어 보류가 안전하지 않다.
+    fixture.entries = fixture.entries.filter((e) => !(e.kind === 'position' && e.target === '7호선' && e.tMs > fixture.window.fromMs + 30_000));
     const result = await replayMorning(fixture);
     expect(boardingPromptsOf(result)).toEqual([['06:27:46', '7035']]);
     // 발사가 1건뿐이라 조회가 끝까지 이어진다 — 매 cycle(보류 없음).

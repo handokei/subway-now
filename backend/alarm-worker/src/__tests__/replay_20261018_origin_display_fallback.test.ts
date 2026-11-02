@@ -94,6 +94,7 @@ function makeEmptyStats(): ScheduledStats {
     originGpsFreeBoardingPromptFired: 0,
     originGpsFreeBoardingPromptBlocked: 0,
     originGpsFreeSnapshotDistrusted: 0,
+    originGpsFreeArrivalLookupDeferred: 0,
     trackingOptInProximityMissingBlocked: 0,
     originGpsFreeDisplayDerived: 0,
     originGpsFreeDisplayDerivationFailed: 0,
