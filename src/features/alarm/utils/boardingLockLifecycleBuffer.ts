@@ -26,6 +26,8 @@ export type LockLifecycleCreateSource =
   // #3055 — PENDING lock을 boarding-confirm 응답으로 실 열차에 승격한 건. 생성('boarding-prompt-response')
   // 과 덤프에서 구분하기 위한 전용 라벨.
   | 'boarding-confirm-response'
+  // #3055 PR-1 — native LA 버튼 POST 응답(nativePost.resolvedTrainCode)으로 기기에 lock이 없던 상태에서 생성한 건.
+  | 'la-native-response'
   | 'other';
 
 export interface LockLifecycleCreateEntry {

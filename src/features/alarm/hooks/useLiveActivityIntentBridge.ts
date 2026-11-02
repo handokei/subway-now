@@ -39,11 +39,14 @@ import { lineCodeFromApiName } from '../../../shared/constants/lineApiNames';
 import {
   LIVE_ACTIVITY_INTENT_POLL_MS,
   LIVE_ACTIVITY_INTENT_STALE_MS,
+  NATIVE_CONFIRM_WAIT_MS,
   isRealBoardingLock,
 } from '../../../shared/constants/boardingLock';
+import type { LaCandidate } from '../../../shared/types/boardingLock';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { isDuplicateBoardingLock } from '../utils/duplicateBoardingLock';
 import { endBoardingActivity } from '../utils/boardingActivityChannel';
+import { applyLaNativeResolution } from '../utils/applyLaNativeResolution';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
@@ -59,6 +62,17 @@ import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('liveActivityIntentBridge');
 
+/**
+ * #3055 PR-1 — native intent가 자기 boarding-confirm POST의 결과를 App Group에 남긴 기록.
+ * `'in-flight'` = POST 진행 중(브릿지는 예산 내 보류), 객체 = 완료(`status` 0 = 실패/타임아웃).
+ */
+export interface NativePostResult {
+  status: number;
+  resolvedTrainCode?: string;
+  lockState?: string;
+  atMs: number;
+}
+
 /** App Group pending boarding intent — native AppIntent가 write하는 schema. */
 export interface PendingBoardingIntent {
   id: string;
@@ -67,6 +81,10 @@ export interface PendingBoardingIntent {
   originStation: string;
   line: string;
   atMs: number;
+  /** #3055 PR-1 — LA 카드가 싣던 발사 열차(없으면 구 native/미지원 카드). 부재 = 현행 경로. */
+  laCandidate?: LaCandidate;
+  /** #3055 PR-1 — native POST 결과. 부재 = 구 native → 현행 경로. */
+  nativePost?: 'in-flight' | NativePostResult;
 }
 
 const VALID_ACTIONS: readonly PendingBoardingIntent['action'][] = [
@@ -80,12 +98,39 @@ const VALID_ACTIONS: readonly PendingBoardingIntent['action'][] = [
  * #2470 — 알림 대칭 액션(미탑승/아직이요) 포함 4종 action → handleResponse 호출 파라미터
  * data-driven 매핑(글로벌 규칙 3, 하드코딩 삼항 금지).
  */
-const ACTION_MAP: Record<PendingBoardingIntent['action'], { actionIdentifier: string; hopEnd: boolean }> = {
-  BOARDING_BOARDED: { actionIdentifier: BOARDING_PROMPT_ACTION_BOARDED, hopEnd: false },
-  BOARDING_NOT_BOARDED: { actionIdentifier: BOARDING_PROMPT_ACTION_NOT_BOARDED, hopEnd: false },
-  DISEMBARK_DISEMBARKED: { actionIdentifier: DISEMBARK_ACTION_DISEMBARKED, hopEnd: true },
-  DISEMBARK_NOT_YET: { actionIdentifier: DISEMBARK_ACTION_NOT_YET, hopEnd: true },
+const ACTION_MAP: Record<
+  PendingBoardingIntent['action'],
+  { actionIdentifier: string; hopEnd: boolean; nativeConfirm: boolean }
+> = {
+  // nativeConfirm: native intent가 boarding-confirm을 직접 POST하고 결과를 `nativePost`로 남기는 action.
+  BOARDING_BOARDED: { actionIdentifier: BOARDING_PROMPT_ACTION_BOARDED, hopEnd: false, nativeConfirm: true },
+  BOARDING_NOT_BOARDED: { actionIdentifier: BOARDING_PROMPT_ACTION_NOT_BOARDED, hopEnd: false, nativeConfirm: false },
+  DISEMBARK_DISEMBARKED: { actionIdentifier: DISEMBARK_ACTION_DISEMBARKED, hopEnd: true, nativeConfirm: true },
+  DISEMBARK_NOT_YET: { actionIdentifier: DISEMBARK_ACTION_NOT_YET, hopEnd: true, nativeConfirm: false },
 };
+
+/** 형식이 맞는 laCandidate만 통과 — 불량은 무시(현행 경로, 400 아님). */
+function parseLaCandidate(raw: unknown): LaCandidate | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { trainCode, issuedAtMs } = raw as Record<string, unknown>;
+  if (typeof trainCode !== 'string' || trainCode.length === 0) return undefined;
+  if (typeof issuedAtMs !== 'number' || !Number.isFinite(issuedAtMs)) return undefined;
+  return { trainCode, issuedAtMs };
+}
+
+/** `'in-flight'` 또는 완료 객체만 통과 — 불량은 무시(구 native와 동일하게 현행 경로). */
+function parseNativePost(raw: unknown): PendingBoardingIntent['nativePost'] {
+  if (raw === 'in-flight') return raw;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { status, resolvedTrainCode, lockState, atMs } = raw as Record<string, unknown>;
+  if (typeof status !== 'number' || typeof atMs !== 'number') return undefined;
+  return {
+    status,
+    atMs,
+    ...(typeof resolvedTrainCode === 'string' && resolvedTrainCode.length > 0 ? { resolvedTrainCode } : {}),
+    ...(typeof lockState === 'string' ? { lockState } : {}),
+  };
+}
 
 /**
  * `readPendingBoardingIntent()`가 반환한 raw JSON 문자열을 파싱 + 검증한다.
@@ -106,6 +151,8 @@ export function parsePendingBoardingIntent(raw: string): PendingBoardingIntent |
   if (typeof o.originStation !== 'string' || o.originStation.length === 0) return null;
   if (typeof o.line !== 'string' || o.line.length === 0) return null;
   if (typeof o.atMs !== 'number') return null;
+  const laCandidate = parseLaCandidate(o.laCandidate);
+  const nativePost = parseNativePost(o.nativePost);
   return {
     id: o.id,
     tripToken: o.tripToken,
@@ -114,6 +161,8 @@ export function parsePendingBoardingIntent(raw: string): PendingBoardingIntent |
     // #3055 — 탑승 LA(split) 버튼은 content.line(정식 노선명 '7호선')을 보낸다. 코드로 환원.
     line: lineCodeFromApiName(o.line),
     atMs: o.atMs,
+    ...(laCandidate !== undefined ? { laCandidate } : {}),
+    ...(nativePost !== undefined ? { nativePost } : {}),
   };
 }
 
@@ -171,6 +220,9 @@ function extractRawIntentId(raw: string): string | null {
   }
 }
 
+/** 처리 중인 intent id — 모듈 레벨(훅 인스턴스·리렌더와 무관하게 단일). `finally`에서 해제. */
+const inFlightIntentIds = new Set<string>();
+
 async function processPendingBoardingIntent(deps: BridgeDeps, nowMs: number): Promise<void> {
   let raw: string | null;
   try {
@@ -200,7 +252,57 @@ async function processPendingBoardingIntent(deps: BridgeDeps, nowMs: number): Pr
     return;
   }
 
-  if (intent.action === 'BOARDING_BOARDED' && isDuplicateBoardingIntent(intent)) {
+  // #3055 PR-1 — 재진입 가드. clear는 아래 `await` 이후라 POST가 도는 동안 같은 intent가 다시 읽힌다(11/02
+  // 19:55:00·:04 두 번 처리 → PENDING 2회). 트리거는 (T1) RootLayout 리렌더(inline deps → run 재생성),
+  // (T2) AppState active 전이 즉시 실행, (T3) 5s 폴링 — 전부 이 진입점으로 모이므로 id 단위로 한 번만 통과시킨다.
+  if (inFlightIntentIds.has(intent.id)) return;
+  inFlightIntentIds.add(intent.id);
+  try {
+    await handleIntent(intent, deps, nowMs);
+  } catch (err) {
+    // 처리 중 예외는 clear하지 않는다 — 다음 실행이 재시도하고, 5분(stale)이면 위 게이트가 폐기한다.
+    log.warn('pending boarding intent 처리 실패 — 다음 실행에서 재시도', err as Error);
+  } finally {
+    inFlightIntentIds.delete(intent.id);
+  }
+}
+
+/** 브릿지가 이 intent를 어떻게 처리할지 — native 응답(`nativePost`) 상태에서 결정한다. */
+type IntentRoute =
+  | { kind: 'wait' }
+  | { kind: 'apply-native'; resolvedTrainCode: string }
+  | { kind: 'handle'; skipBackendForward: boolean };
+
+const HANDLE_ROUTE: IntentRoute = { kind: 'handle', skipBackendForward: false };
+
+function isSuccessStatus(status: number): boolean {
+  return status >= 200 && status < 300;
+}
+
+function decideIntentRoute(intent: PendingBoardingIntent, nowMs: number): IntentRoute {
+  const { nativePost } = intent;
+  if (!ACTION_MAP[intent.action].nativeConfirm || nativePost === undefined) return HANDLE_ROUTE;
+  if (nativePost === 'in-flight') {
+    // 대기 예산 내 보류. 예산 경과 후엔 native 결과와 무관하게 fallback(위젯 프로세스가 죽어 in-flight가 남는 경우).
+    return nowMs - intent.atMs <= NATIVE_CONFIRM_WAIT_MS ? { kind: 'wait' } : HANDLE_ROUTE;
+  }
+  if (!isSuccessStatus(nativePost.status)) return HANDLE_ROUTE;
+  if (intent.action === 'DISEMBARK_DISEMBARKED') {
+    // native가 backend에 'disembarked'를 이미 반영했다 — 로컬 하차 처리만 하고 forward는 생략.
+    return { kind: 'handle', skipBackendForward: true };
+  }
+  const { resolvedTrainCode } = nativePost;
+  return resolvedTrainCode === undefined ? HANDLE_ROUTE : { kind: 'apply-native', resolvedTrainCode };
+}
+
+async function handleIntent(intent: PendingBoardingIntent, deps: BridgeDeps, nowMs: number): Promise<void> {
+  const route = decideIntentRoute(intent, nowMs);
+  if (route.kind === 'wait') return;
+
+  let shouldRetry = false;
+  if (route.kind === 'apply-native') {
+    await applyLaNativeResolution(intent, route.resolvedTrainCode, deps);
+  } else if (intent.action === 'BOARDING_BOARDED' && isDuplicateBoardingIntent(intent)) {
     log.info('duplicate boarding intent — active lock already exists, no-op');
   } else {
     const mapped = ACTION_MAP[intent.action];
@@ -210,9 +312,16 @@ async function processPendingBoardingIntent(deps: BridgeDeps, nowMs: number): Pr
       line: intent.line,
       tripToken: intent.tripToken,
       hopEndKind: mapped.hopEnd ? 'disembark' : undefined,
+      // 방향·trainCode는 싣지 않는다 — 열차 판정은 backend(PENDING + 응답 승격). 후보는 전달만.
+      ...(intent.laCandidate !== undefined ? { laCandidate: intent.laCandidate } : {}),
+      source: 'la-bridge',
+      ...(route.skipBackendForward ? { skipBackendForward: true } : {}),
     };
-    await handleResponse(mapped.actionIdentifier, payload, deps);
+    const outcome = await handleResponse(mapped.actionIdentifier, payload, deps);
+    // POST를 시도했는데 응답 자체를 못 받았으면(status 없음) clear하지 않고 다음 실행에서 재시도한다.
+    shouldRetry = outcome?.posted === true && outcome.status === undefined;
   }
+  if (shouldRetry) return;
 
   // #3221 PR-4 (B2) — LA 버튼 응답을 처리했다(중복 no-op 포함). native `BoardingIntents`가 낙관적으로 카드를
   // 닫지만 앱이 JS로 처리한 시점에 한 번 더 닫아 두 경로 중 하나가 실패해도 카드가 남지 않게 한다(멱등).

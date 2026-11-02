@@ -31,7 +31,12 @@ import { snapToLinePolyline } from '../../route/utils/linePolyline';
 import { isLineNumber } from '../../route/utils/lineGuard';
 import { findNearestStation } from '../utils/findNearestStation';
 import type { LineNumber } from '../../../shared/types/station';
-import { BOARDING_RESOLVE_TIERS, type BoardingResolveTier } from '../../../shared/types/boardingLock';
+import {
+  BOARDING_RESOLVE_TIERS,
+  type BoardingConfirmSource,
+  type BoardingResolveTier,
+  type LaCandidate,
+} from '../../../shared/types/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 import { haversine } from '../../../shared/utils/haversine';
 import type { AccelSummary } from '../utils/accelMotion';
@@ -174,6 +179,19 @@ export interface PositionUploadResult {
   resolvedTrainCode?: string;
   /** #3055 — 위 해소가 최후 tier로 수용된 건이면 그 라벨. 부재 = 일반 tier. */
   resolveTier?: BoardingResolveTier;
+}
+
+/**
+ * #3055 — `postBoardingConfirm`의 optional body 필드. 키가 없으면 body에도 키 자체를 넣지 않는다
+ * (backend `validateBoardingConfirmPayload` 하위호환).
+ *  - `trainCode`: 알림 탭 시 기기가 재확정/embed한 열차(#2961/#3028).
+ *  - `laCandidate`: LA 카드가 보이던 발사 열차(PR-3b가 최신 발사 검증에 사용). 기기는 전달만 한다.
+ *  - `source`: 채널 라벨(D1 meta 집계).
+ */
+export interface BoardingConfirmOptions {
+  trainCode?: string;
+  laCandidate?: LaCandidate;
+  source?: BoardingConfirmSource;
 }
 
 // Seam E (#901) — getBackendUrl/fetchWithTimeout은 backendHttp.ts로 추출 (boardingLockSync도 재사용).
@@ -463,8 +481,9 @@ export async function postBoardingConfirm(
   action: 'boarded' | 'disembarked' | 'not-boarded',
   station: string,
   line: string,
-  trainCode?: string,
+  options: BoardingConfirmOptions = {},
 ): Promise<PositionUploadResult> {
+  const { trainCode, laCandidate, source } = options;
   const base = getBackendUrl();
   if (!base) {
     log.info('ALARM_BACKEND_URL not set — skip boarding-confirm');
@@ -482,6 +501,8 @@ export async function postBoardingConfirm(
           station,
           line,
           ...(trainCode !== undefined ? { trainCode } : {}),
+          ...(laCandidate !== undefined ? { laCandidate } : {}),
+          ...(source !== undefined ? { source } : {}),
         }),
       },
     );

@@ -306,6 +306,15 @@ export const LIVE_ACTIVITY_INTENT_POLL_MS = 5_000;
 export const LIVE_ACTIVITY_INTENT_STALE_MS = 5 * 60_000;
 
 /**
+ * #3055 PR-1 — native LA 버튼 intent가 `nativePost: 'in-flight'`일 때 브릿지가 native POST 결과를
+ * 기다려 주는 **대기 예산**(ms). native 완료 상한이 아니다: 위젯 확장 프로세스가 POST 중 종료되면
+ * `in-flight`가 영원히 남을 수 있으므로, 예산이 지나면 native 결과와 무관하게 브릿지가 fallback
+ * POST로 진행한다(backend 2번째 요청은 기존 lock 유지 분기라 같은 열차를 돌려줘 정확성 유지).
+ * native는 POST를 총 10s 마감으로 감싸므로(PR-2) 15s = 마감 + 기록 지연 여유.
+ */
+export const NATIVE_CONFIRM_WAIT_MS = 15_000;
+
+/**
  * #2709 — lock 신원(trainCode/boardingLine) → backend 전달 경로 통합. `useBoardingLockSync`의
  * lock-identity effect가 POST 실패(네트워크/5xx) 시 이 backoff로 재시도한다. lock이 backend
  * ADR-038 Phase 2(#2560, `buildLockFromKnownTrainCode`) 승격 경로의 유일한 입력이므로 — 이
