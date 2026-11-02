@@ -22,7 +22,8 @@ import { isDegenerateDestination } from '../features/route/utils/isDegenerateDes
 import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { routeToCoordinates, type RouteCoordinatePath } from '../features/route/utils/routeToCoordinates';
 import type { Route } from '../shared/utils/stationRoute';
-import { ROUTE_KEY } from '../shared/constants/storageKeys';
+import { DESTINATION_KEY, ROUTE_KEY } from '../shared/constants/storageKeys';
+import { readStoredRouteLogged } from '../features/alarm/utils/readStoredRouteLogged';
 import { MIN_TOUCH_TARGET } from '../shared/constants/touchTarget';
 import {
   FAVORITE_SLOT_ICONS,
@@ -75,18 +76,11 @@ export default function MapScreen() {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      AsyncStorage.getItem(ROUTE_KEY)
-        .then((raw) => {
+      // #3177 PR-2b — 구버전 저장 경로(id 없음)는 공용 파서가 하차 승강장 id를 채운다.
+      Promise.all([AsyncStorage.getItem(ROUTE_KEY), AsyncStorage.getItem(DESTINATION_KEY)])
+        .then(([routeRaw, destinationRaw]) => {
           if (cancelled) return;
-          if (!raw) {
-            setStoredRoute(null);
-            return;
-          }
-          try {
-            setStoredRoute(JSON.parse(raw) as Route);
-          } catch {
-            setStoredRoute(null);
-          }
+          setStoredRoute(readStoredRouteLogged(routeRaw, destinationRaw));
         })
         .catch(() => {
           if (!cancelled) setStoredRoute(null);

@@ -259,7 +259,8 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     expect(station).toEqual(bgStation.station);
     expect(distanceM).toBe(150); // 0.15 km → 150 m
     expect(dest).toEqual(destination);
-    expect(route).toEqual(directRoute);
+    // #3177 — 저장 경로는 readStoredRoute를 거쳐 목적지 id가 채워진다(구버전 JSON 마이그레이션).
+    expect(route).toEqual({ ...directRoute, destinationStationId: destination.id });
     expect(eta).toBeNull();
     expect(isMock).toBe(false);
     expect(alarm).toBeNull();
