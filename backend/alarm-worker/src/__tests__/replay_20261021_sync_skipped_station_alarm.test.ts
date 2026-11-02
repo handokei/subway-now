@@ -120,9 +120,9 @@ describe('트립 171 — sync가 소비한 직전역(성수)의 취침/준비 �
     expect(after?.lock).toBe('3013');
   });
 
-  it('비취침: 같은 상황에서 준비 알람(alert)이 정확히 1번, companion은 0', async () => {
+  it('[#2510 반전] 비취침: 같은 상황에서 1정거장 전 알람(alert) 0, companion 0 (알람은 취침 전용)', async () => {
     const r = await replay171({ sleep: false });
-    expect(alarmAlerts(r.httpPushes)).toHaveLength(1);
+    expect(alarmAlerts(r.httpPushes)).toEqual([]);
     expect(sleepCompanions(r.httpPushes)).toEqual([]);
   });
 

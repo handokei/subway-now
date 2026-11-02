@@ -7,7 +7,6 @@ import { compareEtaUnknownLast, hasKnownEta, minKnownEtaSeconds } from './arriva
 import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
 import {
   boardingPromptCollapseId,
-  prepareAlarmCollapseId,
   sleepAlarmCollapseId,
   stationNotifCollapseId,
 } from './collapseId';
@@ -183,6 +182,12 @@ import { assertNever } from '../../../src/shared/types/pushContract';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
 import { sleepAlarmContent, t, type StationNotifCounts, type SupportedLocale } from './i18n';
+import {
+  resolveStationAlert,
+  sendStationAlert,
+  stationAlertKind,
+  type ArrivalContent,
+} from './alertSoundPolicy';
 import {
   checkArvlCdFireOnce,
   isSimpleArchEnabled,
@@ -1292,16 +1297,6 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   sleepAlarmRolledBack: number;
   /**
-   * #2510 — "1정거장 전" 준비 진동(ACTION, 전체 트립 대상)이 성공 발사된 누적 횟수.
-   * `maybeFireSleepAlarm`의 비취침 대응판(`maybeFirePrepareAlarm`) — sleepModeEnabled===true
-   * trip은 대신 `sleepAlarmFired`로 집계된다(상호 배타).
-   */
-  prepareAlarmFired: number;
-  /** #2510 — 같은 (tripToken, targetStation) 1h dedup으로 차단된 누적 횟수. */
-  prepareAlarmDedupSkipped: number;
-  /** #2510 — 발사 실패로 dedup claim을 rollback한 누적 횟수 (`sleepAlarmRolledBack`과 동형). */
-  prepareAlarmRolledBack: number;
-  /**
    * #2157 (2026-08-05 결정 A) — eta-missing 임계(`resolveEtaMissingThreshold`) 도달 시 trip을
    * 강제 종료하는 대신 lock만 해제하고 lockless로 강등한 누적 횟수. seoul-outage(httpErrorCount>0)
    * 분기는 기존대로 `cleanupTripWithLa`를 타므로 본 카운터에 집계되지 않는다 — 순수 eta-missing만.
@@ -1670,10 +1665,6 @@ export function createEmptyScheduledStats(now: number): ScheduledStats {
     sleepAlarmFired: 0,
     sleepAlarmDedupSkipped: 0,
     sleepAlarmRolledBack: 0,
-    // #2510 — 준비 진동(ACTION, 전체 트립) 발사/skip 카운터.
-    prepareAlarmFired: 0,
-    prepareAlarmDedupSkipped: 0,
-    prepareAlarmRolledBack: 0,
     // #2157 — eta-missing 강등 + 재확인 push 카운터.
     etaMissingDemoted: 0,
     trainReconfirmFired: 0,
@@ -3060,13 +3051,13 @@ export function buildStationNotifContent(
   trip: Trip,
   waypoint: Waypoint,
   locale: SupportedLocale | undefined,
-): { title: string; body: string } {
+): ArrivalContent {
   const strings = t(locale);
   const counts = deriveStationNotifContext(trip, waypoint);
   return {
     title: strings.stationNotifTitle(waypoint.kind, waypoint.stationName),
     body: strings.stationNotifBody(waypoint.kind, waypoint.stationName, counts),
-  };
+  } as ArrivalContent;
 }
 
 /** kind별 i18n 입력: intermediate=남은 정거장+target, transfer=갈아탈 노선/방면, destination=없음. */
@@ -3074,21 +3065,6 @@ function deriveStationNotifContext(trip: Trip, waypoint: Waypoint): StationNotif
   if (waypoint.kind === 'intermediate') return deriveStationNotifCounts(trip, waypoint);
   if (waypoint.kind === 'transfer') return deriveTransferNextLeg(trip, waypoint);
   return undefined;
-}
-
-/**
- * #2510 — 매역 알림(arvlCd 확정)의 sound/interruption-level. intermediate(#2507)는 무음 INFO를
- * 그대로 유지하고, transfer/destination(=하차/환승 준비 copy)은 도착 진동(ACTION, 전체 트립)으로
- * 승격한다 — 지금까지 sleep이 아니면 sound:null이라 "도착해도 무음"이던 회귀를 고친다.
- * `fireArvlCdStationPush`/`fireVanishFallbackStationPush`가 공유한다.
- */
-function stationNotifSoundFields(
-  kind: Waypoint['kind'],
-): { sound: string | null; interruptionLevel: 'active' | 'time-sensitive' } {
-  if (kind === 'intermediate') {
-    return { sound: null, interruptionLevel: 'active' };
-  }
-  return { sound: 'alarm.wav', interruptionLevel: 'time-sensitive' };
 }
 
 /**
@@ -3248,7 +3224,7 @@ function buildSleepAlarmRetryPayload(
  * #2066 (Phase 2-backend) — 취침 알람(원격 visible) 평가 + 발사.
  *
  * `evaluateSleepAlarmTrigger`로 조건을 평가하고, 통과 시 KV dedup(1h) 체크 후
- * visible alert push(주 채널, `sound: alarm.wav` + `interruption-level: time-sensitive`) +
+ * visible alert push(주 채널, 정책 표의 취침 `one-stop` 행 = alarm.wav + time-sensitive) +
  * companion silent push(kind `sleep-alarm-companion`, device TTS/진동 + OS 예약 cancel용)를
  * 같은 cron tick에서 동시 발사한다.
  *
@@ -3258,8 +3234,8 @@ function buildSleepAlarmRetryPayload(
  * 등록해 backoff 재발사 안전망을 확보한다(다른 fire path와 동일 패턴 재사용).
  *
  * "하지 말 것" 준수 — 매역 알림 경로(`fireArvlCdStationPush`/`fireVanishFallbackStationPush`)는
- * 건드리지 않는다. 본 함수는 별도 dedup namespace(`alarmFireKey:`)와 별도 push kind를 사용하는
- * 완전히 독립된 발사 경로다.
+ * 건드리지 않는다. 발사·dedup은 독립(별도 dedup namespace `alarmFireKey:`, 별도 collapse `alarm-`)이고,
+ * sound 정책만 `alertSoundPolicy.ts`를 공유한다.
  */
 async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<void> {
   const { trip, waypoint, nextWaypoint, crossing, source, env, deps, stats, now, log, generatePushId } = inputs;
@@ -3272,6 +3248,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
     // routine 분기라 로그 노이즈를 만들지 않는다 (매역 알림의 다른 skip 사유들과 동일 정책).
     return;
   }
+  // #2510 재오픈 — 1역 전 알람 발사 여부는 정책 표가 정한다(off면 alert·companion 모두 0, dedup 키도 소모하지 않는다).
+  if (!resolveStationAlert(trip, 'one-stop').fires) return;
   const { target, remaining, cells } = trigger;
   // 칸 단위 dedup(#3100 v2.1) — 후보 칸마다 키를 get해 이미 울린 칸을 제외한다. 기본값/매 역은 칸이 [remaining] 하나라
   // get/put 1쌍·키가 기존 그대로다. 선택 모드는 칸 != 남은 수(clamp)일 수 있다.
@@ -3304,15 +3282,11 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
   const alertPushId = generatePushId();
   const alertHeal = await sendWithEnvHeal(
     (host) =>
-      sendAlertPush({
+      sendStationAlert(trip, 'one-stop', content, {
         // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
         deviceToken: resolveTripDeviceToken(trip),
-        title: content.title,
-        body: content.body,
         pushId: alertPushId,
         tripToken: trip.token,
-        sound: 'alarm.wav',
-        interruptionLevel: 'time-sensitive',
         collapseId,
         config: deps.apnsConfig,
         host,
@@ -3457,212 +3431,6 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       env.DB,
     );
   }
-}
-
-export type PrepareAlarmSkipReason = 'not-preceding';
-
-/**
- * #2510 — "1정거장 전" 준비 진동(ACTION) 발사 조건 평가 (순수 함수, KV/네트워크 접근 없음).
- *
- * `evaluateSleepAlarmTrigger`와 동일한 intermediate → next(transfer|destination) 형태 매칭이지만
- * sleepModeEnabled 게이트가 없다 — "알람 진동 = 1정거장 전 + 도착" 아키텍처를 전체(비취침) 트립
- * 으로 확대하기 위한 병렬 트리거다. sleep 전용 companion push(TTS/OS 예약 cancel)는 이 경로에
- * 없다 — sleep trip은 `maybeFireSleepAlarm`이 계속 전담하고, `maybeFirePrepareAlarm` 호출자가
- * sleepModeEnabled===true trip을 스킵해 두 경로가 상호 배타적으로 동작한다(중복 발사 없음).
- */
-export function evaluatePrepareAlarmTrigger(
-  waypoint: Waypoint,
-  nextWaypoint: Waypoint | undefined,
-): { fire: true; target: Waypoint } | { fire: false; reason: PrepareAlarmSkipReason } {
-  if (
-    waypoint.kind !== 'intermediate' ||
-    nextWaypoint === undefined ||
-    (nextWaypoint.kind !== 'transfer' && nextWaypoint.kind !== 'destination')
-  ) {
-    return { fire: false, reason: 'not-preceding' };
-  }
-  return { fire: true, target: nextWaypoint };
-}
-
-/**
- * #2510 — 준비 진동 dedup KV prefix. sleep 알람(`alarmFireKey:`)과 완전히 분리된 namespace —
- * 같은 트립이 취침 토글을 전환해도 두 dedup이 서로 간섭하지 않는다.
- */
-export const PREPARE_ALARM_FIRE_KEY_PREFIX = 'prepareAlarmFireKey:';
-
-export function prepareAlarmFireKey(tripToken: string, targetStation: string): string {
-  return `${PREPARE_ALARM_FIRE_KEY_PREFIX}${tripToken}:${targetStation}`;
-}
-
-/** #2510 — 준비 진동 dedup TTL (1h, sleep 알람과 동일 정책). */
-export const PREPARE_ALARM_FIRE_DEDUP_TTL_SEC = 60 * 60;
-
-type PrepareAlarmOutcome = 'fired' | 'skipped' | 'rolled-back';
-
-/**
- * #3110 (진단 계측 only) — `maybeFirePrepareAlarm` 평가 outcome을 D1 `trip_events`
- * (kind='prepare-alarm')에 1행 append한다. waypoint advance 시점에만 호출되므로 tick 단위
- * flood가 아니고 KV write는 없다. 발사/advance 판정에는 관여하지 않는다.
- */
-async function recordPrepareAlarm(
-  env: Env,
-  trip: Trip,
-  waypoint: Waypoint,
-  outcome: PrepareAlarmOutcome,
-  target: Waypoint | undefined,
-  extra: Record<string, unknown>,
-  now: number,
-): Promise<void> {
-  await recordTripEvent(
-    env.DB,
-    {
-      tokenHash: hashTripToken(trip.token),
-      kind: 'prepare-alarm',
-      station: waypoint.stationName,
-      line: waypoint.line,
-      meta: {
-        outcome,
-        ...(target !== undefined ? { targetStation: target.stationName, targetKind: target.kind } : {}),
-        ...extra,
-      },
-    },
-    now,
-  );
-}
-
-interface MaybeFirePrepareAlarmInputs {
-  trip: Trip;
-  waypoint: Waypoint;
-  nextWaypoint: Waypoint | undefined;
-  env: Env;
-  deps: AlarmFireDeps;
-  stats: ScheduledStats;
-  now: number;
-  log: Logger;
-  generatePushId: () => string;
-}
-
-/**
- * #2510 — "1정거장 전" 준비 진동(ACTION) 평가 + 발사. sleep 알람(`maybeFireSleepAlarm`)의
- * 비취침 대응판 — 같은 트리거 모양(직전 intermediate → 다음 transfer/destination)을 전체 트립에
- * 적용한다. companion silent push는 발사하지 않는다(TTS/OS 예약 cancel은 sleep 전용 기능).
- *
- * "하지 말 것" 준수 — 매역 알림 경로(`fireArvlCdStationPush`/`fireVanishFallbackStationPush`)의
- * intermediate 무음 INFO(#2507)는 건드리지 않는다. 같은 (직전역) arvlCd 이벤트에서 두 채널이
- * 함께 발사될 수 있다 — INFO(무음, "OO역을 지나고 있어요")와 ACTION(진동, "곧 OO에 도착합니다.
- * 하차 준비하세요!")은 서로 다른 채널의 보완 정보이지 중복이 아니다.
- */
-async function maybeFirePrepareAlarm(inputs: MaybeFirePrepareAlarmInputs): Promise<void> {
-  const { trip, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId } = inputs;
-  // #3110 — 평가 outcome마다 D1 1행(관측 전용, 동작 불변).
-  const record = (outcome: PrepareAlarmOutcome, target?: Waypoint, extra: Record<string, unknown> = {}) =>
-    recordPrepareAlarm(env, trip, waypoint, outcome, target, extra, now);
-  // #3140 — lock 없는 트립은 알림이 없다(사용자 결정). maybeFireSleepAlarm과 같은 이유로 호출부가 아닌 여기서 막는다.
-  if (!isBoardingLockActive(trip, now)) {
-    await record('skipped', undefined, { reason: 'no-lock' });
-    return;
-  }
-  if (trip.sleepModeEnabled === true) {
-    // sleep trip은 maybeFireSleepAlarm이 동일 형태의 알람을 전담 — 상호 배타.
-    await record('skipped', undefined, { reason: 'sleep' });
-    return;
-  }
-  const trigger = evaluatePrepareAlarmTrigger(waypoint, nextWaypoint);
-  if (!trigger.fire) {
-    await record('skipped', undefined, { reason: trigger.reason });
-    return;
-  }
-  const target = trigger.target;
-  const dedupKey = prepareAlarmFireKey(trip.token, target.stationName);
-  const existingDedup = await env.TRIPS.get(dedupKey);
-  if (existingDedup !== null) {
-    stats.prepareAlarmDedupSkipped += 1;
-    log('prepare-alarm skip: dedup', {
-      token: trip.token.slice(0, 8),
-      station: waypoint.stationName,
-      target: target.stationName,
-    });
-    await record('skipped', target, { reason: 'dedup' });
-    return;
-  }
-  // claim 먼저 — cron tick 겹침 보호. 실패 시 아래에서 rollback.
-  await env.TRIPS.put(dedupKey, '1', { expirationTtl: PREPARE_ALARM_FIRE_DEDUP_TTL_SEC });
-
-  const content = buildStationNotifContent(trip, target, trip.locale);
-  const collapseId = prepareAlarmCollapseId(trip.token, target.stationName);
-  const pushId = generatePushId();
-  const heal = await sendWithEnvHeal(
-    (host) =>
-      sendAlertPush({
-        deviceToken: resolveTripDeviceToken(trip),
-        title: content.title,
-        body: content.body,
-        pushId,
-        tripToken: trip.token,
-        sound: 'alarm.wav',
-        interruptionLevel: 'time-sensitive',
-        collapseId,
-        config: deps.apnsConfig,
-        host,
-        fetchImpl: deps.fetchImpl,
-        now,
-      }),
-    trip.apnsEnv,
-    deps.apnsHosts,
-    log,
-    trip.token.slice(0, 8),
-    { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-  );
-  if (heal.correctedEnv) {
-    trip.apnsEnv = heal.correctedEnv;
-    stats.envCorrected += 1;
-  }
-
-  if (heal.result.ok) {
-    stats.prepareAlarmFired += 1;
-    log('prepare-alarm fired', {
-      token: trip.token.slice(0, 8),
-      station: waypoint.stationName,
-      target: target.stationName,
-    });
-    await record('fired', target, { pushId });
-    return;
-  }
-  stats.prepareAlarmRolledBack += 1;
-  await env.TRIPS.delete(dedupKey);
-  await record('rolled-back', target, {
-    pushId,
-    status: heal.result.status,
-    pushReason: heal.result.reason,
-  });
-  log('prepare-alarm: visible push failed (dedup rolled back)', {
-    token: trip.token.slice(0, 8),
-    target: target.stationName,
-    status: heal.result.status,
-    reason: heal.result.reason,
-  });
-  await enqueueRetryIfTransient(
-    env.PENDING_PUSHES,
-    {
-      pushId,
-      token: resolveTripDeviceToken(trip),
-      tripToken: trip.token,
-      payload: buildSleepAlarmRetryPayload(
-        pushId,
-        target,
-        target.kind === 'destination' ? 'destination' : 'transfer',
-        trip.token,
-        now,
-      ),
-      apnsEnv: heal.correctedEnv ?? trip.apnsEnv ?? 'sandbox',
-      status: heal.result.status,
-      reason: heal.result.reason,
-      now,
-      envMismatchExhausted: heal.envMismatchExhausted,
-    },
-    deps.archFlag,
-    env.DB,
-  );
 }
 
 /**
@@ -4140,12 +3908,13 @@ const FIRE_SKIP_REASON = {
 } as const;
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. sleep-transfer(B4)·
-// boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 arvlCd 기반 station-notif fire
-// path(본 함수 + fireVanishFallbackStationPush + runMidCycleFireOnly)에만 적용한다.
-// #3100 (ADR-048 개정) — mute는 intermediate 매역 한정이다. 취침 lock trip의 환승·하차 도착
-// station- push는 비취침과 동일하게(alarm.wav/time-sensitive) 발사한다(2026-10-25 사용자 결정).
-function isSleepMutedStationNotif(trip: Trip, waypoint: Waypoint): boolean {
-  return trip.sleepModeEnabled === true && waypoint.kind === 'intermediate';
+// boarding-prompt(B7/B8) 게이트와는 완전히 별개 — 이 분기는 역 도착 station- push(arrival-* 정책 행)에만 적용한다.
+// #3100 (ADR-048 개정) — mute는 intermediate 매역 한정이다(취침 x arrival-intermediate = off).
+// #2510 재오픈 — 발사 여부는 정책 표(`alertSoundPolicy.ts`)가 정한다: 취침 lock trip의 환승·하차 도착은
+// 취침 무관 발사(2026-10-25 결정 유지)하되 sound는 모드별(취침=alarm.wav·time-sensitive, 일반=정책 표
+// `NORMAL_ARRIVAL_ALERT`). 이 셀의 소비처는 `isStationArrivalAlertOff` 호출처(grep) — 함수명 열거 금지(낡는다).
+function isStationArrivalAlertOff(trip: Trip, waypoint: Waypoint): boolean {
+  return !resolveStationAlert(trip, stationAlertKind(waypoint.kind, 'arrival')).fires;
 }
 
 /**
@@ -4180,7 +3949,7 @@ export async function fireArvlCdStationPush(
   const ssotForFireGate = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
   });
-  if (isSleepMutedStationNotif(trip, waypoint)) {
+  if (isStationArrivalAlertOff(trip, waypoint)) {
     log('station-notif skip: sleep', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -4343,21 +4112,17 @@ export async function fireArvlCdStationPush(
   // (handleSilentPush)를 깨운다. station kind는 배너 no-op(#2088)이라 이중 배너 없이 SSoT
   // mirror(persistBackendSsotMirror)·BG 위젯 갱신(updateWidgetFromSilentPush)만 수행한다.
   const stationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
-  // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
-  const stationNotifSound = stationNotifSoundFields(waypoint.kind);
   // #3221 PR-3 — split trip의 intermediate는 일반 alert 대신 여정 LA 무음 update(실패/비대상이면 null -> 아래 일반 alert).
   const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log, stats });
   const heal = laHeal ?? await sendWithEnvHeal(
     (host) =>
-      sendAlertPush({
+      // #2510 재오픈 — sound/level은 정책 표(모드 x 종류)가 정한다: 환승·하차 도착 = 취침 alarm.wav / 일반 `NORMAL_ARRIVAL_ALERT`,
+      // intermediate = 무음 INFO(#2507).
+      sendStationAlert(trip, stationAlertKind(waypoint.kind, 'arrival'), stationNotifContent, {
         // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
         deviceToken: resolveTripDeviceToken(trip),
-        title: stationNotifContent.title,
-        body: stationNotifContent.body,
         pushId,
         tripToken: trip.token,
-        sound: stationNotifSound.sound,
-        interruptionLevel: stationNotifSound.interruptionLevel,
         // #2909 (ADR-040 0단계) — 역 단위 collapse. trip 단위였던 과거엔 같은 trip의
         // 역A 배너가 역B 배너에 덮여 알림센터에서 사라졌다(10/7 사용자 피드백). station을
         // 명시해 :4241(sync catch-up)과 동일하게 역마다 배너가 쌓이도록 통일한다.
@@ -4568,17 +4333,12 @@ async function sendStationPassedAlertPush(inputs: {
     archFlag: deps.archFlag,
   });
   const content = buildStationNotifContent(trip, waypoint, trip.locale);
-  const soundFields = stationNotifSoundFields(waypoint.kind);
   return sendWithEnvHeal(
     (host) =>
-      sendAlertPush({
+      sendStationAlert(trip, stationAlertKind(waypoint.kind, 'arrival'), content, {
         deviceToken: resolveTripDeviceToken(trip),
-        title: content.title,
-        body: content.body,
         pushId,
         tripToken: trip.token,
-        sound: soundFields.sound,
-        interruptionLevel: soundFields.interruptionLevel,
         // 역 단위 collapse-id (#2909, 코드리뷰 P1-5). 한 호출에서 여러 station push 가 연속 발사될 수 있고
         // (sync-skipped) 다음 cron 이 같은 역을 또 쏴도(mid-cycle) iOS 가 같은 token+station 만 최신으로 교체하며,
         // trip 단위 collapse 처럼 다른 역 배너를 덮거나 과거 역명이 살아남지 않는다.
@@ -4713,7 +4473,7 @@ async function fireEnteringStationPush(inputs: {
   generatePushId: () => string;
 }): Promise<void> {
   const { trip, waypoint, lock, env, deps, stats, ssot, now, log, generatePushId } = inputs;
-  if (isSleepMutedStationNotif(trip, waypoint)) return;
+  if (isStationArrivalAlertOff(trip, waypoint)) return;
   try {
     if (await isStationPassedFired(env, trip, lock, waypoint.stationName)) return;
   } catch {
@@ -4772,7 +4532,7 @@ export async function runMidCycleFireOnly(
 
   for (const { trip, waypoint, lock } of snapshot) {
     stats.evaluated += 1;
-    if (isSleepMutedStationNotif(trip, waypoint)) continue;
+    if (isStationArrivalAlertOff(trip, waypoint)) continue;
     const dedupKey = stationPassedFiredKey(trip.token, lock.trainCode, waypoint.stationName);
     if (firedKeys.has(dedupKey)) continue;
     // #2615 (재생 실증) — 이 1건은 예외적으로 KV GET을 허용한다. 스냅샷에 담긴 trip이 primary
@@ -4907,7 +4667,8 @@ export async function fireSyncSkippedStationPasses(
   generatePushId: () => string,
 ): Promise<SyncSkippedFireStats> {
   const stats: SyncSkippedFireStats = { fired: 0, failed: 0, dedupSkipped: 0, capSkipped: 0 };
-  if (trip.sleepModeEnabled === true) return stats;
+  // 취침 x arrival-intermediate = off (정책 표). 이 함수는 intermediate 매역만 발사하므로 표 셀 하나로 충분하다.
+  if (!resolveStationAlert(trip, 'arrival-intermediate').fires) return stats;
 
   // 코드리뷰 P1-2 — newest-first. 관측역에 가장 가까운 역부터 cap 예산을 소비해, 초과분이
   // 발생하면 가장 오래된 역부터 밀려난다(`stats.fired >= CAP` 체크가 이 순서를 그대로 따름).
@@ -5010,7 +4771,7 @@ export async function fireSyncSkippedStationPasses(
  * 먼저 소비하면 영구 유실됐다(10/28 180 17:17:06 건대입구). 발송은 매역 공용 `sendStationPassedAlertPush`(origin 'device-sync'),
  * dedup은 경로-무관 `stationPassedFiredKey`(진입/도착 발사가 이미 stamp했으면 push 0) — 키는 발사 **성공 후** put.
  * 호출자는 lock 활성 시점(소비 직전)의 `lock`을 넘긴다 — lockless/PENDING은 알림 없음(#3140)이라 발사 0.
- * 취침 mute 대상이 아니다(`isSleepMutedStationNotif`는 intermediate만). skipped intermediate cap(`SYNC_SKIPPED_STATION_FIRE_CAP`)과 별도 예산.
+ * 취침 mute 대상이 아니다(`isStationArrivalAlertOff`는 intermediate만). skipped intermediate cap(`SYNC_SKIPPED_STATION_FIRE_CAP`)과 별도 예산.
  * #2625가 `fireSyncSkippedStationPasses`에서 transfer/destination을 금지한 것은 "관측역 약신호 조기 발사"(P1-1) 때문이었고,
  * 이 함수는 소비가 확정된(`advanceBoardingLockWaypoint` consumed) 관측 waypoint에만 호출돼 그 위임을 이어받는다.
  */
@@ -5071,15 +4832,14 @@ export async function fireSyncObservedTransferDestination(
 
 /**
  * #3157 — `/boarding-lock/sync` 순수 intermediate 분기가 소비(`working.waypoints.slice(shiftedCount)`)한
- * waypoint 중, 아직 도달하지 않은 transfer/destination 의 직전역이 있으면 취침/준비 알람을 발사한다.
+ * waypoint 중, 아직 도달하지 않은 transfer/destination 의 직전역이 있으면 취침 알람을 발사한다.
  *
- * root: 알람 트리거는 "intermediate -> 다음 transfer/destination"(`evaluateSleepAlarmTrigger`/
- * `evaluatePrepareAlarmTrigger`)이고 호출처는 cron의 `completeWaypointAdvance`·`runLocklessIntermediate`
- * 뿐이다. sync가 그 intermediate를 먼저 소비하면 cron은 그 역을 다시 볼 수 없어 알람이 영구 유실된다
+ * root: 알람 트리거는 "intermediate -> 다음 transfer/destination"(`evaluateSleepAlarmTrigger`)이고
+ * 호출처는 cron의 `completeWaypointAdvance`·`runLocklessIntermediate` 뿐이다. sync가 그 intermediate를 먼저 소비하면 cron은 그 역을 다시 볼 수 없어 알람이 영구 유실된다
  * (트립 171 06:38:45 성수 소비 -> "곧 뚝섬" 미발사). 소비된 역은 trip에서 사라지므로 "나중에 cron이
  * 발사"하는 pending marker는 same-session 재등록 병합(index.ts register)에서 유실된다 — 여기서 직접
- * 발사한다. 이중 발사 안전: 기존 `maybeFire*`의 claim-first dedup 키(`alarmFireKey:`/
- * `prepareAlarmFireKey:`, (token, target))를 그대로 쓰므로 cron이 같은 (직전역, 타깃)을 먼저/나중에
+ * 발사한다. 이중 발사 안전: 기존 `maybeFireSleepAlarm`의 claim-first dedup 키(`alarmFireKey:`,
+ * (token, target))를 그대로 쓰므로 cron이 같은 (직전역, 타깃)을 먼저/나중에
  * 평가해도 1회.
  *
  * 대상 = 마지막 소비 역(`waypoints[shiftedCount - 1]`)이 intermediate이고, 그 뒤 첫 transfer/destination(타깃)이
@@ -5136,16 +4896,13 @@ export async function fireSyncConsumedPrecedingAlarms(
   const stats = createEmptyScheduledStats(now);
   // maybeFire*는 env 치유 시 trip.apnsEnv를 mutate한다 — 호출자 스냅샷을 오염시키지 않는다.
   const scratch: Trip = { ...trip };
-  for (const { waypoint, nextWaypoint, crossing, cells } of selectConsumedPrecedingAlarmPairs(
+  for (const { waypoint, nextWaypoint, crossing } of selectConsumedPrecedingAlarmPairs(
     trip,
     shiftedCount,
     requestedCount,
   )) {
     const inputs = { trip: scratch, waypoint, nextWaypoint, env, deps, stats, now, log, generatePushId };
     await maybeFireSleepAlarm({ ...inputs, crossing, source });
-    // 준비 알람은 1역 전 고정(비취침 trip 전용) — 칸이 기본 칸 하나일 때만 부른다. 비인접 칸과 선택 모드 clamp(칸 != 남은 수)
-    // 에서는 부르지 않는다(취침 trip의 `prepare-alarm skipped/sleep` D1 행을 새로 만들지 않는다).
-    if (cells.length === ONE_STATION_STEP && cells[0] === SLEEP_ALARM_MIN_STOPS_BEFORE) await maybeFirePrepareAlarm(inputs);
   }
 }
 
@@ -5386,7 +5143,7 @@ interface FireVanishFallbackStationPushInputs {
 }
 
 // #2063 (ADR-023 개정) — 매역 알림(station-notif) 전용 sleep mute. fireArvlCdStationPush와
-// 동일 분기(`isSleepMutedStationNotif`, #3100: intermediate 한정) — sleep-transfer(B4)·
+// 동일 분기(`isStationArrivalAlertOff`, #3100: intermediate 한정) — sleep-transfer(B4)·
 // boarding-prompt(B7/B8) 게이트와는 완전히 별개.
 export async function fireVanishFallbackStationPush(
   inputs: FireVanishFallbackStationPushInputs,
@@ -5400,7 +5157,7 @@ export async function fireVanishFallbackStationPush(
   const ssot = await readSsot(env.TRIPS, trip.token, {
     cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
   });
-  if (isSleepMutedStationNotif(trip, waypoint)) {
+  if (isStationArrivalAlertOff(trip, waypoint)) {
     log('station-notif skip: sleep', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -5503,21 +5260,15 @@ export async function fireVanishFallbackStationPush(
   // #2092 — contentAvailable:true 병기로 device background task(handleSilentPush)를 깨워
   // SSoT mirror·BG 위젯 갱신을 fireArvlCdStationPush와 동일하게 유지한다.
   const vanishStationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
-  // #2510 — transfer/destination(하차/환승 준비)은 도착 진동(ACTION), intermediate는 무음 INFO(#2507) 유지.
-  const vanishStationNotifSound = stationNotifSoundFields(waypoint.kind);
   // #3221 PR-3 — fireArvlCdStationPush와 같은 split intermediate 대체(편측 방지).
   const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log, stats });
   const heal = laHeal ?? await sendWithEnvHeal(
     (host) =>
-      sendAlertPush({
+      sendStationAlert(trip, stationAlertKind(waypoint.kind, 'arrival'), vanishStationNotifContent, {
         // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
         deviceToken: resolveTripDeviceToken(trip),
-        title: vanishStationNotifContent.title,
-        body: vanishStationNotifContent.body,
         pushId,
         tripToken: trip.token,
-        sound: vanishStationNotifSound.sound,
-        interruptionLevel: vanishStationNotifSound.interruptionLevel,
         // #2909 (ADR-040 0단계) — 역 단위 collapse(fireArvlCdStationPush와 동일 정책).
         collapseId: stationNotifCollapseId(trip.token, waypoint.stationName),
         expirationEpochSec: Math.floor((now + STATION_NOTIF_EXPIRATION_MS) / 1000),
@@ -6940,19 +6691,6 @@ export async function completeWaypointAdvance(
     log,
     generatePushId,
   });
-  // #2510 — 준비 진동(ACTION, 전체 트립). sleepModeEnabled===true trip은 위 maybeFireSleepAlarm이
-  // 이미 담당해 내부에서 스킵된다(상호 배타).
-  await maybeFirePrepareAlarm({
-    trip,
-    waypoint,
-    nextWaypoint: trip.waypoints[1],
-    env,
-    deps,
-    stats,
-    now,
-    log,
-    generatePushId,
-  });
   // #1539 (S6) — waypoint advance 시점 직전 station 누적. silent push payload로 forward되어
   // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
   // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
@@ -8116,18 +7854,6 @@ export async function runLocklessIntermediate(
     waypoint,
     nextWaypoint: sleepConsumed?.target,
     crossing: sleepConsumed?.crossing,
-    env,
-    deps,
-    stats,
-    now,
-    log,
-    generatePushId,
-  });
-  // #2510 — 준비 진동(ACTION, 전체 트립). lock 경로와 동일 병렬 트리거 — 상호 배타(sleep이면 skip).
-  await maybeFirePrepareAlarm({
-    trip,
-    waypoint,
-    nextWaypoint: trip.waypoints[1],
     env,
     deps,
     stats,

@@ -183,6 +183,8 @@ export type TripEventKind =
   // timetableFrom?(시간표 조회 원 열차) }. 관측 전용 — swap 빈도는 낮아(성수 renumber/소멸 시만) D1 quota 위험 낮음.
   | 'lock-reattach'
   | 'cooldown-bypass'
+  // 2026-11-02 #2510 재오픈 — 발사 경로 철거(일반모드 1정거장 전 알람 없음). 과거 행(10/28~) 조회·배포 후 소멸 측정용으로만
+  // 이 kind를 유지한다(삭제 금지). 아래는 철거 전 기록.
   // #3110 — 준비 알람(`maybeFirePrepareAlarm`, "곧 OO 도착") 평가 outcome. 발사/skip/rollback이
   // `log()`·`stats`뿐이라 10/21 trip 173 06:28:45 '곧 뚝섬' 조기 발사를 사후 판별할 수 없었다.
   // 이 함수는 tick마다가 아니라 waypoint advance 시점에만 호출되므로(트립당 정거장 수 이하)

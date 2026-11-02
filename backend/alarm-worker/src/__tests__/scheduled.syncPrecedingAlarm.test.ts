@@ -4,16 +4,15 @@
  * `/boarding-lock/sync`가 순수 intermediate를 소비(`working.waypoints.slice(shiftedCount)`)하면, 소비된
  * intermediate가 아직 도달하지 않은 transfer/destination 의 직전역일 때 cron의
  * `completeWaypointAdvance`가 그 역을 다시 볼 수 없어 취침/준비 알람이 영구 유실된다(트립 171 "곧 뚝섬").
- * 이 함수가 그 알람을 기존 `maybeFireSleepAlarm`/`maybeFirePrepareAlarm`(기존 dedup 키)으로 발사한다.
+ * 이 함수가 그 알람을 기존 `maybeFireSleepAlarm`(기존 dedup 키)으로 발사한다. (비취침 준비 알람 `maybeFirePrepareAlarm`은 #2510 반전으로 철거)
  * 호출자는 pre-slice trip과 shiftedCount를 넘긴다.
  */
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { prepareAlarmCollapseId, sleepAlarmCollapseId } from '../collapseId';
+import { sleepAlarmCollapseId } from '../collapseId';
 import {
   fireSyncConsumedPrecedingAlarms,
-  prepareAlarmFireKey,
   sleepAlarmFireKey,
   type SyncSkippedFireDeps,
 } from '../scheduled';
@@ -107,11 +106,11 @@ describe('#3157 — fireSyncConsumedPrecedingAlarms', () => {
     expect(await r.kv.get(sleepAlarmFireKey(trip.token, '선릉'))).not.toBeNull();
   });
 
-  it('비취침: 준비 알람 1회 (취침 알람 키는 건드리지 않음)', async () => {
+  it('[#2510 반전] 비취침: 1정거장 전 알람 0 (알람은 취침 전용, 취침 알람 키도 건드리지 않음)', async () => {
     const trip = makeTrip([I('강남'), I('역삼'), D('선릉')], { sleepModeEnabled: false });
     const r = await run(trip, 2);
-    expect(r.collapseIds).toEqual([prepareAlarmCollapseId(trip.token, '선릉')]);
-    expect(await r.kv.get(prepareAlarmFireKey(trip.token, '선릉'))).not.toBeNull();
+    expect(r.collapseIds).toEqual([]);
+    expect(r.pushTypes).toEqual([]);
     expect(await r.kv.get(sleepAlarmFireKey(trip.token, '선릉'))).toBeNull();
   });
 
@@ -160,9 +159,9 @@ describe('#3157 — fireSyncConsumedPrecedingAlarms', () => {
     expect(second.collapseIds).toEqual([]);
   });
 
-  it('push 실패 시 dedup 롤백 (기존 maybeFire 계약 유지 — 다음 기회 보존)', async () => {
+  it('push 실패 시 dedup 롤백 (기존 maybeFireSleepAlarm 계약 유지 — 다음 기회 보존)', async () => {
     const kv = new InMemoryKV(() => NOW);
-    const trip = makeTrip([I('강남'), I('역삼'), D('선릉')], { sleepModeEnabled: false });
+    const trip = makeTrip([I('강남'), I('역삼'), D('선릉')]);
     const failing = vi.fn(async () => new Response('', { status: 400 })) as unknown as typeof fetch;
     await fireSyncConsumedPrecedingAlarms(
       makeEnv(kv),
@@ -173,6 +172,6 @@ describe('#3157 — fireSyncConsumedPrecedingAlarms', () => {
       () => undefined,
       () => 'push-1',
     );
-    expect(await kv.get(prepareAlarmFireKey(trip.token, '선릉'))).toBeNull();
+    expect(await kv.get(sleepAlarmFireKey(trip.token, '선릉'))).toBeNull();
   });
 });
