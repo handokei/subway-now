@@ -16,6 +16,7 @@ import { isReversedOrientationLine } from './lineOrientation';
 import { computeJourneyEta, resolveOriginStop } from './journeyTimeline';
 import type { BoardableLookup, JourneyEta } from './journeyTimeline';
 import { rankCandidates, type RankMode } from './routeRanking';
+import { MULTI_TRANSFER_CANDIDATE_LIMIT, MULTI_TRANSFER_STOP_SLACK } from '../constants/routeCandidates';
 
 const logger = createLogger('StationRoute');
 
@@ -712,7 +713,15 @@ function toCandidate(route: NonNullable<Route>, originStationId: string): RouteC
   return { route, totalStops: getRouteTotalStops(route), transferCount, travelMinutes, originStationId };
 }
 
-export function findRoutes(currentId: string, destinationId: string): RouteCandidate[] {
+export interface FindRoutesOptions {
+  /**
+   * #1480 PR-2 — true면 단일 환승 모든 공통역 + 다중 환승 상위 K(최소 단일 +Δ 정거장 이내)를 후보로 낸다.
+   * 기본(false)은 최소 정거장 단일 1 + 최소 다중 1 — 알람 파이프라인(findRoute)·진행 판정이 의존하므로 불변.
+   */
+  expand?: boolean;
+}
+
+export function findRoutes(currentId: string, destinationId: string, options: FindRoutesOptions = {}): RouteCandidate[] {
   const start = performance.now();
   const current = stationById.get(currentId);
   const destination = stationById.get(destinationId);
@@ -745,9 +754,9 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
   const destIdx = destLineStations.findIndex((s) => s.id === destinationId);
   const destNameIndex = getLineNameIndexCached(destination.line);
 
-  // 단일 환승 후보
-  let bestSingle: TransferRoute | null = null;
-  let bestSingleTotal = Infinity;
+  // 단일 환승 후보 — 공통역마다 하나. 기본은 최소 정거장 1개, expand면 전부.
+  const singles: TransferRoute[] = [];
+  const singleTotals: number[] = [];
 
   for (let i = 0; i < currentLineStations.length; i++) {
     const candidate = currentLineStations[i];
@@ -757,41 +766,50 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     // #1698 — 환승 leg도 closed loop 짧은 쪽 hop 수 사용 (stops/seconds 정합).
     const stopsToTransfer = computeSegmentHops(current.line, currentIdx, i, currentLineStations);
     const stopsFromTransfer = computeSegmentHops(destination.line, transferDestIdx, destIdx, destLineStations);
-    const total = stopsToTransfer + stopsFromTransfer;
-
-    if (total < bestSingleTotal) {
-      bestSingleTotal = total;
-      bestSingle = {
-        type: 'transfer',
-        transferName: candidate.name,
-        transferStationId: candidate.id,
-        destinationStationId: destination.id,
-        fromLine: current.line,
-        toLine: destination.line,
-        stopsToTransfer,
-        stopsFromTransfer,
-        secondsToTransfer: computeSegmentSeconds(current.line, currentIdx, i, currentLineStations),
-        secondsFromTransfer: computeSegmentSeconds(destination.line, transferDestIdx, destIdx, destLineStations),
-      };
-    }
+    singleTotals.push(stopsToTransfer + stopsFromTransfer);
+    singles.push({
+      type: 'transfer',
+      transferName: candidate.name,
+      transferStationId: candidate.id,
+      destinationStationId: destination.id,
+      fromLine: current.line,
+      toLine: destination.line,
+      stopsToTransfer,
+      stopsFromTransfer,
+      secondsToTransfer: computeSegmentSeconds(current.line, currentIdx, i, currentLineStations),
+      secondsFromTransfer: computeSegmentSeconds(destination.line, transferDestIdx, destIdx, destLineStations),
+    });
   }
+  const bestSingleTotal = Math.min(...singleTotals);
+  const bestSingleIdx = singleTotals.indexOf(bestSingleTotal); // 동률이면 노선 순서상 첫 역(기존 strict < 동작)
+  const bestSingle: TransferRoute | null = singles[bestSingleIdx] ?? null;
 
   // 2회 환승 후보
-  const multiRoute = findMultiTransferRoute(
+  const multiRoutes = findMultiTransferRoutes(
     current, destination, currentLineStations, destLineStations, currentIdx, destIdx,
   );
 
   // 후보 수집 + 정렬 — 도미네이션 필터는 적용하지 않음.
   // 카테고리별 선택은 findRouteCandidatesByCategory에서 책임진다.
   const candidates: RouteCandidate[] = [];
-  if (bestSingle) candidates.push(toCandidate(bestSingle, currentId));
-  /* istanbul ignore next -- 실제 서울 지하철 데이터에서 2회 환승 불가 노선 조합은 없음 */
-  if (multiRoute) candidates.push(toCandidate(multiRoute, currentId));
+  if (options.expand) {
+    const slackLimit = bestSingleTotal + MULTI_TRANSFER_STOP_SLACK;
+    const extraMulti = multiRoutes.slice(1, MULTI_TRANSFER_CANDIDATE_LIMIT).filter((m) => getRouteTotalStops(m) <= slackLimit);
+    const expanded: NonNullable<Route>[] = [...singles, ...multiRoutes.slice(0, 1), ...extraMulti];
+    // routeSignature 중복 제거(Map 키 = 서명, 먼저 들어온 순서 유지).
+    const bySignature = new Map(expanded.map((route) => [routeSignature(route), route] as const));
+    for (const route of bySignature.values()) candidates.push(toCandidate(route, currentId));
+  } else {
+    if (bestSingle) candidates.push(toCandidate(bestSingle, currentId));
+    /* istanbul ignore next -- 실제 서울 지하철 데이터에서 2회 환승 불가 노선 조합은 없음 */
+    if (multiRoutes[0]) candidates.push(toCandidate(multiRoutes[0], currentId));
+  }
 
   candidates.sort((a, b) => a.travelMinutes - b.travelMinutes);
 
   const duration = performance.now() - start;
-  logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
+  // #1480 PR-2 — K·Δ 결정 근거: 후보 수(expand 여부별)를 비용과 함께 남긴다.
+  logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms candidates=${candidates.length} expand=${options.expand === true}`);
   return candidates;
 }
 
@@ -814,7 +832,7 @@ export function findRouteCandidatesByCategory(
   categories: readonly RouteCategory[] = ROUTE_CATEGORIES,
   options: CandidateRankOptions = {},
 ): CategorizedRoute[] {
-  const found = originIds.flatMap((id) => findRoutes(id, destinationId));
+  const found = originIds.flatMap((id) => findRoutes(id, destinationId, { expand: true }));
   if (found.length === 0) return [];
   const { nowMs } = options;
   if (nowMs === undefined) {
@@ -848,22 +866,24 @@ export function pickRouteByPreference(
   return [...candidates].sort(category.comparator)[0];
 }
 
-function findMultiTransferRoute(
+/**
+ * 2회 환승 후보 — (t1, t2) 조합마다 하나, 총 정거장 오름차순(동률은 열거 순서). [0]이 기존 단일 최적(findMultiTransferRoute)이다.
+ */
+function findMultiTransferRoutes(
   current: Station,
   destination: Station,
   currentLineStations: Station[],
   destLineStations: Station[],
   currentIdx: number,
   destIdx: number,
-): MultiTransferRoute | null {
+): MultiTransferRoute[] {
   const fromLine = current.line;
   const toLine = destination.line;
   const fromEdges = transferGraph.get(fromLine);
   /* istanbul ignore next -- 실제 역 데이터에서는 모든 노선이 환승 가능 */
-  if (!fromEdges) return null;
+  if (!fromEdges) return [];
 
-  let best: MultiTransferRoute | null = null;
-  let bestTotal = Infinity;
+  const found: Array<{ route: MultiTransferRoute; total: number }> = [];
 
   const currentNameIndex = getLineNameIndexCached(current.line);
   const destNameIndex = getLineNameIndexCached(destination.line);
@@ -903,9 +923,9 @@ function findMultiTransferRoute(
         const stopsAfter = computeSegmentHops(toLine, t2DestIdx, destIdx, destLineStations);
         const total = stopsToFirst + stopsToSecond + stopsAfter;
 
-        if (total < bestTotal) {
-          bestTotal = total;
-          best = {
+        found.push({
+          total,
+          route: {
             type: 'multi-transfer',
             transfers: [
               {
@@ -928,13 +948,13 @@ function findMultiTransferRoute(
             stopsAfterLastTransfer: stopsAfter,
             destinationStationId: destination.id,
             secondsAfterLastTransfer: computeSegmentSeconds(toLine, t2DestIdx, destIdx, destLineStations),
-          };
-        }
+          },
+        });
       }
     }
   }
 
-  return best;
+  return found.sort((a, b) => a.total - b.total).map(({ route }) => route);
 }
 
 // 환승 도보 시간 lookup은 `./transferTimes.ts` (ADR-015 §6 SSOT)로 추출 — 동일 데이터셋을
