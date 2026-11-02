@@ -68,6 +68,10 @@ type Dumped = {
   watch?: string | null;
   appState?: string | null;
   baroEventAtMs?: number | null;
+  baroLastAt?: number | null;
+  baroFirstAt?: number | null;
+  baroObs?: boolean | null;
+  baroEvtKind?: string | null;
 };
 
 function renderAndCollect() {
@@ -158,5 +162,122 @@ describe('useFusedNearestStation — #3191 PR-0 Raw 계측 필드', () => {
     expect(b.result?.station.id).toBe(a.result?.station.id);
     expect(b.source).toBe(a.source);
     expect(b.confidence).toBe(a.confidence);
+  });
+});
+
+// #3191 PR-0 — 기압계 관측 필드(B 원인 확정용). 관측 전용: 판정 입력 아님.
+describe('useFusedNearestStation — #3191 PR-0 Raw 기압 관측 필드', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetBarometerState();
+    resetBarometerInstrumentationForTest();
+    mockUseAccelPattern.mockReturnValue('unknown');
+    mockUseArrival.mockReturnValue({ arrival: null, loading: false, isMock: false });
+    mockUsePositions.mockReturnValue({ positions: null, loading: false, isMock: false });
+    mockUseNearest.mockReturnValue(gpsWith({}));
+  });
+
+  function renderWithBaro(signal: { unavailableReason?: string } | null) {
+    jest.useFakeTimers();
+    const barometer = signal === null ? undefined : { subsurface: false, signal };
+    renderHook(() =>
+      useFusedNearestStation(
+        undefined, undefined, undefined, undefined, undefined,
+        barometer as never,
+      ),
+    );
+    act(() => {
+      jest.advanceTimersByTime(0);
+    });
+    jest.useRealTimers();
+    return mockPushRawSignal.mock.calls.map(([e]: [Dumped]) => e);
+  }
+
+  it('reading이 없으면 baroLastAt/baroFirstAt/baroEvtKind=null, baroObs=false', () => {
+    const entries = renderWithBaro({});
+    expect(entries.length).toBeGreaterThan(0);
+    for (const e of entries) {
+      expect(e.baroLastAt).toBeNull();
+      expect(e.baroFirstAt).toBeNull();
+      expect(e.baroObs).toBe(false);
+      expect(e.baroEvtKind).toBeNull();
+    }
+  });
+
+  it('baroLastAt/baroFirstAt = 마지막/첫 reading 시각', () => {
+    const t = Date.now();
+    appendBarometerReading({ t: t - 50_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 5_000, pressureHpa: 1013.05 });
+    const entries = renderWithBaro({});
+    expect(entries.length).toBeGreaterThan(0);
+    for (const e of entries) {
+      expect(e.baroFirstAt).toBe(t - 50_000);
+      expect(e.baroLastAt).toBe(t - 5_000);
+    }
+  });
+
+  it('baroObs=true — 실패 사유 없음 + 첫 reading 30s 경과 + 마지막 reading 30s 이내', () => {
+    const t = Date.now();
+    appendBarometerReading({ t: t - 50_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 5_000, pressureHpa: 1013.05 });
+    const entries = renderWithBaro({});
+    expect(entries.every((e) => e.baroObs === true)).toBe(true);
+  });
+
+  it('baroObs=false — 워밍업(첫 reading 30s 미만)', () => {
+    const t = Date.now();
+    appendBarometerReading({ t: t - 10_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 1_000, pressureHpa: 1013.05 });
+    const entries = renderWithBaro({});
+    expect(entries.every((e) => e.baroObs === false)).toBe(true);
+  });
+
+  it('baroObs=false — 공백(마지막 reading 30s 초과)', () => {
+    const t = Date.now();
+    appendBarometerReading({ t: t - 90_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 60_000, pressureHpa: 1013.05 });
+    const entries = renderWithBaro({});
+    expect(entries.every((e) => e.baroObs === false)).toBe(true);
+  });
+
+  it('baroObs=false — 센서 실패 사유가 있으면', () => {
+    const t = Date.now();
+    appendBarometerReading({ t: t - 50_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 5_000, pressureHpa: 1013.05 });
+    const entries = renderWithBaro({ unavailableReason: 'sensor' });
+    expect(entries.every((e) => e.baroObs === false)).toBe(true);
+  });
+
+  it('baroObs=false — barometer 인자 자체가 없으면', () => {
+    const entries = renderWithBaro(null);
+    expect(entries.every((e) => e.baroObs === false)).toBe(true);
+  });
+
+  it("baroEvtKind='window' — 30s 창 안 |ΔP|>=0.3 이벤트", () => {
+    const t = Date.now();
+    appendBarometerReading({ t: t - 20_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 10_000, pressureHpa: 1013.5 });
+    const entries = renderWithBaro({});
+    expect(entries.every((e) => e.baroEvtKind === 'window')).toBe(true);
+  });
+
+  it("baroEvtKind='gap' — 직전 reading이 30s 밖인 |ΔP|>=0.3 이벤트", () => {
+    const t = Date.now();
+    appendBarometerReading({ t: t - 100_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 10_000, pressureHpa: 1013.5 });
+    const entries = renderWithBaro({});
+    expect(entries.every((e) => e.baroEvtKind === 'gap')).toBe(true);
+  });
+
+  it('동작 불변 — 기압 관측 필드 값이 달라도 현재역 판정은 동일', () => {
+    jest.useFakeTimers();
+    const a = renderHook(() => useFusedNearestStation()).result.current;
+    const t = Date.now();
+    appendBarometerReading({ t: t - 100_000, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: t - 10_000, pressureHpa: 1013.5 });
+    const b = renderHook(() => useFusedNearestStation()).result.current;
+    jest.useRealTimers();
+    expect(b.result?.station.id).toBe(a.result?.station.id);
+    expect(b.source).toBe(a.source);
   });
 });
