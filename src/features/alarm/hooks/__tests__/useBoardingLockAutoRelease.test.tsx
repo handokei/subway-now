@@ -275,6 +275,8 @@ describe('useBoardingLockAutoRelease', () => {
     stopsFromTransfer: 4,
     secondsToTransfer: 360,
     secondsFromTransfer: 480,
+    transferStationId: '2-001',
+    destinationStationId: '5-001',
   };
 
   it('환승 leg waypoint 도달 + proximity → grace 후 release', () => {
@@ -335,6 +337,7 @@ describe('useBoardingLockAutoRelease', () => {
           toLine: '5' as const,
           stopsToTransfer: 3,
           secondsToTransfer: 360,
+          transferStationId: '2-001',
         },
         {
           transferName: '광화문',
@@ -342,10 +345,12 @@ describe('useBoardingLockAutoRelease', () => {
           toLine: '3' as const,
           stopsToTransfer: 2,
           secondsToTransfer: 240,
+          transferStationId: '5-001',
         },
       ],
       stopsAfterLastTransfer: 4,
       secondsAfterLastTransfer: 480,
+      destinationStationId: '3-001',
     };
     const inputs = baseInputs({
       releaseLock,
@@ -366,6 +371,7 @@ describe('useBoardingLockAutoRelease', () => {
       stops: 5,
       line: '2' as const,
       travelSeconds: 600,
+      destinationStationId: '2-001',
     };
     const inputs = baseInputs({
       releaseLock,
