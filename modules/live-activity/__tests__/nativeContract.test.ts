@@ -155,3 +155,100 @@ describe('탑승 LA 타입 격리 (#3221 PR-1)', () => {
     expect(widget).toContain('ActivityConfiguration(for: BoardingActivityAttributes.self)');
   });
 });
+
+/**
+ * #3055 PR-2 — LA 버튼 native 응답 왕복 계약 (plan-2026-11-02-la-button-train-refresh.md §3.3).
+ * native(위젯 확장)가 backend 응답을 App Group 엔트리의 `nativePost`로 되돌려 브릿지가 읽는다.
+ */
+const readWidget = (name: string) => readFileSync(join(WIDGET_DIR, name), 'utf8');
+const readPod = (name: string) => readFileSync(join(IOS_DIR, name), 'utf8');
+
+describe('LA 버튼 native 응답 왕복 (#3055 PR-2)', () => {
+  const block = (needle: string) => stripComments(extractBlock(intents, needle));
+
+  it('(1) 응답 body에서 resolvedTrainCode·lockState를 파싱해 App Group에 기록한다', () => {
+    const post = block('private func postBoardingConfirm(');
+    const record = block('private func recordNativePost(');
+    expect(post).toContain('resolvedTrainCode');
+    expect(post).toContain('lockState');
+    expect(post).toContain('recordNativePost(');
+    expect(record).toContain('"nativePost"');
+    expect(record).toContain('"status"');
+    expect(record).toContain('"atMs"');
+    expect(record).toContain('defaults.set(');
+  });
+
+  it('(2) 기록은 저장 엔트리 id가 자기 id일 때만 — 불일치/삭제된 엔트리는 부활시키지 않는다', () => {
+    const record = block('private func recordNativePost(');
+    expect(record).toMatch(/storedId\s*==\s*entryId/);
+    expect(record).toContain('else { return }');
+  });
+
+  it('(2b) 쓰기 시 nativePost "in-flight" 표식 + id를 반환해 응답 기록과 짝을 맞춘다', () => {
+    const writePending = block('private func writePendingBoardingIntent(');
+    expect(writePending).toContain('"nativePost"');
+    expect(writePending).toContain('in-flight');
+    expect(writePending).toContain('return id');
+  });
+
+  it('(3) body에 source:la-native + laCandidate를 싣고 trainCode 키는 싣지 않는다', () => {
+    const post = block('private func postBoardingConfirm(');
+    expect(post).toContain('"source"');
+    expect(post).toContain('la-native');
+    expect(post).toContain('"laCandidate"');
+    expect(post).not.toMatch(/"trainCode"\s*:/);
+    expect(post).not.toMatch(/\["trainCode"\]/);
+  });
+
+  it('(3b) laCandidate는 trainCode·issuedAtMs가 둘 다 있을 때만 만든다 — 없으면 현행 body', () => {
+    expect(stripComments(intents)).toMatch(/if let trainCode[^{]*let trainCodeIssuedAtMs/);
+  });
+
+  it('(4) 두 위젯이 state.trainCode·state.trainCodeIssuedAtMs를 BoardingConfirmIntent에 넘긴다', () => {
+    for (const file of ['BoardingLiveActivityWidget.swift', 'SubwayLiveActivityWidget.swift']) {
+      const src = stripComments(readWidget(file));
+      const idx = src.indexOf('BoardingConfirmIntent(');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const call = src.slice(idx, src.indexOf(')', src.indexOf('trainCodeIssuedAtMs', idx)) + 1);
+      expect(call).toContain('trainCode: state.trainCode');
+      expect(call).toContain('trainCodeIssuedAtMs: state.trainCodeIssuedAtMs');
+    }
+  });
+
+  it('(5) 총 10s 마감 경쟁 — URLSession.data와 Task.sleep 중 먼저 끝난 쪽, 마감 시 status 0', () => {
+    const post = block('private func postBoardingConfirm(');
+    const deadline = block('private func performWithDeadline(');
+    expect(deadline).toContain('withTaskGroup');
+    expect(deadline).toContain('URLSession.shared.data(for:');
+    expect(deadline).toContain('Task.sleep');
+    expect(deadline).toContain('group.cancelAll()');
+    expect(intents).toMatch(/NATIVE_POST_DEADLINE_SECONDS[^\n]*=\s*10/);
+    expect(post).toContain('performWithDeadline(');
+  });
+
+  it('(6) Boarding·Disembark 두 intent가 같은 postBoardingConfirm 경로로 id를 넘겨 응답을 기록한다', () => {
+    for (const name of ['BoardingConfirmIntent', 'DisembarkConfirmIntent']) {
+      const body = stripComments(extractBlock(intents, `struct ${name}:`));
+      expect(body).toContain('let entryId = writePendingBoardingIntent(');
+      expect(body).toContain('entryId: entryId');
+    }
+  });
+
+  it('(7) ContentState 미러 4파일에 trainCodeIssuedAtMs가 있고 Boarding에는 trainCode도 있다', () => {
+    const boardingFiles = [
+      readPod('BoardingActivityAttributes.swift'),
+      readFileSync(join(SHARED_DIR, 'BoardingActivityAttributes.swift'), 'utf8'),
+    ];
+    const subwayFiles = [
+      readPod('SubwayActivityAttributes.swift'),
+      readFileSync(join(SHARED_DIR, 'SubwayActivityAttributes.swift'), 'utf8'),
+    ];
+    for (const src of boardingFiles) {
+      expect(src).toContain('var trainCode: String?');
+      expect(src).toContain('var trainCodeIssuedAtMs: Int?');
+    }
+    for (const src of subwayFiles) {
+      expect(src).toContain('var trainCodeIssuedAtMs: Int?');
+    }
+  });
+});
