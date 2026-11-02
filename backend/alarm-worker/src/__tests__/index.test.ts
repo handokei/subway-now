@@ -4411,7 +4411,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       );
       const { json, env } = await confirm(
         confirmBody({ line: '7호선' }),
-        tripBody({ promptDisplay: undefined }),
+        tripBody({ promptDisplay: undefined, originStationName: '중곡' }),
       );
       expect(json).toEqual({ ok: true, lockState: 'leg1', resolvedTrainCode: '7246' });
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
@@ -5388,6 +5388,17 @@ describe('POST /trips — #2547 leg-2 anchor fields carry over same session', ()
 // ──────────────────────────────────────────────────────────────────────────
 // Seam E (#901) — POST /boarding-lock/sync
 // ──────────────────────────────────────────────────────────────────────────
+
+describe('validateBoardingLockSync boardingLine 정규화 (#3055)', () => {
+  const base = { token: 't', observedStationName: '건대입구', observedAtMs: 1, accuracy: 10, trainCode: '7246' };
+  it.each([
+    ['7호선', '7'],
+    ['7', '7'],
+    ['알수없음', '알수없음'],
+  ])("boardingLine '%s' → '%s'", (input, expected) => {
+    expect(validateBoardingLockSync({ ...base, boardingLine: input })?.boardingLine).toBe(expected);
+  });
+});
 
 describe('validateBoardingLockSync (#901)', () => {
   it('정상 payload 통과', () => {

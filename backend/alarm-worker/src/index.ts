@@ -219,7 +219,7 @@ import {
   recordPositionKvSample,
   shouldSamplePositionKv,
 } from './positionKvSample';
-import { subwayIdForLine } from './lineAlias';
+import { lineCodeForName, subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import {
   LA_BOARDING_START_MODES,
@@ -3063,7 +3063,8 @@ export function validateBoardingConfirmPayload(input: unknown): BoardingConfirmP
     if (typeof obj.trainCode !== 'string' || obj.trainCode.length === 0) return null;
     trainCode = obj.trainCode;
   }
-  return { action: obj.action, station: obj.station, line: obj.line, trainCode };
+  // #3055 — 탑승 LA 버튼은 정식 노선명('7호선')을 보낸다. 이후 전 경로가 코드 기준이므로 진입에서 환원.
+  return { action: obj.action, station: obj.station, line: lineCodeForName(obj.line), trainCode };
 }
 
 /**
@@ -4193,7 +4194,7 @@ export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayloa
     result.trainCode = obj.trainCode;
   }
   if (typeof obj.boardingLine === 'string' && obj.boardingLine.length > 0) {
-    result.boardingLine = obj.boardingLine;
+    result.boardingLine = lineCodeForName(obj.boardingLine); // #3055 형제 경로 — 같은 탭 유래 line 정규화
   }
   return result;
 }

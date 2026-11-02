@@ -55,6 +55,20 @@ export const LINE_META: Record<string, LineMeta> = {
   airport: { canonical: '공항철도', aliases: ['인천국제공항철도'], color: '#4B81BF', subwayId: '1065' },
 };
 
+/**
+ * #3055 — 노선 표기(코드 / 정식명 / alias)를 LINE_META key(노선 코드)로 정규화한다.
+ * 탑승 LA(split) 버튼은 content.line(정식명 '7호선')을 그대로 보내므로 boarding-confirm 진입에서
+ * 코드로 환원해야 lock·R-4 게이트·echo가 코드 기준으로 맞물린다. 이미 코드면 그대로,
+ * 모르는 값은 입력 그대로 반환(기존 동작 보존).
+ */
+export function lineCodeForName(line: string): string {
+  if (Object.prototype.hasOwnProperty.call(LINE_META, line)) return line;
+  const entry = Object.entries(LINE_META).find(
+    ([, { canonical, aliases }]) => canonical === line || aliases.includes(line),
+  );
+  return entry?.[0] ?? line;
+}
+
 /** realtimePosition URL 파라미터용 정식 노선명. 매핑 없으면 null. */
 export function canonicalLineName(line: string): string | null {
   return LINE_META[line]?.canonical ?? null;
