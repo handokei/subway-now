@@ -107,11 +107,11 @@ describe('#3157 — fireSyncConsumedPrecedingAlarms', () => {
     expect(await r.kv.get(sleepAlarmFireKey(trip.token, '선릉'))).not.toBeNull();
   });
 
-  it('비취침: 준비 알람 1회 (취침 알람 키는 건드리지 않음)', async () => {
+  it('[#2510 반전] 비취침: 1정거장 전 알람 0 (알람은 취침 전용, 취침 알람 키도 건드리지 않음)', async () => {
     const trip = makeTrip([I('강남'), I('역삼'), D('선릉')], { sleepModeEnabled: false });
     const r = await run(trip, 2);
-    expect(r.collapseIds).toEqual([prepareAlarmCollapseId(trip.token, '선릉')]);
-    expect(await r.kv.get(prepareAlarmFireKey(trip.token, '선릉'))).not.toBeNull();
+    expect(r.collapseIds).toEqual([]);
+    expect(r.pushTypes).toEqual([]);
     expect(await r.kv.get(sleepAlarmFireKey(trip.token, '선릉'))).toBeNull();
   });
 

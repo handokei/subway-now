@@ -3778,7 +3778,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       });
     });
 
-    it('sleepModeEnabled=false + 직전역(intermediate) arvlCd 진입 → 준비 진동(alarm.wav/time-sensitive) 발사', async () => {
+    it('[#2510 반전] sleepModeEnabled=false + 직전역(intermediate) arvlCd 진입 → 1정거장 전 push 0, alarm.wav 0 (알람은 취침 전용)', async () => {
       const kv = new InMemoryKV();
       const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
       await putTrip(
@@ -3800,14 +3800,11 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         now: () => NOW,
         generatePushId: () => 'p-prepare-alarm',
       });
-      expect(stats.prepareAlarmFired).toBe(1);
       expect(stats.sleepAlarmFired).toBe(0);
-      const alertCall = findAlertPush(fetchImpl, (body) => body.aps?.sound === 'alarm.wav');
-      expect(alertCall).toBeDefined();
-      const alertBody = JSON.parse(alertCall![1].body as string);
-      expect(alertBody.aps['interruption-level']).toBe('time-sensitive');
-      expect(alertBody.aps.alert.title).toBe('군자 환승');
-      expect(alertBody.aps.alert.body).toBe('이번 역에서 내려 5호선 아차산 방면으로 갈아타세요');
+      const calls = fetchImpl.mock.calls as unknown as [string, RequestInit][];
+      const oneStopLike = calls.filter((c) => /^(alarm|prepare)-/.test(String((c[1].headers as Record<string, string>)['apns-collapse-id'] ?? '')));
+      expect(oneStopLike).toEqual([]);
+      expect(findAlertPush(fetchImpl, (body) => body.aps?.sound === 'alarm.wav')).toBeUndefined();
     });
 
     it('sleepModeEnabled=true → 준비 진동은 스킵 (sleepAlarm이 대신 발사, 상호 배타 중복 없음)', async () => {
@@ -3995,8 +3992,12 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
   // sound: 'alarm.wav'(취침 게이트 무관, 매역 INFO 무음 mute와 별개 — sleep이면 fireArvlCdStationPush
   // 자체가 최상단에서 skip돼 기존과 동일하게 무영향).
   describe('#2510 — 도착 진동(ACTION, 전체 트립) — fireArvlCdStationPush', () => {
-    it('destination kind arvlCd 확정 → sound: alarm.wav / interruption-level: time-sensitive', async () => {
+    it.each([
+      { mode: '취침', sleep: true, sound: 'alarm.wav', level: 'time-sensitive' },
+      { mode: '일반', sleep: false, sound: undefined, level: 'active' },
+    ])('[#2510 반전] destination kind arvlCd 확정 ($mode) → sound $sound / interruption-level $level', async ({ sleep, sound, level }) => {
       const trip = makeLockTrip({
+        sleepModeEnabled: sleep,
         waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
       });
       const kv = new InMemoryKV();
@@ -4022,12 +4023,16 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       });
       const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
       const body = JSON.parse(call[1].body as string);
-      expect(body.aps.sound).toBe('alarm.wav');
-      expect(body.aps['interruption-level']).toBe('time-sensitive');
+      expect(body.aps.sound).toBe(sound);
+      expect(body.aps['interruption-level']).toBe(level);
     });
 
-    it('transfer kind arvlCd 확정 → sound: alarm.wav / interruption-level: time-sensitive', async () => {
+    it.each([
+      { mode: '취침', sleep: true, sound: 'alarm.wav', level: 'time-sensitive' },
+      { mode: '일반', sleep: false, sound: undefined, level: 'active' },
+    ])('[#2510 반전] transfer kind arvlCd 확정 ($mode) → sound $sound / interruption-level $level', async ({ sleep, sound, level }) => {
       const trip = makeLockTrip({
+        sleepModeEnabled: sleep,
         waypoints: [
           { stationName: '군자', line: '7', kind: 'transfer' },
           { stationName: '아차산', line: '5', kind: 'destination' },
@@ -4056,8 +4061,8 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       });
       const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
       const body = JSON.parse(call[1].body as string);
-      expect(body.aps.sound).toBe('alarm.wav');
-      expect(body.aps['interruption-level']).toBe('time-sensitive');
+      expect(body.aps.sound).toBe(sound);
+      expect(body.aps['interruption-level']).toBe(level);
     });
 
     it('intermediate kind(매역 #2507)는 여전히 무음 (sound: null / interruption-level: active) — 회귀 없음', async () => {
@@ -9220,7 +9225,7 @@ describe('#3100 — 취침 trip 환승·하차 도착 station- push (M1 arvlCd /
   }
 
   describe.each(ARRIVAL_KINDS)('$kind ($station)', ({ kind, station }) => {
-    it('M1 arvlCd — 취침 ON도 발사, payload가 비취침과 동일 (station- collapse, alarm.wav, time-sensitive)', async () => {
+    it('M1 arvlCd — 취침 ON도 발사 (#2510 반전: 취침=alarm.wav·time-sensitive, 비취침=무음 배너·active — sound만 모드별)', async () => {
       const base = await runM1(makeTrip3100(kind, station), station);
       const sleep = await runM1(makeTrip3100(kind, station, { sleepModeEnabled: true }), station);
       expect(base).toHaveLength(1);
@@ -9229,17 +9234,22 @@ describe('#3100 — 취침 trip 환승·하차 도착 station- push (M1 arvlCd /
       expect(sleep[0].sound).toBe('alarm.wav');
       expect(sleep[0].interruptionLevel).toBe('time-sensitive');
       expect(sleep[0].data.kind).toBe(kind);
-      expect(sleep).toEqual(base);
+      expect(base[0].collapseId).toBe(sleep[0].collapseId);
+      expect(base[0].sound).toBeUndefined();
+      expect(base[0].interruptionLevel).toBe('active');
+      expect(base[0].data).toEqual(sleep[0].data);
     });
 
-    it('M2 vanish-fallback — 취침 ON도 발사, payload가 비취침과 동일', async () => {
+    it('M2 vanish-fallback — 취침 ON도 발사 (#2510 반전: 취침=alarm.wav·time-sensitive, 비취침=무음 배너·active)', async () => {
       const { pushes: base } = await runM2(makeTrip3100(kind, station));
       const { pushes: sleep } = await runM2(makeTrip3100(kind, station, { sleepModeEnabled: true }));
       expect(base).toHaveLength(1);
       expect(sleep).toHaveLength(1);
       expect(sleep[0].sound).toBe('alarm.wav');
       expect(sleep[0].interruptionLevel).toBe('time-sensitive');
-      expect(sleep).toEqual(base);
+      expect(base[0].sound).toBeUndefined();
+      expect(base[0].interruptionLevel).toBe('active');
+      expect(base[0].data).toEqual(sleep[0].data);
     });
 
     it('M2 — evaluateTransferDestinationGate가 차단하면 취침 ON도 0 (비취침과 같은 게이트, ssot-stale)', async () => {

@@ -182,13 +182,13 @@ describe('#3100 선행 시나리오 1·4 — cron 1역 전진(정상 주행): �
 
   for (const c of CASES) {
     for (const sleep of [true, false]) {
-      it(`${c.name} / ${sleep ? '취침 알람' : '준비 알람'}: 타깃의 직전 역 tick에서만 1회, 그 전·후 tick에는 0`, async () => {
+      it(`${c.name} / ${sleep ? '취침 알람: 타깃의 직전 역 tick에서만 1회, 그 전·후 tick에는 0' : '[#2510 반전] 비취침: 모든 tick 0 (알람은 취침 전용)'}`, async () => {
         const trip = makeTrip(c.waypoints, { sleepModeEnabled: sleep });
         const { perTick } = await walkTrip(trip);
-        const expectedId = (sleep ? sleepAlarmCollapseId : prepareAlarmCollapseId)(TOKEN, c.target);
+        const expectedId = sleepAlarmCollapseId(TOKEN, c.target);
         const preceding = c.waypoints.length - 2;
         perTick.forEach((t, i) => {
-          if (i < preceding) expect(t.alarmsSoFar).toEqual([]); // 출발/중간역에서는 안 울린다
+          if (i < preceding || !sleep) expect(t.alarmsSoFar).toEqual([]); // 출발/중간역·비취침에서는 안 울린다
           else expect(t.alarmsSoFar).toEqual([expectedId]); // 직전 역 tick에서 1회, 타깃 도착 tick에서도 그대로 1회
         });
       });
@@ -400,8 +400,8 @@ describe('#3100 선행 시나리오 3 — 승격 fast-forward로 1역 전 역이
     expect(alarms).toEqual([]);
   });
 
-  it('취침모드 OFF — sync catch-up과 같은 규칙으로 준비 알람 1회 (취침 알람은 0)', async () => {
+  it('[#2510 반전] 취침모드 OFF — 1정거장 전 알람 0 (알람은 취침 전용)', async () => {
     const { alarms } = await tapPromote({ stationName: '어린이대공원', trainSttus: 2 }, false);
-    expect(alarms).toEqual([prepareAlarmCollapseId('ff-alarm-tok', TARGET)]);
+    expect(alarms).toEqual([]);
   });
 });

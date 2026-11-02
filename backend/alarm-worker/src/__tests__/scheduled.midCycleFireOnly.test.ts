@@ -232,11 +232,12 @@ describe('#2615 — runMidCycleFireOnly (allowlist fire-only 진입점)', () => 
     expect(stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
   });
 
-  // #3100 (plan v4/v4.2) — 취침 mute는 intermediate 한정. 환승·하차 도착은 비취침과 같은 payload로 발사.
+  // #3100 (plan v4/v4.2) — 취침 mute는 intermediate 한정. 환승·하차 도착은 취침 무관 발사.
+  // #2510 반전(2026-11-02): payload의 sound는 모드별 — 취침=alarm.wav·time-sensitive, 비취침=무음 배너·active.
   it.each<{ kind: 'transfer' | 'destination'; station: string }>([
     { kind: 'transfer', station: '중곡' },
     { kind: 'destination', station: '군자' },
-  ])('#3100 sleepModeEnabled + $kind — 비취침과 같은 station- push 발사', async ({ kind, station }) => {
+  ])('#3100 sleepModeEnabled + $kind — station- push 발사 (sound만 모드별)', async ({ kind, station }) => {
     const capture = async (sleepModeEnabled: boolean) => {
       const kv = new InMemoryKV(() => NOW);
       const calls: [string, RequestInit][] = [];
@@ -274,7 +275,10 @@ describe('#2615 — runMidCycleFireOnly (allowlist fire-only 진입점)', () => 
     expect(sleep.pushes).toHaveLength(1);
     expect(sleep.pushes[0].aps.sound).toBe('alarm.wav');
     expect(sleep.pushes[0].aps['interruption-level']).toBe('time-sensitive');
-    expect(sleep.pushes).toEqual(base.pushes);
+    expect(base.pushes).toHaveLength(1);
+    expect('sound' in base.pushes[0].aps).toBe(false);
+    expect(base.pushes[0].aps['interruption-level']).toBe('active');
+    expect(sleep.pushes[0].data).toEqual(base.pushes[0].data);
   });
 
   it('같은 pass 내 같은 (trip, station) 스냅샷 2건 — in-memory dedup으로 1회만 발사', async () => {
