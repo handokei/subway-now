@@ -166,3 +166,15 @@ describe('#2629 거부 — 게이트 하나만 깨면 현행(1 tick 1 waypoint)�
     expect({ alerts: alertStations(r).includes('학동'), catchup: catchupRows(r) }).toEqual({ alerts: false, catchup: [] });
   });
 });
+
+describe('#2629 부가 단언', () => {
+  it('취침 변형: 알림 정책으로 mute돼도 따라잡기 소비 역은 감시 마커 1행(skipped-reason)을 남긴다', async () => {
+    const r = await replayTick(seedTrip('강남구청', { sleep: true }));
+    expect(catchupRows(r)).toEqual([{ station: '강남구청', outcome: 'skipped-reason' }]);
+  });
+
+  it('mid-cycle: 이 tick에 전진한 trip의 새 head(논현)가 mid pass 후보 스냅샷에 들어간다', async () => {
+    const r = await replayTick(seedTrip('강남구청'), { dedupStamped: ['강남구청'] });
+    expect(r.cycle.stats.midCycleSnapshot.map((s) => s.waypoint.stationName)).toEqual(['논현']);
+  });
+});

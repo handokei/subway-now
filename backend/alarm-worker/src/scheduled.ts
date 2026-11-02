@@ -15,6 +15,7 @@ import {
   type LegBoardingConfirmation,
 } from './boardingAnchorResolver';
 import { inferLegDirection } from './legDirection';
+import { planPositionCatchup } from './positionCatchup';
 import {
   buildSilentPushData,
   sendAlertPush,
@@ -2374,18 +2375,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       stats.errors += 1;
       log('boarding-lock: poll error', { error: String(e), token: trip.token.slice(0, 8) });
     }
-    // #2615 — mid-cycle 재폴링 후보 축적. 이번 tick에 advance가 일어나지 않은(=아직 확증
-    // 발사되지 않은) lock-active trip만 후보로 남긴다 — 이미 전진한 trip은 이번 cycle에
-    // 더 볼 것이 없다(다음 waypoint의 조기 도착은 30초 내 가능성이 낮고, 봐도 이 스냅샷의
-    // 목적(같은 waypoint 재확인) 밖이라 단순함을 위해 제외). trip/lock은 이번 tick 중
-    // mutate됐을 수 있는 최신 참조를 그대로 담는다(예: vanish-swap trainCode 교체).
+    // #2615 — mid-cycle 재폴링 후보 축적. lock-active trip의 현재 head(전진했다면 새 head)를 후보로 담는다.
+    // #2629 PR-3 — 이전엔 이번 tick에 전진한 trip을 제외했으나(다음 waypoint의 조기 도착은 30초 내 가능성이 낮다는 가정),
+    // 위치 따라잡기로 head가 열차 위치까지 올라온 뒤에는 새 head의 조기 도착도 mid pass가 확인해야 한다.
+    // trip/lock은 이번 tick 중 mutate됐을 수 있는 최신 참조를 그대로 담는다(예: vanish-swap trainCode 교체).
     const postWaypoint = pickActiveWaypoint(trip);
-    if (
-      isBoardingLockActive(trip, now) &&
-      postWaypoint !== null &&
-      postWaypoint.stationName === waypoint.stationName &&
-      postWaypoint.kind === waypoint.kind
-    ) {
+    if (isBoardingLockActive(trip, now) && postWaypoint !== null) {
       stats.midCycleSnapshot.push({ trip, waypoint: postWaypoint, lock: trip.boardingLock });
     }
   }
@@ -2691,6 +2686,69 @@ async function reconcileLockTripProgress(
     stats.errors += 1;
     log('progress-reconcile: error (fail-open)', { error: String(e), token: trip.token.slice(0, 8) });
   }
+}
+
+/** #2629 PR-3 — 위치 따라잡기가 소비한 역의 `cron-fire-attempt` 행 식별자(D1 meta.path). 감시 마커. */
+const POSITION_CATCHUP_PATH = 'cron-catchup';
+
+/**
+ * #2629 PR-3 — lock 열차 위치 따라잡기(사용자 승인 안전망, 2026-11-03).
+ *
+ * 서버 head가 lock 열차의 실제 위치보다 1역 이상 뒤처졌으면(Seoul 결측·cron 건너뜀·전파 지연 등) 같은 tick에 열차 위치까지
+ * head를 끌어올린다. 게이트는 `planPositionCatchup`(위치만, 시간 사용 금지 — ADR-015). 건너뛴 역 알림은 가장 최근 1개만
+ * (`fireSyncSkippedStationPasses`의 cap, newest-first, 공용 dedup). 소비 역마다 `cron-fire-attempt` 1행(meta.path='cron-catchup').
+ * 준비·취침 알람은 소비 구간 기준으로 `fireSyncConsumedPrecedingAlarms`가 평가한다. 끝나면 새 head를 반환 — 호출자는
+ * 이후 모든 사용처(estimate·swap·발사·advance·reschedule/LA)에서 이 값을 써야 한다.
+ * 같은 cycle 스냅샷만 쓴다(fetchPositions는 client in-cycle 캐시). 실패는 fail-open(현행 1 tick 1 waypoint).
+ */
+async function catchUpToLockTrain(
+  trip: Trip,
+  head: Waypoint,
+  lock: BoardingLockMeta,
+  env: Env,
+  deps: ScheduledDeps,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<Waypoint> {
+  let skipped: Waypoint[];
+  try {
+    skipped = planPositionCatchup({ trip, lock, positions: await deps.seoul.fetchPositions(lock.line), now });
+  } catch (e) {
+    log('position-catchup: plan error (fail-open)', { error: String(e), token: trip.token.slice(0, 8) });
+    return head;
+  }
+  const consumedCount = skipped.length;
+  if (consumedCount === 0) return head;
+
+  // 발사는 slice 전 trip 기준(남은 정거장 수·준비 알람 쌍 계산이 pre-slice 스냅샷을 전제한다).
+  await fireSyncSkippedStationPasses(env, trip, skipped, lock, deps, now, log, generatePushId, {
+    origin: 'vanish-fallback',
+    path: POSITION_CATCHUP_PATH,
+  });
+  await fireSyncConsumedPrecedingAlarms(env, trip, consumedCount, deps, now, log, generatePushId, { source: 'cron-catchup' });
+
+  for (const { stationName } of skipped) appendPassedStation(trip, stationName);
+  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+  if (ssot !== null) {
+    for (const { stationName } of skipped) {
+      await stampPassedStationAlarmEvent(ssot, trip.token, stationName, 'station-passed', now);
+    }
+    await writeSsot(env.TRIPS, ssot, { expiresAt: trip.expiresAt });
+  }
+  trip.waypoints = trip.waypoints.slice(consumedCount);
+  // 새 head의 첫 push를 보장하도록 기준값 리셋(completeWaypointAdvance와 동일).
+  trip.lastTrackedArrivalEpoch = undefined;
+  trip.lastLaPushEpoch = undefined;
+  trip.lastLaPushAt = undefined;
+  await putTrip(env.TRIPS, trip);
+  await mirrorProgress(env.TRIPS, trip, consumedCount);
+  log('position-catchup: head advanced to lock train', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    consumed: skipped.map((w) => w.stationName),
+  });
+  return trip.waypoints[0];
 }
 
 async function mirrorProgress(
@@ -4391,7 +4449,7 @@ async function sendStationPassedAlertPush(inputs: {
   now: number;
   log: Logger;
   pushId: string;
-  origin: 'arvlcd' | 'device-sync';
+  origin: PushOrigin;
 }) {
   const { env, trip, waypoint, lock, deps, now, log, pushId, origin } = inputs;
   // #3221 PR-3 — split trip의 intermediate는 여정 LA 무음 update(성공 시 일반 alert 생략).
@@ -4740,10 +4798,22 @@ export async function fireSyncSkippedStationPasses(
   now: number,
   log: Logger,
   generatePushId: () => string,
+  // #2629 PR-3 — 호출 경로 식별. 기본(생략)은 `/boarding-lock/sync` 그대로(origin 'device-sync', D1 meta.path 없음).
+  // cron 위치 따라잡기는 { origin: 'vanish-fallback', path: 'cron-catchup' }로 불러 cron-fire-attempt 행을 구분한다.
+  opts: { origin?: PushOrigin; path?: string } = {},
 ): Promise<SyncSkippedFireStats> {
+  const { origin = 'device-sync', path } = opts;
   const stats: SyncSkippedFireStats = { fired: 0, failed: 0, dedupSkipped: 0, capSkipped: 0 };
   // 취침 x arrival-intermediate = off (정책 표). 이 함수는 intermediate 매역만 발사하므로 표 셀 하나로 충분하다.
-  if (!resolveStationAlert(trip, 'arrival-intermediate').fires) return stats;
+  if (!resolveStationAlert(trip, 'arrival-intermediate').fires) {
+    // #2629 PR-3 — 경로 식별(path)이 있는 호출(cron 따라잡기)은 정책 mute여도 소비 역마다 감시 마커 1행을 남긴다. 기본 호출자는 무변경.
+    if (path !== undefined) {
+      for (const waypoint of skippedWaypoints) {
+        await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, 'alert-muted-by-policy', undefined, path);
+      }
+    }
+    return stats;
+  }
 
   // 코드리뷰 P1-2 — newest-first. 관측역에 가장 가까운 역부터 cap 예산을 소비해, 초과분이
   // 발생하면 가장 오래된 역부터 밀려난다(`stats.fired >= CAP` 체크가 이 순서를 그대로 따름).
@@ -4761,6 +4831,8 @@ export async function fireSyncSkippedStationPasses(
         'skipped-reason',
         now,
         'sync-skip-non-intermediate',
+        undefined,
+        path,
       );
       continue;
     }
@@ -4781,19 +4853,21 @@ export async function fireSyncSkippedStationPasses(
         'skipped-reason',
         now,
         'sync-station-passed-dedup',
+        undefined,
+        path,
       );
       continue;
     }
 
     if (stats.fired >= SYNC_SKIPPED_STATION_FIRE_CAP) {
       stats.capSkipped += 1;
-      await recordFireAttempt(env, trip, waypoint, 'skipped-by-shift', now);
+      await recordFireAttempt(env, trip, waypoint, 'skipped-by-shift', now, undefined, undefined, path);
       continue;
     }
 
     try {
       const pushId = generatePushId();
-      const heal = await sendStationPassedAlertPush({ env, trip, waypoint, lock, deps, now, log, pushId, origin: 'device-sync' });
+      const heal = await sendStationPassedAlertPush({ env, trip, waypoint, lock, deps, now, log, pushId, origin });
 
       if (!heal.result.ok) {
         log('sync-skipped-fire: push failed', {
@@ -4804,7 +4878,7 @@ export async function fireSyncSkippedStationPasses(
         });
         stats.failed += 1;
         // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId);
+        await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, path, pushId);
         continue;
       }
 
@@ -4825,13 +4899,13 @@ export async function fireSyncSkippedStationPasses(
         });
       }
       // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId);
+      await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, path, pushId);
     } catch (e) {
       stats.failed += 1;
       log('sync-skipped-fire: error', { error: String(e), token: trip.token.slice(0, 8) });
       // pushId는 try 블록 내부 선언이라 여기서 scope 밖 — 생성 자체가 실패했을 수 있어
       // 의도적으로 생략한다(해당 attempt는 D1에서 pushId 없는 'failed' 행으로 남는다).
-      await recordFireAttempt(env, trip, waypoint, 'failed', now, String(e));
+      await recordFireAttempt(env, trip, waypoint, 'failed', now, String(e), undefined, path);
     }
   }
 
@@ -4955,7 +5029,7 @@ export function selectConsumedPrecedingAlarmPairs(
 }
 
 /** #3100 — sync 경로 구분(D1 `sleep-alarm` 행 meta.source). cron은 생략. */
-export type SleepAlarmSyncSource = 'sync-advance' | 'sync-ff' | 'sync-mixed';
+export type SleepAlarmSyncSource = 'sync-advance' | 'sync-ff' | 'sync-mixed' | 'cron-catchup';
 
 export async function fireSyncConsumedPrecedingAlarms(
   env: Env,
@@ -5953,6 +6027,8 @@ export async function runTrainCodeTracking(
     activeLock = timetableLock;
     await putTrip(env.TRIPS, trip);
   }
+  // #2629 PR-3 — estimate 전에 lock 열차 위치까지 head를 따라잡는다. 이후 모든 사용처가 새 head를 쓰도록 재대입한다.
+  waypoint = await catchUpToLockTrain(trip, waypoint, activeLock, env, deps, now, log, generatePushId);
   let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
   // #2869 (E) — estimate===null 상태 전이 계측(전이 시에만, #2073 quota 보호). swap 시도/성공
   // 여부와 무관하게 "이번 tick 진입 시점" 값을 기록한다. 반환된(가능하면 갱신된) ssot를
