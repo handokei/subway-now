@@ -3,6 +3,7 @@
  */
 
 import type { BoardingLock } from '../types/boardingLock';
+import type { FusionSource } from '../types/fusion';
 
 /**
  * trip ETA 미상 시 lock 생성에 사용할 fallback 지속시간(분).
@@ -340,3 +341,13 @@ export const LOCK_ONLY_SYNC_ACCURACY_METERS = 999_999;
  * (trainCode/boardingLine 전환)이 있을 때만 재개.
  */
 export const LOCK_SYNC_RETRY_MAX_ATTEMPTS = LOCK_SYNC_RETRY_BACKOFF_MS.length;
+
+/**
+ * #3191 PR-S — fix 나이와 무관하게 `/boarding-lock/sync` 관측역으로 보낼 수 있는 fused 출처.
+ * WiFi SSID와 lock 유래 역은 GPS 좌표 없이 확정된다. backend-ssot는 backend 값의 되먹임이라 제외.
+ */
+export const SYNC_OBSERVATION_FIX_INDEPENDENT_SOURCES: readonly FusionSource[] = [
+  'wifi-ssid',
+  'boarding-lock',
+  'boarding-lock-interp',
+];
