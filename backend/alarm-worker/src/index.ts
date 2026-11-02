@@ -5296,6 +5296,7 @@ export const handler = {
       log('trip_metrics regression scan completed', {
         date: regressionResult.date,
         regressionCount: regressionResult.regressions?.length ?? 0,
+        reconsumeCount: regressionResult.reconsumes?.length ?? 0,
       });
     }
     // #1752 — observability metrics 1h 주기 집계. cron이 매분 실행되지만 1h bucket 키가

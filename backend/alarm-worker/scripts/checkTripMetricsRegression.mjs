@@ -15,8 +15,11 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  buildReconsumeCheckQuery,
   buildRegressionCheckQuery,
+  formatReconsumeReport,
   formatRegressionReport,
+  parseReconsumeCheckResponse,
   parseRegressionCheckResponse,
 } from '../src/checkTripMetricsRegression.ts';
 import { parseArgs, runCli } from './cliUtils.mjs';
@@ -40,33 +43,36 @@ function main() {
 
   const now = Date.now();
   const windowStart = now - REGRESSION_WINDOW_MS;
-  const sql = buildRegressionCheckQuery(windowStart);
 
-  // 절대 bare wrangler 금지(CLAUDE.md #2698) — `--config wrangler.toml` 명시.
-  const d1Args = [
-    'd1',
-    'execute',
-    db,
-    local ? '--local' : '--remote',
-    '--config',
-    'wrangler.toml',
-    '--json',
-    '--command',
-    sql,
-  ];
+  const runQuery = (sql) => {
+    // 절대 bare wrangler 금지(CLAUDE.md #2698) — `--config wrangler.toml` 명시.
+    const d1Args = [
+      'd1',
+      'execute',
+      db,
+      local ? '--local' : '--remote',
+      '--config',
+      'wrangler.toml',
+      '--json',
+      '--command',
+      sql,
+    ];
+    try {
+      return runCli(SCRIPT_DIR, d1Args, { cwd: BACKEND_DIR, maxBuffer: 16 * 1024 * 1024 });
+    } catch (err) {
+      throw new Error(`D1 조회 실패: wrangler d1 execute 실행 실패 (${err instanceof Error ? err.message : String(err)})`);
+    }
+  };
 
-  let stdout;
-  try {
-    stdout = runCli(SCRIPT_DIR, d1Args, { cwd: BACKEND_DIR, maxBuffer: 16 * 1024 * 1024 });
-  } catch (err) {
-    throw new Error(`D1 조회 실패: wrangler d1 execute 실행 실패 (${err instanceof Error ? err.message : String(err)})`);
-  }
-
-  const rows = parseRegressionCheckResponse(stdout);
+  const rows = parseRegressionCheckResponse(runQuery(buildRegressionCheckQuery(windowStart)));
   console.log(formatRegressionReport(rows, now));
 
+  // #3006 — 재진행(같은 역 재소비) 감시.
+  const reconsumes = parseReconsumeCheckResponse(runQuery(buildReconsumeCheckQuery(windowStart)));
+  console.log(formatReconsumeReport(reconsumes, now));
+
   // 회귀 발견 시 exit code 1 — CI 게이트는 아니지만 셸/알림 스크립트에서 체이닝 가능하도록.
-  if (rows.length > 0) {
+  if (rows.length > 0 || reconsumes.length > 0) {
     process.exitCode = 1;
   }
 }
