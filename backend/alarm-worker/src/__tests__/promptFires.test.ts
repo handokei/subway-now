@@ -42,15 +42,23 @@ describe('recordPromptFire', () => {
 });
 
 describe('readLatestPromptFire', () => {
-  it('(token, station, line)의 최신 행을 {trainCode, issuedAt}으로 돌려준다', async () => {
-    const d = db({ first: vi.fn().mockResolvedValue({ train_code: '7246', issued_at: 1000 }) });
-    await expect(readLatestPromptFire(d, 'h', '군자', '7')).resolves.toEqual({ trainCode: '7246', issuedAt: 1000 });
+  it('(token, station, line)의 최신 행을 {trainCode, issuedAt, decision}으로 돌려준다', async () => {
+    const d = db({ first: vi.fn().mockResolvedValue({ train_code: '7246', issued_at: 1000, decision: 'imminent' }) });
+    await expect(readLatestPromptFire(d, 'h', '군자', '7')).resolves.toEqual({
+      trainCode: '7246',
+      issuedAt: 1000,
+      decision: 'imminent',
+    });
     expect(d.prepare).toHaveBeenCalledWith(expect.stringMatching(/ORDER BY issued_at DESC.*LIMIT 1/s));
     expect(d.bind).toHaveBeenCalledWith('h', '군자', '7');
   });
   it('train_code NULL 행은 trainCode null', async () => {
-    const d = db({ first: vi.fn().mockResolvedValue({ train_code: null, issued_at: 5 }) });
-    await expect(readLatestPromptFire(d, 'h', '군자', '7')).resolves.toEqual({ trainCode: null, issuedAt: 5 });
+    const d = db({ first: vi.fn().mockResolvedValue({ train_code: null, issued_at: 5, decision: 'imminent' }) });
+    await expect(readLatestPromptFire(d, 'h', '군자', '7')).resolves.toEqual({
+      trainCode: null,
+      issuedAt: 5,
+      decision: 'imminent',
+    });
   });
   it('행 없음 / db 없음 / 읽기 실패 -> null (fail-closed)', async () => {
     await expect(readLatestPromptFire(db(), 'h', '군자', '7')).resolves.toBeNull();

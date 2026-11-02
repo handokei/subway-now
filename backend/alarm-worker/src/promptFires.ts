@@ -26,6 +26,12 @@ export interface PromptFire {
   issuedAt: number;
 }
 
+/** 저장된 발사 행. `decision`은 PR-3b `verifyLaCandidate`가 도착확정 여부 판정에 쓴다. */
+export interface PromptFireRecord extends PromptFire {
+  /** 발사 사유(gateDecision). */
+  decision: string;
+}
+
 export async function recordPromptFire(db: D1Database | undefined, input: PromptFireInput): Promise<void> {
   if (!db) return;
   const { tokenHash, station, line, trainCode, issuedAt, decision } = input;
@@ -48,16 +54,16 @@ export async function readLatestPromptFire(
   tokenHash: string,
   station: string,
   line: string,
-): Promise<PromptFire | null> {
+): Promise<PromptFireRecord | null> {
   if (!db) return null;
   try {
     const row = await db
       .prepare(
-        'SELECT train_code, issued_at FROM prompt_fires WHERE token_hash = ? AND station = ? AND line = ? ORDER BY issued_at DESC, id DESC LIMIT 1',
+        'SELECT train_code, issued_at, decision FROM prompt_fires WHERE token_hash = ? AND station = ? AND line = ? ORDER BY issued_at DESC, id DESC LIMIT 1',
       )
       .bind(tokenHash, station, line)
-      .first<{ train_code: string | null; issued_at: number }>();
-    return row ? { trainCode: row.train_code, issuedAt: row.issued_at } : null;
+      .first<{ train_code: string | null; issued_at: number; decision: string }>();
+    return row ? { trainCode: row.train_code, issuedAt: row.issued_at, decision: row.decision } : null;
   } catch (e) {
     console.warn(JSON.stringify({ msg: 'promptFires read failed', err: String(e) }));
     return null;
