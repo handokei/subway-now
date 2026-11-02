@@ -71,8 +71,10 @@ import {
   cleanupTripWithLa,
   fireLiveActivityUpdate,
   resolveCurrentStationName,
+  resolveQuestionAnchor,
   type LiveActivityStats,
 } from './liveActivity';
+import { cleanupPromptFires, readLatestPromptFire, recordPromptFire, type PromptFire } from './promptFires';
 import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg, SWAP_LOCK_TTL_MS } from './lockSwap';
@@ -1695,6 +1697,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // 경계에서만 실행해 24회/일로 제한 — KV read/write 없이 `now` 값만으로 게이팅(추가 quota 0).
   if (new Date(now).getUTCMinutes() === 0) {
     await cleanupTripEvents(env.DB, now);
+    // #3221 PR-3a — prompt_fires도 같은 상수(7일)·같은 시 단위 게이트로 정리(D1 쓰기 +24/일).
+    await cleanupPromptFires(env.DB, now);
   }
 
   // #2073 (Issue B) — listTrips 3중 호출(collectActiveLines/collectActiveStations/main loop 각자)을
@@ -2340,6 +2344,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             trip, waypoint, now, deps, stats, now, log, stationarySsot,
             // #2747 PR-6 — newArrivalEpoch=now는 ETA 미지의 자리표시 -> 목적지 ETA 합산 금지.
             false,
+            env.DB,
           );
           if (laHeartbeatDirty) {
             await putTrip(env.TRIPS, trip);
@@ -6096,7 +6101,7 @@ export async function runTrainCodeTracking(
       epochOffset: FALLBACK_HOP_SEC,
     });
     // LA heartbeat는 trip.lastLaPushEpoch 기준이라 handleEtaMissing과 충돌하지 않음.
-    await maybeFireLiveActivityUpdate(trip, waypoint, scheduleHopEpoch, deps, stats, now, log, ssot);
+    await maybeFireLiveActivityUpdate(trip, waypoint, scheduleHopEpoch, deps, stats, now, log, ssot, true, env.DB);
     await handleEtaMissing({
       trip,
       waypoint,
@@ -6275,6 +6280,8 @@ export async function runTrainCodeTracking(
       now,
       log,
       ssot,
+      true,
+      env.DB,
     );
   }
   if (laDirty || hadMissCount) {
@@ -7100,6 +7107,9 @@ export async function completeWaypointAdvance(
       // 그대로 보내면 한 정거장 앞서 표시되는 회귀(#2849). line/kind/stopsRemaining 해석은
       // 여전히 nextWaypoint 기준 — #1654/#1658 환승 display-line 로직 무변경.
       waypoint.stationName,
+      undefined,
+      // #3221 PR-3a — lock 없을 때 발사 열차는 prompt_fires 최신 행에서 복구(lock 활성이면 undefined = 기존 순서).
+      { promptFire: await prefetchPromptFire(env.DB, trip) },
     );
     await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, nextWaypoint.kind, undefined, 'advance');
   }
@@ -7145,6 +7155,8 @@ export async function maybeFireLiveActivityUpdate(
   // #2747 PR-6 — false = `newArrivalEpoch`가 실측 ETA가 아님(lock-missing heartbeat는 now를 넘긴다).
   // 이때 목적지 ETA는 합산할 수 없으므로 LA etaMinutes를 생략한다.
   etaToWaypointKnown = true,
+  // #3221 PR-3a — lock 없을 때 `prompt_fires` 최신 발사를 읽는 D1. 미전달 = 읽을 수 없음 -> 열차 미표시(fail-closed).
+  db?: D1Database,
 ): Promise<boolean> {
   if (!trip.activityPushToken || trip.activityState !== 'live') return false;
   const last = trip.lastLaPushEpoch;
@@ -7184,6 +7196,7 @@ export async function maybeFireLiveActivityUpdate(
   // 불만족"으로 **due tick 하나만** true가 되고, 그 뒤 Swift의 `lastAlertedBoardingPhase`
   // dedup이 phase 전이당 1회로 한 번 더 좁힌다 — 배너 반복이 이중으로 차단된다.
   const endPromptDue = ssot !== null && isEndPromptDue(ssot, now);
+  const promptFire = await prefetchPromptFire(db, trip);
   const contentState = buildLiveActivityContentState(
     waypoint,
     // #2747 PR-6 — 목적지까지 남은 시간(waypoint ETA + 그 waypoint의 remainingSecToDest). 합산 불가면 null=생략.
@@ -7197,7 +7210,7 @@ export async function maybeFireLiveActivityUpdate(
     // #2849 — waypoint.stationName(다음 추적 대상) 대신 SSoT 현재역(미정착 시 trip origin).
     resolveCurrentStationName(trip, ssot),
     undefined,
-    { endPromptDue },
+    { endPromptDue, promptFire },
   );
   const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind, undefined, 'update');
   if (result.dirty) {
@@ -7208,6 +7221,19 @@ export async function maybeFireLiveActivityUpdate(
   // #900 Seam D — heartbeat 게이트 기준점. 발사 시각(wall clock)을 stamp.
   trip.lastLaPushAt = now;
   return true;
+}
+
+/**
+ * #3221 PR-3a — LA 갱신(heartbeat·waypoint advance)이 lock 없는 질문 구간에서 "그 발사의 열차"를 복구하도록 `prompt_fires` 최신
+ * 행을 미리 읽는다(builder는 동기 유지). lock 활성 = undefined(기존 lock 열차 순서 그대로, 조회 없음). lock 없음 + anchor 없음/
+ * 행 없음/읽기 실패/DB 없음 = null(열차 미표시, 이전 stamp 폴백 금지).
+ */
+async function prefetchPromptFire(db: D1Database | undefined, trip: Trip): Promise<PromptFire | null | undefined> {
+  if (trip.boardingLock !== undefined) return undefined;
+  const anchor = resolveQuestionAnchor(trip);
+  if (anchor === undefined) return null;
+  const { station, line } = anchor;
+  return readLatestPromptFire(db, hashTripToken(trip.token), station, line);
 }
 
 /**
@@ -8003,7 +8029,7 @@ export async function runLocklessIntermediate(
     // signal.etaSeconds를 ETA로 전달 — station-passed push와 동일 시점의 ETA 추정값.
     // maybeFireLiveActivityUpdate 내 dedup(30s) + heartbeat(90s) 게이트가 중복 발사를 차단한다.
     // 반환 dirty=true여도 trip의 lastLaPushEpoch/lastLaPushAt 갱신분은 아래 putTrip으로 일괄 persist.
-    await maybeFireLiveActivityUpdate(trip, waypoint, now + signal.etaSeconds * 1000, deps, stats, now, log, ssot);
+    await maybeFireLiveActivityUpdate(trip, waypoint, now + signal.etaSeconds * 1000, deps, stats, now, log, ssot, true, env.DB);
   }
   // #2066 (Phase 2-backend) — 취침 알람 평가. shift 전이라 trip.waypoints[1]이 waypoint(방금
   // arvlCd 확정된 직전역 후보) 바로 다음 대상. lockless도 intermediate만 advance하므로 lock 경로
@@ -8622,6 +8648,18 @@ async function fireBoardingPromptForAnchor(inputs: {
     destinationStation,
   );
 
+  // #3221 PR-3a — 발사 기록은 fire-once 차단 통과 직후·LA/알림 송신 **전**에 쓴다(단일 writer, leg-1/leg-2 공통).
+  // 송신 후에 쓰면 "LA는 이미 열차 A를 보이는데 기록은 아직 이전 발사"인 창이 생겨 그 사이 탭이 오판된다. 송신이 전부 실패한
+  // 발사도 행이 남지만(fail-closed 방향) fire-once stamp가 안 찍혀 다음 cycle 재발사 -> 새 행. 쓰기 실패는 삼킨다(Sentry).
+  await recordPromptFire(env.DB, {
+    tokenHash: hashTripToken(trip.token),
+    station,
+    line,
+    trainCode: selectedTrainCode,
+    issuedAt: now,
+    decision: gate.decision,
+  });
+
   const pushId = generatePushId();
   let dirty = false;
 
@@ -8825,6 +8863,7 @@ async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaA
         title,
         trainInfo: body,
         promptInstrumentation,
+        trainCode: selectedTrainCode,
       });
       return { sent: started.sent, dirty: started.dirty, budgetExceeded: false };
     } catch (e) {
@@ -8850,7 +8889,9 @@ async function firePromptLaAlert(inputs: PromptLaAlertInputs): Promise<PromptLaA
         trip.waypoints.length,
         trip,
         currentStationName,
-        selectedTrainCode ?? undefined,
+        undefined,
+        // #3221 PR-3a — 이번 발사의 열차·시각을 직접 싣는다. ambiguity(null)면 trainCode 미기재(이전 stamp·lock 폴백 금지).
+        { promptFire: { trainCode: selectedTrainCode, issuedAt: now } },
       ),
       // #2434 — BoardingPromptView/BoardingIntents(→boarding-confirm)가 렌더/처리하는
       // 버튼 컨텍스트. Swift ContentState 필드명과 정확히 일치해야 decode된다.

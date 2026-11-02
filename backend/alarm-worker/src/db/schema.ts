@@ -78,3 +78,17 @@ export const latencyProbe = sqliteTable('latency_probe', {
   d1WriteMs: integer('d1_write_ms'),
   kvGetMs: integer('kv_get_ms').notNull(),
 });
+
+/**
+ * `prompt_fires` — 탑승 질문 발사 기록 (#3221 PR-3a). 쓰기/읽기/정리는 `promptFires.ts`
+ * (trip_events와 같이 prepare/bind 직접 사용). drift는 `db/__tests__/schema.test.ts`가 잡는다.
+ */
+export const promptFires = sqliteTable('prompt_fires', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  tokenHash: text('token_hash').notNull(),
+  station: text('station').notNull(),
+  line: text('line').notNull(),
+  trainCode: text('train_code'),
+  issuedAt: integer('issued_at').notNull(),
+  decision: text('decision').notNull(),
+});

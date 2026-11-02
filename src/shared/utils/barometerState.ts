@@ -100,12 +100,20 @@ export interface BarometerDeltaTracking {
   firstHpaAtMs: number | null;
   /** 30초 창 안 |ΔP| >= 0.3 hPa 인 가장 최근 reading의 시각. 없으면 null. */
   lastDeltaEventAtMs: number | null;
+  /**
+   * #3191 PR-0 — `lastDeltaEventAtMs` 이벤트의 종류. 'window' = 30s 창 안 |ΔP|, 'gap' = 직전 reading이 창 밖인
+   * 공백 건넌 |ΔP|. 이벤트 없으면 null. 관측 전용(판정 입력 아님).
+   */
+  lastDeltaEventKind: BarometerDeltaEventKind | null;
 }
+
+export type BarometerDeltaEventKind = 'window' | 'gap';
 
 const EMPTY_DELTA_TRACKING: BarometerDeltaTracking = {
   firstHpa: null,
   firstHpaAtMs: null,
   lastDeltaEventAtMs: null,
+  lastDeltaEventKind: null,
 };
 
 let deltaTracking: BarometerDeltaTracking = EMPTY_DELTA_TRACKING;
@@ -124,11 +132,13 @@ function recordDeltaTracking(prior: readonly BarometerReading[], reading: Barome
     reading.t - lastReading.t > BAROMETER_DPDT_WINDOW_MS &&
     Math.abs(reading.pressureHpa - lastReading.pressureHpa) >= BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA;
   const isEvent = isWindowEvent || isGapEvent;
+  const eventKind: BarometerDeltaEventKind = isWindowEvent ? 'window' : 'gap';
   lastReading = reading;
   deltaTracking = {
     firstHpa: deltaTracking.firstHpa ?? reading.pressureHpa,
     firstHpaAtMs: deltaTracking.firstHpaAtMs ?? reading.t,
     lastDeltaEventAtMs: isEvent ? reading.t : deltaTracking.lastDeltaEventAtMs,
+    lastDeltaEventKind: isEvent ? eventKind : deltaTracking.lastDeltaEventKind,
   };
 }
 

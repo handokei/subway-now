@@ -146,5 +146,25 @@ describe('useAccelerometerFingerprint (#1542)', () => {
       await waitFor(() => expect(result.current).toBe('automotive'));
       expect(mockLogAccelPatternObserved).toHaveBeenCalledWith('automotive');
     });
+
+    // #3191 PR-0 — observer(DebugModal) 인스턴스는 alarmLog에 기록하지 않는다 (pattern 값 자체는 그대로 반환).
+    it("observer role — alarmLog 적재 0, pattern은 정상 반환", async () => {
+      mockSupported.mockReturnValue(true);
+      mockGetSnapshot.mockReturnValue(makeSnapshot('automotive', 3.0));
+
+      const { result } = renderHook(() => useAccelerometerFingerprint('observer'));
+      await waitFor(() => expect(result.current).toBe('automotive'));
+      expect(mockLogAccelPatternObserved).not.toHaveBeenCalled();
+    });
+
+    it("primary role 명시 — 기존대로 적재", async () => {
+      mockSupported.mockReturnValue(true);
+      mockGetSnapshot.mockReturnValue(makeSnapshot('automotive', 3.0));
+
+      renderHook(() => useAccelerometerFingerprint('primary'));
+      await waitFor(() =>
+        expect(mockLogAccelPatternObserved).toHaveBeenCalledWith('automotive'),
+      );
+    });
   });
 });
