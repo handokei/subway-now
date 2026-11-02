@@ -11,15 +11,17 @@
  *   - 키: `progress:<token>` (TRIPS KV 재사용 — 새 namespace 도입 비용 회피)
  *   - 값: shiftedCount + 추적 baseline. trainCode를 stamp해 다른 열차로 갈아탄
  *         새 세션이면 fresh start로 동작.
- *   - POST /trips: progress.trainCode가 incoming.boardingLock.trainCode와 같으면
- *     `incoming.waypoints.slice(progress.shiftedCount)`로 진행분을 잘라낸다.
- *     트레인이 다르면 progress는 무시 (호출부가 clearProgress).
- *   - advanceBoardingLockWaypoint: shiftedCount += 1과 baseline reset을 progress에 기록.
+ *   - #2308 (ADR-052) — 작성자는 cron 경로 `mirrorProgress` 하나다. POST /trips·/boarding-lock/sync는
+ *     progress를 쓰지 않고, register는 읽지도 적용·삭제도 하지 않는다(세션 경계에서만 삭제).
+ *     대신 cron이 매 tick `reconcileTripWithProgress`로 trip.waypoints(노선 정의 사본)를 progress head까지
+ *     앞으로만 맞춘다. 이 파일의 설계가 풀려던 race("진정한 격리")를 그렇게 완결한다.
  *   - runTrainCodeTracking: 성공/실패 사이클에서 baseline(consecutiveEtaMissing,
- *     lastTrackedArrivalEpoch, lastLaPushEpoch)도 progress에 mirror해 race에 무관하게 유지.
+ *     lastTrackedArrivalEpoch, lastLaPushEpoch)도 progress에 mirror하고, 맞춤이 trip으로 복원한다.
  */
 
 import { assertKvCacheTtl } from './kvConsistency';
+import { waypointSignatureKey } from './trips';
+import type { Trip } from './types';
 
 const PROGRESS_PREFIX = 'progress:';
 
@@ -32,14 +34,16 @@ export interface TripProgress {
   /** advance로 shift한 waypoint 개수. POST의 incoming.waypoints에 slice(shiftedCount) 적용. */
   shiftedCount: number;
   /**
-   * #2308 — advance 시점 head waypoint의 `hopIndex` (원본 시퀀스 0-based 위치, shift와 무관하게
-   * 불변). POST /trips 재등록 시 `incoming.waypoints`가 (route 재계산 등으로) shiftedCount 계산
-   * 당시와 다른 시퀀스라면 count 기반 slice가 엉뚱한 waypoint를 head로 재anchor한다(단조 전진
-   * 불변식 위반, 구노선 head 되감김). `applyProgress`는 이 값이 있으면 count 대신
-   * hopIndex 일치 위치로 slice해 head 정체성을 보존한다. 미지정(구 progress/legacy)이면 기존
-   * count 기반 정책으로 fallback.
+   * advance 시점 head waypoint의 `hopIndex` — 하위호환 기록만(읽는 곳 0). device 재등록 waypoints에는 hopIndex가 없어
+   * backend `validateTrip`이 배열 위치로 다시 매기므로 head 식별자로 쓸 수 없다(#2308 재오픈, `headKey` 참고).
    */
   headHopIndex?: number;
+  /**
+   * #2308 — head waypoint의 내용 키(`waypointSignatureKey`). device 재등록 waypoints에는 hopIndex가 없어 backend `validateTrip`이
+   * 배열 위치로 다시 매기므로 hopIndex는 head 식별자로 쓸 수 없다. cron 맞춤(`reconcileTripWithProgress`)이 이 키로
+   * trip.waypoints에서 head를 찾아 앞으로만 자른다. 구 progress(필드 없음)는 맞춤 대상이 아니다.
+   */
+  headKey?: string;
   /** Trip의 lastTrackedArrivalEpoch 사본 — race-isolated. */
   lastTrackedArrivalEpoch?: number;
   /** Trip의 lastLaPushEpoch 사본. */
@@ -135,4 +139,48 @@ export async function putProgress(
 
 export async function deleteProgress(kv: KVNamespace, token: string): Promise<void> {
   await kv.delete(progressKey(token));
+}
+
+/** 맞춤이 덮는 LA·추적 기준값 집합(옛 register `applyProgress`와 같은 집합). */
+export interface ProgressBaseline {
+  lastTrackedArrivalEpoch?: number;
+  lastLaPushEpoch?: number;
+  lastLaPushAt?: number;
+  consecutiveEtaMissing?: number;
+}
+
+export interface ReconcileDecision {
+  /** 맞춤 이후 waypoints (advancedBy===0이면 원본 그대로). */
+  waypoints: Trip['waypoints'];
+  /** 앞으로 자른 개수(0 = head 일치, 기준값만 덮는다). */
+  advancedBy: number;
+  /** 자르기 전 head 키 / 맞춘 head 키 (D1 마커용). */
+  fromKey: string;
+  toKey: string;
+  baseline: ProgressBaseline;
+}
+
+/**
+ * #2308 — cron 맞춤. progress KV가 진행 위치의 권위이고 trip.waypoints는 노선 정의 사본이다.
+ * lock 활성 trip에서 progress.trainCode==lock.trainCode이고 progress.headKey가 trip.waypoints[i]에 있으면:
+ *  - i>0: 앞으로 slice(i) (뒤로 가지 않는다)
+ *  - i=0: 자르지 않음
+ * 두 경우 모두 기준값(LA·추적)을 progress 값으로 덮는다. 못 찾으면(trip이 progress보다 앞섬/다른 노선)·legacy(headKey 없음)·
+ * lockless progress·trainCode 불일치는 null — 추측 slice 금지. 순수 함수(입력 불변).
+ */
+export function reconcileTripWithProgress(trip: Trip, progress: TripProgress | null): ReconcileDecision | null {
+  const trainCode = trip.boardingLock?.trainCode;
+  if (progress === null || trainCode === undefined) return null;
+  const { headKey } = progress;
+  if (progress.trainCode !== trainCode || headKey === undefined) return null;
+  const index = trip.waypoints.findIndex((w) => waypointSignatureKey(w) === headKey);
+  if (index < 0) return null;
+  const { lastTrackedArrivalEpoch, lastLaPushEpoch, lastLaPushAt, consecutiveEtaMissing } = progress;
+  return {
+    waypoints: index === 0 ? trip.waypoints : trip.waypoints.slice(index),
+    advancedBy: index,
+    fromKey: waypointSignatureKey(trip.waypoints[0]),
+    toKey: headKey,
+    baseline: { lastTrackedArrivalEpoch, lastLaPushEpoch, lastLaPushAt, consecutiveEtaMissing },
+  };
 }

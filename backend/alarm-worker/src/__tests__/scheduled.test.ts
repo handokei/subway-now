@@ -3,7 +3,6 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DISEMBARK_PROMPT_CATEGORY, resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { computeNextRetryAt, isRetryableApnsError } from '../apnsHost';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
-import { applyProgress } from '../index';
 import { getProgress, type TripProgress } from '../progress';
 import { appendPositionPoint, type WindowedMetrics } from '../positionSeries';
 import { findStationCoordsByNameAndLine } from '../stationsLookup';
@@ -194,7 +193,7 @@ function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
 function makeFullEmptyStats(): ScheduledStats {
   return {
     scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
-    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0, waypointEnvironmentLookupMiss: 0, boardingPromptLaAlertFired: 0,
+    lockMissing: 0, boardingAnchorResolved: 0, boardingAnchorUnresolved: 0, boardingAnchorLegStreakPending: 0, boardingCommittedSuppressed: 0, laStaleAutoEnded: 0, laStaleSurvivedSilence: 0, killSwitchLocklessIntermediateSkipped: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0, progressEntryReadUnused: 0, waypointEnvironmentLookupMiss: 0, boardingPromptLaAlertFired: 0,
     laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
     boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
     phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
@@ -1263,7 +1262,7 @@ describe('runScheduled', () => {
     });
 
     // #1285 — lockless waypoint shift → progress KV mirror
-    it('#1285 — 발사 성공 시 progress KV에 lockless shiftedCount=1 저장', async () => {
+    it('#1285 → #2308 — 발사 성공 시에도 lockless progress KV를 쓰지 않는다', async () => {
       // #2944 (H-6) — 구 '중곡'은 line 5에 실존하지 않는 역명이라(7호선 전용)
       // inferLegDirection이 station-lookup 실패로 null을 반환했다 — fail-open 시절엔 무해했지만
       // fail-closed 전환 후 후보 0건으로 드러났다. 실제 5호선 역('장한평')으로 정정하고
@@ -1280,15 +1279,11 @@ describe('runScheduled', () => {
         arrivals: [ARVL_ARRIVED],
         apnsOk: true,
       });
-      const progressRaw = await (kv as unknown as KVNamespace).get('progress:tok');
-      expect(progressRaw).not.toBeNull();
-      const progress = JSON.parse(progressRaw as string);
-      expect(progress.lockless).toBe(true);
-      expect(progress.shiftedCount).toBe(1);
-      expect(progress.trainCode).toBeUndefined();
+      // #2308 — lockless shift는 progress를 쓰지 않는다(옛 mirrorLocklessProgress 제거).
+      expect(await (kv as unknown as KVNamespace).get('progress:tok')).toBeNull();
     });
 
-    it('#1285 — 두 번째 발사 시 progress.shiftedCount 누적 (2)', async () => {
+    it('#1285 → #2308 — 두 번째 발사에도 lockless progress는 누적되지 않는다', async () => {
       const kv = new InMemoryKV();
       // 첫 발사 후 progress.shiftedCount=1 존재하는 상황
       await (kv as unknown as KVNamespace).put(
@@ -1316,10 +1311,9 @@ describe('runScheduled', () => {
         fetchImpl: apnsFetch as unknown as typeof fetch,
         now: () => NOW,
       });
+      // #2308 — 기존 lockless progress를 갱신하지 않는다(작성자는 lock 경로 mirrorProgress 하나).
       const progressRaw = await (kv as unknown as KVNamespace).get('progress:tok');
-      const progress = JSON.parse(progressRaw as string);
-      expect(progress.lockless).toBe(true);
-      expect(progress.shiftedCount).toBe(2);
+      expect(JSON.parse(progressRaw as string)).toEqual({ lockless: true, shiftedCount: 1 });
     });
 
     // #1315 — trainCode 미확보 cycle의 보수 motion 게이트 + trainCode 바인딩.
@@ -6139,13 +6133,10 @@ describe('#705 scheduled.ts progress KV mirroring', () => {
         const [[, rawValue, { expirationTtl }]] = rewrites;
         expect((JSON.parse(rawValue) as TripProgress).ttlBasisExpiresAt).toBe(extendedExpiry);
         expect(expirationTtl).toBe(Math.floor((extendedExpiry - clock) / 1000));
-        // 원래 만료 이후에도 progress 키가 살아 있고, POST /trips 재등록이 shift 진행분을 복원한다.
+        // 원래 만료 이후에도 progress 키가 살아 있고, cron 맞춤이 head를 찾을 내용 키(headKey)를 갖는다.
         setClock(originalExpiry + 60_000);
         const alive = await getProgress(kv as unknown as KVNamespace, 'la-tok');
-        expect(alive).not.toBeNull();
-        const incoming = makeLockedLaTrip(progressTripOverrides());
-        const restored = applyProgress(incoming, incoming, alive as TripProgress);
-        expect(restored.waypoints.map((w) => w.stationName)).toEqual(['강남']);
+        expect(alive?.headKey).toBe(waypointSignatureKey(stored.waypoints[stored.waypoints.length - 1]));
       } finally {
         vi.useRealTimers();
       }

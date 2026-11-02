@@ -262,7 +262,13 @@ export type TripEventKind =
   // #1480 PR-0 — POST /trips 서버 waypoint 재합성(Dijkstra min-time)이 기기가 보낸 transfer 순서와 달라 채택을 거부한 1건.
   // meta={ reason:'transfer-mismatch', origin, originLine, destinationId, incomingTransfers[], inferredTransfers[] }.
   // register당 최대 1행, KV write 0. 관측 전용 — 거부 시 incoming이 그대로 저장된다.
-  | 'waypoint-resynth-rejected';
+  | 'waypoint-resynth-rejected'
+  // #2308 — cron 맞춤이 trip.waypoints를 progress head까지 앞으로 복구한 1건(되돌림이 일어났고 복구됐다는 신호).
+  // station=맞춘 head, meta={ fromKey, toKey, advancedBy, trainCode }. 전이 시에만(KV write는 putTrip 1회, D1 1행).
+  | 'progress-reconcile'
+  // #2308 — lock epoch 시작에서 routeWaypoints로 탑승역 다음부터 waypoints·segmentStations를 다시 깐 1건.
+  // station=재고정 후 head, line=lock 노선, meta={ fromKey, toKey, trainCode }. 관측 전용.
+  | 'lock-reanchor';
 
 /** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
 export type LockAttachPath =

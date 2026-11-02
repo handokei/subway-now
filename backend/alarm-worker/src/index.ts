@@ -87,7 +87,7 @@ import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
 import { writeMetric } from './analytics';
-import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
+import { deleteProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { isTransferOrDestination } from './transferDestinationGate';
 import {
@@ -1341,25 +1341,13 @@ app.post('/trips', async (c) => {
       incoming.createdAt - existing.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
         ? existing.lastAutoPromptedAt
         : undefined;
-    // #705: progress KV 우선 참조. 같은 trainCode면 shift된 waypoints를 incoming에 적용.
-    // 다른 trainCode/none이면 progress 폐기.
-    // #1285: lockless opt-in trip(boardingLock 없음 + infoModeEnabled===true)은
-    // token 기준 lockless progress로 보존 — trainCode 없이 lockless===true 마커로 매칭.
-    // #2651 (PR #2772 리뷰, 스펙 4항 재검토) — 최초 구현은 여기에 `promptOptIn===true`도 OR로
-    // 추가했으나(무탭 trip의 progress 되감김 방지 의도) dead code였다: `progress.lockless===true`
-    // 레코드의 **유일한 write 지점**(`mirrorLocklessProgress`, scheduled.ts)은
-    // `runLocklessIntermediate` 내부에서만 호출되고, 그 함수 자체가
-    // `trip.infoModeEnabled && waypoint.kind === 'intermediate'`(scheduled.ts dispatch)일 때만
-    // 진입한다 — 즉 `promptOptIn===true && infoModeEnabled!==true`인 trip은 애초에
-    // `progress.lockless===true` 레코드가 생성되지 않으므로, 이 read-side OR은 절대 참이 될 수
-    // 없는 조건을 추가한 것에 불과했다. 원 조건(infoModeEnabled 단독)으로 되돌린다.
-    const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
-    const progressApplies =
-      progress !== null &&
-      ((incoming.boardingLock !== undefined &&
-        progress.trainCode === incoming.boardingLock.trainCode) ||
-        (progress.lockless === true && incoming.infoModeEnabled === true));
-    if (progress !== null && !progressApplies) {
+    // #2308 — (#705/#1285의 register progress 적용을 대체) register는 진행 위치(progress)의 작성자가 아니다(R2 규칙). 같은 세션 재등록은 progress를 읽지도, trip.waypoints에
+    // 적용하지도, 지우지도 않는다(lock·lockless 모두): device 재등록 waypoints에는 hopIndex가 없어 validateTrip이 배열 위치로 다시
+    // 매기므로 hopIndex 적용은 head를 못 찾거나(되돌림) 우연히 다른 역에 맞았다(앞쪽 점프, 11/02). 진행 복구는 다음 cron tick의
+    // 맞춤(`reconcileLockTripProgress`)이 내용 키로 한다. 세션 경계(다른 세션/route reset)에서만 지워 옛 headKey가 새 route의 같은 키를
+    // 잘못 자르지 않게 한다.
+    const sessionBoundary = routeReset.reset || (existing !== null && !isSameSession);
+    if (sessionBoundary) {
       // #3006 PR-0a — lock 콜백 안이라 응답을 못 낸다. 전용 에러로 승격하면 바깥 catch가 503으로 바꾼다.
       try {
         await deleteProgress(c.env.TRIPS, incoming.token);
@@ -1503,11 +1491,11 @@ app.post('/trips', async (c) => {
           apnsEnv: existing?.apnsEnv ?? incoming.apnsEnv,
         };
 
-    // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
-    // existing trip이 사라졌더라도(KV TTL 만료 등) progress가 살아 있으면 진행분을 그대로 복원.
-    const mergedTrip = progressApplies
-      ? applyProgress(baseTrip, incoming, progress)
-      : baseTrip;
+    // #2308 — 세션 노선 원본: 새 세션은 검증된 incoming waypoints로 1회 채우고, 같은 세션은 보존한다(구 trip은 existing.waypoints).
+    const mergedTrip: Trip = {
+      ...baseTrip,
+      routeWaypoints: isSameSession ? (existing.routeWaypoints ?? existing.waypoints) : incoming.waypoints,
+    };
     // #3023 — 재등록도 활동성 핸들러. same-session 재등록이 짧은 잔여 TTL로 들어와도
     // 여기서 sliding 연장을 적용한다(대부분은 incoming.expiresAt이 이미 새 값이라 no-op).
     const trip = extendTripExpiryOnActivity(mergedTrip, Date.now());
@@ -3675,6 +3663,8 @@ app.post('/boarding-lock/sync', async (c) => {
             undefined,
             () => crypto.randomUUID(),
             isDestinationWp ? fireObserved : undefined,
+            // #2308 b2 — sync-mixed는 progress를 쓰지 않는다(작성자는 cron 경로 하나).
+            { mirrorProgress: false },
           );
           if (!result.consumed) break; // gps-far 유예 등 — trip 보존, 더 진행하지 않는다.
           appliedShiftedCount += 1;
@@ -3732,10 +3722,9 @@ app.post('/boarding-lock/sync', async (c) => {
           source: 'sync-mixed',
         });
       }
-      // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
-      await maybeMirrorLockSyncProgress(c.env.TRIPS, working, appliedShiftedCount);
     } else {
-      // 기존 경로 — 순수 intermediate 소비(transfer/destination 없음), 변경 없음. 이 분기는
+      // 기존 경로 — 순수 intermediate 소비(transfer/destination 없음). #2308: progress mirror는 제거(b2) — sync는 trip.waypoints만
+      // 전진시키고 progress는 cron 경로만 쓴다(그 외 동작 변경 없음). 이 분기는
       // 드리프트/유예 없이 위 cap(`advance`, #3083 lockless hold·체류 hold)이 허용한 만큼을 적용한다.
       appliedShiftedCount = advance.shiftedCount;
       //
@@ -3760,14 +3749,12 @@ app.post('/boarding-lock/sync', async (c) => {
         // #900 Seam D — heartbeat 기준점도 함께 reset (baseline 동형).
         lastLaPushAt: undefined,
       };
-      // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
-      await maybeMirrorLockSyncProgress(c.env.TRIPS, working, advance.shiftedCount);
       // #2625 — 관측역 이전에 건너뛴 station-passed waypoint를 발사+계측. 코드리뷰 P1-4 —
       // `existing.boardingLock` 존재만으로 판단하지 않고 다른 모든 발사 경로와 동일하게
       // `isBoardingLockActive`(만료 검사 포함)를 강제한다 — 만료된 lock의 stale trainCode로
       // 발사되는 것을 막는다. lock 비활성(lockless 포함)이면 매역 알림 발사 자체가 이 backend
       // 아키텍처 밖(#2506 이후 committed architecture, lock 기반)이라 대상이 없다 —
-      // `maybeMirrorLockSyncProgress`와 동일 전제.
+      // 전제는 lock 기반 발사 하나다.
       if (skippedStationPassed.length > 0 && isBoardingLockActive(existing, now)) {
         const lock = existing.boardingLock;
         const apnsConfig = {
@@ -3903,9 +3890,6 @@ app.post('/boarding-lock/sync', async (c) => {
         };
         working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
         if (fastForward.skip > 0 || fastForward.blockedAt !== undefined) {
-          if (fastForward.skip > 0) {
-            await maybeMirrorLockSyncProgress(c.env.TRIPS, working, fastForward.skip);
-          }
           scheduleTripEvent(
             c,
             recordTripEvent(c.env.DB, {
@@ -4297,37 +4281,6 @@ export function isSsotSyncAdvanceMonotonic(
   return candidateIdx >= ssotIdx;
 }
 
-/**
- * Seam E의 advance도 progress KV에 mirror — POST /trips 재등록 race에서 shift 진행분 보존.
- * lock(trainCode) 없는 trip은 progress 자체가 의미 없어 no-op (scheduled.ts mirrorProgress와 동형).
- */
-async function maybeMirrorLockSyncProgress(
-  kv: KVNamespace,
-  trip: Trip,
-  shiftedDelta: number,
-): Promise<void> {
-  const trainCode = trip.boardingLock?.trainCode;
-  if (!trainCode) return;
-  const existing = await getProgress(kv, trip.token);
-  const prevShifted = existing?.trainCode === trainCode ? existing.shiftedCount : 0;
-  const next: TripProgress = {
-    trainCode,
-    shiftedCount: prevShifted + shiftedDelta,
-    // #2308 — head 정체성 anchor. count 대신 hopIndex로 재등록 시 slice해 route 재계산에도
-    // 단조 전진을 보장한다 (applyProgress 참고).
-    headHopIndex: trip.waypoints[0]?.hopIndex,
-    lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
-    lastLaPushEpoch: trip.lastLaPushEpoch,
-    // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
-    lastLaPushAt: trip.lastLaPushAt,
-    consecutiveEtaMissing: trip.consecutiveEtaMissing,
-    // #3169 — cron write-on-change 가드가 sync가 쓴 값을 basis 포함 동일값으로 인식하도록 stamp.
-    ttlBasisExpiresAt: trip.expiresAt,
-  };
-  const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
-  await putProgress(kv, trip.token, next, ttlSec);
-}
-
 interface PushAckPayload {
   pushId: string;
   token: string;
@@ -4661,57 +4614,6 @@ export function isBoardingLockConsistentWithWaypoints(
   waypoints: Trip['waypoints'],
 ): boolean {
   return waypoints.some((wp) => wp.line === lock.line);
-}
-
-/**
- * #2308 — 단조 전진 불변식: progress에 기록된 head waypoint(`headHopIndex`)를 incoming
- * waypoints 시퀀스에서 다시 찾아 그 지점부터 slice한다.
- *
- * `progress.shiftedCount`(카운트)만으로 slice하면, POST /trips 재등록 사이에 incoming의
- * waypoints 시퀀스 자체가 바뀐 경우(route 재계산 / 환승 leg 재산출 / 기기가 origin부터 다시
- * 산출한 full route 재전송 등) count는 유효 범위 안에 있어도 완전히 다른(구노선) waypoint를
- * head로 재anchor한다 — 아침 07:37~07:44 trip_events 되감김(#2308 RCA) 재현 경로.
- *
- * `headHopIndex`는 waypoint의 원본 시퀀스 위치로 shift와 무관하게 불변(types.ts Waypoint.hopIndex
- * 계약) — count 대신 이 값으로 incoming에서 "같은 waypoint"를 재식별하면 시퀀스가 바뀌어도 head
- * 정체성이 보존된다. incoming에 해당 hopIndex가 없으면(진짜 다른 route로 재계산된 경우) count
- * 기반 추정은 신뢰할 수 없으므로 slice를 포기하고 `base.waypoints`(이미 advance된 현재 진행분)를
- * 그대로 보존한다 — 절대 뒤로 되감기지 않는다.
- *
- * `headHopIndex`가 없는 legacy progress(구 client / 구 progress 엔트리)는 기존 count 기반
- * 정책으로 fallback해 하위호환을 유지한다.
- */
-export function applyProgress(
-  base: Trip,
-  incoming: Trip,
-  progress: TripProgress,
-): Trip {
-  const waypoints = resolveProgressWaypoints(base.waypoints, incoming.waypoints, progress);
-  return {
-    ...base,
-    waypoints,
-    lastTrackedArrivalEpoch: progress.lastTrackedArrivalEpoch,
-    lastLaPushEpoch: progress.lastLaPushEpoch,
-    // #900 Seam D — heartbeat wall-clock도 progress가 SSOT.
-    lastLaPushAt: progress.lastLaPushAt,
-    consecutiveEtaMissing: progress.consecutiveEtaMissing,
-  };
-}
-
-export function resolveProgressWaypoints(
-  baseWaypoints: Trip['waypoints'],
-  incomingWaypoints: Trip['waypoints'],
-  progress: TripProgress,
-): Trip['waypoints'] {
-  if (progress.headHopIndex !== undefined) {
-    const idx = incomingWaypoints.findIndex((w) => w.hopIndex === progress.headHopIndex);
-    // #2308 — 단조 전진 불변식: 못 찾으면(route 시퀀스 자체가 다름) count로 추측 slice하지
-    // 않고 이미 advance된 base.waypoints를 그대로 유지 — 구노선 되감김 차단.
-    return idx >= 0 ? incomingWaypoints.slice(idx) : baseWaypoints;
-  }
-  // legacy fallback — headHopIndex 없는 구 progress 엔트리는 기존 count 기반 정책.
-  const sliced = incomingWaypoints.slice(progress.shiftedCount);
-  return sliced.length > 0 ? sliced : baseWaypoints;
 }
 
 /** #1480 PR-E — device가 한 환승 waypoint에 stamp하는 시간표 다음 출발 개수 상한(payload 무한 증가 방지). device K=6의 2배. */

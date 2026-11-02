@@ -273,13 +273,14 @@ describe('#3006 PR-0a — register 경로 KV 실패 503 매핑', () => {
     expect(eventInserts.some((args) => args[2] === 'cooldown-bypass')).toBe(false);
   });
 
-  it('[0a-3] 맞지 않는 progress 삭제 실패 -> 503 (500 아님) + stage deleteProgress', async () => {
+  it('[0a-3] 세션 경계(새 세션)의 progress 삭제 실패 -> 503 (500 아님) + stage deleteProgress', async () => {
     const kv = new SelectiveFailingKV(null, true);
     await putTrip(kv as unknown as KVNamespace, tripBody() as unknown as Trip);
     await putProgress(kv as unknown as KVNamespace, TOKEN, { trainCode: 'OTHER', shiftedCount: 1 }, 3600);
     const { db, errorInserts } = captureAll();
 
-    const res = await post('/trips', tripBody(), makeEnv(kv, db));
+    // #2308 — 같은 세션 재등록은 progress를 지우지 않는다. createdAt이 drift 창(5s)을 넘으면 새 세션 = 세션 경계.
+    const res = await post('/trips', { ...tripBody(), createdAt: NOW + 60_000 }, makeEnv(kv, db));
 
     expect(res.status).toBe(503);
     expect(res.headers.get('Retry-After')).toBeTruthy();
