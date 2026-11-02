@@ -2103,14 +2103,24 @@ describe('useApnsTripRegistration', () => {
 
     it('B1 — 503 kv 직후 억제 구간(RA 60s)에 main effect가 다시 돌아도 POST하지 않고, 사유는 backend-degraded', async () => {
       mockRegister.mockResolvedValue(KV_503);
-      const { rerender } = renderSub();
+      // #3006 — subsurface 전환은 더 이상 main effect를 재실행하지 않으므로 다른 dep(infoModeEnabled).
+      const { rerender } = renderHook(
+        ({ ime }: { ime: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            infoModeEnabled: ime,
+          }),
+        { initialProps: { ime: false } },
+      );
       await act(async () => {
         await flush();
       });
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
-      await advance(21_000); // quarantine(20s) 밖 — 다음 전환은 즉시 확정되어 main effect 재실행.
-      rerender({ sub: true });
+      await advance(21_000);
+      rerender({ ime: true });
       await act(async () => {
         await flush();
       });
@@ -2451,7 +2461,7 @@ describe('useApnsTripRegistration', () => {
       expect(mockRegister).toHaveBeenCalledTimes(4);
     });
 
-    it('B9 — main register effect의 deps 배열은 PR-1이 바꾸지 않는다(정적 고정)', () => {
+    it('B9 — main register effect의 deps 배열 정적 고정 (#3006: confirmedSubsurface 제거)', () => {
       const source = readFileSync(join(__dirname, '..', 'useApnsTripRegistration.ts'), 'utf-8');
       const match = source.match(
         /\}, \[\n((?:\s+[A-Za-z?.]+,\n)+)\s+\]\);\n\n\s+\/\/ ── #2130 \(B-1 Tier 1\)/,
@@ -2465,7 +2475,6 @@ describe('useApnsTripRegistration', () => {
         'routeSig',
         'destination?.id',
         'boardingLockSig',
-        'confirmedSubsurface',
         'etaWithinPollingWindow',
         'infoModeEnabled',
         'promptOptIn',
@@ -2476,6 +2485,9 @@ describe('useApnsTripRegistration', () => {
         'sleepMode',
         'sleepAlarm',
       ]);
+      // #3006 — subsurface 확정값은 main effect deps에 다시 들어가면 안 된다(재등록 폭주 root).
+      expect(deps).not.toContain('confirmedSubsurface');
+      expect(deps).not.toContain('subsurface');
     });
 
     it('B10 [:1071 수렴] — heal-busy 재확인이 억제 구간에 걸리면 ensureRetryArmed 타이머 1개, 억제 종료 시 POST 정확히 1회', async () => {
@@ -4937,12 +4949,12 @@ describe('useApnsTripRegistration', () => {
         await act(async () => {
           jest.advanceTimersByTime(5_000);
         });
-        rerender({ sub: true }); // 새 전환 — quarantine 밖, 즉시 확정(true).
+        rerender({ sub: true }); // 새 전환 — quarantine 밖, 즉시 확정(true). #3006: POST 없음.
         await act(async () => {
           await Promise.resolve();
           await Promise.resolve();
         });
-        expect(mockRegister).toHaveBeenCalledTimes(2);
+        expect(mockRegister).toHaveBeenCalledTimes(1);
 
         await act(async () => {
           jest.advanceTimersByTime(4_000);
@@ -4952,7 +4964,7 @@ describe('useApnsTripRegistration', () => {
           await Promise.resolve();
           await Promise.resolve();
         });
-        expect(mockRegister).toHaveBeenCalledTimes(3);
+        expect(mockRegister).toHaveBeenCalledTimes(1);
 
         await act(async () => {
           jest.advanceTimersByTime(4_000);
@@ -4961,19 +4973,17 @@ describe('useApnsTripRegistration', () => {
         await act(async () => {
           await Promise.resolve();
         });
-        expect(mockRegister).toHaveBeenCalledTimes(3); // confirmed 변화 없음 — 추가 register 없음.
+        expect(mockRegister).toHaveBeenCalledTimes(1); // confirmed 변화 없음 — 추가 register 없음.
 
         // 이 시점 raw=true, confirmed=false(고착). Tier 2 타이머는 마지막으로 confirmed가
         // 실제로 바뀐 시점(직전 보정)부터 60s 후 발동 — 그 시점의 raw(true)로 heal해야 한다.
-        // v4(quarantine-expiry watcher)는 이 60s 구간 안에서 quarantine(20s)도 만료돼 raw로
-        // 자체 수렴한다 — Tier 2가 raw 게이트를 통과하는지와는 별개로 register가 1회 더
-        // 추가된다(수렴 확정 + Tier 2 heal = 총 2회 추가, 합계 5).
+        // #3006: quarantine 만료 수렴 확정은 POST를 만들지 않으므로 Tier 2 heal 1회만 추가(합계 2).
         await act(async () => {
           jest.advanceTimersByTime(CONTEXT_HEAL_TIER2_DELAY_MS);
           await Promise.resolve();
           await Promise.resolve();
         });
-        expect(mockRegister).toHaveBeenCalledTimes(5); // 수렴 확정(1) + Tier 2 heal(1).
+        expect(mockRegister).toHaveBeenCalledTimes(2); // Tier 2 heal(1) — 수렴 확정은 POST 없음.
         // #3221 PR-4 — callRegister에 await 1개(탑승 LA 채널 조각)가 추가돼 수렴 확정 register와 Tier 2 heal의 도달
         // 순서가 microtask 단위로 뒤바뀔 수 있다. "5번째 호출"이라는 순서 가정 대신 heal(스탬프 없는 promptGeoContext
         // 포함) 호출을 내용으로 찾는다 — 검증 의도(heal이 raw=true origin으로 발동)는 동일.
@@ -5081,29 +5091,29 @@ describe('useApnsTripRegistration', () => {
 
       it('60초 전에 같은 trip이 재등록되면 직전 Tier 2 타이머를 clear하고 재arm', async () => {
         const { rerender } = renderHook(
-          ({ sub }: { sub: boolean }) =>
+          ({ sub, ime }: { sub: boolean; ime: boolean }) =>
             useApnsTripRegistration({
               route: route3,
               destination: dest,
               nextStationEtaSeconds: 120,
               currentStation: null,
               subsurface: sub,
+              infoModeEnabled: ime,
               routeOriginStation: origin,
             }),
-          { initialProps: { sub: true } },
+          { initialProps: { sub: true, ime: false } },
         );
         await act(async () => {
           await Promise.resolve();
         });
         expect(mockRegister).toHaveBeenCalledTimes(1);
 
-        // #2699 v2 — subsurface deps(confirmed) 변경은 이제 즉시(quarantine 밖) 반영된다.
-        // 재arm 여부를 검증하는 이 테스트 자체는 "다른 전환으로 main effect가 재실행되는가"만
-        // 필요하므로 타이머 대기 없이 바로 rerender한다.
+        // #3006 — subsurface 전환은 main effect를 재실행하지 않으므로, 재등록 트리거는
+        // infoModeEnabled 토글이고 subsurface는 같은 렌더에서 false로 내려 Tier 2 조건을 끈다.
         act(() => {
           jest.advanceTimersByTime(1000);
         });
-        rerender({ sub: false });
+        rerender({ sub: false, ime: true });
         await act(async () => {
           await Promise.resolve();
           await Promise.resolve();
