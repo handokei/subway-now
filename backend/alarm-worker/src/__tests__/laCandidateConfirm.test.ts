@@ -406,6 +406,42 @@ describe('boarding-confirm laCandidate 판정 (#3221 PR-3b)', () => {
     });
   });
 
+  describe('후보 거부 시에도 stamp 직접 승격은 하지 않는다 (R3s)', () => {
+    it('stamp-valid release 조건 + 후보가 더 새 발사에 밀려 거부 -> stamp(9000) 아닌 live 결과(7321)', async () => {
+      const trip = leg2Trip({
+        boardingLock: {
+          trainCode: '5559',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW - 60_000,
+          segmentStations: ['중곡', '군자'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+      });
+      const stampTrip = {
+        ...trip,
+        legBoardingFireStamp: {
+          boardingStation: ANCHOR,
+          line: '7',
+          trainCode: '9000',
+          destination: '중곡',
+          waypointKeys: (trip.waypoints as { stationName: string; line: string; kind: string }[]).map(
+            (w) => `${w.stationName}|${w.line}|${w.kind}|0`,
+          ),
+          firedAt: NOW - 1000,
+        },
+      };
+      const t = await setup(fire(5_000, '7321'), stampTrip);
+      fetchSpy.mockResolvedValue(livePositions([{ trainNo: '7321', statnNm: ANCHOR }]));
+
+      const { json } = await post(body(cand(30_000, '7320')), t.env);
+
+      expect(json).toMatchObject({ resolvedTrainCode: '7321' });
+      expect((await storedLock(t.env))?.trainCode).toBe('7321');
+      expect(t.confirmMeta()).toMatchObject({ laCandidateDecision: 'stale-newer-prompt' });
+    });
+  });
+
   describe('laCandidate 없는 요청은 현행 100%', () => {
     it('알림 경로(laCandidate 없음): prompt_fires 미조회, laCandidateDecision 없음, live 결과 그대로', async () => {
       const t = await setup(fire(12_000));

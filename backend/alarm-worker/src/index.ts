@@ -2974,10 +2974,9 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // ADR-037 D2b (#2535, 진단 계측 only) — 탭 처리 1건당 정확히 1회 D1 append. HTTP 요청 단위라
   // #2073 quota throttle 불필요(매 tick 반복 호출이 아니다). push/advance/lock 동작 무변경 —
   // 위에서 이미 확정된 lockState/resolveOutcome을 관측만 한다.
-  // #3221 PR-3b — 후보가 최종 lock이면 live 결과는 최종 lock의 출처가 아니다: 응답·meta의 resolveTier/outcome을 생략하고
-  // live 결과는 liveOutcome/liveNoneReason으로 분리한다(resolveTier 값 집합·오수용 측정은 "최종 lock이 live인 행"만 센다).
-  const candidateIsFinalLock =
-    laCandidateDecision === 'accepted-trusted' || laCandidateDecision === 'window-expired-candidate';
+  // #3221 PR-3b — 후보가 최종 lock이면 resolveTier는 구조상 이미 없다(3분 창 내는 live 미실행, fallback은 live가 'resolved'가
+  // 아니어서 tier 없음) — "최종 lock이 live인 행만 resolveTier" 계약 유지. 시도한 live 결과는 outcome이 아니라
+  // liveOutcome/liveNoneReason으로 분리한다(outcome = 최종 lock의 출처).
   const liveWasAttempted = laCandidateDecision === 'window-expired-candidate';
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(token),
@@ -2988,7 +2987,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       anchorSource,
       liveWasAttempted ? undefined : resolveNoneReason,
       trainCodeSource,
-      candidateIsFinalLock ? undefined : resolveTier,
+      resolveTier,
       { source: payload.source, laCandidatePresent: payload.laCandidatePresent },
       laCandidateDecision !== undefined
         ? {
@@ -3006,7 +3005,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       payload.action,
       working.boardingLock,
       keptLockReason,
-      candidateIsFinalLock ? undefined : resolveTier,
+      resolveTier,
       payload.line,
     ),
   });
