@@ -200,7 +200,7 @@ describe('useApnsTripRegistration', () => {
         token: 'token-abc',
         destination: '2-022',
         // #2747 PR-6 — 등록 payload가 목적지까지 남은 초(도착 waypoint=0)를 싣는다.
-        waypoints: [{ stationName: '강남', line: '2', kind: 'destination', remainingSecToDest: 0 }],
+        waypoints: [{ stationName: '강남', line: '2', kind: 'destination', remainingSecToDest: 0, stationId: expect.any(String) }],
         apnsEnv: expect.stringMatching(/^(sandbox|production)$/) as unknown as 'sandbox' | 'production',
       }),
     );

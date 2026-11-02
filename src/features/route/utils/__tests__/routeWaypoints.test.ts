@@ -294,8 +294,8 @@ describe('routeToWaypoints — remainingSecToDest (#2747 PR-6)', () => {
       stopsFromTransfer: 4,
     });
     expect(routeToWaypoints(route, '없는도착역')).toEqual([
-      { stationName: '없는환승역', line: '1', kind: 'transfer' },
-      { stationName: '없는도착역', line: '2', kind: 'destination', remainingSecToDest: 0 },
+      { stationName: '없는환승역', line: '1', kind: 'transfer', stationId: expect.any(String) },
+      { stationName: '없는도착역', line: '2', kind: 'destination', remainingSecToDest: 0, stationId: expect.any(String) },
     ]);
   });
 

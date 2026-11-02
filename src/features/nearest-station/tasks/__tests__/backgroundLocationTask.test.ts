@@ -398,7 +398,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it('routeJson이 있으면 파싱한 route를 processLocationUpdate에 전달한다', async () => {
-    const storedRoute = makeDirectRoute(3, '2');
+    // 구버전 저장 경로(id 없음) — 공용 파서가 목적지 id를 채우는지 보려면 fixture의 id를 떼어 저장한다.
+    const { destinationStationId: _legacyId, ...storedRoute } = makeDirectRoute(3, '2');
     mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(storedRoute));
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });

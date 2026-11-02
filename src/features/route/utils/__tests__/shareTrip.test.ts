@@ -20,6 +20,7 @@ const directRoute: DirectRoute = {
   stops: 5,
   line: '2',
   travelSeconds: 600,
+  destinationStationId: '2-001',
 };
 
 const t = jest.fn((key: string, opts?: Record<string, unknown>) => {

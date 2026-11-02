@@ -84,7 +84,7 @@ describe('detectMisBoarding', () => {
 describe('detectMisBoarding — wrong-direction (#2455)', () => {
   const ddukseom = findStationByNameAndLine(canonicalStationName('뚝섬', '2'), '2')!;
   const sindangName = canonicalStationName('신당', '2');
-  const directRoute: Route = { type: 'direct', stops: 4, line: '2', travelSeconds: 240 };
+  const directRoute: Route = { type: 'direct', stops: 4, line: '2', travelSeconds: 240, destinationStationId: '2-001' };
   const wrongDirectionLock: BoardingLock = {
     destinationId: 'd',
     trainCode: 'T-LOCK',
@@ -202,6 +202,8 @@ describe('detectMisBoarding — wrong-direction (#2455)', () => {
       stopsFromTransfer: 1,
       secondsToTransfer: 120,
       secondsFromTransfer: 60,
+      transferStationId: '2-001',
+      destinationStationId: '7-001',
     };
     const mismatchedLock: BoardingLock = { ...wrongDirectionLock, boardingLine: '7' };
     const result = detectMisBoarding(
@@ -222,6 +224,8 @@ describe('detectMisBoarding — wrong-direction (#2455)', () => {
     const transferRoute: Route = {
       type: 'transfer',
       transferName: canonicalStationName('건대입구', line7),
+      transferStationId: '2-012',
+      destinationStationId: '7-020',
       fromLine: '2',
       toLine: line7,
       stopsToTransfer: 2,
@@ -286,7 +290,7 @@ describe('detectMisBoarding — wrong-direction (#2455)', () => {
   // 반대 방향이었을 뿐이다.
   describe('2호선 순환선 seam(시청↔충정로) — seam에서도 방향 판정 정확 (#2949)', () => {
     const chungjeongno = findStationByNameAndLine(canonicalStationName('충정로', '2'), '2')!;
-    const seamRoute: Route = { type: 'direct', stops: 1, line: '2', travelSeconds: 60 };
+    const seamRoute: Route = { type: 'direct', stops: 1, line: '2', travelSeconds: 60, destinationStationId: '2-001' };
     const seamLock: BoardingLock = {
       destinationId: 'd',
       trainCode: 'T-LOCK',

@@ -227,7 +227,7 @@ describe('useMisBoardingDetector', () => {
 describe('useMisBoardingDetector — wrongDirectionDetected (#2455)', () => {
   const ddukseom = findStationByNameAndLine(canonicalStationName('뚝섬', '2'), '2')!;
   const sindangName = canonicalStationName('신당', '2');
-  const directRoute: Route = { type: 'direct', stops: 4, line: '2', travelSeconds: 240 };
+  const directRoute: Route = { type: 'direct', stops: 4, line: '2', travelSeconds: 240, destinationStationId: '2-001' };
   const directionLock: BoardingLock = {
     destinationId: 'd',
     trainCode: 'T-LOCK',
