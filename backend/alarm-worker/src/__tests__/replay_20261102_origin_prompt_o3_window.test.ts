@@ -11,6 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { PositionPoint } from '../types';
+import { computeOriginPromptWindowStartAt } from '../boardingPrompt';
 import { findStationCoordsByNameAndLine } from '../stationsLookup';
 import {
   boardingPromptsOf,
@@ -113,6 +114,24 @@ describe('#3036 O3 — 거리 x acceptance 표 (실제 APNs 요청, 11/02 아침
       seen[dEff] = boardingPromptsOf(result).map(([, train]) => train);
     }
     expect(seen).toEqual({ 0: ['7035', '7039'], 100: ['7035', '7039'], 300: ['7039', '7043'], 570: ['7039', '7043'] });
+  });
+});
+
+describe('#3036 O3 — 구현(computeOriginPromptWindowStartAt) == 스펙 oracle', () => {
+  // replay는 oracle로 창을 seed하므로(구현을 거울처럼 베끼지 않기 위함) 구현 함수가 oracle과 일치함을 격자로 따로 고정한다.
+  const SOURCES = ['gps-live', 'gps-last-known', undefined] as const;
+  const AGES = [0, 30_000, FIX_MAX_AGE_MS, FIX_MAX_AGE_MS + 1, undefined];
+  it('거리 x 나이 x 출처 격자 전체에서 일치', () => {
+    const registeredAt = 1_000_000_000;
+    for (const dEff of [...DISTANCE_GRID_DEFF_M, 5000, 100_000]) {
+      for (const originFixSource of SOURCES) {
+        for (const originFixAgeMs of AGES) {
+          const geo: Geo = { originDistanceM: dEff + ACCURACY_M, originAccuracyM: ACCURACY_M, originFixAgeMs, originFixSource };
+          expect(computeOriginPromptWindowStartAt(registeredAt, geo)).toBe(specWindowStartAt(registeredAt, geo));
+        }
+      }
+    }
+    expect(computeOriginPromptWindowStartAt(registeredAt, undefined)).toBe(specWindowStartAt(registeredAt, undefined));
   });
 });
 
