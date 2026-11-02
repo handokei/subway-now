@@ -52,10 +52,19 @@ const TOKEN = 'replay-20261019-afternoon';
 
 afterEach(() => vi.unstubAllGlobals());
 
-/** D1 label 비교용 — `leg-boarding-prompt` 이벤트의 (outcome, gateDecision). */
+/**
+ * leg-2 `leg-boarding-prompt` 이벤트만 — #2851 재오픈 이후 같은 kind에 `meta.leg:'origin'` 행(leg-1
+ * 출발역 판정)도 기록된다. 이 재생의 실측 D1 원본(2026-10-19)은 그 계측이 SSoT 부재로 no-op이던 시절
+ * 데이터라 origin 행이 없다 — leg-2 라벨열 비교는 origin 행을 제외한다(실측 fixture는 불변).
+ */
+function isLeg2Prompt(e: { kind: string; meta: unknown }): boolean {
+  return e.kind === 'leg-boarding-prompt' && (e.meta as { leg?: string }).leg !== 'origin';
+}
+
+/** D1 label 비교용 — leg-2 `leg-boarding-prompt` 이벤트의 (outcome, gateDecision). */
 function legPromptLabels(events: readonly { kind: string; meta: unknown }[]): { outcome: string; gateDecision: string }[] {
   return events
-    .filter((e) => e.kind === 'leg-boarding-prompt')
+    .filter(isLeg2Prompt)
     .map((e) => {
       const meta = e.meta as { outcome: string; gateDecision: string };
       return { outcome: meta.outcome, gateDecision: meta.gateDecision };
@@ -238,7 +247,7 @@ describe('#3089 10/19 오후 정상 완주 — whole-trip replay (회귀 가드)
     // D1 원본 라벨열(실측)과 1:1 동일 — 재생이 실제 backend 판단을 재현했다는 증거.
     expect(labels).toEqual(legPromptLabels(r.d1.map((e) => ({ kind: e.kind, meta: d1Meta(e) }))));
 
-    const leg = r.events.filter((e) => e.kind === 'leg-boarding-prompt');
+    const leg = r.events.filter(isLeg2Prompt);
     const [first, second, fired] = leg.map((e) => e.meta as { candidateArvlCds: (number | null)[]; candidateEtaSeconds: number[] });
     // 억제된 두 tick은 어떤 후보도 도착 확정(arvlCd 1/2)이 아니고 ETA가 남아 있다.
     for (const suppressed of [first, second]) {

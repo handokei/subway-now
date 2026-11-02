@@ -205,6 +205,7 @@ import {
   cleanupTripEvents,
   recordLockAttached,
   recordTripEvent,
+  recordTripEventOnTransition,
   type HopEndPromptOutcome,
   type IntermediateRouteBranch,
   type LegBoardingPromptOutcome,
@@ -1838,11 +1839,22 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // tripHasDeclaredIntent는 trip 객체 순수 파생(KV read 없음)이라 idle 트립의 read 비용도 없다.
     if (trip.alarmAtEpochMs - now > POLLING_WINDOW_MS && !tripHasDeclaredIntent(trip)) {
       // 알람 윈도우 진입 전 + 사용자 명시 의향 없음 — 폴링 스킵
+      // #2851 재오픈 — 이 게이트가 origin 탑승 질문 후보(promptOptIn/trackingOptIn 등)를 통째로
+      // 건너뛰는 지점이라 원인 행을 남긴다(11/02 아침 "질문 미발사 + D1 원인 0건"의 후보 root).
+      if (isOriginPromptCandidate(trip)) {
+        await recordOriginBoardingPromptTransition(env, trip, undefined, undefined, 'polling-window-skip', now);
+      }
       continue;
     }
 
     const waypoint = pickActiveWaypoint(trip);
-    if (!waypoint) continue;
+    if (!waypoint) {
+      // #2851 재오픈 — 위와 동일 사유(origin 평가 자체를 건너뜀).
+      if (isOriginPromptCandidate(trip)) {
+        await recordOriginBoardingPromptTransition(env, trip, undefined, undefined, 'no-active-waypoint', now);
+      }
+      continue;
+    }
 
     // #1680 (V8d) — stationary cron skip 게이트. SSoT.motionState === 'stationary' 명시 시
     // Seoul polling + push 발사를 skip한다. motionState='unknown' 또는 SSoT null은 평가 유지.
@@ -2173,6 +2185,10 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           error: String(e),
           token: trip.token.slice(0, 8),
         });
+        // #2851 재오픈 — 평가 예외도 원인 행으로 남긴다(기록 실패는 recorder가 swallow).
+        await recordOriginBoardingPromptTransition(
+          env, trip, undefined, undefined, 'evaluation-error', now, { error: String(e).slice(0, 200) },
+        );
       }
       // #2515 (환승 재탑승 스마트 재-lock, #2511 supersede) — leg 2(`currentLegAnchor`)에는 위
       // origin 전용 `maybeFireOriginBoardingPromptGpsFree`(leg-1 전용, `promptDisplay` 기반)가
@@ -3938,52 +3954,48 @@ async function recordLegBoardingPromptTransition(
 }
 
 /**
- * #2851 (진단 계측 only) — `maybeFireOriginBoardingPromptGpsFree`(leg-1 origin 전용)의
- * fire/suppress 사유(`OriginBoardingPromptOutcome`)를 SSoT 마커(`originBoardingPromptOutcome`)와
- * 비교해 다를 때만 기존 kind='leg-boarding-prompt'로 D1 append한다(#2073 quota 보호, 신규 kind
- * 남발 금지). `meta.leg: 'origin'`으로 leg-2 기록(`recordLegBoardingPromptTransition`)과 같은
- * kind 안에서 구분한다 — `recordLegBoardingPromptTransition`/`legBoardingPromptOutcome`은
- * 무변경(leg-2 쪽 기존 row 형태 그대로). 발사/게이트 판정에는 관여하지 않는다.
+ * #2851 (진단 계측 only) — `maybeFireOriginBoardingPromptGpsFree`(leg-1 origin 전용)와 그 cron
+ * 루프 진입 게이트의 fire/suppress 사유(`OriginBoardingPromptOutcome`)를 기존
+ * kind='leg-boarding-prompt'로 D1 append한다(신규 kind 남발 금지). `meta.leg: 'origin'`으로 leg-2
+ * 기록(`recordLegBoardingPromptTransition`)과 같은 kind 안에서 구분한다.
+ *
+ * 2026-11-02 재오픈 — 전이 마커를 SSoT(KV)가 아니라 D1 직전 행으로 옮겼다. origin 판정은 원리상
+ * lock 전에만 일어나는데 SSoT는 lock 경로에서만 seed(신규 세션 등록은 오히려 SSoT 삭제)되어, 구
+ * 구현(`ssot === null`이면 return)은 항상 no-op였다. 이제 SSoT/KV를 건드리지 않는다(KV read·write 0,
+ * 전이 dedup은 `recordTripEventOnTransition`의 단일 조건부 INSERT). 발사/게이트 판정에는 관여하지 않는다.
  */
 async function recordOriginBoardingPromptTransition(
   env: Env,
   trip: Trip,
-  station: string,
-  line: string,
-  ssot: TripPositionSSoT | null,
+  station: string | undefined,
+  line: string | undefined,
   outcome: OriginBoardingPromptOutcome,
   now: number,
-  candidateArvlCds?: readonly (number | null)[],
-  // #2801 (3차 reopen) — leg-2(`recordLegBoardingPromptTransition`)와 동일 의미/필드명.
-  gateDecision?: BoardingFireDecision['decision'],
-  // code-review(medium, #2801) — leg-2와 동일 의미/필드명(위 함수 헤더 주석 참고).
-  candidateEtaSeconds?: readonly (number | null)[],
+  // 분기별 진단 필드(candidateArvlCds/gateDecision/근접 진단 등). undefined 값은 JSON에서 생략된다.
+  extra: object = {},
 ): Promise<void> {
-  if (ssot === null || ssot.originBoardingPromptOutcome === outcome) return;
-  await writeSsot(
-    env.TRIPS,
-    { ...ssot, originBoardingPromptOutcome: outcome },
-    { expiresAt: trip.expiresAt },
-  );
-  await recordTripEvent(
+  await recordTripEventOnTransition(
     env.DB,
     {
       tokenHash: hashTripToken(trip.token),
       kind: 'leg-boarding-prompt',
       station,
       line,
-      // #3132 — candidateEtaSeconds: null = 시간 모름, 0 = 진짜 0초 (위 recordLegBoardingPromptTransition
-      // 주석 참고).
-      meta: {
-        leg: 'origin',
-        outcome,
-        ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}),
-        ...(candidateEtaSeconds !== undefined ? { candidateEtaSeconds } : {}),
-        ...(gateDecision !== undefined ? { gateDecision } : {}),
-      },
+      meta: { leg: 'origin', outcome, ...extra },
     },
+    trip.createdAt,
     now,
   );
+}
+
+/**
+ * #2851 재오픈 — cron 루프(runScheduled)의 조기 return이 origin 판정 후보 trip(lock 없음·leg-1·
+ * 의향 또는 trackingOptIn 보유)을 통째로 건너뛰는 지점에서만 쓴다. lock/leg-2 trip은 각자 소관이라
+ * 제외(D1 read를 매 cycle 늘리지 않기 위함).
+ */
+function isOriginPromptCandidate(trip: Trip): boolean {
+  if (trip.boardingLock !== undefined || trip.currentLegAnchor) return false;
+  return trip.promptOptIn === true || trip.infoModeEnabled === true || trip.trackingOptIn === true;
 }
 
 /**
@@ -9014,7 +9026,10 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   // (10/18 편측 감사 G2). 의향이 없으면 파생을 시도조차 하지 않아야 카운터가 "후보가 될 수
   // 있는 trip만" 반영한다.
   const hasExplicitIntent = trip.promptOptIn === true || trip.infoModeEnabled === true;
-  if (!hasExplicitIntent && trip.trackingOptIn !== true) return;
+  if (!hasExplicitIntent && trip.trackingOptIn !== true) {
+    await recordOriginBoardingPromptTransition(env, trip, undefined, undefined, 'no-intent', now);
+    return;
+  }
 
   // F2 방어 — caller가 이미 lockMissing 분기로 보장하지만 GPS 경로와 동일하게 재확인.
   if (trip.boardingLock !== undefined) return;
@@ -9032,6 +9047,9 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       token: trip.token.slice(0, 8),
       failureReason: resolved.failureReason,
     });
+    await recordOriginBoardingPromptTransition(
+      env, trip, undefined, undefined, 'derivation-failed', now, { failureReason: resolved.failureReason },
+    );
     return;
   }
   if (resolved.derived) {
@@ -9044,10 +9062,11 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   }
   const display = resolved.anchor;
 
-  // #2851 (진단 계측 only) — 이 함수의 fire/suppress 사유를 SSoT 마커
-  // (`originBoardingPromptOutcome`)와 비교해 전이 시에만 D1에 append(#2073 quota 보호). 아래
-  // 게이트 판정/발사 로직 자체는 무변경.
-  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+  // #2851 (진단 계측 only) — 이 함수의 fire/suppress 사유를 D1 직전 행과 비교해 전이 시에만
+  // append한다(#2073 quota 보호, KV 마커 없음 — `recordOriginBoardingPromptTransition` 주석).
+  // 기록 대상 조기 return: no-intent / derivation-failed / proximity-missing / too-far / silenced
+  // / 후보 단계 outcome / fired. 의도적 제외: 8993 `currentLegAnchor`(leg-2 소관)와 `boardingLock`
+  // (lock 성립 — 다른 경로 소관)는 매 cycle D1 read를 늘리지 않으려 기록하지 않는다.
 
   // #2653 — "GPS를 신뢰할 수 있을 때만" 거리 가드. 이 함수 직전(같은 cron cycle) 먼저 호출되는
   // `evaluateAndMaybeFireBoardingPrompt`(GPS 9단 게이트 경로)가 이미 사용하는 판정
@@ -9101,6 +9120,8 @@ export async function maybeFireOriginBoardingPromptGpsFree(
   let effOriginAccuracyM = originAccuracyM;
 
   let hasProximityReading = false;
+  // #2851 재오픈 — proximity-missing 진단 meta용. series 파생 분기에서만 채워진다.
+  let diagnosticDerivedDistanceM: number | null = null;
   if (staticSnapshotPresent) {
     hasProximityReading = seriesFresh;
     if (!hasProximityReading) {
@@ -9123,6 +9144,7 @@ export async function maybeFireOriginBoardingPromptGpsFree(
     if (originCoords !== null) {
       const derivedDistanceM =
         haversineKm(newest.lat, newest.lng, originCoords.lat, originCoords.lng) * 1000;
+      diagnosticDerivedDistanceM = derivedDistanceM;
       if (isNearOrigin(derivedDistanceM, newest.accuracy)) {
         hasProximityReading = true;
         effOriginDistanceM = derivedDistanceM;
@@ -9159,6 +9181,25 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       originStation: display.originStation,
       line: display.line,
     });
+    // #2851 재오픈 — 11/02 아침 "질문 미발사 + 원인 0건"의 가장 유력한 지점. 왜 근접 실측이 없었는지
+    // (series가 없었나/낡았나/부정확했나/스냅샷이 없었나)를 이 행 하나로 판정할 수 있게 진단 필드를 싣는다.
+    await recordOriginBoardingPromptTransition(
+      env,
+      trip,
+      display.originStation,
+      display.line,
+      'proximity-missing',
+      now,
+      {
+        trackingOptIn: trip.trackingOptIn === true,
+        promptOptIn: trip.promptOptIn === true,
+        snapshotPresent: staticSnapshotPresent,
+        seriesAgeMs: newest !== undefined ? now - newest.ts : null,
+        seriesAccuracyM: newest?.accuracy ?? null,
+        derivedDistanceM: diagnosticDerivedDistanceM,
+        anchorAgeMs: trip.originProximityAt !== undefined ? now - trip.originProximityAt : null,
+      },
+    );
     return;
   }
 
@@ -9189,7 +9230,6 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       trip,
       display.originStation,
       display.line,
-      ssot,
       'too-far',
       now,
     );
@@ -9224,7 +9264,6 @@ export async function maybeFireOriginBoardingPromptGpsFree(
         trip,
         display.originStation,
         display.line,
-        ssot,
         'silenced',
         now,
       );
@@ -9394,12 +9433,14 @@ export async function maybeFireOriginBoardingPromptGpsFree(
       trip,
       display.originStation,
       display.line,
-      ssot,
       promptOutcome,
       now,
-      candidateArvlCds,
-      gateDecision,
-      candidateEtaSeconds,
+      {
+        ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}),
+        // #3132 — candidateEtaSeconds: null = 시간 모름, 0 = 진짜 0초.
+        ...(candidateEtaSeconds !== undefined ? { candidateEtaSeconds } : {}),
+        ...(gateDecision !== undefined ? { gateDecision } : {}),
+      },
     );
   }
 }
