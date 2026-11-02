@@ -41,16 +41,26 @@ ORDER BY started_at DESC;`;
 }
 
 /**
- * 재진행(같은 역 재소비) 감시 (#3006 PR-0) — `trip_events` 기반.
+ * 재진행(같은 역 재소비) 감시 (#3006) — `trip_events` 기반. 신호 3종(SIGNAL_RULES), 한 트립 창 안 (token, station)별 집계.
  *
- * 술어: 한 트립 창 안에서 같은 (token_hash, station)의 `prepare-alarm` 행이 2개 이상.
+ * 술어 교체 배경: #3277 이 비취침 트립의 `prepare-alarm` 기록을 철거해 기존 단일 술어
+ * (prepare-alarm 같은 역 2회+)는 비취침 트립에서 신호가 없다. 취침 트립용으로는 유지하고 두 신호를 더한다.
+ *  - `prepare-alarm-repeat`: 같은 역 prepare-alarm 2회+ (취침 트립). 실측 10/31 강남구청 x4, 11/02 건대입구 x2.
+ *  - `sync-dedup-repeat`: 같은 역 `cron-fire-attempt` 중 reason=`sync-station-passed-dedup` 2회+.
+ *    sync 가 이미 발사한 head 를 다시 평가했다는 뜻 — head 가 앞으로 가지 못한 채 sync 가 반복된다.
+ *    실측 11/02 head 성수 x2 (1973/1980). 일반 `station-passed-dedup`(sent 1 + dedup 1이 정상 dwell)은
+ *    세지 않는다 — 중곡·군자·어린이대공원·청담 등 정상 5건이 거짓양성이 되기 때문이다.
+ *  - `progress-reconcile`: #3282 의 되돌림 복구 행 1건+. 되돌림이 실제로 일어났다는 직접 증거(복구되어 재소비는 막힌다).
+ *    `lock-reanchor`(lock epoch 시작 재고정)는 정상 경로라 세지 않는다.
  * 트립 창 경계 = `trip-end` 행, 그리고 `trip-register` 중 `existedAtRequestStart=false`(새 trip).
- * `advance` 행은 새 head를 기록하므로 제외한다(포함하면 거짓양성 3건이 더해져 2건 -> 5건).
- * 알려진 사각: 준비 알람 짝이 없는 순수 intermediate sync 재전진은 행이 없어 못 잡는다.
+ * `advance` 행은 새 head 를 기록하므로 제외한다(포함하면 거짓양성 3건이 더해져 2건 -> 5건).
+ * 알려진 사각: 10/31 강남구청형(sent 1 + dedup 1 이후 transition-record 억제로 행이 남지 않음)은
+ * 비취침 트립에서 cron 행만으로 정상 dwell 과 구분되지 않는다 — #3282 이후엔 progress-reconcile 로 잡힌다.
  */
 export const RECONSUME_COUNTED_KIND = 'prepare-alarm';
 export const RECONSUME_WINDOW_BOUNDARY_KINDS = ['trip-end', 'trip-register'] as const;
-const RECONSUME_SELECT_KINDS = [RECONSUME_COUNTED_KIND, ...RECONSUME_WINDOW_BOUNDARY_KINDS];
+
+export type ReconsumeSignal = 'prepare-alarm-repeat' | 'sync-dedup-repeat' | 'progress-reconcile';
 
 export const RECONSUME_SELECT_COLUMNS = 'id, ts, token_hash, kind, station, meta';
 
@@ -66,9 +76,44 @@ export interface ReconsumeEventRow {
 export interface ReconsumedStation {
   tokenHash: string;
   station: string;
+  signal: ReconsumeSignal;
   count: number;
   eventIds: number[];
 }
+
+function metaReason(row: ReconsumeEventRow): unknown {
+  if (row.meta === null) return undefined;
+  try {
+    const { reason } = JSON.parse(row.meta) as { reason?: unknown };
+    return reason;
+  } catch {
+    return undefined;
+  }
+}
+
+interface SignalRule {
+  signal: ReconsumeSignal;
+  kind: string;
+  minCount: number;
+  matches: (row: ReconsumeEventRow) => boolean;
+}
+
+const SYNC_DEDUP_REASON = 'sync-station-passed-dedup';
+
+const SIGNAL_RULES: SignalRule[] = [
+  { signal: 'prepare-alarm-repeat', kind: RECONSUME_COUNTED_KIND, minCount: 2, matches: () => true },
+  {
+    signal: 'sync-dedup-repeat',
+    kind: 'cron-fire-attempt',
+    minCount: 2,
+    matches: (row) => metaReason(row) === SYNC_DEDUP_REASON,
+  },
+  { signal: 'progress-reconcile', kind: 'progress-reconcile', minCount: 1, matches: () => true },
+];
+
+const RECONSUME_SELECT_KINDS = [
+  ...new Set([...SIGNAL_RULES.map(({ kind }) => kind), ...RECONSUME_WINDOW_BOUNDARY_KINDS]),
+];
 
 /** `windowExprSql` 의미는 `buildRegressionSql`과 동일(옵션 A는 `'?'`, 옵션 B는 리터럴). */
 export function buildReconsumeSql(windowExprSql: string): string {
@@ -91,24 +136,32 @@ function startsNewTrip(row: ReconsumeEventRow): boolean {
   }
 }
 
-/** 순수 함수 — D1 행(어떤 순서든)에서 재소비 (token, station)을 찾는다. */
+/** 순수 함수 — D1 행(어떤 순서든)에서 재소비 신호 (token, station)을 찾는다. */
 export function findReconsumedStations(rows: ReconsumeEventRow[]): ReconsumedStation[] {
   const sorted = [...rows].sort((a, b) => a.ts - b.ts || a.id - b.id);
   const windowIdByToken = new Map<string, number>();
-  const idsByKey = new Map<string, { tokenHash: string; station: string; ids: number[] }>();
+  const idsByKey = new Map<string, { rule: SignalRule; tokenHash: string; station: string; ids: number[] }>();
   for (const row of sorted) {
     const windowId = windowIdByToken.get(row.token_hash) ?? 0;
     if (startsNewTrip(row)) {
       windowIdByToken.set(row.token_hash, windowId + 1);
       continue;
     }
-    if (row.kind !== RECONSUME_COUNTED_KIND || row.station === null) continue;
-    const key = `${row.token_hash}\u0000${windowId}\u0000${row.station}`;
-    const entry = idsByKey.get(key) ?? { tokenHash: row.token_hash, station: row.station, ids: [] };
+    const { station } = row;
+    const rule = SIGNAL_RULES.find(({ kind, matches }) => kind === row.kind && matches(row));
+    if (rule === undefined || station === null) continue;
+    const key = `${row.token_hash}\u0000${windowId}\u0000${rule.signal}\u0000${station}`;
+    const entry = idsByKey.get(key) ?? { rule, tokenHash: row.token_hash, station, ids: [] };
     entry.ids.push(row.id);
     idsByKey.set(key, entry);
   }
   return [...idsByKey.values()]
-    .filter(({ ids }) => ids.length >= 2)
-    .map(({ tokenHash, station, ids }) => ({ tokenHash, station, count: ids.length, eventIds: ids }));
+    .filter(({ rule, ids }) => ids.length >= rule.minCount)
+    .map(({ rule, tokenHash, station, ids }) => ({
+      tokenHash,
+      station,
+      signal: rule.signal,
+      count: ids.length,
+      eventIds: ids,
+    }));
 }

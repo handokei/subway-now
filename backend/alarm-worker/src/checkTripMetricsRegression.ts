@@ -104,11 +104,11 @@ export function parseReconsumeCheckResponse(stdout: string): ReconsumedStation[]
 }
 
 export function formatReconsumeReport(found: ReconsumedStation[], now: number): string {
-  const header = `재진행 스캔 (${new Date(now).toISOString()}) — 한 트립 창에서 같은 역 prepare-alarm 2회+: ${found.length}건`;
+  const header = `재진행 스캔 (${new Date(now).toISOString()}) — 한 트립 창 재소비 신호(prepare-alarm x2+ / sync-dedup x2+ / progress-reconcile): ${found.length}건`;
   if (found.length === 0) return `${header}\n재소비 없음 — 정상.`;
   const lines = found.map(
-    ({ tokenHash, station, count, eventIds }) =>
-      `  tokenHash=${tokenHash} ${station} x${count} events=${eventIds.join(',')}`,
+    ({ tokenHash, station, signal, count, eventIds }) =>
+      `  tokenHash=${tokenHash} ${station} x${count} [${signal}] events=${eventIds.join(',')}`,
   );
   return [header, ...lines].join('\n');
 }
