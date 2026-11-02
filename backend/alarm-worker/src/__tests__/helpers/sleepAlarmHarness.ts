@@ -197,7 +197,13 @@ export async function advance(
   trip: Trip,
   kv: InMemoryKV,
   fetchImpl: typeof fetch,
-  opts: { db?: unknown; now?: number; pending?: InMemoryKV } = {},
+  opts: {
+    db?: unknown;
+    now?: number;
+    pending?: InMemoryKV;
+    /** #2308 — `completeWaypointAdvance`의 마지막 인자(progress mirror 끄기 등). */
+    advanceOptions?: { mirrorProgress?: boolean };
+  } = {},
 ): Promise<void> {
   let n = 0;
   const now = opts.now ?? NOW;
@@ -212,6 +218,7 @@ export async function advance(
     () => undefined,
     () => `g-${++n}`,
     'lock-active-destination',
+    opts.advanceOptions,
   );
 }
 

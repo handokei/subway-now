@@ -120,6 +120,13 @@ export interface Trip {
   /** 목적지 역 ID (예: "0228" 같은 stations.json id) */
   destination: string;
   waypoints: Waypoint[];
+  /**
+   * #2308 — 세션 노선 원본(불변 사본). 새 세션 register가 검증된 incoming waypoints로 1회 채우고, 같은 세션 재등록은
+   * `existing.routeWaypoints ?? existing.waypoints`로 보존한다(`waypoints`는 cron·sync가 앞으로 잘라 쓰는 진행분이라 원본이 아니다).
+   * 용도는 하나: lock이 붙는 순간(lock epoch 시작) `waypoints`가 탑승역보다 앞서 잘려 있으면 탑승역 다음부터 다시 깔아
+   * 지워진 역을 되살리는 것(`lockReanchor.ts`). 이 필드가 없는 구 trip은 재고정 대상이 아니다(fail-closed).
+   */
+  routeWaypoints?: Waypoint[];
   /** epoch ms — 트립이 종료되어 자동 삭제될 시각 */
   expiresAt: number;
   /** epoch ms — 트립 등록 시각 */

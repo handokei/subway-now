@@ -49,6 +49,8 @@ export interface SyncHttpResult {
   alarmKeyCalls: { get: number; put: number; delete: number };
   sleepRows: { meta: Record<string, unknown> | null }[];
   stored: Trip | undefined;
+  /** #2308 — 요청이 쓴 KV(progress 키 등 부수 효과 관찰용). */
+  kv: InMemoryKV;
 }
 
 async function runRequest(kv: InMemoryKV, body: Record<string, unknown>, trip: Trip): Promise<SyncHttpResult> {
@@ -74,6 +76,7 @@ async function runRequest(kv: InMemoryKV, body: Record<string, unknown>, trip: T
     alarmKeyCalls: spy.alarmKeyCalls(),
     sleepRows: d1.rows.filter((r) => r.kind === 'sleep-alarm'),
     stored: raw === null ? undefined : (JSON.parse(raw) as Trip),
+    kv,
   };
 }
 
