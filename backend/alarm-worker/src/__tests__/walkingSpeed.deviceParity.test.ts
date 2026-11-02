@@ -7,10 +7,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import { WALKING_SPEED_M_PER_S as DEVICE_WALKING_SPEED_M_PER_S } from '../../../../src/shared/constants/eta';
+import { GPS_FIX_SOURCE } from '../../../../src/shared/constants/gpsFixSource';
 import { WALKING_SPEED_M_PER_S } from '../boardingPrompt';
+import { ORIGIN_FIX_SOURCES } from '../types';
 
 describe('WALKING_SPEED_M_PER_S device/backend 동기', () => {
   it('backend 사본 == device 상수', () => {
     expect(WALKING_SPEED_M_PER_S).toBe(DEVICE_WALKING_SPEED_M_PER_S);
+  });
+
+  it('device fix 출처 문자열(PR-3a GPS_FIX_SOURCE) == backend 파서 허용 값', () => {
+    expect([...ORIGIN_FIX_SOURCES].sort()).toEqual(Object.values(GPS_FIX_SOURCE).sort());
   });
 });
