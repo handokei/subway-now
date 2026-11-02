@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
-import { latencyProbe, tripMetrics } from '../schema';
+import { latencyProbe, promptFires, tripMetrics } from '../schema';
 
 /**
  * 프로덕션 `trip_metrics` DDL과 엔티티 정의 drift 감지 (#2783 요구사항 "introspect 결과 대조").
@@ -74,5 +74,22 @@ describe('latencyProbe 엔티티 — 마이그레이션 0008 drift 감지 (#3168
     expect(c.d1WriteMs.notNull).toBe(false);
     expect(c.d1ReadMs.notNull).toBe(true);
     expect(c.kvGetMs.notNull).toBe(true);
+  });
+});
+
+/** #3221 PR-3a — 0009_prompt_fires.sql 기대 DDL. */
+describe('promptFires 엔티티 — 마이그레이션 0009 drift 감지 (#3221)', () => {
+  it('엔티티 컬럼이 0009_prompt_fires.sql과 정확히 일치한다', () => {
+    const names = Object.values(getTableColumns(promptFires)).map((c) => c.name);
+    expect(names.sort()).toEqual(['id', 'token_hash', 'station', 'line', 'train_code', 'issued_at', 'decision'].sort());
+  });
+  it('train_code만 nullable(ambiguity 발사), 나머지는 NOT NULL', () => {
+    const c = getTableColumns(promptFires);
+    expect(c.trainCode.notNull).toBe(false);
+    expect(c.tokenHash.notNull).toBe(true);
+    expect(c.station.notNull).toBe(true);
+    expect(c.line.notNull).toBe(true);
+    expect(c.issuedAt.notNull).toBe(true);
+    expect(c.decision.notNull).toBe(true);
   });
 });

@@ -14146,12 +14146,13 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         });
       });
 
-      it('#3055 PR-0: 출발(2) 열차 선택 + 같은 tick 도착(1) 열차 동시 존재 -> selectedArvlCd=2 && arrivedTrainPresent=true', async () => {
+      it('#3221 PR-4 (D-1a): 같은 tick 출발(2) 7246 + 도착(1) 7247 -> 도착 열차 7247 선택 (APNs trainCode·계측 일치)', async () => {
         const arrivals = makeArrivalsResponse([
           { btrainNo: '7246', isUp: true, arvlCd: 2 },
           { btrainNo: '7247', isUp: true, arvlCd: 1 },
         ]);
         const { db, inserts } = makeFireLogDb();
+        const fetchImpl = vi.fn(arrivals);
         const trip = makeTrip({
           activityPushToken: 'la-activity-token',
           activityState: 'live',
@@ -14161,14 +14162,16 @@ describe('maybeFireOriginBoardingPromptGpsFree (#2531)', () => {
         await maybeFireOriginBoardingPromptGpsFree(
           trip,
           makeEnv(new InMemoryKV(), undefined, db),
-          makeDeps(arrivals as unknown as typeof fetch),
+          makeDeps(fetchImpl as unknown as typeof fetch),
           makeStats(),
           NOW,
           () => {},
           () => 'pid-origin',
         );
         const [row] = soundRows(inserts);
-        expect(row).toMatchObject({ selectedTrainCode: '7246', issuedAt: NOW, selectedArvlCd: 2, arrivedTrainPresent: true });
+        expect(row).toMatchObject({ selectedTrainCode: '7247', issuedAt: NOW, selectedArvlCd: 1, arrivedTrainPresent: true });
+        const [notif] = apnsBodies(fetchImpl as unknown as ReturnType<typeof vi.fn>, 'alert') as unknown as Array<{ body?: { trainCode?: string } }>;
+        expect(notif.body?.trainCode).toBe('7247');
       });
 
       it('#3055 PR-0: 출발(2) 열차만 있으면 arrivedTrainPresent=false', async () => {

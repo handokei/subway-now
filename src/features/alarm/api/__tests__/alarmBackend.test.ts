@@ -1030,6 +1030,24 @@ describe('alarmBackend', () => {
       expect(body.promptDisplay).toEqual({ originStation: '강남', line: '2' });
     });
 
+    it('#3036 PR-3a — originFixAgeMs/originFixSource가 요청 body에 그대로 실린다 (backend 파서 필드명 계약)', async () => {
+      await registerActiveTrip({
+        ...PROMPT_PAYLOAD,
+        promptGeoContext: {
+          origin: { lat: 37.5, lng: 127 },
+          nextStation: { lat: 37.51, lng: 127.01 },
+          direction: 'up',
+          originDistanceM: 300,
+          originAccuracyM: 12,
+          originFixAgeMs: 30_000,
+          originFixSource: 'gps-live',
+        },
+      });
+      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+      expect(body.promptGeoContext.originFixAgeMs).toBe(30_000);
+      expect(body.promptGeoContext.originFixSource).toBe('gps-live');
+    });
+
     it('promptDisplay만 다르면 dedup 깨고 재등록', async () => {
       await registerActiveTrip(PROMPT_PAYLOAD);
       const changed = await registerActiveTrip({

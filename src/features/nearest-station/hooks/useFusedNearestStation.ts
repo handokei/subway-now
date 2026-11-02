@@ -44,6 +44,7 @@ import {
   getLastBarometerReadingAtMs,
 } from '../../../shared/utils/barometerState';
 import { BAROMETER_RECENT_SUBSURFACE_STICKY_WINDOW_MS } from '../../../shared/constants/barometer';
+import type { GpsFixSource } from '../../../shared/constants/gpsFixSource';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import {
@@ -51,6 +52,7 @@ import {
   type FusionConfidence,
   type FusionSource,
   type OppositeDirectionDrop,
+  type ExcludedCandidateDrop,
 } from '../utils/pickFusedStation';
 import { isBarometerObservable, stationaryHoldBlock } from '../utils/stationaryFixHold';
 import { shouldDowngradeFusion, STATIC_SPEED_THRESHOLD_MPS } from '../utils/movementGate';
@@ -217,6 +219,8 @@ interface UseFusedNearestStationReturn {
   lastFixAtMs: number | null;
   /** #3191 PR-2 — 마지막 채택 fix가 BG task fix 주입분인가(FG 업로드 skip 입력). */
   lastFixFromBg: boolean;
+  /** #3036 PR-3a — 마지막 채택 fix의 출처(등록 스냅샷 originFixSource 입력). */
+  lastFixSource: GpsFixSource | null;
   /**
    * #733 — 위치 이력 기반 정적/이동/판정불가. iOS가 speed=-1(미측정)을 보고하는 정적 케이스에서
    * movementGate fallback 신호로 사용. 호출자(useStationAlarm 등)가 evaluateMovement에 전달해
@@ -484,6 +488,9 @@ export interface FusedRouteContext {
   destination: Station | null;
 }
 
+// #3191 PR-0 — observer 인스턴스용 no-op sink (pushCandidateRejectEntry와 동일 시그니처).
+const noopCandidateRejectPush: typeof pushCandidateRejectEntry = () => undefined;
+
 export function useFusedNearestStation(
   arrivalProvider?: ArrivalProvider,
   positionProvider?: PositionProvider,
@@ -560,6 +567,11 @@ export function useFusedNearestStation(
   // 계약(호출부가 고정 role로 하나의 hook을 지속 사용)이라 ref 없이 매 render 재계산해도
   // 무해 — useNearestStation에 그대로 흘려 GPS fix 계측도 동일 role로 게이팅한다.
   const resolvedInstrumentationRole = instrumentationRole ?? 'primary';
+  // #3191 PR-0 — observer(DebugModal) 인스턴스는 모든 측정 버퍼(candidateReject / Fusion log / alarm log /
+  // lock drift / estimator / Raw / Sentry breadcrumb)에 기록하지 않는다. primary 단일 인스턴스 기준 측정.
+  // 판정·표시 로직은 role과 무관(측정 기록점만 게이팅).
+  const isObserver = resolvedInstrumentationRole === 'observer';
+  const pushCandidateReject = isObserver ? noopCandidateRejectPush : pushCandidateRejectEntry;
   // D6 (#1212) — trip 활성(origin+destination+route 모두 채워진 상태)을 sticky 게이트에 전달.
   // routeContext는 HomeScreen에서 trip 시작 시 채워지고 종료 시 undefined로 돌아간다.
   const tripActive = routeContext != null;
@@ -605,6 +617,15 @@ export function useFusedNearestStation(
   const holdFixAtMs = typeof gps.lastFixAtMs === 'number' ? gps.lastFixAtMs : null;
   // gps.liveResult는 sticky override 없는 GPS 최근접 결과 — G2는 fix 자체와 역 사이 거리다.
   const nearestStationDistanceM = gps.liveResult ? gps.liveResult.distanceKm * 1000 : null;
+  // #3191 PR-0 — hold 입력과 Raw 기록(baroObs)이 같은 값을 공유한다.
+  const barometerObservable =
+    barometerSignal != null &&
+    isBarometerObservable({
+      unavailableReason: barometerSignal.unavailableReason,
+      firstReadingAtMs: getBarometerDeltaTracking().firstHpaAtMs,
+      lastReadingAtMs: getLastBarometerReadingAtMs(),
+      nowMs: Date.now(),
+    });
   const holdBlock = stationaryHoldBlock({
     fix:
       holdFixAtMs === null
@@ -613,14 +634,7 @@ export function useFusedNearestStation(
     hasNewerFix: false,
     subsurface: barometerSubsurface,
     baroEventAtMs: getBarometerDeltaTracking().lastDeltaEventAtMs,
-    barometerAvailable:
-      barometerSignal != null &&
-      isBarometerObservable({
-        unavailableReason: barometerSignal.unavailableReason,
-        firstReadingAtMs: getBarometerDeltaTracking().firstHpaAtMs,
-        lastReadingAtMs: getLastBarometerReadingAtMs(),
-        nowMs: Date.now(),
-      }),
+    barometerAvailable: barometerObservable,
     lockActive: boardingLock != null,
     nearestStationDistanceM,
   });
@@ -675,7 +689,7 @@ export function useFusedNearestStation(
   // 'automotive' (RMS ≥ 2.0 m/s²)이면 train 진동 환경 vote 1표 — undergroundSSotConsensus 5번째 signal.
   // BG location piggyback (backgroundLocationTask가 별 start 호출)로 BG에서도 동작.
   // V1 BG 지하 천장 70 → 90% (Transit App 90% / SubwayPS 학술 85% baseline).
-  const accelerometerPattern = useAccelerometerFingerprint();
+  const accelerometerPattern = useAccelerometerFingerprint(resolvedInstrumentationRole);
 
   // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror 폴링.
   //
@@ -772,14 +786,14 @@ export function useFusedNearestStation(
     if (!isDecisionGpsStale) return;
     const line = candidates[0]?.station.line;
     if (!line) return;
-    pushCandidateRejectEntry({
+    pushCandidateReject({
       kind: 'candidate-reject',
       ts: Date.now(),
       // #3191 PR-2 — stale이어도 hold로 L을 계속 쓴 경우는 따로 센다(held 대 stale 비율 = hold 효과 측정).
       reason: stationaryHold ? 'gps-stale-held' : 'gps-stale',
       line,
     });
-  }, [isDecisionGpsStale, candidates, stationaryHold]);
+  }, [isDecisionGpsStale, candidates, stationaryHold, pushCandidateReject]);
 
   // arrival 폴링: 후보 역명 단위 K=3 고정.
   // 각 후보의 호선을 lineHint로 함께 전달해 schedule fallback이 환승역에서 정확한
@@ -833,9 +847,12 @@ export function useFusedNearestStation(
   // 방향 필터에서 빠진 점수>0 반대 방향 신호. fused memo 본문에서는 ref에 모으기만 하고 push는 아래
   // effect가 한다(memo가 커밋 없이 재실행될 수 있어 memo 본문 side-effect를 피한다 — #2594 P5 리뷰 동일 사유).
   const oppositeDirectionDropsRef = useRef<OppositeDirectionDrop[]>([]);
+  // #3191 PR-1(A) — 경로 arc 밖이라 점수에서 빠진 점수>0 신호(같은 handoff 방식).
+  const excludedDropsRef = useRef<ExcludedCandidateDrop[]>([]);
 
   const fused = useMemo(() => {
     oppositeDirectionDropsRef.current = [];
+    excludedDropsRef.current = [];
     if (candidates.length === 0) return null;
     const arrivals = [a0.arrival, a1.arrival, a2.arrival];
     const positions = [p0.positions, p1.positions, p2.positions];
@@ -846,18 +863,25 @@ export function useFusedNearestStation(
         positionMatches: matchPositionsForCandidate(cand, positions),
         // route가 있으면: 맵에 있는 노선은 'up'|'down'|null(미해결 fail-closed), 경로에 없는 노선은 undefined.
         direction: legDirections?.get(cand.station.line),
+        // #3191 PR-1(A) — route 활성 ∧ lock 없음일 때 경로 arc 밖(출발역보다 상류 포함) 후보는 점수 0.
+        // arc는 출발역~목적지라 사용자가 그 열차를 탈 수 없다. lock 있는 trip은 기존 lock 가드가 담당(범위 밖).
+        excluded:
+          arcStations.length > 0 && !boardingLock && arcIndexOfStation(arcStations, cand.station) === -1
+            ? ('off-arc' as const)
+            : undefined,
       })),
       prevHighPriorityStationIdRef.current,
       (drop) => oppositeDirectionDropsRef.current.push(drop),
+      (drop) => excludedDropsRef.current.push(drop),
     );
-  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions, legDirections]);
+  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions, legDirections, arcStations, boardingLock]);
 
   // #3191 PR-2D — 방향 필터 관측. 기존 reason 'candidate-opposite-direction'(#2696)을 재사용한다.
   // observer(DebugModal) 인스턴스는 push하지 않는다(primary와 중복 집계 방지).
   useEffect(() => {
     if (resolvedInstrumentationRole === 'observer') return;
     for (const { kind, stationName, line } of oppositeDirectionDropsRef.current) {
-      pushCandidateRejectEntry({
+      pushCandidateReject({
         kind: 'candidate-reject',
         ts: Date.now(),
         reason: 'candidate-opposite-direction',
@@ -866,7 +890,22 @@ export function useFusedNearestStation(
         signal: kind,
       });
     }
-  }, [fused, resolvedInstrumentationRole]);
+  }, [fused, resolvedInstrumentationRole, pushCandidateReject]);
+
+  // #3191 PR-1(A) — arc 밖 후보 제외 관측(reason 'candidate-off-arc'). observer는 push하지 않는다.
+  useEffect(() => {
+    if (resolvedInstrumentationRole === 'observer') return;
+    for (const { kind, stationName, line } of excludedDropsRef.current) {
+      pushCandidateReject({
+        kind: 'candidate-reject',
+        ts: Date.now(),
+        reason: 'candidate-off-arc',
+        stationName,
+        line,
+        signal: kind,
+      });
+    }
+  }, [fused, resolvedInstrumentationRole, pushCandidateReject]);
 
   useEffect(() => {
     prevHighPriorityStationIdRef.current = fused?.highPriorityStationId ?? null;
@@ -928,7 +967,7 @@ export function useFusedNearestStation(
       if (!lp) continue;
       if (allowedLines && !allowedLines.has(lp.line)) {
         // #1902 (RC-18) — trip route 외 line 후보를 enumerate 단계에서 차단.
-        pushCandidateRejectEntry({
+        pushCandidateReject({
           kind: 'candidate-reject',
           ts: Date.now(),
           reason: 'candidate-line',
@@ -984,7 +1023,7 @@ export function useFusedNearestStation(
           candidateDistanceRejectCount += 1;
           // #1902 — candidate-reject 별 buffer로 이전. fusionDebugBuffer 200 cap 보호.
           // #2728 (ADR-039 2단계) — arc 정합성 실패로 reject된 경우 'candidate-arc'로 구분.
-          pushCandidateRejectEntry({
+          pushCandidateReject({
             kind: 'candidate-reject',
             ts: Date.now(),
             reason: info.viaArcCheck ? 'candidate-arc' : 'candidate-distance',
@@ -998,7 +1037,7 @@ export function useFusedNearestStation(
         // V/X 관측(candidateRejectBuffer)에 기존 'candidate-opposite-direction' reason으로
         // 그대로 올린다 — #2696이 만든 사후 필터와 동일 reason이라 DebugModal 변경 불필요.
         onCandidateDirectionReject: (info) => {
-          pushCandidateRejectEntry({
+          pushCandidateReject({
             kind: 'candidate-reject',
             ts: Date.now(),
             reason: 'candidate-opposite-direction',
@@ -1030,7 +1069,7 @@ export function useFusedNearestStation(
             if (c.trainNo === boardingLock?.trainCode) return true;
             if (lockedTrainUpdnLine === undefined) {
               if (!directionResolutionAttempted) return true;
-              pushCandidateRejectEntry({
+              pushCandidateReject({
                 kind: 'candidate-reject',
                 ts: Date.now(),
                 reason: 'candidate-direction-unresolved',
@@ -1058,7 +1097,7 @@ export function useFusedNearestStation(
             ) {
               // #2914 (결함 2) — 조기 종착 열차. V/X는 candidate-opposite-direction과 같은
               // candidateRejectBuffer를 재사용(신규 인프라 없이 관찰 가능).
-              pushCandidateRejectEntry({
+              pushCandidateReject({
                 kind: 'candidate-reject',
                 ts: Date.now(),
                 reason: 'candidate-early-terminus',
@@ -1078,7 +1117,7 @@ export function useFusedNearestStation(
     // 포함돼야 avgRejectPerFire가 왜곡되지 않는다.
     candidateDistanceRejectCountRef.current = candidateDistanceRejectCount;
     return out;
-  }, [candidates, p0.positions, p1.positions, p2.positions, gateUserLocation, allowedLines, boardingLock, arcStations, lockedTrainUpdnLine]);
+  }, [candidates, p0.positions, p1.positions, p2.positions, gateUserLocation, allowedLines, boardingLock, arcStations, lockedTrainUpdnLine, pushCandidateReject]);
 
   // #2594 (P5 리뷰 fix) — record 호출을 memo 본문에서 이 effect로 이전. useEffect는 실제로
   // 커밋된 렌더에서, deps([candidateTrains]) 참조가 실제로 바뀔 때만 실행되므로 React가 memo를
@@ -1118,7 +1157,7 @@ export function useFusedNearestStation(
         boardingStationId: boardingLock?.boardingStationId ?? locklessGuard?.boardingStationId,
         // #1616 (R8a) — lockless 시 forward-only 가드가 backward를 reject한 케이스만 alarmLog 적재.
         // boardingLock 활성 시는 기존 (#1017) 가드와 동일 동작 — 별도 측정 X (lock 신호가 이미 강한 근거).
-        onFilteredBackward: boardingLock
+        onFilteredBackward: boardingLock || isObserver
           ? undefined
           : (info) => {
               logSuppressedLocklessForwardOnly({
@@ -1127,7 +1166,7 @@ export function useFusedNearestStation(
               });
             },
       }),
-    [candidateTrains, gps.userLocation, boardingLock, arcStations, locklessGuard],
+    [candidateTrains, gps.userLocation, boardingLock, arcStations, locklessGuard, isObserver],
   );
 
   // #445: trainProgress 갱신 시각 추적 + TTL 만료 후 first 갱신에서 sticky 락 해제.
@@ -1560,6 +1599,7 @@ export function useFusedNearestStation(
   const wasSsotLineGuardRejectedRef = useRef(false);
   useEffect(() => {
     if (
+      !isObserver &&
       ssotGuardResult.lineGuardRejected &&
       !wasSsotLineGuardRejectedRef.current &&
       positionTrainResult &&
@@ -1578,7 +1618,7 @@ export function useFusedNearestStation(
       });
     }
     wasSsotLineGuardRejectedRef.current = ssotGuardResult.lineGuardRejected;
-  }, [ssotGuardResult, positionTrainResult, backendSsotMirror]);
+  }, [isObserver, ssotGuardResult, positionTrainResult, backendSsotMirror]);
   // #2261 (ADR-031 Phase 0) — freshness를 `lastAdvanceAt`(backend가 실제 advance한 시각) 대신
   // `receivedAt`(mirror가 device에 도달한 시각) 기준으로 재정의. lastAdvanceAt 기준은 지하·정지
   // (non-advancing) trip에서 advance가 전혀 일어나지 않아 영구 stale에 빠지는 deadlock의 절반
@@ -1901,7 +1941,7 @@ export function useFusedNearestStation(
   // positionTrainBoardingLockMatch 분기의 drift block은 positionTrainResult의 거리 게이트(0.6km) 때문에
   // 실용적으로 도달 불가능하다 (거리 게이트 < drift threshold). 보존성 구현이지만 단위 테스트 커버 불가.
   /* istanbul ignore next */
-  if (positionTrainBoardingLockMatch && positionTrainDriftBlocked && positionTrainResult) {
+  if (!isObserver && positionTrainBoardingLockMatch && positionTrainDriftBlocked && positionTrainResult) {
     pushBoardingLockDriftEntry({
       kind: 'boarding-lock-drift',
       ts: Date.now(),
@@ -1911,7 +1951,7 @@ export function useFusedNearestStation(
       driftMeters: positionTrainDriftM,
     });
   }
-  if (arvlCdArrivedMatch && arvlCdDriftBlocked) {
+  if (!isObserver && arvlCdArrivedMatch && arvlCdDriftBlocked) {
     pushBoardingLockDriftEntry({
       kind: 'boarding-lock-drift',
       ts: Date.now(),
@@ -1972,7 +2012,7 @@ export function useFusedNearestStation(
   // dedup 1s — 같은 tier 연속 폴링 cycle에서 1건만 적재.
   // #1936 — FusionTierName(pickFusionTier 산출) → 기존 FusionPickerTier 라벨 매핑.
   //   기존 dashboard/Sentry/alarmLog query backward-compat 유지.
-  logFusionPickerTier(LEGACY_TIER_LABEL_MAP[cascadeTierPick.tier]);
+  if (!isObserver) logFusionPickerTier(LEGACY_TIER_LABEL_MAP[cascadeTierPick.tier]);
 
   // #1723 — 환승역 line drift 보정 (post-cascade + 강등 후 fallback 공통).
   //
@@ -2038,9 +2078,9 @@ export function useFusedNearestStation(
   // dedup은 recordEnvironmentTransition 내부에서 처리(prev === next 시 no-op).
   const prevEnvironmentRef = useRef<Environment | undefined>(undefined);
   useEffect(() => {
-    recordEnvironmentTransition(prevEnvironmentRef.current, environment);
+    if (!isObserver) recordEnvironmentTransition(prevEnvironmentRef.current, environment);
     prevEnvironmentRef.current = environment;
-  }, [environment]);
+  }, [environment, isObserver]);
 
   // #1934 (Epic #1927 G3) option B + #1936 G4 통합 — candidate env vote reject counter.
   //
@@ -2067,7 +2107,7 @@ export function useFusedNearestStation(
     for (const cand of candidates) {
       if (!isCandidateEnvMismatch(environment, cand)) continue;
       candidateEnvRejectCount += 1;
-      pushCandidateRejectEntry({
+      pushCandidateReject({
         kind: 'candidate-reject',
         ts: Date.now(),
         reason: 'candidate-env',
@@ -2080,7 +2120,7 @@ export function useFusedNearestStation(
     if (resolvedInstrumentationRole !== 'observer') {
       recordCandidateEnvFire(candidateEnvRejectCount, Date.now());
     }
-  }, [candidates, environment, resolvedInstrumentationRole]);
+  }, [candidates, environment, resolvedInstrumentationRole, pushCandidateReject]);
 
   // #1936 (Epic #1927 G4) — cascade tier 채택 Sentry breadcrumb. delta-only emit.
   // dedup은 recordFusionTierAdopted 내부에서 처리(prev === next 시 no-op).
@@ -2089,14 +2129,16 @@ export function useFusedNearestStation(
   const adoptedTier = cascadeTierPick.tier;
   const adoptedDistanceKm = cascadeTierPick.result?.distanceKm ?? null;
   useEffect(() => {
-    recordFusionTierAdopted(
-      prevFusionTierRef.current,
-      adoptedTier,
-      environment,
-      adoptedDistanceKm,
-    );
+    if (!isObserver) {
+      recordFusionTierAdopted(
+        prevFusionTierRef.current,
+        adoptedTier,
+        environment,
+        adoptedDistanceKm,
+      );
+    }
     prevFusionTierRef.current = adoptedTier;
-  }, [adoptedTier, environment, adoptedDistanceKm]);
+  }, [adoptedTier, environment, adoptedDistanceKm, isObserver]);
 
   // ADR-008 stationProgressEstimator — 시간 적분 → 관측 구동 전환 (#739).
   // arc상 추정 위치가 현 채택된 결과보다 앞이거나, 채택 결과가 arc 밖이면 override.
@@ -2247,8 +2289,10 @@ export function useFusedNearestStation(
   //   - adoptedTier: cascade가 채택한 tier (상위 tier advance 여부 판정)
   //   - locklessTripStartRef: lockless trip 시작 시각 (#1207 앵커, 위에서 이미 산출)
   //
-  // lock 활성 trip은 범위 밖 — RCA 시나리오(positionTrain은 lock 필요, 즉 lockless에서만
-  // positionTrain 자체가 dormant)가 lockless 전용이라 locklessTripStartRef가 자연 게이트 역할.
+  // lock 활성 trip은 범위 밖 — RCA 시나리오(sticky가 출발역에 고착)가 lockless 전용이라
+  // locklessTripStartRef가 자연 게이트 역할. (lockless positionTrain tier6은 dormant가 아니다:
+  // positionTrainConsensus.requiresPositionTrainConsensus — automotive ∧ cellular surface 합의면 채택 가능,
+  // checkStationProgression은 arc 밖 후보를 면제한다. #3191 PR-1(A)는 이를 바꾸지 않는다 — ADR-044:35, 셀 M9 선언.)
   const tripOriginForDemote = routeContext?.origin ?? null;
   const stickyLockedStation = gps.stickyDisplayOnly;
   const resultStuckAtStickyOrigin =
@@ -2270,7 +2314,7 @@ export function useFusedNearestStation(
   // dedup: false→true 전환 시에만 push — 매 polling cycle 재적재로 buffer 점령 방지.
   const wasDemotedRef = useRef(false);
   useEffect(() => {
-    if (currentStationDisplayDemoted && !wasDemotedRef.current && stickyLockedStation) {
+    if (!isObserver && currentStationDisplayDemoted && !wasDemotedRef.current && stickyLockedStation) {
       pushFusionDebugEntry({
         kind: 'display-demote',
         reason: 'display-demote-sticky-stale',
@@ -2280,7 +2324,7 @@ export function useFusedNearestStation(
       });
     }
     wasDemotedRef.current = currentStationDisplayDemoted;
-  }, [currentStationDisplayDemoted, stickyLockedStation]);
+  }, [currentStationDisplayDemoted, stickyLockedStation, isObserver]);
 
   const estimate = estimateStationProgress({
     lock: boardingLock ?? null,
@@ -2563,7 +2607,7 @@ export function useFusedNearestStation(
         })
       : false;
   useEffect(() => {
-    if (displayRegressionRejected && ssotStation && estimate) {
+    if (!isObserver && displayRegressionRejected && ssotStation && estimate) {
       logBackendSsotRouteRegressionReject(ssotStation.name, estimate.station.name);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- displayRegressionRejected 전이에만 반응.
@@ -2600,6 +2644,7 @@ export function useFusedNearestStation(
     ? `${effectiveEstimate.strategy}|${effectiveEstimate.station.id}|${effectiveEstimate.index}`
     : 'null';
   useEffect(() => {
+    if (isObserver) return;
     const est = estimateRef.current;
     pushEstimatorEntry({
       ts: Date.now(),
@@ -2608,7 +2653,7 @@ export function useFusedNearestStation(
       stationLine: est ? est.station.line : null,
       arcIndex: est ? est.index : null,
     });
-  }, [estimateKey]);
+  }, [estimateKey, isObserver]);
 
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
   // render 중 side-effect 회피 + 의존성 누락 은폐 회피를 위해 결정 key를 ref로 비교.
@@ -2624,6 +2669,7 @@ export function useFusedNearestStation(
   // corrId는 in-memory cache에서 sync read (setTripCorrId/clear 시 cache 갱신 보장).
   const lastStationIdRef = useRef<string | null>(null);
   useEffect(() => {
+    if (isObserver) return;
     if (lastDecisionKeyRef.current === decisionKey) return;
     lastDecisionKeyRef.current = decisionKey;
     const candidates: FusionCandidateMini[] = [];
@@ -2738,7 +2784,11 @@ export function useFusedNearestStation(
     if (watchActive !== undefined) {
       watchForDump = watchActive ? 'active' : 'inactive';
     }
-    const baroEventAtMs = getBarometerDeltaTracking().lastDeltaEventAtMs;
+    const {
+      lastDeltaEventAtMs: baroEventAtMs,
+      lastDeltaEventKind: baroEvtKind,
+      firstHpaAtMs: baroFirstAt,
+    } = getBarometerDeltaTracking();
     // #3191 PR-2 — hold 판정은 렌더 본문에서 1회 계산한 값을 그대로 기록한다(게이트 입력과 같은 값).
     // fix 시각을 모르면(테스트 mock 등) 판단 불가 = holdEligible null.
     const holdEligible = holdFixAtMs === null ? null : stationaryHold;
@@ -2749,6 +2799,10 @@ export function useFusedNearestStation(
       holdEligible,
       holdBlock,
       distM: nearestStationDistanceM,
+      baroLastAt: getLastBarometerReadingAtMs(),
+      baroFirstAt,
+      baroObs: barometerObservable,
+      baroEvtKind,
     };
     // #1859 — CTRadioAccessTechnology 스냅샷. tech는 native 캐시에서 동기 읽기.
     // vote는 useCellularTech()가 이미 산출한 값을 그대로 사용(재분류 없음).
@@ -2821,7 +2875,7 @@ export function useFusedNearestStation(
       pushReceipt: null,
       ...instrumentationForDump,
     });
-  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, accelerometerPattern, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM]);
+  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, accelerometerPattern, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM, isObserver]);
 
   return {
     result,
@@ -2843,6 +2897,7 @@ export function useFusedNearestStation(
     lastFixAtMs: gps.lastFixAtMs,
     // #3191 PR-2 — L이 BG task fix 주입분이면 FG 업로드(useFgPositionUpload)가 건너뛴다.
     lastFixFromBg: gps.lastFixFromBg === true,
+    lastFixSource: gps.lastFixSource ?? null,
     positionStability,
     estimatorStrategy: estimate?.strategy ?? null,
     // D2(#1208) + #1235 (D9 wire) — useStationAlarm hop window 게이트 + DebugModal Trip/Fusion/GPS 섹션 SSOT.

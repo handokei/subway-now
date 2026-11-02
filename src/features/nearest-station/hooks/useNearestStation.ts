@@ -45,6 +45,7 @@ import {
   isGpsQualityHysteresisReleased,
 } from '../utils/gpsQualityGate';
 import { GPS_QUALITY_GATE_TIMER_INTERVAL_MS } from '../../../shared/constants/gpsQualityGate';
+import { GPS_FIX_SOURCE, type GpsFixSource } from '../../../shared/constants/gpsFixSource';
 
 /** #876 — useNearestStation 표시값의 출처. sticky lock된 역이면 'sticky', 아니면 GPS live.
  *  알람 트리거에는 영향 없음 — 호출자가 출처별 UX(예: "탑승 전 추정")를 분기할 수 있게 노출. */
@@ -156,6 +157,8 @@ interface UseNearestStationReturn {
   // #3191 PR-2 — 마지막 채택 fix(L)가 BG task fix 주입분인가. true면 BG task가 이미 backend에 업로드했으므로
   // FG 업로드(useFgPositionUpload)는 건너뛴다. FG watch/one-shot fix가 채택되면 false로 돌아온다.
   lastFixFromBg: boolean;
+  // #3036 PR-3a — 마지막 채택 fix의 출처(live / cold-start last-known). null = fix 없음.
+  lastFixSource: GpsFixSource | null;
   // #3191 PR-0 — FG watch 구독이 지금 살아 있는지(관측 전용 getter, render 유발 없음). Raw signal이
   // 기록 시점의 watch 상태를 남기기 위한 것 — 어떤 판정도 이 값을 읽지 않는다.
   isWatchActive: () => boolean;
@@ -271,6 +274,7 @@ export function useNearestStation(
   const [gpsActive, setGpsActive] = useState<GpsActiveState>(() => currentGpsActive());
   const [lastFixAtMs, setLastFixAtMs] = useState<number | null>(null);
   const [lastFixFromBg, setLastFixFromBg] = useState(false);
+  const [lastFixSource, setLastFixSource] = useState<GpsFixSource | null>(null);
   const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
   // #1313 — "지하라 throttle 중인가"의 SSOT. startWatch가 호출 시점에 이 ref를 읽어 watch 옵션을
   // 고른다. subsurface 원시값이 아니라 throttle 여부(=== true)를 들고 있어 warmup(undefined)과
@@ -375,7 +379,8 @@ export function useNearestStation(
       // #2076 결함2 — 급락 여부는 진단 로그에만 반영. degraded 상태를 직접 바꾸지 않는다.
       const jumpDegraded = isGpsQualityJumpDegraded(qualityGateLastPassAccuracyRef.current, accuracy);
       qualityGateConsecutivePassRef.current = 0;
-      if (!logDrop) return;
+      // #3191 PR-0 — observer(DebugModal) 인스턴스는 측정 버퍼에 기록하지 않는다.
+      if (!logDrop || instrumentationRoleRef.current === 'observer') return;
       pushGpsDropEntry({
         ts: now,
         lat,
@@ -404,7 +409,12 @@ export function useNearestStation(
     }
   }, GPS_QUALITY_GATE_TIMER_INTERVAL_MS);
 
-  const applyLocation = useCallback((coords: Location.LocationObjectCoords, timestamp: number, fromBg = false) => {
+  const applyLocation = useCallback((
+    coords: Location.LocationObjectCoords,
+    timestamp: number,
+    fromBg = false,
+    source: GpsFixSource = GPS_FIX_SOURCE.LIVE,
+  ) => {
     const { latitude, longitude, speed, accuracy } = coords;
     const fix: FixSample = { lat: latitude, lng: longitude, timestamp };
     // #3191 PR-2 — L 단조성. 같거나 과거 timestamp fix(watch inactive→active 직후 재전달, 중복 콜백)가
@@ -428,6 +438,7 @@ export function useNearestStation(
     // jump/accuracy drop된 fix는 채택 안 함(stale 시각이 그대로 유지) — 사용자가 stale 구간 식별 가능.
     setLastFixAtMs(timestamp);
     setLastFixFromBg(fromBg);
+    setLastFixSource(source);
     const stationsResult = findNearestStations(latitude, longitude, MAX_STATION_DISTANCE_KM);
 
     const newId = stationsResult?.primary.id ?? null;
@@ -465,7 +476,7 @@ export function useNearestStation(
 
     // 측정(#443): station 변화 시에만 push. 매 fix는 너무 자주 — 점프 시퀀스
     // (사가정→을지로4가→용마산) 재구성엔 station 단위면 충분.
-    if (stationChanged || noStation) {
+    if ((stationChanged || noStation) && instrumentationRoleRef.current !== 'observer') {
       pushFusionDebugEntry({
         kind: 'gps',
         event: 'gps-fix',
@@ -595,11 +606,11 @@ export function useNearestStation(
         const strictlyAcceptable = isAccuracyAcceptable(lastKnown.coords.accuracy);
         const displayAcceptable = isAccuracyAcceptableForDisplay(lastKnown.coords.accuracy);
         if (fresh && strictlyAcceptable) {
-          applyLocation(lastKnown.coords, lastKnown.timestamp);
+          applyLocation(lastKnown.coords, lastKnown.timestamp, false, GPS_FIX_SOURCE.LAST_KNOWN);
           setLoading(false);
         } else if (fresh && displayAcceptable) {
           // cold start 완화 hydrate — result는 채우되 uncertain=true로 신뢰도 표시.
-          applyLocation(lastKnown.coords, lastKnown.timestamp);
+          applyLocation(lastKnown.coords, lastKnown.timestamp, false, GPS_FIX_SOURCE.LAST_KNOWN);
           setLocationUncertain(true);
           setLoading(false);
           logger.info('lastKnown coldStart hydrate: uncertain', {
@@ -674,6 +685,8 @@ export function useNearestStation(
             const acc = location.coords.accuracy;
             // #1516 dedup gate 1: 직전 drop과 lat/lng/accuracy 모두 동일하면 skip.
             // 실측: 동일 accuracy(1414m) × 18건 다발 — same OS fix가 재발화하는 패턴.
+            // #3191 PR-0 — observer는 gps-drop 측정 버퍼(아래 push 2곳)에 기록하지 않는다.
+            if (instrumentationRoleRef.current === 'observer') return;
             const prevDrop = lastDropRef.current;
             const sameAsPrev =
               prevDrop !== null &&
@@ -958,6 +971,7 @@ export function useNearestStation(
     gpsActive,
     lastFixAtMs,
     lastFixFromBg,
+    lastFixSource,
     isWatchActive,
     gpsQualityDegraded,
     source: exposed.source,

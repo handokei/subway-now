@@ -15,7 +15,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RAW_SIGNAL_BUFFER_KEY } from '../../../shared/constants/storageKeys';
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
-import { getBarometerDeltaTracking } from '../../../shared/utils/barometerState';
+import { getBarometerDeltaTracking, type BarometerDeltaEventKind } from '../../../shared/utils/barometerState';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import type { CellularEnvironmentVote } from '../../nearest-station/utils/cellularTech';
 
@@ -162,6 +162,16 @@ export interface RawSignalEntry {
   holdBlock?: string | null;
   /** #3191 PR-2 — G2 입력: fix↔GPS 최근접역 거리(m). 모르면 null. 관측 전용. */
   distM?: number | null;
+  /**
+   * #3191 PR-0 — 기압계 관측 필드(관측 전용, 판정 입력 아님). hold의 baro-unavailable / baro-event 원인 확정용.
+   * baroLastAt/baroFirstAt = 마지막/첫 reading 시각(없으면 null), baroObs = isBarometerObservable 결과
+   * (실패 사유 없음 + 워밍업 30s 경과 + 마지막 reading 30s 이내), baroEvtKind = 마지막 ΔP 이벤트 종류.
+   * 구 entry에는 없다(optional).
+   */
+  baroLastAt?: number | null;
+  baroFirstAt?: number | null;
+  baroObs?: boolean;
+  baroEvtKind?: BarometerDeltaEventKind | null;
   /** #3191 PR-0 — 프로세스당 1회, 첫 hPa 기준선이 생긴 뒤 첫 push entry에만 부착. */
   launch?: RawSignalLaunch;
 }

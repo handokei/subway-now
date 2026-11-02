@@ -2120,8 +2120,12 @@ describe('useFusedNearestStation', () => {
 
     // sticky가 tripOrigin(용마산)에 고정 + 다른 신호 미채택 상태로 렌더 후 elapsedMs만큼 경과시킨다.
     // wifiStation을 지정하면 상위 tier(wifi) 채택 시나리오를 재현할 수 있다.
-    function renderStuckAtOrigin(opts?: { elapsedMs?: number; wifiStation?: Station | null }) {
-      const { elapsedMs = CURRENT_STATION_STALE_DEMOTE_MS, wifiStation = null } = opts ?? {};
+    function renderStuckAtOrigin(opts?: {
+      elapsedMs?: number;
+      wifiStation?: Station | null;
+      role?: 'primary' | 'observer';
+    }) {
+      const { elapsedMs = CURRENT_STATION_STALE_DEMOTE_MS, wifiStation = null, role } = opts ?? {};
       mockUseNearest.mockReturnValue(
         gpsBase({
           userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
@@ -2145,6 +2149,8 @@ describe('useFusedNearestStation', () => {
             undefined,
             undefined,
             wifi,
+            undefined,
+            role,
           ),
         { initialProps: wifiStation },
       );
@@ -2152,6 +2158,14 @@ describe('useFusedNearestStation', () => {
       rerender(wifiStation);
       return result;
     }
+
+    // #3191 PR-0 — observer(DebugModal) 인스턴스는 강등 판정은 같게 하되 Fusion log에는 push하지 않는다.
+    it("observer 인스턴스 — 강등 true는 동일, display-demote fusion log push 0", () => {
+      const result = renderStuckAtOrigin({ role: 'observer' });
+
+      expect(result.current.currentStationDisplayDemoted).toBe(true);
+      expect(getFusionDebugEntries().filter((e) => e.kind === 'display-demote')).toHaveLength(0);
+    });
 
     it('4조건 충족 (trip 활성 + sticky==tripOrigin + 상위 tier 부재 + 3분 경과) → 강등 true + fusion log 1건', () => {
       const result = renderStuckAtOrigin();

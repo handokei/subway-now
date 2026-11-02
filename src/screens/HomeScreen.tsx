@@ -92,6 +92,7 @@ import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLo
 import { usePrevTrainCandidate } from '../features/alarm/hooks/usePrevTrainCandidate';
 import { useAnchorDepartures } from '../features/alarm/hooks/useAnchorDepartures';
 import { buildDepartedTrainRows } from '../features/alarm/utils/departedTrainRows';
+import { isSyncObservationEligible } from '../features/alarm/utils/syncObservationEligibility';
 import { useSafetyNetScheduler } from '../features/alarm/hooks/useSafetyNetScheduler';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useDestinationAutoClear, pickDestinationArvlCd } from '../features/alarm/hooks/useDestinationAutoClear';
@@ -324,7 +325,7 @@ export default function HomeScreen() {
   // 안 지워지고 zombie station-passed 알림이 계속 발사됐다. 기존 BG-only pull-death backstop을
   // FG poll 주기에도 배선 — 신규 판정/cleanup 로직 없음(기존 checkTripDeathByPull 재사용).
   useTripDeathForegroundBackstop();
-  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted, lastFixFromBg } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing, estimatorIsTimeIntegration, estimatorStrategy, backendSsotCurrentStationId, environment, currentStationDisplayDemoted, lastFixFromBg, lastFixAtMs, lastFixSource } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation, silentPushHealthy);
 
   // #1621 Phase B — V1 mismatch 자동 측정. UI currentStation(cascade picker)이 backend SSoT
   // 권위 mirror와 일치하지 않으면 alarmLog 'v1-mismatch' reason으로 1분 dedup 적재.
@@ -975,8 +976,11 @@ export default function HomeScreen() {
   // autoLockCandidate(#916) 무탭 hydrate 채널은 삭제됐다("무탭 오토락 전량 삭제" 결정, #2342).
   // D4 (#1210) — 활성 lock의 trainCode + 노선을 동봉해 환승 leg 진입 시 backend가
   // 새 trainCode로 추적을 갱신하도록 한다 (consecutiveEtaMissing 자동 종료 차단).
+  // #3191 PR-S — 표시용 현재역은 판단 자격 있는 출처(신선 fix / WiFi / lock)일 때만 backend 관측역으로 보낸다.
+  const syncObservedStationName =
+    result && isSyncObservationEligible({ source, lastFixAtMs, nowMs: Date.now() }) ? result.station.name : null;
   useBoardingLockSync({
-    currentStationName: result?.station.name ?? null,
+    currentStationName: syncObservedStationName,
     accuracyMeters: accuracyMeters ?? null,
     tripActive: Boolean(destination && route),
     subsurface: barometerSubsurface,
@@ -1334,7 +1338,14 @@ export default function HomeScreen() {
     // fix 없으면(GPS 미해소/권한거절) undefined 대신 null로 명시 전달 — 필드 자체 생략은 hook이 처리.
     gpsFix:
       userLocation && accuracyMeters != null
-        ? { lat: userLocation.lat, lng: userLocation.lng, accuracyM: accuracyMeters }
+        ? {
+            lat: userLocation.lat,
+            lng: userLocation.lng,
+            accuracyM: accuracyMeters,
+            // #3036 PR-3a — fix 나이·출처. null이면 필드 생략(buildOriginGpsStamp) — backend는 "나이 모름"으로 처리.
+            ...(lastFixAtMs != null ? { fixTs: lastFixAtMs } : {}),
+            ...(lastFixSource != null ? { source: lastFixSource } : {}),
+          }
         : null,
     // #2130 (B-1 Tier 2) — 지하 fallback heal의 route 출발역. effectiveOrigin은 GPS pause에도
     // customOrigin/lastFusedStation/boardingLockStation/tripOrigin 순으로 fallback해 currentStation이

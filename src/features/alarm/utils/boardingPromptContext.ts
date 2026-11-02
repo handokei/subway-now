@@ -43,6 +43,7 @@ import { inferLoopDirection } from '../../route/utils/loopDirection';
 import { findLocklessActiveLegWaypoint } from '../../route/utils/findActiveTransferContext';
 import { findSegmentEndStationName } from './buildBoardingLockMeta';
 import { resolveGpsFreeOrigin } from './gpsFreeOrigin';
+import type { GpsFixSource } from '../../../shared/constants/gpsFixSource';
 
 /**
  * #2946 (H-7 결함2, 2026-10-10 코디네이터 리뷰로 범위 축소) — 처음엔 `resolveTravelDirection ??
@@ -64,6 +65,10 @@ export interface GpsFix {
   lat: number;
   lng: number;
   accuracyM: number;
+  /** #3036 PR-3a — fix 획득 시각(epoch ms). 없으면(구형 호출자) 나이 필드를 만들지 않는다. */
+  fixTs?: number;
+  /** #3036 PR-3a — fix 출처(live / cold-start last-known). 없으면 출처 필드를 만들지 않는다. */
+  source?: GpsFixSource;
 }
 
 export interface BoardingPromptContext {
@@ -78,6 +83,10 @@ export interface BoardingPromptContext {
     originDistanceM?: number;
     /** #2130 (B-2) — GPS fix 정확도(m). originDistanceM과 항상 짝으로만 존재. */
     originAccuracyM?: number;
+    /** #3036 PR-3a — originDistanceM을 만든 fix의 나이(ms, 등록 시점 기준). backend O3 창의 신뢰도 입력. */
+    originFixAgeMs?: number;
+    /** #3036 PR-3a — 그 fix의 출처. 'gps-live'만 도보시간 계산에 쓰인다(계획 §17.5). */
+    originFixSource?: GpsFixSource;
   };
   promptDisplay: {
     originStation: string;
@@ -120,10 +129,20 @@ interface BuildInputs {
 function buildOriginGpsStamp(
   origin: { lat: number; lng: number },
   gpsFix: GpsFix | null | undefined,
-): { originDistanceM: number; originAccuracyM: number } | Record<string, never> {
+): Pick<
+  BoardingPromptContext['promptGeoContext'],
+  'originDistanceM' | 'originAccuracyM' | 'originFixAgeMs' | 'originFixSource'
+> {
   if (gpsFix == null) return {};
-  const originDistanceM = Math.round(haversine(gpsFix.lat, gpsFix.lng, origin.lat, origin.lng) * 1000);
-  return { originDistanceM, originAccuracyM: gpsFix.accuracyM };
+  const { lat, lng, accuracyM, fixTs, source } = gpsFix;
+  const originDistanceM = Math.round(haversine(lat, lng, origin.lat, origin.lng) * 1000);
+  return {
+    originDistanceM,
+    originAccuracyM: accuracyM,
+    // #3036 PR-3a — 나이는 송신(=등록) 시점 기준. 음수(시계 역행)는 0으로 clamp. 판정은 backend 몫.
+    ...(fixTs != null ? { originFixAgeMs: Math.max(0, Date.now() - fixTs) } : {}),
+    ...(source != null ? { originFixSource: source } : {}),
+  };
 }
 
 export function buildBoardingPromptContext({

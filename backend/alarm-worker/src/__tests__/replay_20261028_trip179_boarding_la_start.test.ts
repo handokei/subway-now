@@ -215,8 +215,12 @@ describe('#3221 PR-3 — 비split trip은 현행 byte 동일', () => {
    * 정확히 아래 3가지뿐이다 — (1) 비취침 "1정거장 전" prepare alert(`prepare-…-건대입구`, alarm.wav) 1건 삭제,
    * (2) 건대입구 환승 도착 alert의 `sound: alarm.wav` + `time-sensitive` -> sound 키 부재 + `active`(비취침 무음 배너),
    * (3) (1)로 줄어든 push 수만큼 이후 pushId 일련번호가 1씩 당겨짐. simNowMs·url·그 외 body/header는 전부 동일.
+   *
+   * 2026-11-03 #3221 PR-3a로 이 해시를 다시 갱신했다(이전 값 e3d34f43…). 질문 LA update 3건의 content-state에 발사 시각
+   * `trainCodeIssuedAtMs`(=알림 sentAt)가 추가됐을 뿐이다 — 갱신 후 push 전수 JSON에서 이 키 3건(`,"trainCodeIssuedAtMs":N`)만
+   * 제거해 다시 해시하면 이전 값 e3d34f43…과 정확히 일치함을 확인했다(다른 body/header/simNowMs 변경 0).
    */
-  const BASELINE_PUSHES_SHA256 = 'e3d34f434d2d0030446020244a836b397e5e43dda3592d89385c4519fb378ba4';
+  const BASELINE_PUSHES_SHA256 = 'b8999e3fc765a33c167af4c2659c57e04156a584ed8cf8e2892037ec2796ea42';
 
   it('start 0건, 질문 LA alert는 여정 update에 실리고, push 전수 해시가 변경 전과 같다', async () => {
     const result = await replay(false);

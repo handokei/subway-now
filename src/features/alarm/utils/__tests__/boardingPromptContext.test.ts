@@ -609,3 +609,87 @@ describe('buildBoardingPromptContext', () => {
     });
   });
 });
+
+describe('#3036 PR-3a — 등록 스냅샷 fix 나이·출처 (originFixAgeMs / originFixSource)', () => {
+  // backend 파서(PR-3b)가 읽을 필드명 계약 — 계획 §17.5: originFixAgeMs, originFixSource('gps-live'|'gps-last-known').
+  const NOW = 1_800_000_000_000;
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const baseInputs = () => ({
+    route: makeDirectRoute(2, '3'),
+    currentStation: st('3-001'),
+    destination: st('3-003'),
+  });
+
+  it('신선 live fix → 나이(ms)와 gps-live 동봉 (거리/정확도 스탬프와 함께)', () => {
+    const ctx = buildBoardingPromptContext({
+      ...baseInputs(),
+      gpsFix: { lat: 37.6, lng: 126.8, accuracyM: 12, fixTs: NOW - 30_000, source: 'gps-live' },
+    });
+    expect(ctx?.promptGeoContext.originFixAgeMs).toBe(30_000);
+    expect(ctx?.promptGeoContext.originFixSource).toBe('gps-live');
+    expect(ctx?.promptGeoContext.originAccuracyM).toBe(12);
+  });
+
+  it('last-known fix → 출처 gps-last-known 표기', () => {
+    const ctx = buildBoardingPromptContext({
+      ...baseInputs(),
+      gpsFix: { lat: 37.6, lng: 126.8, accuracyM: 40, fixTs: NOW - 90_000, source: 'gps-last-known' },
+    });
+    expect(ctx?.promptGeoContext.originFixSource).toBe('gps-last-known');
+    expect(ctx?.promptGeoContext.originFixAgeMs).toBe(90_000);
+  });
+
+  it('오래된 fix(12분)도 나이를 그대로 보낸다 — 판정은 backend 몫 (device는 가공하지 않음)', () => {
+    const ctx = buildBoardingPromptContext({
+      ...baseInputs(),
+      gpsFix: { lat: 37.6, lng: 126.8, accuracyM: 12, fixTs: NOW - 12 * 60_000, source: 'gps-live' },
+    });
+    expect(ctx?.promptGeoContext.originFixAgeMs).toBe(12 * 60_000);
+  });
+
+  it('fixTs가 미래(시계 역행)면 나이를 0으로 clamp', () => {
+    const ctx = buildBoardingPromptContext({
+      ...baseInputs(),
+      gpsFix: { lat: 37.6, lng: 126.8, accuracyM: 12, fixTs: NOW + 5_000, source: 'gps-live' },
+    });
+    expect(ctx?.promptGeoContext.originFixAgeMs).toBe(0);
+  });
+
+  it('fixTs/source 없는 구형 fix → 나이·출처 필드 부재 (거리 스탬프는 유지)', () => {
+    const ctx = buildBoardingPromptContext({
+      ...baseInputs(),
+      gpsFix: { lat: 37.6, lng: 126.8, accuracyM: 12 },
+    });
+    expect(ctx?.promptGeoContext.originAccuracyM).toBe(12);
+    expect(ctx?.promptGeoContext).not.toHaveProperty('originFixAgeMs');
+    expect(ctx?.promptGeoContext).not.toHaveProperty('originFixSource');
+  });
+
+  it('fix 없음(null/undefined) → 나이·출처 필드 부재', () => {
+    for (const gpsFix of [null, undefined]) {
+      const ctx = buildBoardingPromptContext({ ...baseInputs(), gpsFix });
+      expect(ctx?.promptGeoContext).not.toHaveProperty('originFixAgeMs');
+      expect(ctx?.promptGeoContext).not.toHaveProperty('originFixSource');
+    }
+  });
+
+  it('lock 활성 분기에서도 동일하게 동봉', () => {
+    const current = st('3-001');
+    const dest = st('3-003');
+    const ctx = buildBoardingPromptContext({
+      route: makeDirectRoute(2, '3'),
+      currentStation: current,
+      destination: dest,
+      lock: makeLock({ destinationId: dest.id, boardingStationId: current.id, boardingLine: '3' }),
+      gpsFix: { lat: 37.6, lng: 126.8, accuracyM: 12, fixTs: NOW - 1_000, source: 'gps-live' },
+    });
+    expect(ctx?.promptGeoContext.originFixAgeMs).toBe(1_000);
+    expect(ctx?.promptGeoContext.originFixSource).toBe('gps-live');
+  });
+});
