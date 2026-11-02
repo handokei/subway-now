@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildReconsumeSql, findReconsumedStations } from '../tripMetricsRegressionQuery';
-import { buildReconsumeCheckQuery, formatReconsumeReport } from '../checkTripMetricsRegression';
+import { buildReconsumeCheckQuery, formatReconsumeReport, parseReconsumeCheckResponse } from '../checkTripMetricsRegression';
 import { findTripReconsumes, maybeRunTripMetricsRegressionScan } from '../tripMetricsRegressionScan';
 import { InMemoryKV } from './inMemoryKv';
 import type { Env } from '../types';
@@ -74,6 +74,11 @@ describe('SQL (#3006)', () => {
 
   it('옵션 B: buildReconsumeCheckQuery 는 리터럴 window 를 삽입한다', () => {
     expect(buildReconsumeCheckQuery(1700000000000)).toMatch(/ts\s*>\s*1700000000000/);
+  });
+
+  it('parseReconsumeCheckResponse: wrangler --json 응답 -> 재소비 목록', () => {
+    const stdout = JSON.stringify([{ results: [ev('prepare-alarm', 'A'), ev('prepare-alarm', 'A')] }]);
+    expect(parseReconsumeCheckResponse(stdout).map((r) => r.station)).toEqual(['A']);
   });
 
   it('formatReconsumeReport', () => {

@@ -24,7 +24,8 @@
 // 같은 경로로 Node가 로드하는 `replayFixture.ts:9`가 확장자 없이도 되는 이유는 그게 `import type`
 // (타입 스트리핑에 지워져 해석 자체가 일어나지 않음)이기 때문 — 값 import에는 적용되지 않는다.
 // 이 파일/`fixtureFromTrip.ts`/`replayFixture.ts`에 **값** 상대 import를 새로 추가할 때도 동일.
-import { buildRegressionSql } from './tripMetricsRegressionQuery.ts';
+import { buildReconsumeSql, buildRegressionSql, findReconsumedStations } from './tripMetricsRegressionQuery.ts';
+import type { ReconsumeEventRow, ReconsumedStation } from './tripMetricsRegressionQuery.ts';
 
 export interface RegressionCheckRow {
   trip_token_hash: string;
@@ -88,5 +89,26 @@ export function formatRegressionReport(rows: RegressionCheckRow[], now: number):
       `intent=${intent} endReason=${row.end_reason ?? '?'}`
     );
   });
+  return [header, ...lines].join('\n');
+}
+
+/** 재진행(같은 역 재소비) 조회 SQL — 옵션 B(리터럴 window, #3006). 술어 SSoT는 tripMetricsRegressionQuery. */
+export function buildReconsumeCheckQuery(windowStartMs: number): string {
+  return buildReconsumeSql(String(windowStartMs));
+}
+
+/** `wrangler d1 execute --json` stdout(trip_events 행) -> 재소비 (token, station) 목록. */
+export function parseReconsumeCheckResponse(stdout: string): ReconsumedStation[] {
+  const rows = parseRegressionCheckResponse(stdout) as unknown as ReconsumeEventRow[];
+  return findReconsumedStations(rows);
+}
+
+export function formatReconsumeReport(found: ReconsumedStation[], now: number): string {
+  const header = `재진행 스캔 (${new Date(now).toISOString()}) — 한 트립 창에서 같은 역 prepare-alarm 2회+: ${found.length}건`;
+  if (found.length === 0) return `${header}\n재소비 없음 — 정상.`;
+  const lines = found.map(
+    ({ tokenHash, station, count, eventIds }) =>
+      `  tokenHash=${tokenHash} ${station} x${count} events=${eventIds.join(',')}`,
+  );
   return [header, ...lines].join('\n');
 }

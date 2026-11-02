@@ -39,3 +39,76 @@ WHERE ${REGRESSION_WHERE_BASE}
   AND ended_at > ${windowExprSql}
 ORDER BY started_at DESC;`;
 }
+
+/**
+ * 재진행(같은 역 재소비) 감시 (#3006 PR-0) — `trip_events` 기반.
+ *
+ * 술어: 한 트립 창 안에서 같은 (token_hash, station)의 `prepare-alarm` 행이 2개 이상.
+ * 트립 창 경계 = `trip-end` 행, 그리고 `trip-register` 중 `existedAtRequestStart=false`(새 trip).
+ * `advance` 행은 새 head를 기록하므로 제외한다(포함하면 거짓양성 3건이 더해져 2건 -> 5건).
+ * 알려진 사각: 준비 알람 짝이 없는 순수 intermediate sync 재전진은 행이 없어 못 잡는다.
+ */
+export const RECONSUME_COUNTED_KIND = 'prepare-alarm';
+export const RECONSUME_WINDOW_BOUNDARY_KINDS = ['trip-end', 'trip-register'] as const;
+const RECONSUME_SELECT_KINDS = [RECONSUME_COUNTED_KIND, ...RECONSUME_WINDOW_BOUNDARY_KINDS];
+
+export const RECONSUME_SELECT_COLUMNS = 'id, ts, token_hash, kind, station, meta';
+
+export interface ReconsumeEventRow {
+  id: number;
+  ts: number;
+  token_hash: string;
+  kind: string;
+  station: string | null;
+  meta: string | null;
+}
+
+export interface ReconsumedStation {
+  tokenHash: string;
+  station: string;
+  count: number;
+  eventIds: number[];
+}
+
+/** `windowExprSql` 의미는 `buildRegressionSql`과 동일(옵션 A는 `'?'`, 옵션 B는 리터럴). */
+export function buildReconsumeSql(windowExprSql: string): string {
+  const kinds = RECONSUME_SELECT_KINDS.map((k) => `'${k}'`).join(', ');
+  return `SELECT ${RECONSUME_SELECT_COLUMNS}
+FROM trip_events
+WHERE kind IN (${kinds})
+  AND ts > ${windowExprSql}
+ORDER BY token_hash, ts, id;`;
+}
+
+function startsNewTrip(row: ReconsumeEventRow): boolean {
+  if (row.kind === 'trip-end') return true;
+  if (row.kind !== 'trip-register' || row.meta === null) return false;
+  try {
+    const { existedAtRequestStart } = JSON.parse(row.meta) as { existedAtRequestStart?: unknown };
+    return existedAtRequestStart === false;
+  } catch {
+    return false;
+  }
+}
+
+/** 순수 함수 — D1 행(어떤 순서든)에서 재소비 (token, station)을 찾는다. */
+export function findReconsumedStations(rows: ReconsumeEventRow[]): ReconsumedStation[] {
+  const sorted = [...rows].sort((a, b) => a.ts - b.ts || a.id - b.id);
+  const windowIdByToken = new Map<string, number>();
+  const idsByKey = new Map<string, { tokenHash: string; station: string; ids: number[] }>();
+  for (const row of sorted) {
+    const windowId = windowIdByToken.get(row.token_hash) ?? 0;
+    if (startsNewTrip(row)) {
+      windowIdByToken.set(row.token_hash, windowId + 1);
+      continue;
+    }
+    if (row.kind !== RECONSUME_COUNTED_KIND || row.station === null) continue;
+    const key = `${row.token_hash}\u0000${windowId}\u0000${row.station}`;
+    const entry = idsByKey.get(key) ?? { tokenHash: row.token_hash, station: row.station, ids: [] };
+    entry.ids.push(row.id);
+    idsByKey.set(key, entry);
+  }
+  return [...idsByKey.values()]
+    .filter(({ ids }) => ids.length >= 2)
+    .map(({ tokenHash, station, ids }) => ({ tokenHash, station, count: ids.length, eventIds: ids }));
+}
