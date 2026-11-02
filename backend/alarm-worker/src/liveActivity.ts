@@ -29,6 +29,7 @@ import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { extractOriginStation, recordTripMetrics } from './d1TripMetrics';
 import { readDeviceContact } from './deviceContact';
 import { buildTripEndedAlertContent } from './alertContent';
+import { resolveStationAlert } from './alertSoundPolicy';
 import { t } from './i18n';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
@@ -84,6 +85,11 @@ export interface LiveActivityStats {
   laPushSent: number;
   laPushFailed: number;
   laTokenCleared: number;
+  /**
+   * #3005 F-E1 — 이번 cycle에서 종료(cleanupTripWithLa)된 trip token. 1차 pass가 mid-cycle 스냅샷에서
+   * 끝난 트립을 걸러내는 in-memory 신호(KV read 0). 생략하는 호출자(HTTP DELETE 등)는 기록하지 않는다.
+   */
+  tripEndedTokens?: Set<string>;
 }
 
 export interface LiveActivityDeps {
@@ -636,12 +642,19 @@ export async function cleanupTripWithLa(
   stats: LiveActivityStats,
   now: number,
   log: Logger,
-  options?: { reason?: TripEndedReason; metricsReason?: string; endPath?: TripEndPath },
+  options?: {
+    reason?: TripEndedReason;
+    metricsReason?: string;
+    endPath?: TripEndPath;
+    /** #3100 F-S2 — 이 종료가 하차 도착 알림을 겸해야 한다(도착 push가 아직 안 나감). 소리는 정책 표가 정한다. */
+    arrivalAlert?: boolean;
+  },
 ): Promise<void> {
-  const { reason, metricsReason, endPath } = options ?? {};
+  const { reason, metricsReason, endPath, arrivalAlert } = options ?? {};
+  stats.tripEndedTokens?.add(trip.token);
   await fireLiveActivityDismissal(trip, { ...deps, db: deps.db ?? env.DB }, stats, now, log);
   if (reason) {
-    await fireTripEndedAlertPush(trip, reason, env, deps, now, log);
+    await fireTripEndedAlertPush(trip, reason, env, deps, now, log, arrivalAlert);
     // #1339 — launch reconciliation 백스톱. alert push가 APNs drop/디바이스 오프라인으로
     // 누락된 케이스에서 디바이스가 다음 launch 시 GET /trips/:token/status로 종료 사실을
     // 확인하고 자체 cleanup한다. KV write 실패는 cleanup 흐름을 차단하지 않는다 —
@@ -735,6 +748,20 @@ export async function cleanupTripWithLa(
 }
 
 /**
+ * #3100 F-S2 — 종료 alert가 하차 도착 알림을 겸할 때의 sound/level. 정책 표(`arrival-destination`)가 정한다:
+ * 취침 = alarm.wav + time-sensitive, 비취침 = 무음(옵션 생략 -> 기존 무소리 배너).
+ */
+function arrivalAlarmSound(
+  trip: Pick<Trip, 'sleepModeEnabled'>,
+  arrivalAlert: boolean,
+): { sound?: string; interruptionLevel?: 'time-sensitive' } {
+  if (!arrivalAlert) return {};
+  const policy = resolveStationAlert(trip, 'arrival-destination');
+  if (!policy.fires || policy.sound === null) return {};
+  return { sound: policy.sound, interruptionLevel: 'time-sensitive' };
+}
+
+/**
  * trip-ended alert push 발사 (#1337). LA dismissal과 직렬로 1회 발사.
  *
  * KV `tripEndedAlert:{tripToken}` set-if-absent 게이트로 같은 trip의 종료 alert가 cron race로
@@ -756,6 +783,7 @@ export async function fireTripEndedAlertPush(
   deps: LiveActivityDeps,
   now: number,
   log: Logger,
+  arrivalAlert = false,
 ): Promise<void> {
   const dedupKey = tripEndedAlertDedupKey(trip.token, trip.createdAt);
   const existing = await env.TRIPS.get(dedupKey);
@@ -788,6 +816,7 @@ export async function fireTripEndedAlertPush(
           reason: externalReason,
           // #3223 후속 — 목적지 도착 종료는 "{목적지} 도착 · 안내 종료" 문구.
           alert: buildTripEndedAlertContent(reason, trip.destination, trip.locale),
+          ...arrivalAlarmSound(trip, arrivalAlert),
           sentAt: now,
           // race 가드(#868 P1-2) — push 도착 시점에 클라가 trip 갈아탔으면 ACTIVE_TRIP_KEY 불일치로 cleanup skip.
           tripToken: trip.token,

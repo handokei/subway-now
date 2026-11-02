@@ -711,6 +711,9 @@ export interface SendTripEndedAlertPushOptions {
   now?: number;
   /** #3223 후속 — 표시 문구 override. 생략하면 기존 "안내 종료" 상수. */
   alert?: { title: string; body: string };
+  /** #3100 F-S2 — 하차 도착 알람을 겸하는 종료 alert의 소리. 생략 = 무소리 배너(기존). 값은 정책 표에서만 온다. */
+  sound?: string;
+  interruptionLevel?: 'time-sensitive';
 }
 
 export async function sendTripEndedAlertPush(
@@ -733,6 +736,8 @@ export async function sendTripEndedAlertPush(
   const body = JSON.stringify({
     aps: {
       alert: options.alert ?? { title: TRIP_ENDED_ALERT_TITLE, body: TRIP_ENDED_ALERT_BODY },
+      ...(options.sound !== undefined ? { sound: options.sound } : {}),
+      ...(options.interruptionLevel !== undefined ? { 'interruption-level': options.interruptionLevel } : {}),
     },
     // #2552 — data(레거시/BG raw 경로) + body(expo FG content.data: userInfo["body"], #2549 기전)
     // 둘 다 병기. trip-ended 응답 핸들러가 content.data로 읽는 경로가 top-level `data`만으론 null.
