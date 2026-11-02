@@ -238,7 +238,9 @@ describe('#3155 트립 171 replay — 앵커역(건대입구) 출발 열차 목�
     expect(r.tapped?.headAfter).toEqual(['성수', '뚝섬']);
     const station = r.events
       .slice(r.tapped?.eventsBeforeTap ?? 0)
-      .filter((e) => e.kind === 'cron-fire-attempt' && e.station !== null)
+      // #2629 PR-3 — 위치 따라잡기(path='cron-catchup')의 소비 마커 행은 "늦은 발사 시도"가 아니라 열차가 이미 지나친 head를
+      // 같은 tick에 소비한 감시 행이다(여기서는 시간표 후속 열차 2049가 뚝섬에 있어 head 성수를 따라잡음). 늦은 시도 금지 단언에서 제외한다.
+      .filter((e) => e.kind === 'cron-fire-attempt' && e.station !== null && e.meta.path !== 'cron-catchup')
       .map((e) => e.station);
     // 재생 창(06:44:45)까지 2011은 뚝섬 전에 피드에서 사라져 매역 시도 자체가 0건일 수 있다 — 시도가 있다면
     // 전부 다음 역(뚝섬)이어야 한다(지난 역에 대한 늦은 시도 금지).
