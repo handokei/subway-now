@@ -41,6 +41,7 @@ import { initSentryIfOptedIn } from '../src/shared/infra/monitoring/sentryInit';
 import { hydrateRawSignalBuffer } from '../src/features/observability/utils/rawSignalBuffer';
 import { hydratePushReceiptBuffer } from '../src/features/observability/utils/pushReceiptBuffer';
 import { getCurrentTripCorrId } from '../src/features/observability/utils/tripCorrId';
+import { hydrateBackendCallBuffer } from '../src/shared/utils/backendCallBuffer';
 
 const layoutLogger = createLogger('RootLayout');
 
@@ -58,6 +59,11 @@ hydrateRawSignalBuffer().catch((e) =>
 // 적재한 receipt를 FG(DebugModal)가 읽으려면 이 hydrate가 필수 — rawSignalBuffer와 동일 이유.
 hydratePushReceiptBuffer().catch((e) =>
   layoutLogger.warn('pushReceiptBuffer hydrate 실패(#2861):', e),
+);
+// #3055 PR-0b — backend-call 링버퍼도 boot 시 복원. 호출자 0건이던 동안 cold launch 후 첫 push가
+// 빈 링을 persist해 직전 세션 기록을 덮었다. persist는 이 hydration 완료를 기다린다(순서 보장).
+hydrateBackendCallBuffer().catch((e) =>
+  layoutLogger.warn('backendCallBuffer hydrate 실패(#3055):', e),
 );
 // #1501 — trip corrId in-memory cache도 boot 시 storage에서 복원.
 // 강제종료 후 재진입 시 활성 trip이 살아있는데도 cache=null이면 첫 fusion cycle entries에

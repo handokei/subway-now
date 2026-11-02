@@ -101,8 +101,16 @@ export function createCallId(): string {
   return `${Date.now().toString(36)}${callIdCounter.toString(36)}`;
 }
 
+/**
+ * 진행 중(또는 완료된) boot hydration. `persist()`가 이 promise를 기다린 뒤 스냅샷을 쓴다 —
+ * 링 전체 스냅샷을 쓰는 persist가 hydrate 전에 실행되면 직전 세션 기록을 덮는다(#3055 PR-0b).
+ * hydrate를 한 번도 시작하지 않았으면 null(대기 없음).
+ */
+let hydration: Promise<void> | null = null;
+
 async function persist(): Promise<void> {
   try {
+    if (hydration) await hydration;
     const snapshot = db.get();
     await AsyncStorage.setItem(BACKEND_CALL_LOG_KEY, JSON.stringify(snapshot));
   } catch {
@@ -136,12 +144,20 @@ export function subscribeBackendCallEntries(listener: () => void): () => void {
  * 직전 세션의 호출 흔적이 진단 도구에서 즉시 보이게 하는 게 목적.
  * 형식이 깨졌거나 read 실패 시 graceful skip (in-memory ring은 빈 상태로 시작).
  */
-export async function hydrateBackendCallBuffer(): Promise<void> {
+export function hydrateBackendCallBuffer(): Promise<void> {
+  hydration = restoreBackendCallBuffer();
+  return hydration;
+}
+
+async function restoreBackendCallBuffer(): Promise<void> {
   try {
     const raw = await AsyncStorage.getItem(BACKEND_CALL_LOG_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return;
+    // hydration 도중 push된 새 엔트리는 복원분 뒤에 다시 쌓아 시간순(옛 -> 새)을 유지한다.
+    const pushedDuringHydration = db.get();
+    db.clear();
     for (const entry of parsed) {
       if (
         entry &&
@@ -154,6 +170,7 @@ export async function hydrateBackendCallBuffer(): Promise<void> {
         db.push(entry as BackendCallEntry);
       }
     }
+    for (const entry of pushedDuringHydration) db.push(entry);
   } catch {
     // graceful — 깨진 JSON 등.
   }
