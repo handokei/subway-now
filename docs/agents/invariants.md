@@ -13,6 +13,7 @@
 
 | 위치 | 종류 | 요약 | 강제 |
 |---|---|---|---|
+| alertSoundPolicy.ts `STATION_ALERT_POLICY` (#2510 재오픈, 2026-11-02) | 불변식 | **alarm.wav·time-sensitive는 취침 정책 행에서만** — 일반 모드는 1정거장 전 push 없음 + 환승·하차·매역 도착 = `NORMAL_ARRIVAL_ALERT`(기본 S: 무음 배너+active, 1줄로 D 전환). 모든 역 단위 alert는 `sendStationAlert`만 거치고 1역 전 content(`OneStopContent`)와 도착 content(`ArrivalContent`)는 타입이 달라 섞이면 컴파일 에러(#3237 재발 차단). backend 비테스트 코드의 `'alarm.wav'` 리터럴은 정확히 1건 | 있음 (타입 `PolicyTable`/`satisfies` + `alarmSoundLiteralGuard.test.ts` + `alertSoundPolicy(.typecheck).test.ts` + `replay_20261102_alarm_mode.test.ts`) |
 | scheduled.ts:3474 | 불변식 | `fireArvlCdStationPush`만 — advance 미성공 시 fire path 진입 금지(조기 return). advance 없이 발사만 하는 경로는 mid-cycle·position 진입(`sendStationPassedFireOnly`, #3223 ADR-050) 2곳뿐 | 있음 |
 | scheduled.ts `isEnteringTarget` / `isPositionEnteringFire` (#3223) | 불변식 | 매역 진입(position sttus0) 발사는 intermediate·transfer·destination 모두(U1 포함, 10/29 ADR-050 개정) — 알림 push만, advance·release·종료는 도착 시점 · 번호 변경역(`RENUMBER_STATION`) 제외 · trip/SSoT mutate 금지 · KV 쓰기=공용 dedup 키 1건 · 역당 1회(`stationPassedFiredKey` 공유) | 있음 (`scheduled.positionEntering.test.ts`, `replay_20261028_position_entering.test.ts`) |
 | scheduled.ts:1621 | 불변식 | 열차 미선택/lock 만료 trip은 fire 제외 | 부분 |

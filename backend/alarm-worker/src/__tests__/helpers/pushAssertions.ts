@@ -49,23 +49,3 @@ export function firedLocklessIntermediateStations(pushes: CapturedPush[]): strin
   }
   return occurrences;
 }
-
-/**
- * #2718 — "1정거장 전" 준비 알림(`maybeFirePrepareAlarm`, 진동/사운드 있는 실제 alert push,
- * "곧 OO에 도착합니다. 하차 준비하세요!")이 발사된 목적지(prepare target) 목록.
- * `collapseId`가 `prepare-<tokenPrefix>-<targetStation>` 형태라 다른 alert 채널과
- * 구분된다. lock 활성/lockless 무관하게 동작하는 채널 — 목적지 waypoint 자체의 "도착"
- * 확정 push(`destinationArrivedFired`/`firedStationOccurrences`의 destination 항목)와는
- * 별개로, "곧 도착"만 알린다(하차 확정 아님).
- */
-export function firedPrepareAlarmTargets(pushes: CapturedPush[]): string[] {
-  const occurrences: string[] = [];
-  for (const push of pushes) {
-    if (push.headers.pushType !== 'alert') continue;
-    const collapseId = push.headers.collapseId;
-    if (typeof collapseId !== 'string') continue;
-    const match = collapseId.match(/^prepare-.+-(.+)$/);
-    if (match) occurrences.push(match[1]);
-  }
-  return occurrences;
-}

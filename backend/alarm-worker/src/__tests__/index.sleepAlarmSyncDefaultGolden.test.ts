@@ -6,7 +6,7 @@
  * 기대값은 변경 전 실측 출력이며 통과시키려 조정하지 않는다.
  */
 import { describe, expect, it } from 'vitest';
-import { prepareAlarmCollapseId, sleepAlarmCollapseId } from '../collapseId';
+import { sleepAlarmCollapseId } from '../collapseId';
 import { useApnsHarness, wp } from './helpers/sleepAlarmHarness';
 import {
   FF_CHAIN_NAMES,

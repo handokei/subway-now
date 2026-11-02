@@ -12,7 +12,7 @@ import {
   SLEEP_ALARM_MIN_STOPS_BEFORE as MIN,
   type SleepAlarmConfig,
 } from '../../../../../src/shared/constants/sleepAlarm';
-import { prepareAlarmCollapseId, sleepAlarmCollapseId } from '../../collapseId';
+import { sleepAlarmCollapseId } from '../../collapseId';
 import { fireSyncConsumedPrecedingAlarms, sleepAlarmFireKey, type SyncSkippedFireDeps } from '../../scheduled';
 import type { Trip, Waypoint } from '../../types';
 import { InMemoryKV } from '../inMemoryKv';
@@ -171,12 +171,12 @@ export function registerSleepAlarmNTable(): void {
         }
       }
 
-      it(`취침 OFF / ${cfg.name}: 설정을 무시하고 준비 알람이 기본 칸(MIN)에서만 1회`, async () => {
+      it(`[#2510 반전] 취침 OFF / ${cfg.name}: 설정과 무관하게 알람 0회 (알람은 취침 전용)`, async () => {
         const waypoints = legWaypoints(MAX, 'destination');
         const trip = makeTrip(waypoints, { sleepModeEnabled: false, sleepAlarm: cfg.sleepAlarm });
         const { calls } = await walkTrip(trip);
         const alerts = calls.filter((c) => c.pushType === 'alert' && /^(alarm|prepare)-/.test(c.collapseId ?? ''));
-        expect(alerts.map((c) => c.collapseId)).toEqual([prepareAlarmCollapseId(TOKEN, TARGET)]);
+        expect(alerts.map((c) => c.collapseId)).toEqual([]);
         expect(companions(calls)).toEqual([]);
       });
     }

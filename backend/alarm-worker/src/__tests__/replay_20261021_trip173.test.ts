@@ -160,11 +160,10 @@ describe('#3140 트립 173 — lock 없는 구간 알림 0 / lock 활성 준비 
     expect(offending).toEqual([]);
   });
 
-  it('lock 활성 중 준비 알람은 불변 — 건대입구 환승 임박(alarm.wav) 06:25:46 1회', async () => {
+  it('[#2510 반전] lock 활성 중에도 비취침은 알람(alarm.wav) 0 — 06:25:46 건대입구 환승 임박 준비 알람은 철거됨', async () => {
     const r = await replay173();
     const alarms = r.result.cycles.filter((c) => c.pushes.some(isAlarmSound));
-    expect(alarms.map((c) => c.simNowMs)).toEqual([expect.any(Number)]);
-    expect(Math.abs(alarms[0].simNowMs - kstMs('06:25:46'))).toBeLessThan(5_000);
+    expect(alarms.map((c) => c.simNowMs)).toEqual([]);
   });
 });
 

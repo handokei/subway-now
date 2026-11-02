@@ -54,6 +54,6 @@ describe('alarm.wav 리터럴 가드 (#2510)', () => {
   it('alertSoundPolicy.ts export 이름 집합이 허용목록과 정확히 일치한다', () => {
     const source = readFileSync(POLICY_FILE, 'utf-8');
     const names = [...source.matchAll(/^export\s+(?:async\s+)?(?:const|function|type|interface)\s+(\w+)/gm)].map((m) => m[1]);
-    expect([...names].sort()).toEqual([...ALLOWED_EXPORTS].sort());
+    expect([...new Set(names)].sort()).toEqual([...ALLOWED_EXPORTS].sort());
   });
 });

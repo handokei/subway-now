@@ -188,9 +188,9 @@ describe('#3221 PR-3 — split trip: 매역(intermediate)은 일반 alert 대신
     expect(arrived).toEqual([]);
   });
 
-  it('그 외 알림(준비 알람 prepare-*)은 무변경으로 유지된다', async () => {
+  it('[#2510 반전] 비취침 1정거장 전 준비 알람(prepare-*)은 철거돼 0건이다', async () => {
     const result = await replay(true);
-    expect(alertsWith(result, 'prepare-').length).toBeGreaterThan(0);
+    expect(alertsWith(result, 'prepare-')).toEqual([]);
   });
 });
 
@@ -208,8 +208,15 @@ describe('#3221 PR-3 — 여정 LA가 없으면 매역 알림을 잃지 않는�
 });
 
 describe('#3221 PR-3 — 비split trip은 현행 byte 동일', () => {
-  /** 변경 전(dev 4f82953b) 코드로 계산한 push 전수(simNowMs/url/body/headers, UUID 정규화) sha256. 통과시키려 조정 금지. */
-  const BASELINE_PUSHES_SHA256 = '361ff7cf703c194b289438d0ee4da7dce2d9a2a79bbc2d8f520804d6c6c23d66';
+  /**
+   * 변경 전(dev 4f82953b) 코드로 계산한 push 전수(simNowMs/url/body/headers, UUID 정규화) sha256. 통과시키려 조정 금지.
+   *
+   * 2026-11-02 #2510 반전으로 이 해시를 갱신했다(이전 값 361ff7cf…). 이전/이후 push 전수를 덤프해 diff한 결과 차이는
+   * 정확히 아래 3가지뿐이다 — (1) 비취침 "1정거장 전" prepare alert(`prepare-…-건대입구`, alarm.wav) 1건 삭제,
+   * (2) 건대입구 환승 도착 alert의 `sound: alarm.wav` + `time-sensitive` -> sound 키 부재 + `active`(비취침 무음 배너),
+   * (3) (1)로 줄어든 push 수만큼 이후 pushId 일련번호가 1씩 당겨짐. simNowMs·url·그 외 body/header는 전부 동일.
+   */
+  const BASELINE_PUSHES_SHA256 = 'e3d34f434d2d0030446020244a836b397e5e43dda3592d89385c4519fb378ba4';
 
   it('start 0건, 질문 LA alert는 여정 update에 실리고, push 전수 해시가 변경 전과 같다', async () => {
     const result = await replay(false);

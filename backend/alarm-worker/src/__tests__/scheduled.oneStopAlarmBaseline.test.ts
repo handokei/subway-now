@@ -1,5 +1,5 @@
 /**
- * #3100 선행 — "1역 전 알람"(취침 `maybeFireSleepAlarm` / 준비 `maybeFirePrepareAlarm`) 현행 동작 baseline.
+ * #3100 선행 — "1역 전 알람"(취침 `maybeFireSleepAlarm`) 동작 baseline. (비취침 준비 `maybeFirePrepareAlarm`은 #2510 반전으로 2026-11-02 철거 — 비취침 케이스는 0회로 반전)
  * 프로덕션 코드 diff 0. 기대(사용자 지시 2026-10-23): lock 걸린 트립에서 환승역·하차역 각각 **바로 앞 역에서 정확히 1회**,
  * 출발역(=1역 전인 1정거장 leg)에서는 안 울림, lock 없으면 안 울림.
  *
@@ -11,7 +11,7 @@
 import { exportPKCS8, generateKeyPair } from 'jose';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { prepareAlarmCollapseId, sleepAlarmCollapseId } from '../collapseId';
+import { sleepAlarmCollapseId } from '../collapseId';
 import app from '../index';
 import {
   completeWaypointAdvance,

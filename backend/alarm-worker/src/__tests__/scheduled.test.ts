@@ -31,7 +31,6 @@ import {
   stationPassedFiredKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
-  evaluatePrepareAlarmTrigger,
   fireArvlCdStationPush,
   fireVanishFallbackStationPush,
   flipApnsEnv,
@@ -234,9 +233,6 @@ function makeFullEmptyStats(): ScheduledStats {
     sleepAlarmFired: 0,
     sleepAlarmDedupSkipped: 0,
     sleepAlarmRolledBack: 0,
-    prepareAlarmFired: 0,
-    prepareAlarmDedupSkipped: 0,
-    prepareAlarmRolledBack: 0,
     etaMissingDemoted: 0,
     trainReconfirmFired: 0,
     midCycleSnapshot: [],
@@ -3737,10 +3733,9 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     });
   });
 
-  // #2510 — "알람 진동 = 1정거장 전 + 도착"을 전체(비취침) 트립으로 확대. "1정거장 전" 준비
-  // 진동(ACTION)은 취침 전용 게이트(#2066 evaluateSleepAlarmTrigger)를 우회하는 병렬 트리거
-  // (evaluatePrepareAlarmTrigger/maybeFirePrepareAlarm)로 구현됐다.
-  describe('#2510 — 준비 진동(ACTION, 전체 트립) 발사 조건', () => {
+  // #2510 반전(2026-11-02) — 알람(alarm.wav)은 취침 전용. #2510이 만든 비취침 "1정거장 전" 준비 진동
+  // (evaluatePrepareAlarmTrigger/maybeFirePrepareAlarm)은 철거됐다. 아래는 그 부재와 취침 경로의 불변을 고정한다.
+  describe('#2510 반전 — 1정거장 전 알람은 취침 전용', () => {
     function findAlertPush(
       fetchImpl: ReturnType<typeof vi.fn>,
       predicate: (body: { aps?: Record<string, unknown> }) => boolean,
@@ -3755,28 +3750,6 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         }
       });
     }
-
-    it('evaluatePrepareAlarmTrigger — intermediate→transfer/destination만 fire, 그 외 not-preceding', () => {
-      const intermediate: Waypoint = { stationName: '중곡', line: '7', kind: 'intermediate' };
-      const transfer: Waypoint = { stationName: '군자', line: '7', kind: 'transfer' };
-      const destination: Waypoint = { stationName: '아차산', line: '5', kind: 'destination' };
-      expect(evaluatePrepareAlarmTrigger(intermediate, transfer)).toEqual({
-        fire: true,
-        target: transfer,
-      });
-      expect(evaluatePrepareAlarmTrigger(intermediate, destination)).toEqual({
-        fire: true,
-        target: destination,
-      });
-      expect(evaluatePrepareAlarmTrigger(transfer, destination)).toEqual({
-        fire: false,
-        reason: 'not-preceding',
-      });
-      expect(evaluatePrepareAlarmTrigger(intermediate, undefined)).toEqual({
-        fire: false,
-        reason: 'not-preceding',
-      });
-    });
 
     it('[#2510 반전] sleepModeEnabled=false + 직전역(intermediate) arvlCd 진입 → 1정거장 전 push 0, alarm.wav 0 (알람은 취침 전용)', async () => {
       const kv = new InMemoryKV();
@@ -3807,7 +3780,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(findAlertPush(fetchImpl, (body) => body.aps?.sound === 'alarm.wav')).toBeUndefined();
     });
 
-    it('sleepModeEnabled=true → 준비 진동은 스킵 (sleepAlarm이 대신 발사, 상호 배타 중복 없음)', async () => {
+    it('sleepModeEnabled=true → 취침 알람 정확히 1건(alarm.wav + time-sensitive, 취침 채널 alarm- collapse)', async () => {
       const kv = new InMemoryKV();
       const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
       await putTrip(
@@ -3830,8 +3803,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         generatePushId: () => 'p-prepare-alarm-sleep',
       });
       expect(stats.sleepAlarmFired).toBe(1);
-      expect(stats.prepareAlarmFired).toBe(0);
-      // alarm.wav alert는 정확히 1건(sleep 채널) — prepare가 별도로 중복 발사하지 않는다.
+      // alarm.wav alert는 정확히 1건(sleep 채널) — 다른 채널이 중복 발사하지 않는다.
       const alertCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((call) => {
         try {
           return JSON.parse(call[1].body as string)?.aps?.sound === 'alarm.wav';
@@ -3841,157 +3813,11 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       });
       expect(alertCalls).toHaveLength(1);
     });
-
-    it('dedup — 같은 (tripToken, target) 1시간 이내 재발사 안 함', async () => {
-      const kv = new InMemoryKV();
-      await putTrip(
-        kv as unknown as KVNamespace,
-        makeLockTrip({
-          sleepModeEnabled: false,
-          waypoints: [
-            { stationName: '중곡', line: '7', kind: 'intermediate' },
-            { stationName: '군자', line: '7', kind: 'transfer' },
-          ],
-        }),
-      );
-      await kv.put('prepareAlarmFireKey:lock-tok:군자', '1');
-      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
-        seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: fetchImpl as unknown as typeof fetch,
-        now: () => NOW,
-        generatePushId: () => 'p-prepare-alarm-dedup',
-      });
-      expect(stats.prepareAlarmFired).toBe(0);
-      expect(stats.prepareAlarmDedupSkipped).toBe(1);
-    });
-
-    it('중간 intermediate(다음이 transfer/destination 아님) → not-preceding으로 미발사', async () => {
-      const kv = new InMemoryKV();
-      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-      await putTrip(
-        kv as unknown as KVNamespace,
-        makeLockTrip({
-          sleepModeEnabled: false,
-          waypoints: [
-            { stationName: '중곡', line: '7', kind: 'intermediate' },
-            { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
-            { stationName: '군자', line: '7', kind: 'transfer' },
-          ],
-        }),
-      );
-      const stats = await runScheduled(makeEnv(kv), {
-        seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: fetchImpl as unknown as typeof fetch,
-        now: () => NOW,
-        generatePushId: () => 'p-prepare-alarm-not-preceding',
-      });
-      expect(stats.prepareAlarmFired).toBe(0);
-    });
-
-    // #3110 — 관측 전용: 평가 outcome마다 D1 trip_events(kind='prepare-alarm') 1행.
-    // 10/21 trip 173 06:28:45 '곧 뚝섬' 발사가 D1·덤프 어디에도 없어 판별 불가였다.
-    describe('#3110 — D1 trip_events(kind=prepare-alarm) 관측', () => {
-      const WAYPOINTS: Waypoint[] = [
-        { stationName: '중곡', line: '7', kind: 'intermediate' },
-        { stationName: '군자', line: '7', kind: 'transfer' },
-        { stationName: '아차산', line: '5', kind: 'destination' },
-      ];
-
-      async function runWith(
-        overrides: Partial<Trip>,
-        opts: { kvPre?: Record<string, string>; apnsStatus?: number } = {},
-      ) {
-        const { db, inserts } = makeFireLogDb();
-        const kv = new InMemoryKV();
-        await putTrip(kv as unknown as KVNamespace, makeLockTrip({ waypoints: WAYPOINTS, ...overrides }));
-        for (const [k, v] of Object.entries(opts.kvPre ?? {})) await kv.put(k, v);
-        await runScheduled(makeEnv(kv, undefined, db), {
-          seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: vi.fn(
-            async () => new Response('{"reason":"BadFoo"}', { status: opts.apnsStatus ?? 200 }),
-          ) as unknown as typeof fetch,
-          now: () => NOW,
-          generatePushId: () => 'p-prepare-d1',
-        });
-        return inserts
-          .filter((args) => args[2] === 'prepare-alarm')
-          .map((args) => ({
-            station: args[3],
-            line: args[4],
-            meta: JSON.parse(args[5] as string) as Record<string, unknown>,
-          }));
-      }
-
-      it('발사 → outcome=fired 1행 (역·노선·target 종류·pushId)', async () => {
-        const rows = await runWith({ sleepModeEnabled: false });
-        expect(rows).toHaveLength(1);
-        expect(rows[0].station).toBe('중곡');
-        expect(rows[0].line).toBe('7');
-        expect(rows[0].meta).toMatchObject({
-          outcome: 'fired',
-          targetStation: '군자',
-          targetKind: 'transfer',
-          pushId: 'p-prepare-d1',
-        });
-      });
-
-      it('dedup 키 hit → outcome=skipped / reason=dedup 1행', async () => {
-        const rows = await runWith(
-          { sleepModeEnabled: false },
-          { kvPre: { 'prepareAlarmFireKey:lock-tok:군자': '1' } },
-        );
-        expect(rows).toHaveLength(1);
-        expect(rows[0].meta).toMatchObject({
-          outcome: 'skipped',
-          reason: 'dedup',
-          targetStation: '군자',
-          targetKind: 'transfer',
-        });
-      });
-
-      it('sleep trip → outcome=skipped / reason=sleep 1행', async () => {
-        const rows = await runWith({ sleepModeEnabled: true });
-        expect(rows).toHaveLength(1);
-        expect(rows[0].meta).toMatchObject({ outcome: 'skipped', reason: 'sleep' });
-      });
-
-      it('다음이 transfer/destination 아님 → outcome=skipped / reason=not-preceding 1행', async () => {
-        const rows = await runWith({
-          sleepModeEnabled: false,
-          waypoints: [
-            { stationName: '중곡', line: '7', kind: 'intermediate' },
-            { stationName: '어린이대공원', line: '7', kind: 'intermediate' },
-            { stationName: '군자', line: '7', kind: 'transfer' },
-          ],
-        });
-        expect(rows).toHaveLength(1);
-        expect(rows[0].meta).toMatchObject({ outcome: 'skipped', reason: 'not-preceding' });
-      });
-
-      it('push 실패(400) → outcome=rolled-back 1행 (fired 행 없음)', async () => {
-        const rows = await runWith({ sleepModeEnabled: false }, { apnsStatus: 400 });
-        expect(rows).toHaveLength(1);
-        expect(rows[0].meta).toMatchObject({
-          outcome: 'rolled-back',
-          targetStation: '군자',
-          pushId: 'p-prepare-d1',
-          status: 400,
-        });
-      });
-    });
   });
 
-  // #2510 — 도착 진동(ACTION, 전체 트립). transfer/destination의 arvlCd 확정 push는 이제
-  // sound: 'alarm.wav'(취침 게이트 무관, 매역 INFO 무음 mute와 별개 — sleep이면 fireArvlCdStationPush
-  // 자체가 최상단에서 skip돼 기존과 동일하게 무영향).
-  describe('#2510 — 도착 진동(ACTION, 전체 트립) — fireArvlCdStationPush', () => {
+  // #2510 반전(2026-11-02) — transfer/destination의 arvlCd 확정 push는 발사는 취침 무관이되 sound는 모드별:
+  // 취침 = alarm.wav + time-sensitive, 일반 = 정책 표 `NORMAL_ARRIVAL_ALERT`(무음 배너 + active).
+  describe('#2510 반전 — 도착 push sound 모드별 — fireArvlCdStationPush', () => {
     it.each([
       { mode: '취침', sleep: true, sound: 'alarm.wav', level: 'time-sensitive' },
       { mode: '일반', sleep: false, sound: undefined, level: 'active' },
@@ -17713,11 +17539,10 @@ describe('#3140 — lock 없는 트립 알림 제거 (backend)', () => {
     return { stats, bodies, stored, pending, prepareRows };
   }
 
-  it('lockless 비취침 — 준비 알람(alarm.wav) 미발사 + D1 prepare-alarm skipped/no-lock 1행, waypoint는 정상 advance', async () => {
-    const { stats, bodies, stored, prepareRows } = await runLockless({ sleepModeEnabled: false });
-    expect(stats.prepareAlarmFired).toBe(0);
+  it('lockless 비취침 — alarm.wav 미발사 + D1 prepare-alarm 행 없음(경로 철거), waypoint는 정상 advance', async () => {
+    const { bodies, stored, prepareRows } = await runLockless({ sleepModeEnabled: false });
     expect(bodies.filter((b) => b.aps?.sound === 'alarm.wav')).toEqual([]);
-    expect(prepareRows).toEqual([expect.objectContaining({ outcome: 'skipped', reason: 'no-lock' })]);
+    expect(prepareRows).toEqual([]);
     expect(stored.waypoints[0].stationName).toBe('역삼');
   });
 
