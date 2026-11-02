@@ -25,6 +25,7 @@ describe('barometerState 델타 계측 (#3191 PR-0)', () => {
       firstHpa: null,
       firstHpaAtMs: null,
       lastDeltaEventAtMs: null,
+      lastDeltaEventKind: null,
     });
   });
 
@@ -86,6 +87,7 @@ describe('barometerState 델타 계측 (#3191 PR-0)', () => {
       firstHpa: null,
       firstHpaAtMs: null,
       lastDeltaEventAtMs: null,
+      lastDeltaEventKind: null,
     });
   });
 });

@@ -375,7 +375,8 @@ export function useNearestStation(
       // #2076 결함2 — 급락 여부는 진단 로그에만 반영. degraded 상태를 직접 바꾸지 않는다.
       const jumpDegraded = isGpsQualityJumpDegraded(qualityGateLastPassAccuracyRef.current, accuracy);
       qualityGateConsecutivePassRef.current = 0;
-      if (!logDrop) return;
+      // #3191 PR-0 — observer(DebugModal) 인스턴스는 측정 버퍼에 기록하지 않는다.
+      if (!logDrop || instrumentationRoleRef.current === 'observer') return;
       pushGpsDropEntry({
         ts: now,
         lat,
@@ -465,7 +466,7 @@ export function useNearestStation(
 
     // 측정(#443): station 변화 시에만 push. 매 fix는 너무 자주 — 점프 시퀀스
     // (사가정→을지로4가→용마산) 재구성엔 station 단위면 충분.
-    if (stationChanged || noStation) {
+    if ((stationChanged || noStation) && instrumentationRoleRef.current !== 'observer') {
       pushFusionDebugEntry({
         kind: 'gps',
         event: 'gps-fix',
@@ -674,6 +675,8 @@ export function useNearestStation(
             const acc = location.coords.accuracy;
             // #1516 dedup gate 1: 직전 drop과 lat/lng/accuracy 모두 동일하면 skip.
             // 실측: 동일 accuracy(1414m) × 18건 다발 — same OS fix가 재발화하는 패턴.
+            // #3191 PR-0 — observer는 gps-drop 측정 버퍼(아래 push 2곳)에 기록하지 않는다.
+            if (instrumentationRoleRef.current === 'observer') return;
             const prevDrop = lastDropRef.current;
             const sameAsPrev =
               prevDrop !== null &&

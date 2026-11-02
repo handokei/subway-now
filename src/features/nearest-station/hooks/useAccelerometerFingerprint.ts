@@ -43,7 +43,9 @@ import {
 /** 폴링 주기 — `useCellularTech` / `useMotionActivity`와 동일 (5s). 알람 평가 30s보다 짧다. */
 const POLL_INTERVAL_MS = 5_000;
 
-export function useAccelerometerFingerprint(): AccelerometerPattern {
+export function useAccelerometerFingerprint(
+  instrumentationRole: 'primary' | 'observer' = 'primary',
+): AccelerometerPattern {
   const [pattern, setPattern] = useState<AccelerometerPattern>('unknown');
 
   useEffect(() => {
@@ -70,9 +72,11 @@ export function useAccelerometerFingerprint(): AccelerometerPattern {
   // 자체에 1s dedup이 있어 동일 pattern 연속 호출은 자동 흡수, 다른 pattern으로 전환되면
   // 즉시 새 entry. forward source인 alarmLog 윈도우에 누적되어 backend R2 ndjson →
   // `/admin/alarm-log-stats` `accelPatternCounts` non-zero 보장.
+  // #3191 PR-0 — observer(DebugModal) 인스턴스는 alarmLog에 기록하지 않는다.
   useEffect(() => {
+    if (instrumentationRole === 'observer') return;
     logAccelPatternObserved(pattern);
-  }, [pattern]);
+  }, [pattern, instrumentationRole]);
 
   return pattern;
 }
