@@ -33,6 +33,7 @@ import { t } from './i18n';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { resolvePromptAnchor } from './promptAnchor';
+import type { PromptFire } from './promptFires';
 import { logPushFailure } from './pushFailureLog';
 import { hashTripToken } from './sentry';
 import { computeLegProgressContext, computeMultiHopContext, computeNextStopContext } from './tripMultiHop';
@@ -226,7 +227,15 @@ export function buildLiveActivityContentState(
   // #3007 S4-c — 정지 15분 "종료할까요?" 제안 여부. 판정은 호출부가 `isEndPromptDue(ssot, now)`
   // (#3008, motionState.ts)로 하고 결과만 넘긴다 — content builder는 SSoT를 모른다(기존
   // 시그니처가 trip만 받는 설계 유지).
-  options?: { endPromptDue?: boolean },
+  options?: {
+    endPromptDue?: boolean;
+    /**
+     * #3221 PR-3a — lock 없는 질문 구간의 "이번 발사 열차". 부재(undefined) = 기존 resolveDefaultTrainCode 경로(lock 열차
+     * 등). 값이 있으면(null 포함) lock 없을 때 **이 값만** 쓴다: `{trainCode, issuedAt}` -> `trainCode`·`trainCodeIssuedAtMs`,
+     * `null`/`trainCode:null`(ambiguity·행 없음·읽기 실패) -> 열차 미기재(이전 stamp·lock 폴백 금지). lock 활성 시 무시.
+     */
+    promptFire?: PromptFire | null;
+  },
 ): LiveActivityContentState {
   // #1654 / #1658 — 환승 waypoint 추적 중에는 다음 leg의 line을 lineName/lineColorHex에 반영한다.
   // waypoint.kind==='transfer' + trip.waypoints[1]이 존재하면 새 leg의 line을 우선 사용.
@@ -248,10 +257,19 @@ export function buildLiveActivityContentState(
   };
   // #2962 — override 우선, 없으면 resolveDefaultTrainCode(stamp-먼저, 아래)로 폴백. 둘 다
   // 없으면 필드 자체를 emit하지 않는다(아래 spread) — 기존 MultiHopContext 선택 필드 관례와 동일.
-  const resolvedTrainCode =
-    trainCodeOverride ?? (trip ? resolveDefaultTrainCode(trip) : undefined);
+  // #3221 PR-3a — lock 없는 질문 구간은 호출부가 넘긴 발사 기록(promptFire)만 따른다(trip stamp·이전 열차 폴백 금지).
+  const promptFire = options?.promptFire;
+  const promptFireOnly = trip !== undefined && trip.boardingLock === undefined && promptFire !== undefined;
+  const resolvedTrainCode = promptFireOnly
+    ? (promptFire?.trainCode ?? undefined)
+    : (trainCodeOverride ?? (trip ? resolveDefaultTrainCode(trip) : undefined));
   const withTrainCode =
-    resolvedTrainCode !== undefined ? { trainCode: resolvedTrainCode } : {};
+    resolvedTrainCode !== undefined
+      ? {
+          trainCode: resolvedTrainCode,
+          ...(promptFireOnly && promptFire ? { trainCodeIssuedAtMs: promptFire.issuedAt } : {}),
+        }
+      : {};
   if (!trip) return { ...base, ...withTrainCode };
   // multi-hop optional 필드는 존재하는 것만 spread — undefined assignment를 피해 기존 5 필드
   // toEqual 단언과 ActivityKit content-state diff 모두 깔끔.
@@ -345,17 +363,22 @@ export function buildStationArrivedContentState(trip: Trip, waypoint: Waypoint, 
  * - **lock 활성** → 질문 phase 금지. 이미 열차를 아는데 다시 묻는 `#2939`(10/9 실측) 재발 방지.
  *   lock 상태의 "추적중" 표시는 device auto-lock 경로(#2528)가 담당한다.
  */
+/**
+ * anchor = "어느 역에서 탑승을 묻는가". leg-1은 promptDisplay(유실 시 resolvePromptAnchor로
+ * originStationName+waypoint 파생, #3046), 환승 후는 currentLegAnchor가 그대로 우선.
+ * #3221 PR-3a — heartbeat가 `prompt_fires` 최신 발사를 읽을 때도 같은 anchor를 쓴다(발사 writer의 station/line과 동일 키).
+ */
+export function resolveQuestionAnchor(trip: Trip): { station: string; line: string } | undefined {
+  const { currentLegAnchor } = trip;
+  if (currentLegAnchor) return { station: currentLegAnchor.boardingStation, line: currentLegAnchor.line };
+  const { anchor } = resolvePromptAnchor(trip);
+  return anchor ? { station: anchor.originStation, line: anchor.line } : undefined;
+}
+
 function computeBoardingContext(trip: Trip): LiveActivityContentState {
   // lock이 활성이면 질문하지 않는다(#2939).
   if (trip.boardingLock !== undefined) return {};
-  // anchor = "어느 역에서 탑승을 묻는가". leg-1은 promptDisplay(유실 시 resolvePromptAnchor로
-  // originStationName+waypoint 파생, #3046), 환승 후는 currentLegAnchor가 그대로 우선.
-  const promptAnchor = trip.currentLegAnchor ? null : resolvePromptAnchor(trip).anchor;
-  const anchor = trip.currentLegAnchor
-    ? { station: trip.currentLegAnchor.boardingStation, line: trip.currentLegAnchor.line }
-    : promptAnchor
-      ? { station: promptAnchor.originStation, line: promptAnchor.line }
-      : undefined;
+  const anchor = resolveQuestionAnchor(trip);
   if (anchor === undefined) return {};
   return {
     boardingPhase: 'pre-boarding',
