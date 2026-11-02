@@ -210,5 +210,53 @@ describe('backendCallBuffer', () => {
       await hydrateBackendCallBuffer();
       expect(getBackendCallEntries()).toHaveLength(0);
     });
+
+    // #3055 PR-0b (R20) — hydrate 완료 전에 push가 들어와도 직전 세션 기록이 덮이지 않는다.
+    // persist()는 링 전체 스냅샷을 쓰므로 hydrate 전 첫 persist가 빈 링을 쓰면 직전 기록이 소실된다.
+    describe('R20 — hydration 전 push', () => {
+      function lastPersistedIds(): string[] {
+        const { calls } = mockSetItem.mock;
+        const [key, value] = calls[calls.length - 1];
+        expect(key).toBe(BACKEND_CALL_LOG_KEY);
+        return (JSON.parse(value as string) as BackendCallEntry[]).map((e) => e.callId);
+      }
+
+      it('hydrate 진행 중 push 1건 -> 최종 storage에 직전 엔트리 + 새 엔트리 모두(옛 -> 새 순)', async () => {
+        const stored = [makeEntry({ callId: 'old1', ts: 10 }), makeEntry({ callId: 'old2', ts: 20 })];
+        let resolveRead: (raw: string | null) => void = () => {};
+        mockGetItem.mockImplementationOnce(
+          () => new Promise<string | null>((resolve) => { resolveRead = resolve; }),
+        );
+
+        const hydrating = hydrateBackendCallBuffer();
+        pushBackendCallEntry(makeEntry({ callId: 'new1', ts: 30 })); // push 자체는 동기
+        expect(getBackendCallEntries().map((e) => e.callId)).toEqual(['new1']);
+        await flush();
+        // hydration이 끝나기 전에는 어떤 persist도 storage를 쓰지 않는다(빈/부분 스냅샷 덮어쓰기 금지).
+        expect(mockSetItem).not.toHaveBeenCalled();
+
+        resolveRead(JSON.stringify(stored));
+        await hydrating;
+        await flush();
+
+        expect(getBackendCallEntries().map((e) => e.callId)).toEqual(['old1', 'old2', 'new1']);
+        expect(lastPersistedIds()).toEqual(['old1', 'old2', 'new1']);
+      });
+
+      it('hydrate read 실패여도 대기 후 persist는 진행된다(새 엔트리만이라도 기록)', async () => {
+        let rejectRead: (e: Error) => void = () => {};
+        mockGetItem.mockImplementationOnce(
+          () => new Promise<string | null>((_, reject) => { rejectRead = reject; }),
+        );
+        const hydrating = hydrateBackendCallBuffer();
+        pushBackendCallEntry(makeEntry({ callId: 'new1' }));
+        await flush();
+        expect(mockSetItem).not.toHaveBeenCalled();
+        rejectRead(new Error('boom'));
+        await hydrating;
+        await flush();
+        expect(lastPersistedIds()).toEqual(['new1']);
+      });
+    });
   });
 });
