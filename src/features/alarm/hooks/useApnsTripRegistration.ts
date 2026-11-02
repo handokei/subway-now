@@ -542,8 +542,9 @@ export function useApnsTripRegistration({
   // 안에서 읽지 않기 위해서다 — updater는 순수해야 하고 StrictMode(dev)/concurrent 렌더링에서
   // 2회 호출될 수 있는데, 이전 버전은 그 updater 안에서 `logSubsurfaceRegisterTransition`
   // 호출 + ref(`settledSubsurfaceRef`/`quarantineAnchorAtRef`) 변이를 실행해 StrictMode
-  // 이중 렌더에서 **로그가 확정 전환 1건당 2번 적재**됐다 — 이 로그의 유일 목적("로그:POST
-  // 1:1 대조")이 정확히 그 이중 호출로 깨진다. 이제 다음 값은 setState **밖**에서 순수하게
+  // 이중 렌더에서 **로그가 확정 전환 1건당 2번 적재**됐다 — 이 로그의 목적(확정 전환 1건당
+  // 1행 관측; #3006 이후로는 POST와 1:1이 아니다 — 전환은 POST를 만들지 않는다)이 정확히 그
+  // 이중 호출로 깨진다. 이제 다음 값은 setState **밖**에서 순수하게
   // 계산하고, 부수효과(로그/ref 변이)도 setState 호출 시점에 정확히 1회만 실행한다 —
   // setConfirmedSubsurface에는 항상 plain value만 넘긴다(updater 함수 형태를 쓰지 않음).
   const confirmedSubsurfaceRef = useRef(false);
@@ -1446,11 +1447,13 @@ export function useApnsTripRegistration({
         // trip 존재 여부와 무관하게 "기압계가 현재 관측하는 물리적 상태"를 반영하는 값이다 —
         // trip이 없어도 raw subsurface prop은 계속 흘러들어온다. 만약 여기서 confirmed를
         // false로 강제하면(raw가 여전히 true인 채로), 아래 subsurface confirm effect가 그
-        // 차이를 "새 전환"으로 보고 즉시 다시 true로 되돌리고, 그 결과(confirmedSubsurface
-        // 변경)가 다시 이 main effect를 재실행시켜 "트립 없음" 분기가 또 reset하는 무한
-        // 루프가 실제로 재현됐다(리뷰 과정에서 발견, 회귀 방지로 남긴다). settled 값도 같은
-        // 이유로 건드리지 않는다 — quarantine 창이 이미 닫혔으므로(위 리셋) 다음 실제 전환이
-        // 스스로 새 settled를 스냅샷한다.
+        // 차이를 "새 전환"으로 보고 즉시 다시 true로 되돌린다(confirmed 값이 실제 raw와 어긋난
+        // 채 남는 것을 막는 이유는 그대로 유효하다). 과거에는 이 되돌림이 main effect를
+        // 재실행시켜 "트립 없음" 분기가 또 reset하는 무한 루프로 이어졌으나(#3006 이후
+        // `confirmedSubsurface`는 main effect deps가 아니므로 루프는 구조적으로 불가) 값
+        // 일관성 이유로 리셋하지 않는 정책은 유지한다. settled 값도 같은 이유로 건드리지
+        // 않는다 — quarantine 창이 이미 닫혔으므로(위 리셋) 다음 실제 전환이 스스로 새
+        // settled를 스냅샷한다.
         quarantineAnchorAtRef.current = 0;
         return;
       }
@@ -1523,8 +1526,10 @@ export function useApnsTripRegistration({
       //
       // #2683 — **단, "새 trip 등록"일 때만.** 스펙이 요구한 것은 `trip 등록(new)` 시점의 clear인데
       // 이 지점은 같은 trip의 **재등록**에서도 매번 실행됐다. 재등록은 생각보다 훨씬 잦다 —
-      // 이 effect의 deps에 `subsurface`(기압계 지하 판정)가 들어 있어 지하/지상을 오가는 주행
-      // 중에는 수십 초마다 재실행된다. 2026-09-17 저녁 라이드 실측: 한 trip 동안
+      // (당시) 이 effect의 deps에 `subsurface`(기압계 지하 판정)가 들어 있어 지하/지상을 오가는
+      // 주행 중에는 수십 초마다 재실행됐다. #3006 이후 subsurface는 deps에서 제거됐지만 다른
+      // 사유(etaWithinPollingWindow·의향 토글 등)의 같은 trip 재등록은 여전히 존재하므로 이
+      // 가드는 유효하다. 2026-09-17 저녁 라이드 실측: 한 trip 동안
       // `POST /trips` **29회**, 그때마다 mirror가 통째로 지워졌다.
       //
       // 그 결과 device는 backend SSoT를 **한 번도 손에 쥐지 못한다** — 표시가 출발역(성수)에
@@ -1655,22 +1660,13 @@ export function useApnsTripRegistration({
     // 재도입하지 않는다 — 오히려 이 경계를 넘는 순간 재등록하지 않으면 alarmAtEpochMs가
     // register 시점 값에 동결돼 backend 게이트가 실제 ETA보다 늦게 열린다(alarmBucket 제거의
     // 부작용, 리뷰 재지적).
-    // #903 (Seam G) → #2699 (정정, RCA 9/21 "원인 확정" 코멘트): subsurface 변화 시 backend
-    // threshold(5→10)를 빨리 갱신해 지하 진입 직후 일시 GPS/arrival 누락에 인내. **이 deps
-    // slot은 raw prop이 아니라 `confirmedSubsurface`(위 flap-quarantine 게이트 참고)다.**
-    // 과거 이 주석은 "useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로 deps churn
-    // 위험 낮음"이라고 단정했으나 사실과 달랐다 — useBarometer의 실제 hysteresis는 1Hz 샘플 ×
-    // BAROMETER_SUBSURFACE_CONFIRM_SAMPLES(3) = 약 3초 디바운스뿐이고(30s는 dP/dt 회귀
-    // 윈도우지 토글 디바운스가 아니다), 지하/지상 경계에서 raw subsurface는 4~13초 간격으로
-    // 반복 토글됐다(실측 6쌍). "alarmBackend dedup hash가 미변화 사이클은 skip한다"는 주장도
-    // 성립하지 않았다 — hash에 함께 포함된 alarmBucket(시간종속)·waypoints/promptDisplayKey
-    // (currentStation 파생, 매 register 호출마다 사실상 항상 변동)가 hash를 사실상 상시-변동
-    // 상태로 만들어 dedup이 실제로는 거의 작동하지 않았다(alarmBackend.ts buildRegisterHash
-    // 참고, alarmBucket은 #2699에서 제거). 18분 trip에 POST /trips 29~37회 폭주(#2699)가 이
-    // 잘못된 전제의 실측 결과 — v2(현재)는 raw subsurface의 단일 전환은 즉시 이 deps slot에
-    // 반영하되(latency 없음), 경계 flapping(직전 전환 SUBSURFACE_FLAP_QUARANTINE_MS 이내의
-    // 되돌아온 전환)만 감지해 원래 값으로 되돌린다 — 한 flap episode당 최대 2회(확정+보정)로
-    // 유계, bounce 횟수에 비례하지 않는다.
+    // #3006 — **subsurface(confirmedSubsurface)는 이 deps에 없다.** 지하/지상 판정 전환은
+    // POST /trips를 일으키지 않는다. 10/31 용마산→논현 라이드에서 전환 11회 + quarantine
+    // 되돌림 4회 = 15회 재등록(1회 = KV put 3)이 cron 전진을 되돌려 매역·하차 준비가 ~2분
+    // 늦었다. backend는 trip.subsurface를 발사/전진 판단에 쓰지 않으므로(로그뿐) 즉시 전송할
+    // 소비처가 없다. payload의 subsurface 슬롯은 유지한다 — 다른 사유의 재등록·token refresh가
+    // latestInputsRef의 최신 확정값을 싣는다. flap-quarantine 자체(#2699)와
+    // `subsurface-register-confirmed` 계측은 유지한다(확정 전환 관측용).
     // #1923: infoModeEnabled 변화 시 backend lockless intermediate gate를 즉시 활성화해 다음 cron
     // cycle부터 station-passed silent push 발사가 가능. 토글 빈도는 사용자 명시 의향 표명/trip 종료
     // 시점만이므로 deps churn 위험 낮음. alarmBackend dedup hash가 미변화 사이클은 POST를 skip.
@@ -1688,7 +1684,6 @@ export function useApnsTripRegistration({
     routeSig,
     destination?.id,
     boardingLockSig,
-    confirmedSubsurface,
     etaWithinPollingWindow,
     infoModeEnabled,
     promptOptIn,
