@@ -171,7 +171,7 @@ describe('LA 버튼 native 응답 왕복 (#3055 PR-2)', () => {
     const record = block('private func recordNativePost(');
     expect(post).toContain('resolvedTrainCode');
     expect(post).toContain('lockState');
-    expect(post).toContain('recordNativePost(');
+    expect(post).toContain('status: result.status, resolvedTrainCode: resolvedTrainCode, lockState: lockState');
     expect(record).toContain('"nativePost"');
     expect(record).toContain('"status"');
     expect(record).toContain('"atMs"');
@@ -187,14 +187,15 @@ describe('LA 버튼 native 응답 왕복 (#3055 PR-2)', () => {
   it('(2b) 쓰기 시 nativePost "in-flight" 표식 + id를 반환해 응답 기록과 짝을 맞춘다', () => {
     const writePending = block('private func writePendingBoardingIntent(');
     expect(writePending).toContain('"nativePost"');
-    expect(writePending).toContain('in-flight');
+    expect(writePending).toContain('payload["nativePost"] = NATIVE_POST_IN_FLIGHT');
     expect(writePending).toContain('return id');
+    expect(intents).toContain('NATIVE_POST_IN_FLIGHT = "in-flight"');
   });
 
   it('(3) body에 source:la-native + laCandidate를 싣고 trainCode 키는 싣지 않는다', () => {
     const post = block('private func postBoardingConfirm(');
-    expect(post).toContain('"source"');
-    expect(post).toContain('la-native');
+    expect(post).toContain('"source": SOURCE_LA_NATIVE');
+    expect(intents).toContain('SOURCE_LA_NATIVE = "la-native"');
     expect(post).toContain('"laCandidate"');
     expect(post).not.toMatch(/"trainCode"\s*:/);
     expect(post).not.toMatch(/\["trainCode"\]/);

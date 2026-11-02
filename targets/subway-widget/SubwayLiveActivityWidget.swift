@@ -693,7 +693,8 @@ private struct BoardingPromptButton: View {
                     tripToken: state.boardingPromptTripToken ?? "",
                     originStation: state.boardingPromptOriginStation ?? "",
                     line: state.boardingPromptLine ?? "",
-                    trainCode: state.trainCode
+                    trainCode: state.trainCode,
+                    trainCodeIssuedAtMs: state.trainCodeIssuedAtMs
                 )) {
                     Text(NSLocalizedString("widget.boardingPrompt.boarded.button", comment: "Confirm boarding button label"))
                         .font(.subheadline)
