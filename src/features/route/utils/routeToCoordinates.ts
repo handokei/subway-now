@@ -1,4 +1,5 @@
 import type { LineNumber, Station } from '../../../shared/types/station';
+import { isClosedLoopMainStation, shortestLinePathIndices } from '../../../shared/utils/lineLoopPath';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { findStationByNameAndLine, getStationsOnLine } from '../../../shared/utils/stationRoute';
 
@@ -22,18 +23,28 @@ interface Segment {
   toStation: Station;
 }
 
-/** 두 역 사이 해당 노선의 역들을 순서대로 반환 (양 끝 포함). */
+/**
+ * 두 역 사이 해당 노선의 역들을 진행 순서대로 반환 (양 끝 포함).
+ *
+ * 방향을 id 정렬 idx 대소로 정하지 않는다(#3086, invariants 금지 패턴) —
+ * 2호선 closed loop seam(시청 idx0 <-> 충정로 idx42)에서 wrap 구간이 본선 전체를 훑는 오경로가 된다.
+ * 본선 구간은 `shortestLinePathIndices`(wrap-aware)에 위임한다.
+ * closed loop 노선에서 한쪽이라도 본선 밖(지선)이면 stations.json에 분기점 연결이 없어
+ * 사이 역을 알 수 없으므로 양 끝만 잇는다(본선 전체 경유 방지).
+ */
 function sliceLine(line: LineNumber, fromName: string, toName: string): Station[] {
   const lineStations = getStationsOnLine(line);
   const fromIdx = lineStations.findIndex((s) => s.name === fromName);
   const toIdx = lineStations.findIndex((s) => s.name === toName);
   if (fromIdx === -1 || toIdx === -1) return [];
-  const step = toIdx >= fromIdx ? 1 : -1;
-  const slice: Station[] = [];
-  for (let i = fromIdx; i !== toIdx + step; i += step) {
-    slice.push(lineStations[i]);
+  const hasClosedLoop = lineStations.some((s) => isClosedLoopMainStation(line, s.id));
+  const bothOnMain =
+    isClosedLoopMainStation(line, lineStations[fromIdx].id) &&
+    isClosedLoopMainStation(line, lineStations[toIdx].id);
+  if (hasClosedLoop && !bothOnMain && fromIdx !== toIdx) {
+    return [lineStations[fromIdx], lineStations[toIdx]];
   }
-  return slice;
+  return shortestLinePathIndices(lineStations, fromIdx, toIdx, line).map((i) => lineStations[i]);
 }
 
 /** Route를 세그먼트(노선/시작역/끝역) 시퀀스로 변환. 환승 N개 일반화. */

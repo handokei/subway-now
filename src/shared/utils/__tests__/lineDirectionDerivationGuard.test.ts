@@ -42,6 +42,9 @@ const ALLOWED_CLOSED_LOOP_IMPORTERS = new Set([
   join(REPO_ROOT, 'src', 'shared', 'utils', 'stationRoute.ts'), // 경로/다음역 조회(방향 판정 아님, 기존)
   join(REPO_ROOT, 'src', 'features', 'route', 'utils', 'tripDirection.ts'),
   join(REPO_ROOT, 'src', 'shared', 'utils', 'directionOnLine.ts'), // #1480 N1 — features에서 shared로 이동
+  // #3086 — 지도 폴리라인 slice. 방향은 shortestLinePathIndices(wrap-aware)에 위임하고,
+  // isClosedLoopMainStation은 지선 구간(본선 밖) 판별에만 쓴다. idx 대소 방향 재도출을 제거한 소비자.
+  join(REPO_ROOT, 'src', 'features', 'route', 'utils', 'routeToCoordinates.ts'),
   join(REPO_ROOT, 'backend', 'alarm-worker', 'src', 'legDirection.ts'),
 ]);
 
