@@ -2,6 +2,7 @@ import { routeToCoordinates } from '../routeToCoordinates';
 import { findRoute } from '../../../../shared/utils/stationRoute';
 import stationsData from '../../../../data/stations.json';
 import type { Station } from '../../../../shared/types/station';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -148,5 +149,47 @@ describe('routeToCoordinates stale route + 타노선 origin (#3076 characterizat
   it('2호선 direct route에 7호선 출발역을 주면 null (지도 폴리라인 미렌더)', () => {
     const staleRoute = findRoute(byId('2-022').id, byId('2-019').id);
     expect(routeToCoordinates(staleRoute, byId('7-024'), byId('2-019'))).toBeNull();
+  });
+});
+
+// #3086 sliceLine 방향 재도출 — id 정렬 idx 대소(toIdx>=fromIdx)로 방향을 정하면
+// 2호선 closed loop seam(시청 idx0 <-> 충정로 idx42)과 지선(까치산/신설동)에서 오경로가 그려진다.
+describe('routeToCoordinates 2호선 seam/지선 (#3086)', () => {
+  const stationOn2 = (base: string): Station => {
+    const name = canonicalStationName(base, '2');
+    return allStations.find((s) => s.line === '2' && s.name === name)!;
+  };
+  const coords = (stations: Station[]) => stations.map((s) => ({ latitude: s.lat, longitude: s.lng }));
+  const pathOf = (from: Station, to: Station) =>
+    routeToCoordinates(makeDirectRoute(1, '2'), from, to)!.path;
+
+  it('시청 -> 충정로 (seam 1 hop): 정확히 두 역만 잇는다', () => {
+    const [from, to] = [stationOn2('시청'), stationOn2('충정로')];
+    expect(pathOf(from, to)).toEqual(coords([from, to]));
+  });
+
+  it('충정로 -> 시청 (seam 역방향 1 hop): 정확히 두 역만 잇는다', () => {
+    const [from, to] = [stationOn2('충정로'), stationOn2('시청')];
+    expect(pathOf(from, to)).toEqual(coords([from, to]));
+  });
+
+  it('아현 -> 을지로입구 (seam 통과): 충정로, 시청을 거쳐 wrap 한다', () => {
+    const stations = ['아현', '충정로', '시청', '을지로입구'].map(stationOn2);
+    expect(pathOf(stations[0], stations[3])).toEqual(coords(stations));
+  });
+
+  it('신도림 -> 까치산 (지선): 본선 전체를 훑지 않고 두 역만 잇는다', () => {
+    const [from, to] = [stationOn2('신도림'), stationOn2('까치산')];
+    expect(pathOf(from, to)).toEqual(coords([from, to]));
+  });
+
+  it('신설동 -> 성수 (지선 -> 본선): 본선 전체를 훑지 않고 두 역만 잇는다', () => {
+    const [from, to] = [stationOn2('신설동'), stationOn2('성수')];
+    expect(pathOf(from, to)).toEqual(coords([from, to]));
+  });
+
+  it('본선 일반 구간(강남 -> 삼성)은 기존대로 중간역을 모두 포함한다', () => {
+    const stations = ['강남', '역삼', '선릉', '삼성'].map(stationOn2);
+    expect(pathOf(stations[0], stations[3])).toEqual(coords(stations));
   });
 });
