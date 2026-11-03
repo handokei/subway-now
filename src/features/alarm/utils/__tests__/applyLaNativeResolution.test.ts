@@ -120,8 +120,30 @@ describe('applyLaNativeResolution (#3055 R10)', () => {
     await expect(applyLaNativeResolution(INTENT, '7320', deps)).resolves.toBe('failed');
   });
 
-  it('행2: store lock이 PENDING → 교체하지 않고 foreign pending 관측 로그', async () => {
+  it('행2: 같은 역·노선의 PENDING(이전 탭 잔존) → 응답 열차로 교체 생성(사용자 결정 2026-11-03)', async () => {
     useBoardingLockStore.setState({ lock: { ...BASE_LOCK, trainCode: PENDING_TRAIN_CODE } });
+    const deps = makeDeps();
+    expect(await applyLaNativeResolution(INTENT, '7320', deps)).toBe('replaced-pending');
+    expect(deps.createLock).toHaveBeenCalledTimes(1);
+    expect(deps.createLock).toHaveBeenCalledWith(
+      expect.objectContaining({ trainCode: '7320', boardingStationId: STATION.id, boardingLine: '7' }),
+      true,
+      'la-native-response',
+    );
+  });
+
+  it('행2: 같은 역·노선 PENDING 교체인데 목적지가 어디에도 없으면 교체하지 않는다', async () => {
+    useBoardingLockStore.setState({ lock: { ...BASE_LOCK, trainCode: PENDING_TRAIN_CODE } });
+    const deps = makeDeps({ destinationId: null });
+    expect(await applyLaNativeResolution(INTENT, '7320', deps)).toBe('skipped-no-trip');
+    expect(deps.createLock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['다른 역', { boardingStationId: 'S-other' }],
+    ['다른 노선', { boardingLine: '2' as const }],
+  ])('[거부] 행2: PENDING이 %s이면 교체하지 않고 foreign pending 관측 로그', async (_label, diff) => {
+    useBoardingLockStore.setState({ lock: { ...BASE_LOCK, trainCode: PENDING_TRAIN_CODE, ...diff } });
     const deps = makeDeps();
     expect(await applyLaNativeResolution(INTENT, '7320', deps)).toBe('ignored-pending');
     expect(deps.createLock).not.toHaveBeenCalled();
