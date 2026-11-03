@@ -75,6 +75,7 @@ jest.mock('../../../alarm/api/signalDumpBackend', () => ({
   flushSignalDumpOutbox: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../../../alarm/utils/tripEndedNotification', () => ({
+  captureTripEndIdentity: jest.fn().mockResolvedValue(null),
   notifyTripEnded: jest.fn().mockResolvedValue(undefined),
 }));
 

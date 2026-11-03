@@ -70,7 +70,7 @@ import {
 } from '../utils/tripEndedSentinel';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
-import { notifyTripEnded } from '../utils/tripEndedNotification';
+import { captureTripEndIdentity, notifyTripEnded } from '../utils/tripEndedNotification';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { appendAlarmLog, getAlarmLog } from '../utils/alarmLog';
@@ -212,9 +212,13 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
         // #2675 — 자동 종료를 사용자에게 알린다. 이 경로는 앱이 BG/종료 상태에서도 발화하므로
         // 화면 내 배너/토스트로는 도달하지 못한다("도착 안내도 종료 알림도 없이 조용히 사라짐",
         // 2026-09-17 사용자 보고). cleanup 전에 destination snapshot을 읽어 문구에 역명을 싣는다.
+        // #3005 PR-B — identity는 진입 직후 캡처(다른 종료 경로 cleanup이 corrId를 지워도 같은 키).
+        const endedDestination = useDestinationStore.getState().destination;
+        const endIdentity = await captureTripEndIdentity();
         void notifyTripEnded({
-          destination: useDestinationStore.getState().destination,
+          destination: endedDestination,
           reason: 'arrived',
+          identity: endIdentity,
         });
         await triggerTripEndRecall();
         // #2302 — alarmLog reason(위 appendAlarmLog)과 lock release 사유(아래 releaseLock)에
