@@ -741,6 +741,9 @@ export async function sendPushAck(payload: PushAckPayload): Promise<AlarmBackend
 export async function clearActiveTrip(
   token: string,
   reason: TripEndReason,
+  // #3005 PR-A-be — 종료하려는 trip의 corrId. 주면 backend가 저장된 trip의 corrId와 다를 때(같은 token의
+  // 새 trip) 삭제하지 않는다. 생략하면 기존 동작.
+  corrId?: string,
 ): Promise<AlarmBackendResult> {
   // 트립 종료 후 동일 트립을 다시 시작할 수 있도록 dedup 캐시를 초기화한다.
   // URL 미설정/네트워크 실패 경로에서도 초기화해야 클라이언트가 register dedup에
@@ -761,7 +764,9 @@ export async function clearActiveTrip(
   try {
     // #2302 — reason은 자유 문자열 쿼리로 전달(backend가 64자로 잘라 telemetry에만 사용).
     const res = await fetchWithTimeout(
-      `${base}/trips/${encodeURIComponent(token)}?reason=${encodeURIComponent(reason)}`,
+      `${base}/trips/${encodeURIComponent(token)}?reason=${encodeURIComponent(reason)}${
+        corrId ? `&corrId=${encodeURIComponent(corrId)}` : ''
+      }`,
       { method: 'DELETE' },
     );
     if (!res.ok) {

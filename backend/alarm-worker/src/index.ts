@@ -4682,6 +4682,14 @@ app.delete('/trips/:token', async (c) => {
       return getTrip(c.env.TRIPS, indexedToken);
     })());
   if (!existing) return c.json({ ok: true, deleted: false });
+  // #3005 PR-A-be — compare-and-delete. 운영 trip 토큰은 기기 APNs 토큰이라 trip마다 같아, 종료 정리가
+  // 늦게 도착하면 같은 token의 "새 trip"을 지운다(10-18 실측: 등록 3.4초 뒤 destination-switch 삭제).
+  // device가 종료하려는 trip의 corrId를 ?corrId=로 보내면 저장된 trip의 corrId와 다를 때 삭제하지 않는다.
+  // 파라미터가 없는 구버전 요청, 또는 저장된 trip에 corrId가 없는 구버전 등록은 기존 동작(삭제) 그대로.
+  const expectedCorrId = c.req.query('corrId')?.trim();
+  if (expectedCorrId && existing.corrId && existing.corrId !== expectedCorrId) {
+    return c.json({ ok: true, deleted: false });
+  }
   // #2268 — device가 실제 종료 사유(예: lockless-trip-end, 사용자 탭)를 알고 있으면 optional
   // ?reason= 쿼리로 전달, D1 trip_metrics의 end_reason에 그대로 적재한다(6번째 인자
   // metricsReason, cleanupTripWithLa 참고). 기존 alert-push 게이팅용 reason(5번째 인자)은 그대로

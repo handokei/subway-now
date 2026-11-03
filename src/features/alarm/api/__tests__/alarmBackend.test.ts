@@ -829,6 +829,14 @@ describe('alarmBackend', () => {
       );
     });
 
+    it('#3005: corrId를 주면 ?corrId= 쿼리로 URL-encode해 전달한다', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      await clearActiveTrip('t', 'destination-switch', '1730-ab/cd');
+      const [url] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/trips/t?reason=destination-switch&corrId=1730-ab%2Fcd');
+    });
+
     it('fetch throw 시 ok=false (throw 안 함)', async () => {
       process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
       (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
