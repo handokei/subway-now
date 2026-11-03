@@ -41,6 +41,9 @@ import type { LineNumber } from '../../../shared/types/station';
  *    사용자 목적지에 도달하지 못해 제외한 횟수(10/3 성수 3174 내선·성수종착 패턴).
  *  - `candidate-off-arc` (#3191 PR-1 A): route 활성 ∧ lock 없음 trip에서 fused 후보가 경로 arc 밖
  *    (출발역보다 상류 포함)이라 점수>0 arrival/position 신호가 점수에서 빠진 횟수(`signal` 태그로 구분).
+ *  - `candidate-unreachable` (#3191 PR-D): lock 없음 ∧ 정지 품질 fix가 15초 넘게 묵었을 때 앵커(최근접역)의
+ *    같은 노선 인접역인데 그 hop 운행시간 안에는 도달할 수 없고 신선 fix였다면 거리 게이트가 거부했을 후보의
+ *    점수>0 arrival/position 신호가 점수에서 빠진 횟수(`signal` 태그로 구분).
  *
  * 일곱 reason을 같은 buffer로 묶은 이유: 모두 사용자 GPS / route / environment 기반 후보 정확도
  * 신호로 진단 시점에 비교 관찰이 유효. DebugModal에서 reason 키별 분포 표시.
@@ -57,7 +60,8 @@ export type CandidateRejectReason =
   | 'candidate-opposite-direction'
   | 'candidate-direction-unresolved'
   | 'candidate-early-terminus'
-  | 'candidate-off-arc';
+  | 'candidate-off-arc'
+  | 'candidate-unreachable';
 
 export interface CandidateRejectEntry {
   kind: 'candidate-reject';
@@ -87,7 +91,7 @@ export interface CandidateRejectEntry {
    */
   count?: number;
   /**
-   * #3191 PR-2D — `candidate-opposite-direction`(PR-1 A: `candidate-off-arc`) reason 한정. 방향 필터(fused 후보 점수)에서 빠진
+   * #3191 PR-2D — `candidate-opposite-direction`(PR-1 A: `candidate-off-arc`, PR-D: `candidate-unreachable`) reason 한정. 방향 필터(fused 후보 점수)에서 빠진
    * 신호 종류. position-train enumeration 경로(#2696/#2914)의 entry에는 없다. 집계 윈도우 안에서는
    * 첫 push의 종류가 유지된다.
    */

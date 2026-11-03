@@ -53,6 +53,7 @@ import {
   resetBarometerInstrumentationForTest,
   resetBarometerState,
 } from '../../../../shared/utils/barometerState';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import { arrivalRet, positionRet, makeTrain } from '../../../../testUtils/positionApiFixtures';
 import { parseRawRow } from '../../../../testUtils/fixtures/replay_20261021_sagajeong_hold';
 import {
@@ -174,6 +175,8 @@ interface RunOpts {
   fixAgeS?: number;
   accM?: number;
   speedMps?: number | null;
+  /** 행 `pos` 대신 쓸 좌표 - 신선 fix였다면 거리 게이트를 통과했을 위치 합성용. */
+  position?: { lat: number; lng: number };
 }
 
 /** trip route -> FusedRouteContext (route 없음이면 undefined). */
@@ -204,7 +207,8 @@ function run(row: DumpRow, opts: RunOpts = {}) {
   const signal = opts.signal === undefined ? signalOf(row) : opts.signal;
   const fixMs = opts.fixAgeS === undefined ? row.fixMs : row.nowMs - opts.fixAgeS * 1000;
 
-  const top = actualFindTop(row.lat, row.lng, 5, 1.0);
+  const { lat, lng } = opts.position ?? { lat: row.lat, lng: row.lng };
+  const top = actualFindTop(lat, lng, 5, 1.0);
   mockFindTop.mockImplementation(actualFindTop);
   const speedMps = opts.speedMps === undefined ? row.speedMps : opts.speedMps;
   const nearestWith = (speed: number | null) => ({
@@ -212,7 +216,7 @@ function run(row: DumpRow, opts: RunOpts = {}) {
     liveResult: top[0],
     stickyDisplayOnly: null,
     variants: [top[0].station],
-    userLocation: { lat: row.lat, lng: row.lng },
+    userLocation: { lat, lng },
     speedMps: speed,
     accuracyMeters: opts.accM ?? row.accM,
     loading: false,
@@ -278,6 +282,7 @@ function run(row: DumpRow, opts: RunOpts = {}) {
     stationId: result?.station.id,
     source,
     confidence,
+    rejects: getCandidateRejectEntries(),
     rejectReasons: getCandidateRejectEntries().map((e) => e.reason as string),
   };
 }
@@ -394,6 +399,147 @@ describe('#3191 PR-F 대조 - D-hop 조건 밖 실측 행은 동작이 바뀌지
       signal: { station: seongsu, kind: 'position', code: TRAIN_STATUS.ARRIVED },
     });
     expect(stationId).toBe('2-010');
+    expect(rejectReasons).not.toContain('candidate-unreachable');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// PR-D (D-hop) - 정지 fix 직후 도달 불가 이웃역 제외. 아래 테스트는 수정 전에 red다.
+// ---------------------------------------------------------------------------------------------------------------------
+const R11_ROW = cycleRows(R11_NOV02).find((r) => r.raw.startsWith('19:44:34')) as DumpRow; // AB2FB L633
+const W_ROW = cycleRows(W_OCT30).find((r) => r.raw.startsWith('17:24:06')) as DumpRow; // B8D812 L762
+
+const seongsu = getStationById('2-011') as Station;
+const ttukseom = getStationById('2-010') as Station;
+const eorinidaegongwon = getStationById('7-018') as Station;
+
+/** 비최근접 후보(이웃역) 신호의 가능한 값 범위 - 계획 §5.2 (arrivalCodes.ts / trainStatus.ts). */
+const NEIGHBOR_SIGNAL_VALUES: ReadonlyArray<readonly ['arrival' | 'position', number]> = [
+  ...[0, 1, 4, 5].map((code) => ['arrival', code] as const),
+  ...[0, 1].map((code) => ['position', code] as const),
+];
+
+const unreachableRejects = (rejects: ReturnType<typeof run>['rejects']) =>
+  rejects.filter((e) => (e.reason as string) === 'candidate-unreachable');
+
+describe('#3191 PR-D 도달 불가 이웃역 제외 (D-hop) - 실측 결함 행', () => {
+  it('R11 (11/02 19:44:34, AB2FB L633/L634): 뚝섬 정지 fix 16s 후 성수 도착 신호 -> 뚝섬 유지 + candidate-unreachable{성수}', () => {
+    expect(R11_ROW.fixAgeS).toBe(16);
+    const { stationId, rejects } = run(R11_ROW, { route: ROUTE_2_SEONGSU });
+    expect(stationId).toBe('2-010');
+    const dropped = unreachableRejects(rejects);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toMatchObject({
+      stationName: canonicalStationName('성수', '2'),
+      line: '2',
+      signal: 'position',
+    });
+  });
+
+  it('W (10/30 17:24:06, B8D812 L762/L763): 건대입구 정지 fix 15s 후 어린이대공원 신호 -> 건대입구(7-019) 유지 + candidate-unreachable{어린이대공원}', () => {
+    expect(W_ROW.fixAgeS).toBe(15);
+    const { stationId, rejects } = run(W_ROW, { route: ROUTE_7_WAYPOINT });
+    expect(stationId).toBe('7-019');
+    const dropped = unreachableRejects(rejects);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toMatchObject({
+      stationName: canonicalStationName('어린이대공원', '7'),
+      line: '7',
+      signal: 'arrival',
+    });
+  });
+
+  describe.each([
+    ['R11 (뚝섬 -> 성수, hop 60s)', R11_ROW, ROUTE_2_SEONGSU, seongsu, '2-010'],
+    ['W (건대입구 -> 어린이대공원, hop 80s)', W_ROW, ROUTE_7_WAYPOINT, eorinidaegongwon, '7-019'],
+  ] as const)('%s - 이웃 신호 값 범위 전체', (_name, row, route, neighbor, anchorId) => {
+    it.each(NEIGHBOR_SIGNAL_VALUES)('%s 신호 코드 %i: 점수와 무관하게 앵커 유지 + 사유 적재', (kind, code) => {
+      const { stationId, rejects } = run(row, { route, signal: { station: neighbor, kind, code } });
+      expect(stationId).toBe(anchorId);
+      expect(unreachableRejects(rejects)).toHaveLength(1);
+    });
+  });
+});
+
+describe('#3191 PR-D 경계 (합성, 입력은 R11 행 값에서 한 항목만 변경)', () => {
+  const base = { route: ROUTE_2_SEONGSU } as const;
+
+  it.each([
+    [59, '2-010', 1],
+    [60, '2-011', 0],
+  ])('fix 나이 %is (hop 60s 미만만 제외): 결과 %s, 사유 %i건', (fixAgeS, expectedId, expectedDrops) => {
+    const { stationId, rejects } = run(R11_ROW, { ...base, fixAgeS });
+    expect(stationId).toBe(expectedId);
+    expect(unreachableRejects(rejects)).toHaveLength(expectedDrops);
+  });
+
+  it.each([
+    [30, '2-010', 1],
+    [31, '2-011', 0],
+  ])('정확도 %im (acc<=30만 제외): 결과 %s, 사유 %i건', (accM, expectedId, expectedDrops) => {
+    const { stationId, rejects } = run(R11_ROW, { ...base, accM });
+    expect(stationId).toBe(expectedId);
+    expect(unreachableRejects(rejects)).toHaveLength(expectedDrops);
+  });
+
+  it.each([
+    [0.49, '2-010', 1],
+    [0.5, '2-011', 0],
+  ])('속도 %f m/s (speed<0.5만 제외): 결과 %s, 사유 %i건', (speedMps, expectedId, expectedDrops) => {
+    const { stationId, rejects } = run(R11_ROW, { ...base, speedMps });
+    expect(stationId).toBe(expectedId);
+    expect(unreachableRejects(rejects)).toHaveLength(expectedDrops);
+  });
+
+  it('속도 정보 없음(null)은 정지 품질로 본다: 제외', () => {
+    const { stationId, rejects } = run(R11_ROW, { ...base, speedMps: null });
+    expect(stationId).toBe('2-010');
+    expect(unreachableRejects(rejects)).toHaveLength(1);
+  });
+
+  it('신선 fix였다면 거리 게이트를 통과했을 위치(뚝섬 0.35km / 성수 0.46km 지점)면 제외하지 않는다 - 현행(성수) 유지', () => {
+    const t = 0.43;
+    const position = {
+      lat: ttukseom.lat + t * (seongsu.lat - ttukseom.lat),
+      lng: ttukseom.lng + t * (seongsu.lng - ttukseom.lng),
+    };
+    const { stationId, rejects } = run(R11_ROW, { ...base, position });
+    expect(stationId).toBe('2-011');
+    expect(unreachableRejects(rejects)).toHaveLength(0);
+  });
+
+  it('lock이 있으면 적용하지 않는다 (lock 있는 trip은 기존 lock 가드 담당)', () => {
+    const lock: BoardingLock = {
+      destinationId: ROUTE_2_SEONGSU.destinationId,
+      trainCode: '9001',
+      boardingStationId: '2-010',
+      boardingLine: '2',
+      boardedAt: R11_ROW.nowMs - 5_000,
+      expectedDurationMs: 30 * 60_000,
+    };
+    const { rejectReasons } = run(R11_ROW, { ...base, boardingLock: lock });
+    expect(rejectReasons).not.toContain('candidate-unreachable');
+  });
+
+  it('hold가 활성이면 적용하지 않는다 (기존 hold가 L을 거리 게이트에 계속 쓴다) - 사유 적재 없이 뚝섬 유지', () => {
+    const t = 0.3;
+    const position = {
+      lat: ttukseom.lat + t * (seongsu.lat - ttukseom.lat),
+      lng: ttukseom.lng + t * (seongsu.lng - ttukseom.lng),
+    };
+    // holdBlk '-' = 기압계 관측 가능(워밍업 완료, 이동 증거 없음) -> G2(최근접역 >=150m)만 만족하면 hold.
+    const { stationId, rejectReasons } = run({ ...R11_ROW, holdBlk: '-' }, { ...base, position });
+    expect(stationId).toBe('2-010');
+    expect(rejectReasons).toContain('gps-stale-held');
+    expect(rejectReasons).not.toContain('candidate-unreachable');
+  });
+
+  it('경로 arc 밖 후보는 기존대로 candidate-off-arc가 우선한다 (R1-5 유지) - candidate-unreachable로 바뀌지 않는다', () => {
+    // 뚝섬에서 반대 방향(한양대 쪽) trip이면 성수는 출발역 상류 = arc 밖.
+    const reverse = { originId: '2-010', destinationId: (findStationByNameAndLine('한양대', '2') as Station).id };
+    const { stationId, rejectReasons } = run(R11_ROW, { route: reverse });
+    expect(stationId).toBe('2-010');
+    expect(rejectReasons).toContain('candidate-off-arc');
     expect(rejectReasons).not.toContain('candidate-unreachable');
   });
 });

@@ -49,8 +49,9 @@ export interface FusionCandidate {
    * 모든 신호 점수 0(fail-closed — direction===null과 같은 방식)이고, 제외 전 점수>0이었으면
    * `onExcludedDrop`으로 후보·종류당 1회 보고한다. 판정(route 활성 ∧ lock 없음 ∧ arc 밖)은 호출자 소관 —
    * 본 함수는 사유를 모른 채 제외만 한다. 모든 후보가 0이면 기존대로 `candidates[0]`(gps-only) 폴백.
+   * #3191 PR-D — `'unreachable'`: 정지 fix 직후 hop 운행시간 안에 도달 불가한 앵커 이웃(`findUnreachableNeighborIds`).
    */
-  excluded?: 'off-arc';
+  excluded?: 'off-arc' | 'unreachable';
 }
 
 /** `excluded`로 점수에서 빠진 "점수>0" 신호 1건(후보·종류당 1회) — 관측용. */

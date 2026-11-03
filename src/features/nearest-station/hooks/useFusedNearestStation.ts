@@ -13,7 +13,8 @@ import {
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
 // #1902 (RC-18) — candidate reject 별 buffer. fusionDebugBuffer 200 cap 점령 자기 파괴 차단.
-import { pushCandidateRejectEntry } from '../utils/candidateRejectBuffer';
+import { pushCandidateRejectEntry, type CandidateRejectReason } from '../utils/candidateRejectBuffer';
+import { findUnreachableNeighborIds } from '../utils/unreachableNeighbor';
 // #2594 (옵션 D) — 재평가 빈도 계측. 동작 변경 없음(관측 전용).
 import {
   recordCandidateDistanceFire,
@@ -491,6 +492,12 @@ export interface FusedRouteContext {
 // #3191 PR-0 — observer 인스턴스용 no-op sink (pushCandidateRejectEntry와 동일 시그니처).
 const noopCandidateRejectPush: typeof pushCandidateRejectEntry = () => undefined;
 
+// #3191 PR-1(A)/PR-D — pickFusedStation `excluded` 사유 -> candidateRejectBuffer reason.
+const EXCLUSION_REJECT_REASON: Record<ExcludedCandidateDrop['reason'], CandidateRejectReason> = {
+  'off-arc': 'candidate-off-arc',
+  unreachable: 'candidate-unreachable',
+};
+
 export function useFusedNearestStation(
   arrivalProvider?: ArrivalProvider,
   positionProvider?: PositionProvider,
@@ -850,12 +857,25 @@ export function useFusedNearestStation(
   // #3191 PR-1(A) — 경로 arc 밖이라 점수에서 빠진 점수>0 신호(같은 handoff 방식).
   const excludedDropsRef = useRef<ExcludedCandidateDrop[]>([]);
 
+  // #3191 PR-D(D-hop) — 정지 fix 직후 도달 불가 이웃 후보. fix 나이는 렌더마다 변하므로 fused memo deps에는
+  // 나이가 아니라 이 결과(id 목록 키)만 넣어, 제외 집합이 실제로 바뀔 때만 fused를 다시 계산한다.
+  const unreachableKey = findUnreachableNeighborIds({
+    candidates,
+    fixAgeMs: gpsFixAgeMs,
+    accuracyMeters: gps.accuracyMeters,
+    speedMps: gps.speedMps,
+    userLocation: gps.userLocation,
+    stationaryHold,
+    lockActive: boardingLock != null,
+  }).join(',');
+
   const fused = useMemo(() => {
     oppositeDirectionDropsRef.current = [];
     excludedDropsRef.current = [];
     if (candidates.length === 0) return null;
     const arrivals = [a0.arrival, a1.arrival, a2.arrival];
     const positions = [p0.positions, p1.positions, p2.positions];
+    const unreachableIds = unreachableKey.split(',');
     return pickFusedStation(
       candidates.map((cand, i) => ({
         candidate: cand,
@@ -865,16 +885,19 @@ export function useFusedNearestStation(
         direction: legDirections?.get(cand.station.line),
         // #3191 PR-1(A) — route 활성 ∧ lock 없음일 때 경로 arc 밖(출발역보다 상류 포함) 후보는 점수 0.
         // arc는 출발역~목적지라 사용자가 그 열차를 탈 수 없다. lock 있는 trip은 기존 lock 가드가 담당(범위 밖).
+        // #3191 PR-D(D-hop) — 경로 판정(off-arc)이 먼저고, 그 다음 정지 fix 직후 도달 불가 이웃(unreachable).
         excluded:
           arcStations.length > 0 && !boardingLock && arcIndexOfStation(arcStations, cand.station) === -1
             ? ('off-arc' as const)
-            : undefined,
+            : unreachableIds.includes(cand.station.id)
+              ? ('unreachable' as const)
+              : undefined,
       })),
       prevHighPriorityStationIdRef.current,
       (drop) => oppositeDirectionDropsRef.current.push(drop),
       (drop) => excludedDropsRef.current.push(drop),
     );
-  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions, legDirections, arcStations, boardingLock]);
+  }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions, legDirections, arcStations, boardingLock, unreachableKey]);
 
   // #3191 PR-2D — 방향 필터 관측. 기존 reason 'candidate-opposite-direction'(#2696)을 재사용한다.
   // observer(DebugModal) 인스턴스는 push하지 않는다(primary와 중복 집계 방지).
@@ -892,14 +915,15 @@ export function useFusedNearestStation(
     }
   }, [fused, resolvedInstrumentationRole, pushCandidateReject]);
 
-  // #3191 PR-1(A) — arc 밖 후보 제외 관측(reason 'candidate-off-arc'). observer는 push하지 않는다.
+  // #3191 PR-1(A)/PR-D — 제외 후보 관측(reason은 제외 사유별: 'candidate-off-arc' / 'candidate-unreachable').
+  // observer는 push하지 않는다.
   useEffect(() => {
     if (resolvedInstrumentationRole === 'observer') return;
-    for (const { kind, stationName, line } of excludedDropsRef.current) {
+    for (const { reason, kind, stationName, line } of excludedDropsRef.current) {
       pushCandidateReject({
         kind: 'candidate-reject',
         ts: Date.now(),
-        reason: 'candidate-off-arc',
+        reason: EXCLUSION_REJECT_REASON[reason],
         stationName,
         line,
         signal: kind,
