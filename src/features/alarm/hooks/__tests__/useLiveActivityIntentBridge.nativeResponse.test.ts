@@ -257,6 +257,50 @@ describe('useLiveActivityIntentBridge — #3055 PR-1', () => {
     });
   });
 
+  describe('apply 결과별 intent 보존 (#3055 — 탭했는데 lock 없음 방지)', () => {
+    const nativeRaw = () =>
+      boardedRaw({ nativePost: { status: 200, resolvedTrainCode: '7320', atMs: TAP_AT + 300 } });
+
+    it.each(['failed', 'skipped-no-trip'])(
+      "'%s'이면 clear하지 않고 다음 사이클에 재적용해 lock이 생기면 clear한다",
+      async (transient) => {
+        mockApplyLaNativeResolution.mockResolvedValueOnce(transient).mockResolvedValueOnce('created');
+        mockReadPendingBoardingIntent.mockReturnValue(nativeRaw());
+        renderHook(() => useLiveActivityIntentBridge(baseDeps, nowAt(1_000)));
+        await flush();
+        expect(mockApplyLaNativeResolution).toHaveBeenCalledTimes(1);
+        expect(mockClearPendingBoardingIntent).not.toHaveBeenCalled();
+        expect(mockEndBoardingActivity).not.toHaveBeenCalled();
+
+        capturedPollCallback!();
+        await flush();
+        expect(mockApplyLaNativeResolution).toHaveBeenCalledTimes(2);
+        expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('tok-1000000');
+      },
+    );
+
+    it("'failed'가 계속되어도 5분(stale) 경과하면 재시도 대신 폐기한다", async () => {
+      mockApplyLaNativeResolution.mockResolvedValue('failed');
+      mockReadPendingBoardingIntent.mockReturnValue(nativeRaw());
+      renderHook(() => useLiveActivityIntentBridge(baseDeps, nowAt(LIVE_ACTIVITY_INTENT_STALE_MS + 1)));
+      await flush();
+      expect(mockApplyLaNativeResolution).not.toHaveBeenCalled();
+      expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('tok-1000000');
+    });
+
+    it.each(['skipped-station', 'created', 'noop-same', 'ignored-pending', 'ignored-other'])(
+      "'%s'는 기존대로 clear한다",
+      async (result) => {
+        mockApplyLaNativeResolution.mockResolvedValue(result);
+        mockReadPendingBoardingIntent.mockReturnValue(nativeRaw());
+        renderHook(() => useLiveActivityIntentBridge(baseDeps, nowAt(1_000)));
+        await flush();
+        expect(mockClearPendingBoardingIntent).toHaveBeenCalledWith('tok-1000000');
+        expect(mockEndBoardingActivity).toHaveBeenCalledWith('intent-response');
+      },
+    );
+  });
+
   describe('native in-flight 대기 + 예산 (R15)', () => {
     it.each([
       ['BOARDING', boardedRaw],

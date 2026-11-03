@@ -46,7 +46,7 @@ import type { LaCandidate } from '../../../shared/types/boardingLock';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { isDuplicateBoardingLock } from '../utils/duplicateBoardingLock';
 import { endBoardingActivity } from '../utils/boardingActivityChannel';
-import { applyLaNativeResolution } from '../utils/applyLaNativeResolution';
+import { applyLaNativeResolution, type LaNativeResolutionResult } from '../utils/applyLaNativeResolution';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
@@ -295,13 +295,18 @@ function decideIntentRoute(intent: PendingBoardingIntent, nowMs: number): Intent
   return resolvedTrainCode === undefined ? HANDLE_ROUTE : { kind: 'apply-native', resolvedTrainCode };
 }
 
+const RETRYABLE_APPLY_RESULTS: readonly LaNativeResolutionResult[] = ['failed', 'skipped-no-trip'];
+
 async function handleIntent(intent: PendingBoardingIntent, deps: BridgeDeps, nowMs: number): Promise<void> {
   const route = decideIntentRoute(intent, nowMs);
   if (route.kind === 'wait') return;
 
   let shouldRetry = false;
   if (route.kind === 'apply-native') {
-    await applyLaNativeResolution(intent, route.resolvedTrainCode, deps);
+    const result = await applyLaNativeResolution(intent, route.resolvedTrainCode, deps);
+    // 'failed'(createLock 예외)와 'skipped-no-trip'(목적지 읽기 실패가 "없음"과 구분 불가 —
+    // widgetRefreshContext catch)은 일시적일 수 있어 clear하지 않고 재시도한다(5분 stale 게이트가 상한).
+    shouldRetry = RETRYABLE_APPLY_RESULTS.includes(result);
   } else if (intent.action === 'BOARDING_BOARDED' && isDuplicateBoardingIntent(intent)) {
     log.info('duplicate boarding intent — active lock already exists, no-op');
   } else {
