@@ -233,6 +233,10 @@ import {
   type LaCandidateVerdict,
 } from './laCandidate';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
+import { carryBoardingLock, evaluateSameSession, isBoardingLockConsistentWithWaypoints } from './sessionIdentity';
+
+// 순수 함수는 sessionIdentity.ts로 추출(#3300 PR-1) — 기존 import 경로(index.ts) 호환을 위해 재export.
+export { SESSION_DRIFT_WINDOW_MS, evaluateSameSession, isBoardingLockConsistentWithWaypoints } from './sessionIdentity';
 import {
   LA_BOARDING_START_MODES,
   ORIGIN_FIX_SOURCES,
@@ -1369,14 +1373,12 @@ app.post('/trips', async (c) => {
     // incoming이 있으면 그대로 채택(swap/재송신). 없으면 existing lock을 현재 waypoints와 정합할
     // 때만 보존한다 — 환승 후 stale leg-1 lock이 leg-2 waypoints에 살아남는 회귀를 차단(정합 실패
     // 시 drop → lockMissing → leg-2 프롬프트 정상). new-session 분기는 `...incoming`으로 자연 처리.
-    const carriedBoardingLock =
-      incoming.boardingLock ??
-      (isSameSession &&
-      existing !== null &&
-      existing.boardingLock !== undefined &&
-      isBoardingLockConsistentWithWaypoints(existing.boardingLock, existing.waypoints)
-        ? existing.boardingLock
-        : undefined);
+    const carriedBoardingLock = carryBoardingLock({
+      incomingLock: incoming.boardingLock,
+      isSameSession,
+      existingLock: existing?.boardingLock,
+      existingWaypoints: existing?.waypoints ?? [],
+    });
     const baseTrip = isSameSession
       ? {
           ...incoming,
@@ -4680,51 +4682,6 @@ app.delete('/trips/:token', async (c) => {
   return c.json({ ok: true, deleted: true });
 });
 
-/**
- * #704: 동일 세션 판별 — strict createdAt 동일성에서 trainCode 기반 + drift 허용으로 완화.
- *
- * 같은 세션 조건 (OR):
- *   1) 양쪽 boardingLock.trainCode가 일치 — cold restart로 createdAt이 바뀌어도 같은 열차면 진행 유지
- *   2) trainCode 미사용 단계라면 createdAt drift가 SESSION_DRIFT_WINDOW_MS 이내
- *
- * trainCode가 다르면 명백히 다른 열차로 새 세션 → false. lock이 한쪽만 있어도(이행 단계)
- * createdAt drift만으로 판정.
- */
-export const SESSION_DRIFT_WINDOW_MS = 5_000;
-
-export function evaluateSameSession(existing: Trip, incoming: Trip): boolean {
-  const existingCode = existing.boardingLock?.trainCode;
-  const incomingCode = incoming.boardingLock?.trainCode;
-  if (existingCode && incomingCode) {
-    return existingCode === incomingCode;
-  }
-  return Math.abs(existing.createdAt - incoming.createdAt) <= SESSION_DRIFT_WINDOW_MS;
-}
-
-/**
- * #1366 Layer 3 — boardingLock cross-validation (POST /trips merge 시점).
- *
- * Frontend가 환승 hop 진입 시 store 업데이트 race로 새 line의 trainCode를 직전 leg의
- * segmentStations와 결합해 stale metadata로 전송하는 케이스가 관측됐다
- * (item 4 8:33 환승역 즉시 재탑승 trip — lock.line='7' + waypoints는 전부 2호선).
- *
- * 게이트: lock.line이 incoming.waypoints의 어느 waypoint.line과도 일치하지 않으면
- * lock metadata는 거짓 — backend가 채택하지 않고 lock 필드만 drop한다 (trip 본체는 살림).
- *
- * 좁은 (stationName + line) 매칭 대신 line-level 매칭만 보는 이유:
- *  - Lock의 segmentStations[0]은 사용자가 탑승한 출발역. waypoints는 transfer/destination
- *    anchor만 포함하므로 출발역이 waypoint에 직접 등장하지 않을 수 있다.
- *  - 사용자가 실제 탑승한 line은 반드시 trip route의 어딘가에 등장해야 한다 — 등장하지
- *    않는다면 stale metadata로 단정한다.
- *
- * waypoints가 비어 있으면 (validateTrip이 미리 차단) false로 평가된다.
- */
-export function isBoardingLockConsistentWithWaypoints(
-  lock: BoardingLockMeta,
-  waypoints: Trip['waypoints'],
-): boolean {
-  return waypoints.some((wp) => wp.line === lock.line);
-}
 
 /** #1480 PR-E — device가 한 환승 waypoint에 stamp하는 시간표 다음 출발 개수 상한(payload 무한 증가 방지). device K=6의 2배. */
 const MAX_NEXT_LEG_DEPARTURES = 12;
