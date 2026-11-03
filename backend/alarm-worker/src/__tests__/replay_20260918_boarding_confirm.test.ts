@@ -198,6 +198,7 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
       outcome: 'resolved',
       anchorSource: 'tap',
       laCandidatePresent: false, // #3055 PR-0 계측 필드(실측 D1 이전 배포분에는 없음)
+      action: 'boarded', // #3301 계측 필드(실측 D1 이전 배포분에는 없음)
     });
     const attached = calls.filter((c) => c[2] === 'lock-attached');
     expect(attached).toHaveLength(1);

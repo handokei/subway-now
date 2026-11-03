@@ -296,6 +296,7 @@ describe('#3089 10/19 오후 정상 완주 — whole-trip replay (회귀 가드)
     expect(leg2Tap.response.resolvedTrainCode).toBe(prompt?.trainCode);
     expect(r.events.filter((e) => e.kind === 'boarding-confirm-result')[1].meta).toEqual({
       laCandidatePresent: false, // #3055 PR-0 계측 필드
+      action: 'boarded', // #3301 계측 필드(실측 D1 이전 배포분에는 없음)
       lockState: 'leg2',
       anchorSource: 'currentLegAnchor',
       trainCodeSource: 'body',
