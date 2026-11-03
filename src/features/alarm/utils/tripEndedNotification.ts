@@ -147,3 +147,11 @@ export async function notifyTripEnded(input: NotifyTripEndedInput): Promise<void
     log.warn('trip-ended 알림 표시 실패 (graceful)', e);
   }
 }
+
+/**
+ * 자동 해제 호출부(HomeScreen 도착 / 목적지 자동 해제)용: clear를 실행하고 종료를 알린다.
+ */
+export function clearAndNotifyTripEnded(clear: () => void, input: NotifyTripEndedInput): void {
+  clear();
+  void notifyTripEnded(input);
+}
