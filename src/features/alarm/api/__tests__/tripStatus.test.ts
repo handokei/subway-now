@@ -56,6 +56,28 @@ describe('fetchTripStatus', () => {
     });
   });
 
+  // #3005 PR-D-b — backend marker의 corrId(additive). 없거나 문자열이 아니면 키 생략(구 backend 호환).
+  it('200 ended corrId(문자열) → 그대로 전달', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      jsonResponse({ tripToken: 'tk', status: 'ended', endedAt: 5, endReason: 'destination', corrId: 'corr-A' }),
+    );
+    const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
+    expect(result).toEqual({
+      status: 'ended',
+      endedAt: 5,
+      endReason: 'destination-arrived',
+      corrId: 'corr-A',
+    });
+  });
+
+  it.each([[undefined], [7], ['']])('200 ended corrId=%p → 키 생략', async (corrId) => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      jsonResponse({ tripToken: 'tk', status: 'ended', endedAt: 5, endReason: 'destination', corrId }),
+    );
+    const result = await fetchTripStatus('tk', 'https://api.test.dev', fetchImpl);
+    expect(result).not.toHaveProperty('corrId');
+  });
+
   it.each([
     ['expired'],
     ['eta-missing'],
