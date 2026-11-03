@@ -22,8 +22,8 @@ import {
   DEPTH_TO_PRESSURE_HPA_PER_M,
 } from '../constants/barometer';
 import stationAbsolutePressureData from '../../data/stationAbsolutePressure.json';
-import stationTravelTimesJson from '../../data/stationTravelTimes.json';
 import type { LineNumber, Station } from '../types/station';
+import { lookupAdjacentHopSeconds } from './adjacentHopSeconds';
 import {
   evaluateBarometerStop,
   evaluateSubsurfaceEnter,
@@ -50,21 +50,6 @@ export interface StationAbsolutePressureEntry {
 
 const ABS_PRESSURE_ENTRIES: readonly StationAbsolutePressureEntry[] =
   stationAbsolutePressureData as readonly StationAbsolutePressureEntry[];
-
-const TRAVEL_TIMES = stationTravelTimesJson as Record<string, number>;
-
-/**
- * stationTravelTimes.json은 인접 hop만 등록. 인접이 아니면 undefined → 본 narrow에서 신호 미사용.
- * `${line}|${fromId}|${toId}` 키는 `stationRoute.ts`와 동일하게 양방향 모두 등록되어 있다.
- */
-function lookupAdjacentHopSeconds(
-  line: LineNumber,
-  fromId: string,
-  toId: string,
-): number | null {
-  const key = `${line}|${fromId}|${toId}`;
-  return TRAVEL_TIMES[key] ?? null;
-}
 
 /**
  * stationAbsolutePressure.json에서 stationId로 depth_m 조회. 없으면 null.

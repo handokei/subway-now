@@ -53,6 +53,7 @@ import {
   resetBarometerInstrumentationForTest,
   resetBarometerState,
 } from '../../../../shared/utils/barometerState';
+import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import { arrivalRet, positionRet, makeTrain } from '../../../../testUtils/positionApiFixtures';
 import { parseRawRow } from '../../../../testUtils/fixtures/replay_20261021_sagajeong_hold';
 import {
@@ -428,7 +429,11 @@ describe('#3191 PR-D 도달 불가 이웃역 제외 (D-hop) - 실측 결함 행'
     expect(stationId).toBe('2-010');
     const dropped = unreachableRejects(rejects);
     expect(dropped).toHaveLength(1);
-    expect(dropped[0]).toMatchObject({ stationName: '성수', line: '2', signal: 'position' });
+    expect(dropped[0]).toMatchObject({
+      stationName: canonicalStationName('성수', '2'),
+      line: '2',
+      signal: 'position',
+    });
   });
 
   it('W (10/30 17:24:06, B8D812 L762/L763): 건대입구 정지 fix 15s 후 어린이대공원 신호 -> 건대입구(7-019) 유지 + candidate-unreachable{어린이대공원}', () => {
@@ -437,7 +442,11 @@ describe('#3191 PR-D 도달 불가 이웃역 제외 (D-hop) - 실측 결함 행'
     expect(stationId).toBe('7-019');
     const dropped = unreachableRejects(rejects);
     expect(dropped).toHaveLength(1);
-    expect(dropped[0]).toMatchObject({ stationName: '어린이대공원', line: '7', signal: 'arrival' });
+    expect(dropped[0]).toMatchObject({
+      stationName: canonicalStationName('어린이대공원', '7'),
+      line: '7',
+      signal: 'arrival',
+    });
   });
 
   describe.each([

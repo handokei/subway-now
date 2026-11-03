@@ -164,3 +164,45 @@
 
 - M8: origin이 하류로 잘못 캡처된 trip에서 실제 역이 0점이 된다.
 - Raw에 비최근접 후보 열차 신호가 없어 replay의 사가정 arrival은 합성이다(fix 시각·정확도는 실측 원문).
+
+---
+
+## unreachable (PR-D) — 정지 fix 직후 도달 불가 이웃역 제외 (#3191, plan v6 D-hop)
+
+### 배경
+
+지상에서 정지하면 iOS가 15초 넘게 새 fix를 주지 않는다. hold(PR-2)는 최근접역 >=150m일 때만 켜져(G2) 역 앞(<150m)에서는 15초 넘은 fix가 결정 입력에서 빠지고(ADR-039 1단계) 거리 게이트가 꺼진다. 그 틈에 앵커(`candidates[0]`) 바로 옆 역의 열차 신호가 앵커를 이겨 사용자가 한 역 앞/뒤로 표시된다. 실측 2건(사용자에게 보임, trip 활성): R11 11/02 19:44:34 뚝섬->성수(LA 28초, 덤프 AB2FB L633/L634) / W 10/30 17:24:06 건대입구->어린이대공원(덤프 B8D812 L762/L763, ADR-044 "W 미커버" 선언의 대상). R12(11/03 실제 탑승 이동, speed 0.6)는 결함이 아니므로 대상에서 뺀다(C 안을 채택하지 않은 결정적 근거).
+
+### 결정
+
+`findUnreachableNeighborIds`(`utils/unreachableNeighbor.ts`)가 아래를 **모두** 만족하는 후보를 `excluded: 'unreachable'`로 점수 0 처리한다(fail-closed, off-arc와 같은 방식). 판정이 off-arc보다 뒤다(off-arc 우선).
+
+1. lock 없음, hold 아님, fix 나이 >= 15s (`GPS_QUALITY_GATE_MAX_AGE_MS`)
+2. 마지막 fix가 정지 품질: acc <= `STATIONARY_HOLD_MAX_ACCURACY_M`(30), speed null 또는 < `STATIONARY_HOLD_MAX_SPEED_MPS`(0.5) — hold 술어와 같은 임계
+3. 후보가 앵커의 같은 노선 인접역이고(`lookupAdjacentHopSeconds`, `shared/utils/adjacentHopSeconds.ts`로 barometerState에서 추출) fix 나이 < 그 hop 운행시간
+4. 신선 fix였다면 거리 게이트(`passesFusionDistanceGate`, 일반 0.6km/0.2km)가 이 후보를 거부했을 위치 — 신선 게이트보다 엄격해지는 일이 없다
+
+제외된 점수>0 신호는 reason `candidate-unreachable`(`signal` 태그)로 candidateRejectBuffer에 적재한다(DebugModal 'Candidate rejects'). 길어야 hop 운행시간(데이터상 60~270s) 뒤에는 현행 동작으로 돌아간다. 적용 환경은 전 환경(지상·지하, 사용자 결정 QA-2).
+
+### 이 ADR(PR-D)이 수정·대체·모순하는 결정
+
+- **ADR-044 / #2713 / ADR-039 1단계 ("15초 넘은 fix는 결정 입력에서 제외")**: 묵은 fix를 "정지 품질 ∧ hop 운행시간 이내"일 때 **제외 입력**으로만 쓴다. 재배정 축: 나이 상한 15s 고정 -> 인접 hop 운행시간, 표시 한정·lockless 한정.
+- **ADR-044 (지상 역 앞 <150m는 hold를 끄고 fused 신호가 대체로 맞으므로 비용으로 수용)**: R11·W 실측으로 그 비용이 결함으로 확인됐다. G2는 바꾸지 않는다(hold는 그대로 꺼짐) — hop 시간 동안 도달 불가 이웃만 제외한다.
+- **ADR-044 O3 (acc<=100 기각) / S (사후 override 기각)**: 유지. D는 acc<=30(ADR-015 §3 strong A와 같은 값)이고, cascade 입력 단계의 제외다.
+- **ADR-044 W 미커버 선언**: **커버로 바뀐다**(W 17:24:06 replay).
+- **ADR-039 §D 핵심 1 ("GPS 단독 거부권 없음")**: D는 묵은 fix + 운행시간 데이터로 열차 신호 후보를 배제한다. (a) 범위(표시 한정)에서 재배정 — 판단 경로(알림 발사·lock 생성·backend 입력)는 영향 0(lockless 발사 차단, sync 묵음 미송신)이고 소비처 전수는 plan §4.
+- **ADR-015 §3 (지하 GPS reject, fire 게이트)**: 직접 충돌 없음. W(지하 승강장)에 적용되므로 전 환경으로 결정(QA-2).
+- **memory "GPS 결정권한 X(지상만)"**: (a)에 따라 표시에만 쓴다.
+- **#2841 (정체는 결함)**: 정체는 hop 시간 이내로 제한하며 E2(제외된 후보가 hop 안의 다음 신선 fix 최근접이었던 건수, acceptance 1주 0건)로 감시한다.
+
+### 선언하는 미커버 셀
+
+- S5b/R12(speed >=0.5 정차 중 열차 안 fix): 현행 유지 — D 비활성(speed 조건).
+- S12(acc >30, L797 acc 189 포함): D 밖. 실제 위치 미확정.
+- S24(열차 안에서 찍힌 mid-hop 정지 fix, speed<0.5): 이웃 표시가 최대 hop 시간 지연된다. 실측 0건, E2로 감시.
+- S23(인접 hop 키 없음: 다른 노선·비인접·데이터 미커버 구간): D 비활성(현행).
+- S22: 앵커는 `candidates[0]`(allowedLines 필터 후, pickFusedStation과 같은 기준). hold G2는 `gps.liveResult` 기준이라 두 값이 다를 수 있다.
+
+### 결과 / 검증
+
+`useFusedNearestStation.unreachableNeighbor.test.ts` — R11·W 실측 행 replay(덤프 원문 fixture `replay_20261103_unreachable_neighbor.ts`, 열차 신호는 합성)와 경계 it.each, 대조(R0·R12·R7-R10·L797·lock·hold·off-arc 우선)가 함께 있다.
