@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  REGISTER_COOLDOWN_MS,
   TRIP_STATUS_RETENTION_MS,
   TRIP_STATUS_TTL_SEC,
   deleteTripEndedStatus,
@@ -135,11 +136,46 @@ describe('deleteTripEndedStatus (#2144)', () => {
 });
 
 describe('constants', () => {
-  it('retention is 1 hour', () => {
-    expect(TRIP_STATUS_RETENTION_MS).toBe(60 * 60 * 1000);
+  it('status 보존은 10시간 (기기 SIGNAL_4_KTX_ETA_UPPER_BOUND_MS와 정렬, #3005 PR-D-b)', () => {
+    expect(TRIP_STATUS_RETENTION_MS).toBe(10 * 60 * 60 * 1000);
+  });
+
+  it('재등록 쿨다운은 status 보존과 분리되어 1시간 유지', () => {
+    expect(REGISTER_COOLDOWN_MS).toBe(60 * 60 * 1000);
   });
 
   it('TTL well exceeds retention so 410 is observable before record disappears', () => {
     expect(TRIP_STATUS_TTL_SEC * 1000).toBeGreaterThan(TRIP_STATUS_RETENTION_MS);
+  });
+});
+
+describe('marker corrId (#3005 PR-D-b)', () => {
+  it('corrId를 저장하고 읽는다', async () => {
+    const kv = new InMemoryKV();
+    await writeTripEndedStatus(kv as unknown as KVNamespace, 'tok', 'destination-arrived', 1000, 'corr-A');
+    expect(await readTripEndedStatus(kv as unknown as KVNamespace, 'tok')).toEqual({
+      endedAt: 1000,
+      endReason: 'destination',
+      corrId: 'corr-A',
+    });
+  });
+
+  it('corrId 미지정이면 필드를 생략한다 (구 레코드 호환)', async () => {
+    const kv = new InMemoryKV();
+    await writeTripEndedStatus(kv as unknown as KVNamespace, 'tok', 'expired', 1000);
+    const read = await readTripEndedStatus(kv as unknown as KVNamespace, 'tok');
+    expect(read).toEqual({ endedAt: 1000, endReason: 'expired' });
+    expect(read).not.toHaveProperty('corrId');
+  });
+
+  it('문자열이 아닌 corrId는 무시한다', async () => {
+    const kv = new InMemoryKV();
+    kv.store.set('tripStatus:tok', {
+      value: JSON.stringify({ endedAt: 1, endReason: 'expired', corrId: 7 }),
+    });
+    expect(await readTripEndedStatus(kv as unknown as KVNamespace, 'tok')).toEqual({
+      endedAt: 1,
+      endReason: 'expired',
+    });
   });
 });

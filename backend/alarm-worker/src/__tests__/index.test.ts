@@ -7408,10 +7408,40 @@ describe('GET /trips/:tripToken/status (#1339 launch reconciliation)', () => {
     expect(await res.json()).toEqual({ error: 'trip_not_found' });
   });
 
-  it('returns 410 expired-retention when the marker is older than the retention window', async () => {
+  it('11/03 실측: 종료 61.5분 뒤 조회도 200 ended + endReason + corrId (#3005 PR-D-b)', async () => {
     const env = makeKvEnv();
     const kv = env.TRIPS as unknown as InMemoryKV;
-    const endedAt = Date.now() - 60 * 60 * 1000 - 1_000; // > 1h
+    const endedAt = Date.now() - (61 * 60 * 1000 + 30_000); // 19:06:53 → 20:08:22
+    kv.store.set('tripStatus:abc', {
+      value: JSON.stringify({ endedAt, endReason: 'destination', corrId: 'corr-A' }),
+    });
+
+    const res = await getStatus(env, 'abc');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      tripToken: 'abc',
+      status: 'ended',
+      endedAt,
+      endReason: 'destination',
+      corrId: 'corr-A',
+    });
+  });
+
+  it('corrId 없는 구 marker는 corrId 필드 없이 ended', async () => {
+    const env = makeKvEnv();
+    const kv = env.TRIPS as unknown as InMemoryKV;
+    const endedAt = Date.now() - 5_000;
+    kv.store.set('tripStatus:abc', {
+      value: JSON.stringify({ endedAt, endReason: 'destination' }),
+    });
+    const body = (await (await getStatus(env, 'abc')).json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('corrId');
+  });
+
+  it('returns 410 expired-retention when the marker is older than the retention window (10h)', async () => {
+    const env = makeKvEnv();
+    const kv = env.TRIPS as unknown as InMemoryKV;
+    const endedAt = Date.now() - 10 * 60 * 60 * 1000 - 1_000; // > 10h
     kv.store.set('tripStatus:old', {
       value: JSON.stringify({ endedAt, endReason: 'expired' }),
     });

@@ -1408,6 +1408,28 @@ describe('cleanupTripWithLa', () => {
       });
     }
 
+    it('trip의 corrId를 marker에 저장한다 (#3005 PR-D-b)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined, corrId: 'corr-A' });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        { reason: 'destination-arrived' },
+      );
+      const raw = kv.store.get('tripStatus:devtoken');
+      expect(JSON.parse(raw!.value)).toEqual({
+        endedAt: NOW,
+        endReason: 'destination',
+        corrId: 'corr-A',
+      });
+    });
+
     it('does not write a marker when reason is omitted (HTTP DELETE path)', async () => {
       const kv = new InMemoryKV();
       const trip = makeTrip({ activityPushToken: undefined });
