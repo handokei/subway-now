@@ -3676,7 +3676,9 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(stored.legBoardingPromptState?.fired).toBe(true);
     });
 
-    it('도보시간 미경과(now < legBoardingEligibleAt) → anchor 자체 없음, lockState none', async () => {
+    // #3300 — boarded 탭은 도보 게이트를 우회한다. 이 시나리오의 fixture 열차(positionEntry 기본 updnLine
+    // '1'=하행)는 상행 방향 필터에서 제외돼 후보가 없으므로 walk-gated가 아니라 position-resolve none이 된다.
+    it('도보시간 미경과여도 탭은 게이트를 우회한다 — 후보 없으면 lockState none(walk-gated 아님)', async () => {
       fetchSpy.mockResolvedValue(
         new Response(
           JSON.stringify({
@@ -3698,7 +3700,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, lockState: 'none' });
-      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(fetchSpy).toHaveBeenCalled();
     });
   });
 
@@ -4851,7 +4853,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       });
     });
 
-    it('leg-2 도보시간 미경과 — meta={lockState:none, outcome:walk-gated}', async () => {
+    it('leg-2 도보시간 미경과 탭 — 게이트 우회(#3300): outcome이 walk-gated가 아니고 anchorSource=currentLegAnchor', async () => {
       const { db, inserts } = captureEventInserts();
       const env = makeKvEnv();
       env.DB = db;
@@ -4879,7 +4881,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(JSON.parse(events[0][5] as string)).toEqual({
         laCandidatePresent: false,
         lockState: 'none',
-        outcome: 'walk-gated',
+        anchorSource: 'currentLegAnchor',
       });
     });
 

@@ -2799,17 +2799,17 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         // true)면 bypassWalkGate를 전달해 W-1(walk-gate 미개방 지각 탭)을 해소한다. 원래부터
         // boardingLock이 undefined였던 기존 3개 호출 패턴(이 분기 자체 포함, register-time/cron)
         // 은 bypassWalkGate 미전달과 동일하게 동작 — release가 일어나지 않았으면 false.
+        //
+        // #3300 — 탭은 lock 유무와 무관하게 도보 게이트를 우회한다. 하차 응답이 lock을 먼저 풀어
+        // releasedForLegSwitch=false인 채 탭이 오면 11/03 실측처럼 walk-gated로 거부됐다(#2957 편측).
+        // 명시적 [탑승함] 탭은 가장 강한 의향 신호라 게이트가 보호하려는 대상(배경 오매칭)과 무관하다.
         const activeOrigin = resolveActiveLegOrigin(working, now, {
           allowLegTransfer: true,
-          bypassWalkGate: releasedForLegSwitch,
+          bypassWalkGate: true,
         });
-        const isWalkGated =
-          !releasedForLegSwitch &&
-          working.currentLegAnchor !== undefined &&
-          (working.legBoardingEligibleAt === undefined || now < working.legBoardingEligibleAt);
         if (activeOrigin) {
           anchorSource = working.currentLegAnchor !== undefined ? 'currentLegAnchor' : 'promptDisplay';
-        } else if (!isWalkGated) {
+        } else {
           anchorSource = 'tap';
         }
 
@@ -2821,7 +2821,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           {
             allowLegTransfer: true,
             tapAnchor: { boardingStation: payload.station, line: payload.line },
-            bypassWalkGate: releasedForLegSwitch,
+            bypassWalkGate: true,
           },
           // ADR-037 D2b (#2535, 진단 계측 only) — resolve outcome 관측. lock 판정/생성 자체는
           // anchorLock 반환값 그대로 사용 — 이 콜백은 D1 append 용 부가 관측이다.

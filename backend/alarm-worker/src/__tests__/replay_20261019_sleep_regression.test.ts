@@ -194,21 +194,22 @@ async function replaySleepTrip(): Promise<Replayed> {
 
 describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails = 수정 시 통과로 바뀌어 CI가 알린다)', () => {
   // ── 결함 1: 탑승 탭 거부 (#2801 / #3083) ────────────────────────────────────────────────
-  it.fails('탑승 탭(18:08:52 상당)이 수락된다 — 현재: walk-gate가 거부(outcome=walk-gated, lock 없음) [#2801/#3083]', async () => {
+  it('탑승 탭(18:08:52 상당)이 수락된다 — #3300: boarded 탭은 walk-gate를 우회한다 [#2801/#3083]', async () => {
     const r = await replaySleepTrip();
     const [firstTap] = r.taps;
     // 사용자는 열차 도착(프롬프트 18:08:45) 7초 뒤 명시 의향으로 탭했다 — 수락돼 lock이 생겨야 한다.
     expect(firstTap.response.lockState).not.toBe('none');
   });
 
-  it('[현재 결함 고정] 탭 1·2는 walk-gated로 거부되고 3번째 탭만 수락된다 — D1과 동일 라벨', async () => {
+  it('[#3300 이후] 첫 탭은 walk-gate 없이 수락되고 둘째 탭은 기존 lock 유지 — D1 실측(구 배포)은 walk-gated 2회', async () => {
     const r = await replaySleepTrip();
     const confirmEvents = r.events.filter((e) => e.kind === 'boarding-confirm-result').map((e) => e.meta);
+    // #3300 — 재생은 수정 후 코드: 첫 탭이 lock을 만들고(walk-gated 아님) 둘째 탭은 이미 lock이 있어 재평가하지 않는다.
     expect(confirmEvents.slice(0, 2)).toEqual([
-      { lockState: 'none', outcome: 'walk-gated', laCandidatePresent: false }, // #3055 PR-0 계측 필드
-      { lockState: 'none', outcome: 'walk-gated', laCandidatePresent: false },
+      { lockState: 'leg2', outcome: 'resolved', anchorSource: 'currentLegAnchor', laCandidatePresent: false },
+      { lockState: 'leg1', laCandidatePresent: false },
     ]);
-    expect(confirmEvents[2]).toMatchObject({ lockState: 'leg2', anchorSource: 'currentLegAnchor', trainCodeSource: 'body' });
+    expect(confirmEvents[2]).toMatchObject({ lockState: 'leg2' }); // 이미 lock 보유 — 재평가 없음
     // D1 실측과 동일(탭 3회: walk-gated, walk-gated, leg2/body).
     const d1Taps = r.d1.filter((e) => e.kind === 'boarding-confirm-result').map(d1Meta);
     expect(d1Taps.slice(0, 2)).toEqual([
@@ -216,7 +217,7 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
       { lockState: 'none', outcome: 'walk-gated' },
     ]);
     expect(d1Taps[2]).toMatchObject({ lockState: 'leg2', anchorSource: 'currentLegAnchor', trainCodeSource: 'body' });
-    expect(r.taps.map((t) => t.response.lockState)).toEqual(['none', 'none', 'leg2']);
+    expect(r.taps.map((t) => t.response.lockState)).toEqual(['leg2', 'leg1', 'leg2']);
   });
 
   // ── 결함 2: 하차(취침 companion) 알람 조기 발사 (#3083) ─────────────────────────────────
