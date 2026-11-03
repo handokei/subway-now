@@ -53,12 +53,12 @@ function remainingLegsRoute(anchored: NonNullable<Route>): NonNullable<Route> {
   const completed = anchored.type === 'direct' ? 0 : (anchored.completedTransfers ?? 0);
   if (anchored.type === 'direct' || completed === 0) return anchored;
   if (anchored.type === 'transfer') {
-    return { type: 'direct', line: anchored.toLine, stops: anchored.stopsFromTransfer, travelSeconds: anchored.secondsFromTransfer };
+    return { type: 'direct', line: anchored.toLine, stops: anchored.stopsFromTransfer, travelSeconds: anchored.secondsFromTransfer, destinationStationId: anchored.destinationStationId };
   }
   const { transfers } = anchored;
   if (completed >= transfers.length) {
     const { toLine } = transfers[transfers.length - 1];
-    return { type: 'direct', line: toLine, stops: anchored.stopsAfterLastTransfer, travelSeconds: anchored.secondsAfterLastTransfer };
+    return { type: 'direct', line: toLine, stops: anchored.stopsAfterLastTransfer, travelSeconds: anchored.secondsAfterLastTransfer, destinationStationId: anchored.destinationStationId };
   }
   return { ...anchored, transfers: transfers.slice(completed) };
 }

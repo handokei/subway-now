@@ -53,6 +53,7 @@ function getTransferSegments(route: Route): TransferSegment[] {
     return [
       {
         transferName: route.transferName,
+        transferStationId: route.transferStationId,
         fromLine: route.fromLine,
         toLine: route.toLine,
         stopsToTransfer: route.stopsToTransfer,

@@ -41,7 +41,7 @@ describe('resolveAllTargets — stationId (#3177 PR-4)', () => {
 
   it('경로에 id가 없으면 undefined를 그대로 싣는다 (이름 대체 조회 금지)', () => {
     const route = findRoute('2-022', '4-025')!;
-    const bare = { ...route, transferStationId: undefined, destinationStationId: undefined };
+    const bare = { ...route, transferStationId: undefined, destinationStationId: undefined } as unknown as typeof route;
     const targets = resolveAllTargets(bare, SADANG);
     expect(targets[0].stationId).toBeUndefined();
   });
