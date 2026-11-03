@@ -209,7 +209,7 @@ export interface Trip {
    * `evaluateEndPromptAutoEnd`의 기준점. 이동 감지(cancel) 시 제거된다.
    */
   endPromptShownAt?: number;
-  /** #3007 PR-1 — [계속] 응답 시각. **타입만** — 기록 경로(route)는 PR-2. `>= endPromptShownAt`이면 자동 종료 대상 아님. */
+  /** #3007 PR-2 — [계속] 응답 시각(`POST /trips/:token/end-prompt-response`). `>= endPromptShownAt`이면 자동 종료 대상 아님. */
   endPromptContinuedAt?: number;
   /**
    * #3007 PR-1 — `end-prompt-auto-end-due` D1 행을 이미 적재한 질문의 `endPromptShownAt` 값. 같은 질문 중복 적재 방지 마커
@@ -1320,4 +1320,9 @@ export type LaBoardingStartMode = (typeof LA_BOARDING_START_MODES)[number];
 export interface LaClientCapability {
   split: true;
   boardingStart: LaBoardingStartMode;
+  /**
+   * #3007 PR-2 — 종료 질문의 [계속] 응답 채널(`POST /trips/:token/end-prompt-response`)을 가진 앱. 이 capability가 없는
+   * 앱(구버전)은 [계속]을 눌러도 backend가 모르므로 `evaluateEndPromptAutoEnd`가 'none'(자동 종료 대상 아님).
+   */
+  endPromptAutoEnd?: true;
 }

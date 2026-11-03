@@ -2535,6 +2535,45 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
 }
 
 /**
+ * #3007 PR-2 — 종료 질문("안내를 종료할까요? 5분 뒤 자동으로 종료돼요")의 [계속] 응답 채널.
+ *
+ * 그 전까지 LA [계속] 버튼은 네트워크 호출이 없어 backend가 모르는 채로 5분 뒤 자동 종료(PR-3)가 [계속]을 무시했을 것이다.
+ * `trip.endPromptContinuedAt = now`를 기록하면 `evaluateEndPromptAutoEnd`가 'none'(`>= endPromptShownAt`)을 돌려준다.
+ * 질문(`endPromptShownAt`)이 없거나 이전 질문 것이어도 그대로 기록한다(멱등·무해 — 판정은 `>= shownAt` 비교가 한다).
+ *
+ * Body: `{ action: 'continue' }`
+ * Response 200: `{ ok: true }` / 404 `{ error: 'trip_not_found' }` / 400 `{ error: 'invalid_json' | 'invalid_payload' | 'missing_token' }`
+ */
+const END_PROMPT_RESPONSE_ACTIONS = ['continue'] as const;
+
+app.post('/trips/:token/end-prompt-response', async (c) => {
+  const token = c.req.param('token');
+  if (!token) return c.json({ error: 'missing_token' }, 400);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const action = body && typeof body === 'object' ? (body as Record<string, unknown>).action : undefined;
+  if (!END_PROMPT_RESPONSE_ACTIONS.some((a) => a === action)) return c.json({ error: 'invalid_payload' }, 400);
+
+  const existing = await getTrip(c.env.TRIPS, token);
+  if (!existing) return c.json({ error: 'trip_not_found' }, 404);
+
+  const now = Date.now();
+  // 사용자 응답은 활동성 핸들러 — sliding TTL 연장(#3023, dismiss 경로와 동일).
+  await putTrip(c.env.TRIPS, extendTripExpiryOnActivity({ ...existing, endPromptContinuedAt: now }, now));
+  await recordTripEvent(c.env.DB, {
+    tokenHash: hashTripToken(token),
+    kind: 'end-prompt-continue',
+    meta: { shownAt: existing.endPromptShownAt ?? null },
+  });
+  return c.json({ ok: true });
+});
+
+/**
  * boarding-prompt 사용자 [미탑승]/dismiss 신호 (#819 게이트 #9).
  * 클라이언트가 사용자 응답을 받아 호출한다. silencedUntil을 set해 5분간 재발사 차단.
  *
@@ -4941,7 +4980,10 @@ function parseLaClient(raw: unknown): LaClientCapability | undefined {
   const { split, boardingStart } = raw as Record<string, unknown>;
   if (split !== true) return undefined;
   const mode = LA_BOARDING_START_MODES.find((m) => m === boardingStart);
-  return mode === undefined ? undefined : { split: true, boardingStart: mode };
+  if (mode === undefined) return undefined;
+  const capability: LaClientCapability = { split: true, boardingStart: mode };
+  if ((raw as Record<string, unknown>).endPromptAutoEnd === true) capability.endPromptAutoEnd = true;
+  return capability;
 }
 
 /** #3036 (O3) — 등록 시 `originPromptWindow` 병합 결과. trackingOptIn이 아니면 기존 창만 유지(없으면 필드 생략). */

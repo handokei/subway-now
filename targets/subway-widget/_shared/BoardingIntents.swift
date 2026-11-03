@@ -39,6 +39,8 @@ private let ACTION_DISEMBARK_NOT_YET = "DISEMBARK_NOT_YET"
 // #3007 S4-c — LA "안내를 종료할까요?" 버튼. JS가 앱 복귀 시 로컬 trip 상태를 정리하도록
 // pending marker에 쓰는 action (device `useAlarmEndTripResponder` 계열이 소비).
 private let ACTION_END_TRIP = "END_TRIP"
+// #3007 PR-2 — 종료 질문 [계속]. JS 브릿지(`useLiveActivityIntentBridge`)가 native POST 실패 시 FG에서 재전송하는 마커 action.
+private let ACTION_END_PROMPT_CONTINUE = "END_PROMPT_CONTINUE"
 
 // #2528 — backend 직결(BG, #2527 계약: POST /trips/:token/boarding-confirm,
 // body {action,station,line}). body의 `action`은 App Group의 ACTION_* 코드와 다른 어휘라
@@ -566,10 +568,50 @@ struct EndTripIntent: LiveActivityIntent {
     }
 }
 
+/// #3007 PR-2 — 종료 질문 [계속]을 backend에 알린다(`POST /trips/:token/end-prompt-response {action:"continue"}`).
+/// backend는 `endPromptContinuedAt`을 기록해 질문 5분 뒤 자동 종료(PR-3)를 취소한다.
+/// 응답 status는 App Group 마커(`entryId`)의 `nativePost`에 기록 — 실패(status 0 등)면 FG 진입 시 브릿지가 재전송한다.
+/// `@available`은 `performWithDeadline`·`recordNativePost`가 iOS 17+ 선언이라 필요하다.
+@available(iOS 17.0, *)
+private func postEndPromptContinue(tripToken: String, entryId: String?) async {
+    func recordFailure() {
+        if let entryId = entryId {
+            recordNativePost(entryId: entryId, status: 0, resolvedTrainCode: nil, lockState: nil)
+        }
+    }
+    guard !tripToken.isEmpty,
+          let encodedToken = tripToken.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+          let url = URL(string: "\(ALARM_BACKEND_URL_BASE)/trips/\(encodedToken)/end-prompt-response")
+    else {
+        intentLog.error("end-prompt-response skipped — tripToken empty or unencodable")
+        recordFailure()
+        return
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.timeoutInterval = 10
+    guard let bodyData = try? JSONSerialization.data(withJSONObject: ["action": "continue"]) else {
+        intentLog.error("end-prompt-response body encode failed")
+        recordFailure()
+        return
+    }
+    request.httpBody = bodyData
+
+    let result = await performWithDeadline(request)
+    intentLog.info("end-prompt-response status=\(result.status, privacy: .public)")
+    if let entryId = entryId {
+        recordNativePost(entryId: entryId, status: result.status, resolvedTrainCode: nil, lockState: nil)
+    }
+}
+
 /// #3221 — 15분 정지 종료 제안(`end-prompt`)의 [계속 안내] 버튼.
 ///
-/// 서버 호출이 **없다**(네트워크 0): trip을 그대로 유지하고 탑승 LA만 닫는다. "계속"은 이전까지
-/// 무응답이었지만(#3007 S4-c) 이제 명시 버튼이다. 여정 LA·pending marker·backend 모두 건드리지 않는다.
+/// trip은 그대로 유지하고 질문 LA만 닫는다. #3007 PR-2부터 backend에 [계속]을 **알린다**(`postEndPromptContinue`) —
+/// 그 전에는 네트워크 0이라 backend가 모르는 채로 5분 뒤 자동 종료(PR-3)가 [계속]을 무시했을 것이다.
+/// App Group 마커를 POST **전에** 써서 위젯 프로세스가 POST 중 죽어도 FG 진입 시 브릿지가 재전송할 근거가 남는다.
+/// 배너 닫기는 다른 응답 intent와 같은 `markCurrentActivity`(탑승 LA end + legacy 통합 LA의 end-prompt 행 제거).
 @available(iOS 17.0, *)
 struct ContinueGuidanceIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "계속 안내"
@@ -589,9 +631,15 @@ struct ContinueGuidanceIntent: LiveActivityIntent {
 
     func perform() async throws -> some IntentResult {
         intentLog.info("perform CONTINUE_GUIDANCE tapped tripToken=\(tripToken, privacy: .public)")
-        for activity in Activity<BoardingActivityAttributes>.activities {
-            await activity.end(nil, dismissalPolicy: .immediate)
-        }
+        await markCurrentActivity(boardingPhase: nil)
+        let entryId = writePendingBoardingIntent(
+            action: ACTION_END_PROMPT_CONTINUE,
+            tripToken: tripToken,
+            originStation: "",
+            line: "",
+            trackNativePost: true
+        )
+        await postEndPromptContinue(tripToken: tripToken, entryId: entryId)
         return .result()
     }
 }

@@ -427,7 +427,7 @@ function computeEndPromptContext(trip: Trip, due: boolean): LiveActivityContentS
     boardingPhase: 'end-prompt',
     boardingPromptTripToken: trip.token,
     boardingAlertTitle: strings.endPromptTitle,
-    boardingAlertBody: strings.endPromptBody({ destinationStation: trip.destination }),
+    boardingAlertBody: strings.endPromptBody,
   };
 }
 

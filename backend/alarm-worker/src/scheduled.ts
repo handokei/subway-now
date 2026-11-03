@@ -1933,7 +1933,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           station: resolveCurrentStationName(trip, stationarySsot),
           line: waypoint.line,
           title: strings.endPromptTitle,
-          body: strings.endPromptBody({ destinationStation: trip.destination }),
+          body: strings.endPromptBody,
         });
         // #3007 PR-1 — 질문이 기기에 **전달 성공**한 경우에만 기록(실패한 질문을 기준으로 자동 종료 금지).
         // 이미 저장하던 putTrip에 실려 추가 KV write 0(started.dirty와 같은 write로 합쳐진다).

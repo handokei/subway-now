@@ -139,7 +139,7 @@ export type EndPromptAutoEndVerdict = 'end' | 'cancel' | 'wait' | 'none';
 /**
  * #3007 PR-1 — 질문(`trip.endPromptShownAt`) 이후 상태로 자동 종료 여부를 판정한다. 순수 함수(KV/D1 없음).
  *
- *  - none: 질문 기록 없음 / [계속] 응답이 질문 이후 / 활성 lock(lock trip은 evidence가 저밀도라 무의미 — 위 PR-6 주석)
+ *  - none: 질문 기록 없음 / `laClient.endPromptAutoEnd` capability 없음(구버전 앱 — [계속] 채널이 없다) / [계속] 응답이 질문 이후 / 활성 lock(lock trip은 evidence가 저밀도라 무의미 — 위 PR-6 주석)
  *  - cancel: 질문 이후 윈도우 최대 변위 >= MOTION_MOVING_DISPLACEMENT_M (경과 시간과 무관하게 즉시)
  *  - end: 경과 >= GRACE 이고, 기기 sync stale(앱 꺼짐 — 이동 증거 부재가 곧 증거)이거나 질문 이후 계속 정지
  *  - wait: 그 외(유예 중 / 10~50m 애매 / 샘플 부족) — 잘못된 종료보다 대기가 낫다
@@ -149,8 +149,9 @@ export function evaluateEndPromptAutoEnd(
   ssot: TripPositionSSoT,
   now: number,
 ): EndPromptAutoEndVerdict {
-  const { endPromptShownAt: shownAt, endPromptContinuedAt: continuedAt, boardingLock } = trip;
+  const { endPromptShownAt: shownAt, endPromptContinuedAt: continuedAt, boardingLock, laClient } = trip;
   if (shownAt === undefined) return 'none';
+  if (laClient?.endPromptAutoEnd !== true) return 'none';
   if (continuedAt !== undefined && continuedAt >= shownAt) return 'none';
   // scheduled.ts `isBoardingLockActive`와 같은 술어(순환 import 회피로 인라인): 만료된 lock은 lockless 취급.
   if (boardingLock !== undefined && boardingLock.expiresAt > now) return 'none';

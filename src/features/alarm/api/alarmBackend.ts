@@ -212,7 +212,12 @@ export interface RegisterTripPayload {
    * 탑승여부는 별도 LA(push-to-start 17.2+ / FG 시작 17.0~17.1)로 받는다. 미지정(Android/구 build)이면 필드
    * 미송신 — backend는 구 클라이언트 경로(여정 LA에 질문 행)를 유지하고 body·hash가 바이트 동일하다.
    */
-  laClient?: { split: true; boardingStart: 'push-to-start' | 'fg-only' | 'none' };
+  laClient?: {
+    split: true;
+    boardingStart: 'push-to-start' | 'fg-only' | 'none';
+    /** #3007 PR-2 — 종료 질문 [계속] 응답 채널(`postEndPromptContinue`)을 가진 빌드. 없으면 backend는 자동 종료 대상에서 제외한다. */
+    endPromptAutoEnd?: true;
+  };
   /**
    * #3221 PR-4 — 탑승 LA 서버 시작용 기기 단위 push-to-start token(hex). `laClient.boardingStart==='push-to-start'`
    * 이고 token이 발급됐을 때만. 여정 LA token(`registerLiveActivityToken`)과 별개다. 회전하면 hash가 바뀌어 재등록된다.
@@ -810,6 +815,35 @@ export async function reportBoardingPromptOutcome(
     return { ok: true, status: res.status };
   } catch (e) {
     log.warn('boarding-prompt metric error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * #3007 PR-2 — 종료 질문 [계속] 응답을 backend에 전달한다(`POST /trips/:token/end-prompt-response`).
+ * native `ContinueGuidanceIntent`의 POST가 실패했을 때 `useLiveActivityIntentBridge`가 FG에서 재전송하는 경로.
+ * throw 없이 `{ok}` — 호출자가 status로 재시도 여부를 판단한다(4xx = 재시도 무의미, 응답 없음/5xx = 재시도).
+ */
+export async function postEndPromptContinue(token: string): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip end-prompt continue');
+    return { ok: false, skipped: true };
+  }
+  if (!token) return { ok: false };
+  try {
+    const res = await fetchWithTimeout(`${base}/trips/${encodeURIComponent(token)}/end-prompt-response`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'continue' }),
+    });
+    if (!res.ok) {
+      log.warn(`end-prompt continue failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('end-prompt continue error', e);
     return { ok: false };
   }
 }
