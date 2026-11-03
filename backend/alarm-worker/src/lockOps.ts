@@ -8,6 +8,8 @@
  * 이 파일은 순수 함수만 둔다 — DO/KV/index.ts/scheduled.ts 연결 없음(동작 변화 0).
  * 호출자 연결은 PR-2(TripDO `/lock`) ~ PR-3a/3b. 스펙: tasks/plan-2026-11-03-trip-do-field-cas.md §2.
  */
+import { appendLockCodeHistory } from './lockCodeHistory';
+import { carryBoardingLock, evaluateSameSession } from './sessionIdentity';
 import type { BoardingLockMeta, Trip } from './types';
 
 export interface LockCell {
@@ -140,11 +142,184 @@ export function lockLegKey(lock: BoardingLockMeta): string {
   return `${origin}|${lock.line}`;
 }
 
-// red 단계 stub — 시그니처만 있고 동작은 없다(모든 op가 noop). 구현은 다음 커밋.
-export function applyLockOp(cell: LockCell, _op: LockOp, _now: number): LockOpResult {
-  return { outcome: 'noop', cell };
+const sameIdentity = (a: BoardingLockMeta | undefined, b: BoardingLockMeta | undefined): boolean =>
+  a === undefined || b === undefined ? a === b : a.trainCode === b.trainCode && lockLegKey(a) === lockLegKey(b);
+
+const noop = (cell: LockCell): LockOpResult => ({ outcome: 'noop', cell });
+const conflict = (cell: LockCell): LockOpResult => ({ outcome: 'conflict', cell });
+
+/** lock과 결합 필드를 한 번에 되돌린 "lock 없음" 패치. */
+const CLEARED: Partial<LockCell> = {
+  lock: undefined,
+  consecutiveEtaMissing: 0,
+  lockCodeHistory: undefined,
+  renumberSuccessor: undefined,
+};
+
+/** 부착 패치 — 카운터·history·표식을 새 lock 기준으로 초기화한다. */
+const attachPatch = (lock: BoardingLockMeta | undefined): Partial<LockCell> => ({ ...CLEARED, lock });
+
+function applied(
+  cell: LockCell,
+  op: LockOp,
+  now: number,
+  patch: Partial<LockCell>,
+  identityChanged: boolean,
+): LockOpResult {
+  const next: LockCell = {
+    ...cell,
+    ...patch,
+    rev: identityChanged ? cell.rev + 1 : cell.rev,
+    last: { op: op.type, source: op.source, at: now },
+  };
+  // everAttached는 OR로만 커진다 — patch가 false를 실어도 되돌리지 않는다.
+  next.everAttached = cell.everAttached || patch.everAttached === true || next.lock !== undefined;
+  return { outcome: 'applied', cell: next };
 }
 
-export function applyLockCell(trip: Trip, _cell: LockCell): Trip {
-  return trip;
+type Handlers = {
+  [K in LockOp['type']]: (cell: LockCell, op: Extract<LockOp, { type: K }>, now: number) => LockOpResult;
+};
+
+const HANDLERS: Handlers = {
+  attachIfNone: (cell, op, now) => {
+    if (cell.lock !== undefined) return noop(cell);
+    if (op.authority === 'auto' && cell.rev !== op.expectedRev) return conflict(cell);
+    return applied(cell, op, now, attachPatch(op.lock), true);
+  },
+
+  userBoarded: (cell, op, now) => {
+    const revMatches = cell.rev === op.expectedRev;
+    // 낡은 시야인데 셀에 이미 lock이 있으면 사용자 탭이라도 기존 lock을 지우지 않는다(응답은 셀 기준).
+    if (!revMatches && cell.lock !== undefined) return { outcome: 'conflict-kept', cell };
+    if (op.lock !== undefined) return applied(cell, op, now, attachPatch(op.lock), true);
+    if (revMatches && op.releaseFirst && cell.lock !== undefined) return applied(cell, op, now, CLEARED, true);
+    return noop(cell);
+  },
+
+  userDisembarked: (cell, op, now) => {
+    if (cell.lock === undefined) return noop(cell);
+    if (lockLegKey(cell.lock) !== op.expectedLegKey) return conflict(cell);
+    return applied(cell, op, now, CLEARED, true);
+  },
+
+  releaseAuto: (cell, op, now) => {
+    if (cell.rev !== op.expectedRev) return conflict(cell);
+    if (cell.lock === undefined) return noop(cell);
+    return applied(cell, op, now, CLEARED, true);
+  },
+
+  swapAuto: (cell, op, now) => {
+    if (cell.rev !== op.expectedRev) return conflict(cell);
+    const { lock } = cell;
+    if (lock === undefined) return noop(cell);
+    return applied(
+      cell,
+      op,
+      now,
+      {
+        lock: { ...lock, trainCode: op.trainCode, expiresAt: Math.max(lock.expiresAt, op.expiresAt) },
+        lockCodeHistory: op.appendHistory
+          ? appendLockCodeHistory(cell.lockCodeHistory, lock.trainCode)
+          : cell.lockCodeHistory,
+        consecutiveEtaMissing: 0,
+        renumberSuccessor: op.renumberSuccessor,
+      },
+      true,
+    );
+  },
+
+  refreshExpiry: (cell, op, now) => {
+    const { lock } = cell;
+    if (cell.rev !== op.expectedRev || lock === undefined || op.until <= lock.expiresAt) return noop(cell);
+    return applied(cell, op, now, { lock: { ...lock, expiresAt: op.until } }, false);
+  },
+
+  setSegment: (cell, op, now) => {
+    if (cell.rev !== op.expectedRev) return conflict(cell);
+    const { lock } = cell;
+    if (lock === undefined) return noop(cell);
+    return applied(cell, op, now, { lock: { ...lock, segmentStations: op.segmentStations } }, false);
+  },
+
+  setEtaMissing: (cell, op, now) => {
+    if (cell.rev !== op.expectedRev) return conflict(cell);
+    if (cell.consecutiveEtaMissing === op.value) return noop(cell);
+    return applied(cell, op, now, { consecutiveEtaMissing: op.value }, false);
+  },
+
+  registerSession: (cell, op, now) => {
+    const incomingLock = op.incomingLock ?? undefined;
+    const { existing } = op;
+    // 같은 세션 판정은 index.ts와 같은 함수(evaluateSameSession)를 **셀의 최신 lock**으로 평가한다.
+    const sameSessionExisting =
+      existing !== null &&
+      !op.routeReset &&
+      evaluateSameSession(
+        { boardingLock: cell.lock, createdAt: existing.createdAt },
+        { boardingLock: incomingLock, createdAt: op.incomingCreatedAt },
+      )
+        ? existing
+        : null;
+    if (sameSessionExisting === null) {
+      return applied(
+        cell,
+        op,
+        now,
+        { ...attachPatch(incomingLock), session: { seq: cell.session.seq + 1, createdAt: op.incomingCreatedAt } },
+        true,
+      );
+    }
+    const lock = carryBoardingLock({
+      incomingLock,
+      isSameSession: true,
+      existingLock: cell.lock,
+      existingWaypoints: sameSessionExisting.waypointLines.map((line) => ({ line })),
+    });
+    if (lock === cell.lock) return noop(cell);
+    // lock이 사라지면 결합 필드도 함께 소거(셀 불변식: 이력·표식은 lock과 같이 산다).
+    return applied(cell, op, now, lock === undefined ? CLEARED : { lock }, !sameIdentity(cell.lock, lock));
+  },
+
+  // rev·seq 카운터는 유지(묘비) — 낡은 rev의 auto op가 거부되도록 rev는 반드시 오른다.
+  endSession: (cell, op, now) =>
+    applied(cell, op, now, { ...CLEARED, session: { ...cell.session, seq: cell.session.seq + 1 } }, true),
+
+  seedFromKv: (cell, op, now) => {
+    const { snapshot, epoch } = op;
+    if (cell.session.createdAt === snapshot.createdAt && cell.seededEpoch === epoch) return noop(cell);
+    return applied(
+      cell,
+      op,
+      now,
+      {
+        session: { seq: cell.session.seq, createdAt: snapshot.createdAt },
+        lock: snapshot.lock,
+        everAttached: snapshot.everAttached === true,
+        consecutiveEtaMissing: snapshot.consecutiveEtaMissing ?? 0,
+        lockCodeHistory: snapshot.lockCodeHistory,
+        renumberSuccessor: snapshot.renumberSuccessor,
+        seededEpoch: epoch,
+      },
+      true,
+    );
+  },
+};
+
+export function applyLockOp(cell: LockCell, op: LockOp, now: number): LockOpResult {
+  const handler = HANDLERS[op.type] as (c: LockCell, o: LockOp, n: number) => LockOpResult;
+  return handler(cell, op, now);
+}
+
+/** 셀의 lock 관련 필드를 메모리 trip에 반영한다(함수형 — 입력 trip 불변). */
+export function applyLockCell(trip: Trip, cell: LockCell): Trip {
+  const { lock, consecutiveEtaMissing, lockCodeHistory, renumberSuccessor, everAttached } = cell;
+  return {
+    ...trip,
+    boardingLock: lock,
+    consecutiveEtaMissing,
+    lockCodeHistory,
+    renumberSuccessor,
+    lockEverAttached: trip.lockEverAttached === true || everAttached ? true : trip.lockEverAttached,
+  };
 }

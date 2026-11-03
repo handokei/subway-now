@@ -46,9 +46,9 @@ export function evaluateSameSession(existing: SessionIdentity, incoming: Session
  *
  * waypoints가 비어 있으면 (validateTrip이 미리 차단) false로 평가된다.
  */
-export function isBoardingLockConsistentWithWaypoints(
+export function isBoardingLockConsistentWithWaypoints<W extends { line: string }>(
   lock: BoardingLockMeta,
-  waypoints: ReadonlyArray<{ line: string }>,
+  waypoints: ReadonlyArray<W>,
 ): boolean {
   return waypoints.some((wp) => wp.line === lock.line);
 }
