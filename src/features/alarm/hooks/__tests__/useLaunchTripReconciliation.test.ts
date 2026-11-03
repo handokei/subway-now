@@ -219,6 +219,50 @@ describe('runLaunchTripReconciliation', () => {
     });
   });
 
+  // #3005 PR-D-b — marker 보존이 10h로 늘어, register 실패 시 이전 trip marker가 현재 trip을 지우면 안 된다.
+  describe('#3005 PR-D-b — ended marker corrId 대조', () => {
+    const ENDED = {
+      status: 'ended',
+      endedAt: 1_700_000_000_000,
+      endReason: 'destination-arrived',
+    } as const;
+
+    beforeEach(async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    });
+
+    it('[거부] marker corrId가 현재 trip corrId와 다르면 정리하지 않는다', async () => {
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-current');
+      mockFetchTripStatus.mockResolvedValue({ ...ENDED, corrId: 'corr-previous' });
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+    });
+
+    it('같은 corrId면 정리한다', async () => {
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-current');
+      mockFetchTripStatus.mockResolvedValue({ ...ENDED, corrId: 'corr-current' });
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+    });
+
+    it('응답에 corrId 없음(구 backend)이면 기존 동작대로 정리한다', async () => {
+      mockGetCurrentTripCorrIdSync.mockReturnValue('corr-current');
+      mockFetchTripStatus.mockResolvedValue(ENDED);
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+    });
+
+    it('현재 corrId를 알 수 없으면(cache 미수화) 기존 동작대로 정리한다', async () => {
+      mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+      mockFetchTripStatus.mockResolvedValue({ ...ENDED, corrId: 'corr-previous' });
+      await runLaunchTripReconciliation();
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('#3143 — ended 분기도 미발사 도착 알람이 있으면 유예', () => {
     beforeEach(async () => {
       await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');

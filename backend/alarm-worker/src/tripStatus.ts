@@ -36,13 +36,26 @@ export type TripStatusEndReason =
 export interface TripStatusRecord {
   endedAt: number;
   endReason: TripStatusEndReason;
+  /**
+   * #3005 PR-D-b — 종료된 trip 인스턴스의 corrId. status 보존이 10h로 늘어 같은 token의 이전 trip marker가
+   * 현재 trip 조회에 섞일 수 있으므로, device가 현재 corrId와 대조해 다르면 ended로 보지 않게 한다.
+   * trip이 corrId를 보유하지 않았거나 구 레코드면 생략.
+   */
+  corrId?: string;
 }
 
 /**
- * 응답 contract retention 윈도우 — launch reconciliation은 최근 종료된 trip만 의미가 있다.
- * `now - endedAt` 이 이 값을 넘으면 GET endpoint는 410(expired-retention)을 반환.
+ * GET /trips/:token/status 응답 보존 윈도우. `now - endedAt` 이 이 값을 넘으면 410(expired-retention).
+ * #3005 PR-D-b — 기기 Signal 4 판정 상한(`SIGNAL_4_KTX_ETA_UPPER_BOUND_MS`=10h)과 맞춘다.
+ * 1h였을 때 종료 61분 뒤 조회가 410이라 기기가 backend 확정 종료를 받지 못했다(11/03 실측).
  */
-export const TRIP_STATUS_RETENTION_MS = 60 * 60 * 1000;
+export const TRIP_STATUS_RETENTION_MS = 10 * 60 * 60 * 1000;
+
+/**
+ * #1425 — 같은 token 재등록 쿨다운. status 보존(`TRIP_STATUS_RETENTION_MS`)과 분리해 1h 유지한다
+ * (보존만 늘리고 쿨다운이 같이 늘면 정상 재등록이 10h 막힌다).
+ */
+export const REGISTER_COOLDOWN_MS = 60 * 60 * 1000;
 
 /**
  * KV expirationTtl — 정확한 만료 응답을 위해 retention보다 충분히 길게 잡는다.
@@ -79,10 +92,12 @@ export async function writeTripEndedStatus(
   token: string,
   reason: TripEndedReason,
   now: number,
+  corrId?: string,
 ): Promise<void> {
   const record: TripStatusRecord = {
     endedAt: now,
     endReason: toTripStatusEndReason(reason),
+    ...(corrId ? { corrId } : {}),
   };
   await kv.put(tripStatusKey(token), JSON.stringify(record), {
     expirationTtl: TRIP_STATUS_TTL_SEC,
@@ -120,7 +135,12 @@ export async function readTripEndedStatus(
     ) {
       return null;
     }
-    return { endedAt: parsed.endedAt, endReason: parsed.endReason };
+    const { endedAt, endReason, corrId } = parsed;
+    return {
+      endedAt,
+      endReason,
+      ...(typeof corrId === 'string' && corrId ? { corrId } : {}),
+    };
   } catch {
     return null;
   }

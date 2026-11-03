@@ -46,6 +46,11 @@ jest.mock('../alarmLog', () => ({
   appendAlarmLog: (...args: unknown[]) => mockAppendAlarmLog(...args),
 }));
 
+const mockGetCurrentTripCorrIdSync = jest.fn<string | null, []>(() => null);
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
+}));
+
 const BASE_URL = 'https://api.test.dev';
 
 describe('getBackendUrl', () => {
@@ -470,5 +475,48 @@ describe('checkTripDeathByPull', () => {
     expect(result).toBe('skipped');
     expect(mockCleanupBackendConfirmedEndedTrip).not.toHaveBeenCalled();
     expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
+  });
+});
+
+// #3005 PR-D-b — marker 보존 10h: 이전 trip의 ended marker가 현재 trip을 지우면 안 된다.
+describe('checkTripDeathByPull — ended marker corrId 대조 (#3005 PR-D-b)', () => {
+  const ENDED = { status: 'ended', endedAt: 1, endReason: 'destination-arrived' } as const;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
+    mockCancelTripBoundOsQueue.mockResolvedValue(undefined);
+    mockCleanupBackendConfirmedEndedTrip.mockResolvedValue(undefined);
+    mockGetCurrentTripCorrIdSync.mockReturnValue('corr-current');
+  });
+
+  it('[거부] marker corrId가 현재와 다르면 alive, cleanup 0회', async () => {
+    mockFetchTripStatus.mockResolvedValue({ ...ENDED, corrId: 'corr-previous' });
+    const result = await checkTripDeathByPull(BASE_URL, 'fg-tick');
+    expect(result).toBe('alive');
+    expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
+    expect(mockCleanupBackendConfirmedEndedTrip).not.toHaveBeenCalled();
+  });
+
+  it('같은 corrId면 ended + cleanup', async () => {
+    mockFetchTripStatus.mockResolvedValue({ ...ENDED, corrId: 'corr-current' });
+    const result = await checkTripDeathByPull(BASE_URL, 'fg-tick');
+    expect(result).toBe('ended');
+    expect(mockCleanupBackendConfirmedEndedTrip).toHaveBeenCalledTimes(1);
+  });
+
+  it('응답 corrId 없음(구 backend)이면 기존 동작: ended', async () => {
+    mockFetchTripStatus.mockResolvedValue(ENDED);
+    const result = await checkTripDeathByPull(BASE_URL, 'fg-tick');
+    expect(result).toBe('ended');
+  });
+
+  it('현재 corrId 미상이면 기존 동작: ended', async () => {
+    mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+    mockFetchTripStatus.mockResolvedValue({ ...ENDED, corrId: 'corr-previous' });
+    const result = await checkTripDeathByPull(BASE_URL, 'fg-tick');
+    expect(result).toBe('ended');
   });
 });

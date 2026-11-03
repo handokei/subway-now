@@ -47,6 +47,11 @@ export interface TripStatusResult {
    * backend가 APNs 410/종료 dismissal/DELETE로 토큰을 조용히 지우면 false. 구 backend 응답엔 없다(undefined).
    */
   hasLiveActivityToken?: boolean;
+  /**
+   * #3005 PR-D-b — ended일 때 종료된 trip 인스턴스의 corrId. status 보존이 10h라 이전 trip의 marker일 수 있어
+   * 소비자가 현재 corrId와 대조한다. 구 backend/구 레코드는 없다(undefined).
+   */
+  corrId?: string;
 }
 
 const REQUEST_TIMEOUT_MS = 5000;
@@ -118,6 +123,7 @@ export async function fetchTripStatus(
     endedAt?: unknown;
     endReason?: unknown;
     hasLiveActivityToken?: unknown;
+    corrId?: unknown;
   };
 
   if (body.status === 'active') {
@@ -138,6 +144,7 @@ export async function fetchTripStatus(
       status: 'ended',
       endedAt,
       endReason: normalizeEndReason(body.endReason),
+      ...(typeof body.corrId === 'string' && body.corrId ? { corrId: body.corrId } : {}),
     };
   }
   throw new Error(`trip status fetch: unexpected body`);
