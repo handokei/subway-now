@@ -8,6 +8,7 @@ import {
   type TripDoStorage,
 } from '../tripDO';
 import type { Trip } from '../types';
+import { makeMapStorage } from './helpers/fakeTripDoNamespace';
 import type { TripPositionSSoT } from '../tripPositionSsot';
 
 /**
@@ -50,16 +51,7 @@ function makeSsot(overrides?: Partial<TripPositionSSoT>): TripPositionSSoT {
   };
 }
 
-/** Map 기반 fake — `DurableObjectState.storage`의 최소 부분집합 (KV 스타일 API). */
-function makeFakeStorage(): TripDoStorage {
-  const map = new Map<string, unknown>();
-  return {
-    get: async <T>(key: string) => map.get(key) as T | undefined,
-    put: async (key: string, value: unknown) => {
-      map.set(key, value);
-    },
-  };
-}
+const makeFakeStorage = (): TripDoStorage => makeMapStorage();
 
 describe('tripDO row helpers — pure function CRUD', () => {
   it('getTripRow: 신규 storage는 undefined', async () => {

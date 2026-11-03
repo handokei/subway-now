@@ -35,6 +35,7 @@
  * 등 타입은 `@cloudflare/workers-types`의 ambient global이라 import 없이 사용 가능.
  */
 
+import { applyLockOp, emptyLockCell, type LockCell, type LockOp } from './lockOps';
 import type { Trip } from './types';
 import type { TripPositionSSoT } from './tripPositionSsot';
 
@@ -46,6 +47,8 @@ const TRIP_ROW_UPDATED_AT_KEY = 'tripUpdatedAt';
 const SSOT_ROW_KEY = 'ssot';
 /** DO storage row key — SSoT row 마지막 write epoch ms. */
 const SSOT_ROW_UPDATED_AT_KEY = 'ssotUpdatedAt';
+/** DO storage row key — lock 셀(#3300 옵션 D, `LockCell`). */
+const LOCK_ROW_KEY = 'lock';
 
 /**
  * `DurableObjectState.storage`의 최소 부분집합 포트. 실제 프로덕션에서는
@@ -54,6 +57,8 @@ const SSOT_ROW_UPDATED_AT_KEY = 'ssotUpdatedAt';
 export interface TripDoStorage {
   get<T = unknown>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
+  /** 다중 키 원자 쓰기(ctx.storage.put(entries)) — 이후 진행 셀과 함께 쓸 때 사용. */
+  put(entries: Record<string, unknown>): Promise<void>;
 }
 
 /** trip row read. 미존재 시 undefined (신규 DO 인스턴스). */
@@ -91,18 +96,65 @@ export async function seedSsotRow(
  *  - `POST /trip` → body `Trip` 그대로 seed, `204`
  *  - `GET  /ssot` → `{ ssot: TripPositionSSoT | null }`
  *  - `POST /ssot` → body `TripPositionSSoT` 그대로 seed, `204`
+ *  - `GET  /lock` → `{ cell: LockCell | null }` (#3300)
+ *  - `POST /lock/op` → body `{ op: LockOp, now?: number }` → `{ outcome, cell }`. 잘못된 body/op는 `400`
  *
  * **fire 없음** — Phase 2(#2260 후속 이슈) 스코프. 본 클래스는 state 보관/조회만 수행한다.
  */
 export class TripDO implements DurableObject {
   private readonly storage: TripDoStorage;
+  /**
+   * 요청 직렬화 promise-chain mutex(#3300 §1(a)). DO input gate 해석에 기대지 않고 plain vitest에서도
+   * 결정적으로 동작한다. lock 핸들러 안에서 storage 외 await는 금지다(get → apply → put만).
+   */
+  private chain: Promise<unknown> = Promise.resolve();
 
   constructor(state: DurableObjectState) {
     this.storage = state.storage;
   }
 
+  private serialize<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(task);
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async handleLockOp(request: Request): Promise<Response> {
+    let body: { op?: LockOp; now?: number };
+    try {
+      body = (await request.json()) as { op?: LockOp; now?: number };
+    } catch {
+      return new Response('invalid json', { status: 400 });
+    }
+    const { op, now } = body;
+    if (typeof op?.type !== 'string') return new Response('invalid op', { status: 400 });
+    return this.serialize(async () => {
+      const stored = await this.storage.get<LockCell>(LOCK_ROW_KEY);
+      let result: ReturnType<typeof applyLockOp>;
+      try {
+        result = applyLockOp(stored ?? emptyLockCell(), op, now ?? Date.now());
+      } catch {
+        return new Response('invalid op', { status: 400 });
+      }
+      // applied만 영속 — noop/conflict/conflict-kept는 셀을 바꾸지 않는다.
+      if (result.outcome === 'applied') await this.storage.put({ [LOCK_ROW_KEY]: result.cell });
+      return Response.json(result);
+    });
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    if (request.method === 'GET' && url.pathname === '/lock') {
+      return this.serialize(async () => {
+        const cell = await this.storage.get<LockCell>(LOCK_ROW_KEY);
+        return Response.json({ cell: cell ?? null });
+      });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/lock/op') {
+      return this.handleLockOp(request);
+    }
 
     if (request.method === 'GET' && url.pathname === '/trip') {
       const trip = await getTripRow(this.storage);
