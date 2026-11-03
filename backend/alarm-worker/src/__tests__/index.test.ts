@@ -3702,6 +3702,77 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
     });
   });
 
+  // #3300 — 11/03 18:56~18:58 실측(token_hash b00dd879, 뚝섬→2호선→건대입구→7호선→용마산).
+  // 하차 응답(disembarked)이 2호선 lock을 먼저 풀어 boardingLock===undefined인 상태에서 7호선 탑승 탭이
+  // 오면 releasedForLegSwitch=false라 도보 게이트(#2515)가 탭을 거부했다(D1 outcome=walk-gated).
+  // 입력은 D1 trip_events 값(18:58:45 la-boarding-start 건대입구/7, 7292 arvlCd=1)으로 구성한 합성 상태다 —
+  // R2 캡처는 쓰지 않았다(positions mock = 7호선 건대입구 상행 1대).
+  describe('boarded 탭 — lock 없음 + 도보 게이트 미개방 (#3300)', () => {
+    function lockFreeLeg2Trip(): Record<string, unknown> {
+      return tripBody({
+        promptDisplay: { originStation: '용마산', line: '2' },
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: CREATED + 5 * 60_000, // 도보 게이트 미개방
+        waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+        infoModeEnabled: true,
+        boardingLock: undefined,
+      });
+    }
+
+    function captureInserts(): { db: Env['DB']; inserts: unknown[][] } {
+      const inserts: unknown[][] = [];
+      const run = vi.fn().mockResolvedValue({ success: true });
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => {
+          if (sql.includes('trip_events')) inserts.push(args);
+          return { run };
+        },
+      }));
+      return { db: { prepare } as unknown as Env['DB'], inserts };
+    }
+
+    it('boarded 탭은 lock이 이미 없어도 walk-gate를 우회해 leg-2 lock을 만든다', async () => {
+      fetchSpy.mockResolvedValue(
+        new Response(
+          JSON.stringify({ realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '0', trainNo: '7292' })] }),
+          { status: 200 },
+        ),
+      );
+      const { db, inserts } = captureInserts();
+      const env = makeKvEnv();
+      env.DB = db;
+      await env.TRIPS.put('trip:tok-bc', JSON.stringify(lockFreeLeg2Trip()));
+
+      const res = await post('/trips/tok-bc/boarding-confirm', confirmBody({ station: '건대입구', line: '7' }), env);
+      expect(res.status).toBe(200);
+
+      const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+      expect(events).toHaveLength(1);
+      const meta = JSON.parse(events[0][5] as string);
+      expect(meta.outcome).not.toBe('walk-gated');
+      expect(meta.lockState).toBe('leg2');
+      expect(await res.json()).toMatchObject({ ok: true, lockState: 'leg2', resolvedTrainCode: '7292' });
+
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-bc')) as string);
+      expect(stored.boardingLock?.trainCode).toBe('7292');
+    });
+
+    it('거부 케이스: 탭이 아닌 경로(resolver 기본값 = bypassWalkGate 미전달)는 같은 상태에서 여전히 walk-gated', async () => {
+      const { attemptBoardingAnchorResolution } = await import('../boardingAnchorResolver');
+      const outcomes: string[] = [];
+      const seoul = { fetchPositions: vi.fn() } as never;
+      const lock = await attemptBoardingAnchorResolution(
+        lockFreeLeg2Trip() as never,
+        seoul,
+        CREATED,
+        { allowLegTransfer: true, tapAnchor: { boardingStation: '건대입구', line: '7' } },
+        (outcome) => outcomes.push(outcome),
+      );
+      expect(lock).toBeNull();
+      expect(outcomes).toEqual(['walk-gated']);
+    });
+  });
+
   // #2957 (W2, E2E) — 10/9 실측 회귀(leg-1 lock 5559 잔존이 leg-2 응답을 봉쇄) 재현 + 수리를
   // HTTP 왕복으로 end-to-end 고정. 단위 테스트(`decideLegLockReleaseForBoardedTap` describe)는
   // 판정 함수만 검증하고, 여기는 release→재생성 wiring(§4-2 LA 게이트 skip 포함) 전체를 검증한다.
