@@ -32,6 +32,7 @@
 
 import {
   pushMotionEvidence,
+  isDeviceSyncStale,
   readSsot,
   writeSsot,
   type MotionEvidence,
@@ -125,6 +126,44 @@ export function hasBeenStationaryFor(
 export function isEndPromptDue(ssot: TripPositionSSoT, now: number): boolean {
   if (!hasBeenStationaryFor(ssot, now, END_PROMPT_STATIONARY_MS)) return false;
   return !hasBeenStationaryFor(ssot, now, END_PROMPT_STATIONARY_MS + CRON_INTERVAL_MS);
+}
+
+/**
+ * #3007 — 종료 질문 후 무응답 자동 종료까지의 유예. 사용자 결정(2026-11-03): 질문 유지 + 약 5분 무응답·무이동이면 종료.
+ * 새 임계 변위를 만들지 않는다 — 취소는 `MOTION_MOVING_DISPLACEMENT_M`, 정지는 `hasBeenStationaryFor`를 재사용한다.
+ */
+export const END_PROMPT_AUTO_END_GRACE_MS = 5 * 60_000;
+
+export type EndPromptAutoEndVerdict = 'end' | 'cancel' | 'wait' | 'none';
+
+/**
+ * #3007 PR-1 — 질문(`trip.endPromptShownAt`) 이후 상태로 자동 종료 여부를 판정한다. 순수 함수(KV/D1 없음).
+ *
+ *  - none: 질문 기록 없음 / [계속] 응답이 질문 이후 / 활성 lock(lock trip은 evidence가 저밀도라 무의미 — 위 PR-6 주석)
+ *  - cancel: 질문 이후 윈도우 최대 변위 >= MOTION_MOVING_DISPLACEMENT_M (경과 시간과 무관하게 즉시)
+ *  - end: 경과 >= GRACE 이고, 기기 sync stale(앱 꺼짐 — 이동 증거 부재가 곧 증거)이거나 질문 이후 계속 정지
+ *  - wait: 그 외(유예 중 / 10~50m 애매 / 샘플 부족) — 잘못된 종료보다 대기가 낫다
+ */
+export function evaluateEndPromptAutoEnd(
+  trip: Trip,
+  ssot: TripPositionSSoT,
+  now: number,
+): EndPromptAutoEndVerdict {
+  const { endPromptShownAt: shownAt, endPromptContinuedAt: continuedAt, boardingLock } = trip;
+  if (shownAt === undefined) return 'none';
+  if (continuedAt !== undefined && continuedAt >= shownAt) return 'none';
+  // scheduled.ts `isBoardingLockActive`와 같은 술어(순환 import 회피로 인라인): 만료된 lock은 lockless 취급.
+  if (boardingLock !== undefined && boardingLock.expiresAt > now) return 'none';
+
+  const sinceShown = ssot.motionEvidence.filter(
+    (e) => e.source === 'device-position' && e.ts >= shownAt && e.ts <= now,
+  );
+  if (maxDisplacementMeters(sinceShown) >= MOTION_MOVING_DISPLACEMENT_M) return 'cancel';
+
+  const elapsedMs = now - shownAt;
+  if (elapsedMs < END_PROMPT_AUTO_END_GRACE_MS) return 'wait';
+  if (isDeviceSyncStale(ssot, now)) return 'end';
+  return hasBeenStationaryFor(ssot, now, elapsedMs) ? 'end' : 'wait';
 }
 
 /** motionEvidence 중 최신 'device-position' sample의 ts. 없으면 null. */
