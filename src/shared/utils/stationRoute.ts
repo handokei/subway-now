@@ -135,7 +135,7 @@ export interface DirectRoute {
   /** #655: 실측 운행 시간(초). findRoutes/updateRouteFromPosition가 lookup으로 채운다. */
   travelSeconds: number;
   /** #3177: 실제 하차 승강장 역 id(stations.json). 하차문 조회는 이름이 아닌 id로 한다. */
-  destinationStationId?: string;
+  destinationStationId: string;
 }
 
 /**
@@ -154,9 +154,9 @@ export interface TransferRoute extends CompletedTransferState {
   type: 'transfer';
   transferName: string;
   /** #3177: 환승역에서 실제로 내리는 fromLine 승강장의 역 id. */
-  transferStationId?: string;
+  transferStationId: string;
   /** #3177: 최종 목적지 승강장 역 id. */
-  destinationStationId?: string;
+  destinationStationId: string;
   fromLine: LineNumber;
   toLine: LineNumber;
   stopsToTransfer: number;
@@ -170,7 +170,7 @@ export interface TransferRoute extends CompletedTransferState {
 export interface TransferSegment {
   transferName: string;
   /** #3177: 이 환승에서 실제로 내리는 fromLine 승강장의 역 id. */
-  transferStationId?: string;
+  transferStationId: string;
   fromLine: LineNumber;
   toLine: LineNumber;
   stopsToTransfer: number;
@@ -185,7 +185,7 @@ export interface MultiTransferRoute extends CompletedTransferState {
   /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
   secondsAfterLastTransfer: number;
   /** #3177: 최종 목적지 승강장 역 id. */
-  destinationStationId?: string;
+  destinationStationId: string;
 }
 
 export type Route = DirectRoute | TransferRoute | MultiTransferRoute | null;
