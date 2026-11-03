@@ -8,6 +8,8 @@ import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { setTripCorrId, __resetTripCorrIdForTests__ } from '../../../observability/utils/tripCorrId';
 import { useNavigationStore } from '../../../route/store/useNavigationStore';
 import { useUserIntentStore } from '../useUserIntentStore';
+import { useBoardingLockStore } from '../useBoardingLockStore';
+import { BOARDING_LOCK_KEY } from '../../../../shared/constants/storageKeys';
 import * as alarmBackend from '../../api/alarmBackend';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -112,5 +114,45 @@ describe('runTripBoundCleanups expected (#3005)', () => {
 
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
     expect(clearSpy).toHaveBeenCalledWith(TOKEN, 'user-clear');
+  });
+
+  describe('BoardingLock (capturedAt)', () => {
+    const lockAt = (boardedAt: number) => ({
+      destinationId: 'd',
+      trainCode: 'T-1',
+      boardingStationId: 's',
+      boardingLine: '2' as const,
+      boardedAt,
+      expectedDurationMs: 60_000,
+    });
+    const CAPTURED = 1_000_000;
+    const expectedAt = { corrId: null, activeTripToken: null, capturedAt: CAPTURED };
+
+    beforeEach(() => useBoardingLockStore.setState({ lock: null }));
+
+    it('정리 등록 이후 탑승한 lock은 메모리·storage 모두 보존한다', async () => {
+      await useBoardingLockStore.getState().createLock(lockAt(CAPTURED + 1), false);
+      await runTripBoundCleanups('destination-switch', { expected: expectedAt });
+      expect(useBoardingLockStore.getState().lock?.trainCode).toBe('T-1');
+      expect(await AsyncStorage.getItem(BOARDING_LOCK_KEY)).not.toBeNull();
+    });
+
+    it('정리 등록 이전부터 있던 lock은 해제한다', async () => {
+      await useBoardingLockStore.getState().createLock(lockAt(CAPTURED - 1), false);
+      await runTripBoundCleanups('destination-switch', { expected: expectedAt });
+      expect(useBoardingLockStore.getState().lock).toBeNull();
+      expect(await AsyncStorage.getItem(BOARDING_LOCK_KEY)).toBeNull();
+    });
+
+    it('lock이 없으면 그대로 진행한다', async () => {
+      await runTripBoundCleanups('destination-switch', { expected: expectedAt });
+      expect(useBoardingLockStore.getState().lock).toBeNull();
+    });
+
+    it('capturedAt 생략 시 lock은 항상 정리한다(기존 동작)', async () => {
+      await useBoardingLockStore.getState().createLock(lockAt(CAPTURED + 1), false);
+      await runTripBoundCleanups('destination-switch', { expected: { corrId: null, activeTripToken: null } });
+      expect(useBoardingLockStore.getState().lock).toBeNull();
+    });
   });
 });

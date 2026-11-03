@@ -236,6 +236,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       // #3005 — 정리 체인은 recall await 뒤에 돈다. 그 사이 새 trip이 등록되면 늦게 온 정리가 새 trip을 지우므로,
       // **등록 시점**의 trip 신원(corrId + backend token)을 캡처해 runTripBoundCleanups가 같은 trip일 때만
       // 신원 묶인 항목을 정리하게 한다. getItem은 여기서 동기로 발행해 이후 쓰기(새 등록 ack)와 섞이지 않는다.
+      const capturedAt = Date.now();
       const expectedTokenRead = AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
       // #1321 — delete→recreate race 차단: tripTransitionQueue에 chain해 직렬화한다.
       // 직전 transition(예: delete)의 cleanup이 완전히 끝난 뒤에야 이번 transition(예: recreate)의
@@ -253,6 +254,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
           const expected = {
             corrId: endedCorrIdSnapshot,
             activeTripToken: await expectedTokenRead,
+            capturedAt,
           };
           return station
             ? runTripBoundCleanups('destination-switch', { preserveCustomOrigin: true, expected })
