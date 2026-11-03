@@ -244,6 +244,10 @@ export type TripEventKind =
   // 중복 적재 없음 — `isEndPromptDue`가 "하한 D 만족 && 하한 D+1tick 불만족"으로 due tick
   // 하나만 true가 되게 무상태 판정한다(마커를 KV에 쓰지 않기 위한 설계).
   | 'end-prompt-due'
+  // #3007 PR-1 — 종료 질문(`endPromptShownAt`) 후 GRACE(5분) 무응답·무이동 -> 자동 종료 대상이 된 시점 1건. **계측 전용**
+  // (종료 연결은 PR-3). meta={ shownAt, graceMs, elapsedMs, deviceSyncStale, motionState }. 같은 질문 중복 적재 없음 —
+  // `trip.endPromptAutoEndDueLoggedFor === endPromptShownAt` 마커(trip에 이미 실리는 putTrip, 질문당 +1 write).
+  | 'end-prompt-auto-end-due'
   // #3144 (v8 D3, ADR-043) — backend가 trip.boardingLock을 **부착한 모든 지점** 1건. 171 leg-1 backend
   // lock의 출처(sync/boarding-confirm/ register resolver / cron resolver)를 D1만으로 가릴 수 없었던
   // 계측 공백을 메운다. `meta`={ path: LockAttachPath, trainCode, hasResponseMarker }, `station`=

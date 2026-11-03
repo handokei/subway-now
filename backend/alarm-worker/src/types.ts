@@ -204,6 +204,19 @@ export interface Trip {
    */
   lastLaPushAt?: number;
   /**
+   * #3007 PR-1 — "안내를 종료할까요?" 질문이 기기에 **전달 성공**한 시각(epoch ms). cron(`fireBoardingLaStart().sent`)
+   * 또는 LA heartbeat update 성공 시에만 기록한다 — 전달 실패한 질문 기준으로 자동 종료하면 안 된다.
+   * `evaluateEndPromptAutoEnd`의 기준점. 이동 감지(cancel) 시 제거된다.
+   */
+  endPromptShownAt?: number;
+  /** #3007 PR-1 — [계속] 응답 시각. **타입만** — 기록 경로(route)는 PR-2. `>= endPromptShownAt`이면 자동 종료 대상 아님. */
+  endPromptContinuedAt?: number;
+  /**
+   * #3007 PR-1 — `end-prompt-auto-end-due` D1 행을 이미 적재한 질문의 `endPromptShownAt` 값. 같은 질문 중복 적재 방지 마커
+   * (값 비교라 새 질문이 shownAt을 갱신하면 자동으로 무효화 — 별도 clear 불필요).
+   */
+  endPromptAutoEndDueLoggedFor?: number;
+  /**
    * 연속 etaMissing 카운트 (#706). 운행 시간대 외(새벽 등)에 trainCode가 Seoul API에서
    * 사라져도 trip이 자동 종료되지 않아 무한 폴링하던 회귀(8h × 1/min) 방지용.
    * runTrainCodeTracking이 estimate=null 받을 때마다 +1, 성공 시 0 reset.

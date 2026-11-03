@@ -7,7 +7,12 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { runScheduled, type ScheduledDeps } from '../scheduled';
+import {
+  createEmptyScheduledStats,
+  maybeFireLiveActivityUpdate,
+  runScheduled,
+  type ScheduledDeps,
+} from '../scheduled';
 import { SeoulArrivalClient } from '../seoul';
 import { getTrip, putTrip } from '../trips';
 import { seedSsot, writeSsot, type MotionEvidence } from '../tripPositionSsot';
@@ -200,9 +205,53 @@ describe('#3007 PR-1 — 질문 +5분 평가 (계측만)', () => {
   it('활성 lock trip은 평가하지 않는다', async () => {
     const { kv, db, inserts } = await setup(evidence(), {
       endPromptShownAt: SHOWN_AT,
-      boardingLock: { expiresAt: NOW + 60_000 } as Trip['boardingLock'],
+      boardingLock: {
+        trainCode: '7246',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW - 60_000,
+        segmentStations: ['중곡', '용마산'],
+        expiresAt: NOW + 60 * 60_000,
+      } as Trip['boardingLock'],
     });
     await runAt(kv, db, NOW);
     expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(0);
+  });
+});
+
+describe('#3007 PR-1 — heartbeat(legacy LA update) 경로 기록', () => {
+  async function heartbeat(apnsStatus: number): Promise<Trip> {
+    const trip = makeTrip({ activityPushToken: 'la-token', activityState: 'live', apnsEnv: 'sandbox' });
+    const fetchImpl = vi.fn(async () => new Response('', { status: apnsStatus }));
+    const deps = {
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      seoul: makeSeoul(() => NOW),
+    } as ScheduledDeps;
+    const ssot = await seedSsot(new InMemoryKV() as unknown as KVNamespace, trip.token, '중곡', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.motionEvidence = stationary(NOW, END_PROMPT_STATIONARY_MS);
+    ssot.lastDeviceSyncAt = NOW;
+    await maybeFireLiveActivityUpdate(
+      trip,
+      trip.waypoints[0],
+      NOW + 120_000,
+      deps,
+      createEmptyScheduledStats(NOW),
+      NOW,
+      () => {},
+      ssot,
+    );
+    return trip;
+  }
+
+  it('endPromptDue + LA update 성공 -> endPromptShownAt = now', async () => {
+    expect((await heartbeat(200)).endPromptShownAt).toBe(NOW);
+  });
+
+  it('LA update 실패 -> 기록 없음', async () => {
+    expect((await heartbeat(500)).endPromptShownAt).toBeUndefined();
   });
 });

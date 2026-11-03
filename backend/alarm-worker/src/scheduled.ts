@@ -110,7 +110,9 @@ import {
 } from './advanceTripPosition';
 // #3007 — 정지 15분 due 판정(무상태, KV write 0). 상세는 motionState.ts 헤더.
 import {
+  END_PROMPT_AUTO_END_GRACE_MS,
   END_PROMPT_STATIONARY_MS,
+  evaluateEndPromptAutoEnd,
   isEndPromptDue,
   maxDisplacementMeters,
 } from './motionState';
@@ -1933,7 +1935,38 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           title: strings.endPromptTitle,
           body: strings.endPromptBody({ destinationStation: trip.destination }),
         });
-        if (started.dirty) await putTrip(env.TRIPS, trip);
+        // #3007 PR-1 — 질문이 기기에 **전달 성공**한 경우에만 기록(실패한 질문을 기준으로 자동 종료 금지).
+        // 이미 저장하던 putTrip에 실려 추가 KV write 0(started.dirty와 같은 write로 합쳐진다).
+        if (started.sent) trip.endPromptShownAt = now;
+        if (started.dirty || started.sent) await putTrip(env.TRIPS, trip);
+      }
+    }
+    // #3007 PR-1 — 질문 이후 상태 평가(**계측만, 종료 연결은 PR-3**). 같은 이유로 stationary-skip `continue` 앞에 둔다.
+    // 추가 KV read 0(stationarySsot 재사용). KV write는 질문당 최대 +2회(cancel 시 필드 제거 1 / end 최초 적재 마커 1) — 둘 다
+    // 질문이 실제로 있었던 드문 trip에서만 발생하며, 평소(none/wait)는 0.
+    if (stationarySsot !== null) {
+      const { endPromptShownAt: shownAt } = trip;
+      const verdict = evaluateEndPromptAutoEnd(trip, stationarySsot, now);
+      if (verdict === 'cancel') {
+        delete trip.endPromptShownAt;
+        await putTrip(env.TRIPS, trip);
+      } else if (verdict === 'end' && shownAt !== undefined && trip.endPromptAutoEndDueLoggedFor !== shownAt) {
+        await recordTripEvent(env.DB, {
+          tokenHash: hashTripToken(trip.token),
+          kind: 'end-prompt-auto-end-due',
+          station: waypoint.stationName,
+          line: waypoint.line,
+          meta: {
+            shownAt,
+            graceMs: END_PROMPT_AUTO_END_GRACE_MS,
+            elapsedMs: now - shownAt,
+            deviceSyncStale: isDeviceSyncStale(stationarySsot, now),
+            motionState: stationarySsot.motionState,
+          },
+        });
+        // 같은 질문 중복 적재 방지 — 마커가 현재 질문의 shownAt과 같으면 재적재 안 함(새 질문은 shownAt이 달라 자동 무효).
+        trip.endPromptAutoEndDueLoggedFor = shownAt;
+        await putTrip(env.TRIPS, trip);
       }
     }
     if (
@@ -7250,6 +7283,8 @@ export async function maybeFireLiveActivityUpdate(
     // 410 분기 — token이 비워졌으므로 lastLaPushEpoch/lastLaPushAt은 갱신하지 않는다.
     return true;
   }
+  // #3007 PR-1 — heartbeat 경로의 질문 전달 성공 기록(cron 경로와 같은 필드). lastLaPushAt과 같은 저장에 실린다.
+  if (endPromptDue && result.sent) trip.endPromptShownAt = now;
   trip.lastLaPushEpoch = newArrivalEpoch;
   // #900 Seam D — heartbeat 게이트 기준점. 발사 시각(wall clock)을 stamp.
   trip.lastLaPushAt = now;
