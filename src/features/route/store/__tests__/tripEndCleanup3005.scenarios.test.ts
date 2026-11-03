@@ -207,24 +207,20 @@ async function runS1(): Promise<TripSurvival> {
 }
 
 describe('#3005 S1 [10-18 실측] 대기 상태에서 새 목적지 선택 -> 새 트립이 정리 체인에 지워지지 않는다', () => {
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('ACTIVE_TRIP(백엔드 트립 토큰)이 유지된다', async () => {
+  it('ACTIVE_TRIP(백엔드 트립 토큰)이 유지된다', async () => {
     expect((await runS1()).activeTripAfter).toBe(TOKEN_X);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('새 트립의 corrId가 유지된다', async () => {
+  it('새 트립의 corrId가 유지된다', async () => {
     const { corrIdOfX, corrIdAfter } = await runS1();
     expect(corrIdAfter).toBe(corrIdOfX);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('trackingOptIn이 유지된다', async () => {
+  it('trackingOptIn이 유지된다', async () => {
     expect((await runS1()).trackingOptInAfter).toBe(true);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X를 대상으로 한 백엔드 DELETE(10-18의 destination-switch http-delete)가 0회다', async () => {
+  it('X를 대상으로 한 백엔드 DELETE(10-18의 destination-switch http-delete)가 0회다', async () => {
     await runS1();
     expect(deletesFor(TOKEN_X)).toHaveLength(0);
   });
@@ -261,24 +257,20 @@ async function runS2(): Promise<TripSurvival> {
 }
 
 describe('#3005 S2 [경합] 종료 직후 정리 체인이 끝나기 전에 새 목적지 선택', () => {
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X의 ACTIVE_TRIP이 유지된다', async () => {
+  it('X의 ACTIVE_TRIP이 유지된다', async () => {
     expect((await runS2()).activeTripAfter).toBe(TOKEN_X);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X의 corrId가 유지된다', async () => {
+  it('X의 corrId가 유지된다', async () => {
     const { corrIdOfX, corrIdAfter } = await runS2();
     expect(corrIdAfter).toBe(corrIdOfX);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X의 trackingOptIn이 유지된다', async () => {
+  it('X의 trackingOptIn이 유지된다', async () => {
     expect((await runS2()).trackingOptInAfter).toBe(true);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X를 대상으로 한 백엔드 DELETE가 어느 체인에서도 0회다', async () => {
+  it('X를 대상으로 한 백엔드 DELETE가 어느 체인에서도 0회다', async () => {
     await runS2();
     expect(deletesFor(TOKEN_X)).toHaveLength(0);
   });
