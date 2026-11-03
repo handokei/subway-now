@@ -3621,6 +3621,60 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       });
     });
 
+    describe('#3301 boarding-confirm-result meta action / resolveError', () => {
+      async function runConfirm(
+        overrides: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> {
+        const { db, inserts } = captureEventInsertsGlobal();
+        const env = makeKvEnv();
+        env.DB = db;
+        await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(legTransferTripBody()));
+        const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(overrides), env);
+        expect(res.status).toBe(200);
+        const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+        expect(events).toHaveLength(1);
+        return JSON.parse(events[0][5] as string) as Record<string, unknown>;
+      }
+
+      it('not-boarded 탭 → meta.action==="not-boarded", resolveError 없음', async () => {
+        const meta = await runConfirm({ action: 'not-boarded' });
+        expect(meta.action).toBe('not-boarded');
+        expect(meta.lockState).toBe('none');
+        expect(meta).not.toHaveProperty('resolveError');
+      });
+
+      it('disembarked 탭 → meta.action==="disembarked"', async () => {
+        const meta = await runConfirm({ action: 'disembarked' });
+        expect(meta.action).toBe('disembarked');
+        expect(meta).not.toHaveProperty('resolveError');
+      });
+
+      it('boarded + live 해소 예외 → meta.action==="boarded", resolveError===true', async () => {
+        fetchSpy.mockImplementation(() => {
+          throw new Error('seoul client boom');
+        });
+        const meta = await runConfirm({ action: 'boarded' });
+        expect(meta.action).toBe('boarded');
+        expect(meta.resolveError).toBe(true);
+        expect(meta.lockState).toBe('none');
+        expect(JSON.stringify(meta)).not.toContain('boom');
+      });
+
+      it('boarded 정상 resolved → action==="boarded", resolveError 없음', async () => {
+        fetchSpy.mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '0', trainNo: '7256' })],
+            }),
+            { status: 200 },
+          ),
+        );
+        const meta = await runConfirm({ action: 'boarded', station: '전혀다른역', line: '9' });
+        expect(meta.action).toBe('boarded');
+        expect(meta).not.toHaveProperty('resolveError');
+      });
+    });
+
     function captureEventInsertsGlobal(): { db: Env['DB']; inserts: unknown[][] } {
       const inserts: unknown[][] = [];
       const run = vi.fn().mockResolvedValue({ success: true });
