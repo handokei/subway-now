@@ -374,3 +374,39 @@ describe('lockOps — seedFromKv / applyLockCell', () => {
     expect(applyLockCell(trip, emptyLockCell()).consecutiveEtaMissing).toBe(0);
   });
 });
+
+describe('lockOps — 만료 lock은 "lock 없음" (cron의 !isBoardingLockActive 의미, scheduled.ts:1965/1348)', () => {
+  const expired = () => run(emptyLockCell(), userBoarded(0, lock3334()), L3334_ATTACH_TS).cell;
+  const afterExpiry = () => expired().lock!.expiresAt + 1;
+
+  it('만료 lock 셀 + cron attachIfNone(rev 일치) -> 덮어쓰기: 카운터·history 초기화, rev+1', () => {
+    const base = { ...expired(), consecutiveEtaMissing: 3, lockCodeHistory: ['3330'] };
+    const r = run(
+      base,
+      { type: 'attachIfNone', source: 'cron-leg2', authority: 'auto', expectedRev: base.rev, lock: lock7266() },
+      afterExpiry(),
+    );
+    expect(r.outcome).toBe('applied');
+    expect(r.cell.lock?.trainCode).toBe('7266');
+    expect(r.cell.consecutiveEtaMissing).toBe(0);
+    expect(r.cell.lockCodeHistory).toBeUndefined();
+    expect(r.cell.rev).toBe(base.rev + 1);
+  });
+
+  it('만료 lock 셀 + userBoarded(rev 불일치) -> conflict-kept가 아니라 부착', () => {
+    const base = expired();
+    const r = run(base, userBoarded(base.rev - 1, lock7266()), afterExpiry());
+    expect(r.outcome).toBe('applied');
+    expect(r.cell.lock?.trainCode).toBe('7266');
+  });
+
+  it('활성 lock은 기존대로 attachIfNone noop / userBoarded conflict-kept', () => {
+    const base = expired();
+    const now = base.lock!.expiresAt - 1;
+    expect(
+      run(base, { type: 'attachIfNone', source: 'cron-leg2', authority: 'auto', expectedRev: base.rev, lock: lock7266() }, now)
+        .outcome,
+    ).toBe('noop');
+    expect(run(base, userBoarded(base.rev - 1, lock7266()), now).outcome).toBe('conflict-kept');
+  });
+});
