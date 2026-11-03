@@ -24,7 +24,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import i18next, { type ParseKeys } from 'i18next';
 import { Platform } from 'react-native';
-import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
+import { ACTIVE_TRIP_KEY, TRIP_CORR_ID_KEY } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
 import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { TRIP_ENDED_CATEGORY } from './notificationCategory';
@@ -32,7 +32,9 @@ import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { appendAlarmLog } from './alarmLog';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { claimTripEnd, resolveTripEndIdentity } from './tripEndClaim';
+import { getTripStartedAt } from './tripStartStorage';
 
 const log = createLogger('tripEndedNotification');
 
@@ -83,14 +85,38 @@ export interface NotifyTripEndedInput {
   /** 종료 시점의 목적지. 문구에 역명을 싣는다. null이면 역명 없이 종료 문구만. */
   destination: Station | null;
   reason: TripEndedReason;
+  /**
+   * 경로 진입 시점에 `captureTripEndIdentity()`로 잡아 둔 종료 identity(dedupe 키). 생략하면 알림 시점에
+   * 조회한다(폴백). 종료 경로마다 cleanup 타이밍이 달라 알림 시점 조회는 키가 갈라지므로(#3005 PR-B)
+   * 자동 종료 경로는 진입 직후 캡처해 넘긴다. `null` = 캡처 시점에도 trip을 알 수 없음.
+   */
+  identity?: string | null;
 }
 
 /**
  * 종료 1건의 dedupe 키. corrId는 `runTripBoundCleanups`가 지우므로 **cleanup 전에** 불러야 한다
  * (cleanup 뒤 호출은 startedAt → 분 단위 폴백으로 내려간다).
  */
-async function resolveEndClaimKey(): Promise<string> {
-  return (await resolveTripEndIdentity()) ?? `min:${Math.floor(Date.now() / MINUTE_MS)}`;
+async function resolveEndClaimKey(captured: string | null | undefined): Promise<string> {
+  const identity = captured === undefined ? await resolveTripEndIdentity() : captured;
+  return identity ?? `min:${Math.floor(Date.now() / MINUTE_MS)}`;
+}
+
+/**
+ * 종료 경로 **진입 직후** trip identity를 캡처한다(corrId 1순위 -> `start:<startedAt>` -> null).
+ * corrId 메모리 캐시가 cold launch로 아직 비어 있으면 storage를 직접 읽어 hydrate 완료를 기다린다 —
+ * `getCurrentTripCorrId()`는 캐시를 덮어써 cleanup이 지운 corrId를 되살릴 수 있어 쓰지 않는다.
+ * 읽기는 호출 즉시(동기 구간에서) 시작되므로 뒤이은 cleanup이 지우기 전의 값을 잡는다.
+ */
+export async function captureTripEndIdentity(): Promise<string | null> {
+  const cached = getCurrentTripCorrIdSync();
+  if (cached) return cached;
+  const [stored, startedAt] = await Promise.all([
+    AsyncStorage.getItem(TRIP_CORR_ID_KEY).catch(() => null),
+    getTripStartedAt().catch(() => null),
+  ]);
+  if (stored) return stored;
+  return startedAt === null ? null : `start:${startedAt}`;
 }
 
 /**
@@ -103,10 +129,10 @@ async function resolveEndClaimKey(): Promise<string> {
  * 실패는 swallow — 알림 하나 때문에 종료 cleanup 흐름이 깨지면 안 된다.
  */
 export async function notifyTripEnded(input: NotifyTripEndedInput): Promise<void> {
-  const { destination, reason } = input;
+  const { destination, reason, identity } = input;
   // 어떤 단계(claim 키 조회 / 문구 조립 / 예약)가 throw해도 호출부(종료 cleanup 흐름)로 새지 않는다.
   try {
-    if (!claimTripEnd(await resolveEndClaimKey())) return;
+    if (!claimTripEnd(await resolveEndClaimKey(identity))) return;
     const stationName = destination ? getStationDisplayName(destination) : null;
     const { title: titleKey, body: bodyKey } = TRIP_ENDED_TEXT_KEYS[reason];
     // #3223 후속 — 도착 종료 + 목적지명이 있으면 "{역} 도착 · 안내 종료" / "목적지에 도착해 경로 안내를 마쳤어요"
@@ -149,9 +175,11 @@ export async function notifyTripEnded(input: NotifyTripEndedInput): Promise<void
 }
 
 /**
- * 자동 해제 호출부(HomeScreen 도착 / 목적지 자동 해제)용: clear를 실행하고 종료를 알린다.
+ * 자동 해제 호출부(HomeScreen 도착 / 목적지 자동 해제)용: identity를 **clear 이전에** 캡처하고, clear를
+ * 동기로 실행한 뒤 캡처한 identity로 알린다. clear가 corrId를 지워도 다른 종료 경로와 같은 키를 쓴다.
  */
 export function clearAndNotifyTripEnded(clear: () => void, input: NotifyTripEndedInput): void {
+  const captured = captureTripEndIdentity();
   clear();
-  void notifyTripEnded(input);
+  void captured.then((identity) => notifyTripEnded({ ...input, identity }));
 }

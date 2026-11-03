@@ -58,7 +58,7 @@ import { getTripStartedAt } from '../utils/tripStartStorage';
 import { fetchTripStatus } from '../api/tripStatus';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
-import { notifyTripEnded } from '../utils/tripEndedNotification';
+import { captureTripEndIdentity, notifyTripEnded } from '../utils/tripEndedNotification';
 import { handleTripGone } from '../utils/tripGoneSelfEnd';
 import { cleanupBackendConfirmedEndedTrip } from '../utils/tripEndedCleanupSequence';
 import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
@@ -169,6 +169,9 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       logger.info(
         `Signal 4 backend-timeout self-end: silentPushGap=${now - lastReceivedAt}ms tripAge=${now - startedAt}ms`,
       );
+      // #3005 PR-B — 종료 identity는 진입 직후(recall await 앞) 캡처한다. recall await 중 다른 종료 경로의
+      // cleanup이 corrId를 지우면 알림 시점 조회는 다른 키(`min:<분>`)로 내려가 dedupe가 뚫린다.
+      const endIdentity = await captureTripEndIdentity();
       // 기존 status=ended 분기와 동일한 순서 — recall이 cleanup 이전이어야 storage 입력 유지.
       await triggerTripEndRecall();
       // 알림은 cleanup 앞 — corrId(dedupe 키)·ACTIVE_TRIP_KEY(tripToken)가 cleanup에서 지워진다.
@@ -176,6 +179,7 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       await notifyTripEnded({
         destination: useDestinationStore.getState().destination,
         reason: 'backend-silent',
+        identity: endIdentity,
       });
       const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
       // #2302 — Signal 4(backend 30분 무음) self-end. 이 경로도 alarmLog에 흔적을 남기지

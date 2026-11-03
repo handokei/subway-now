@@ -58,7 +58,9 @@ jest.mock('../../store/tripBoundCleanups', () => ({
 
 // PR-3b — Signal 4 self-end의 종료 알림.
 const mockNotifyTripEnded = jest.fn();
+const mockCaptureTripEndIdentity = jest.fn();
 jest.mock('../../utils/tripEndedNotification', () => ({
+  captureTripEndIdentity: (...args: unknown[]) => mockCaptureTripEndIdentity(...args),
   notifyTripEnded: (...args: unknown[]) => mockNotifyTripEnded(...args),
 }));
 
@@ -118,6 +120,7 @@ beforeEach(async () => {
   mockClearSentinel.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
   mockNotifyTripEnded.mockResolvedValue(undefined);
+  mockCaptureTripEndIdentity.mockResolvedValue('corr-captured');
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
   mockClearBackendSsotMirror.mockResolvedValue(undefined);
@@ -486,7 +489,12 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockNotifyTripEnded).toHaveBeenCalledWith({
         destination: MOCK_STATIONS.gangnam,
         reason: 'backend-silent',
+        identity: 'corr-captured',
       });
+      // #3005 PR-B — identity는 recall(await) 앞에서 캡처한다.
+      expect(mockCaptureTripEndIdentity.mock.invocationCallOrder[0]).toBeLessThan(
+        mockTriggerTripEndRecall.mock.invocationCallOrder[0],
+      );
       // corrId는 runTripBoundCleanups가 지우므로 알림이 먼저. recall(storage 입력 필요)은 그보다 앞.
       const recallOrder = mockTriggerTripEndRecall.mock.invocationCallOrder[0];
       const noticeOrder = mockNotifyTripEnded.mock.invocationCallOrder[0];

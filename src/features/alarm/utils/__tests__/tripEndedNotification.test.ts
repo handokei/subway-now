@@ -38,6 +38,8 @@ import i18next from 'i18next';
 import { Platform } from 'react-native';
 import type { Station } from '../../../../shared/types/station';
 import {
+  captureTripEndIdentity,
+  clearAndNotifyTripEnded,
   notifyTripEnded,
   TRIP_ENDED_AUTO_KIND,
   TRIP_ENDED_NOTIFICATION_ID,
@@ -299,5 +301,63 @@ describe('notifyTripEnded — 조용한 종료 경로 콘텐츠 (PR-3a)', () => 
       await notifyTripEnded({ destination: null, reason: 'lifecycle' });
       expect(mockAppendAlarmLog).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('captureTripEndIdentity / identity 인자 (#3005 PR-B)', () => {
+  beforeEach(resetAll);
+
+  it('corrId 캐시가 있으면 storage를 읽지 않고 그 값', async () => {
+    await expect(captureTripEndIdentity()).resolves.toBe('corr-1');
+    expect(mockGetItem).not.toHaveBeenCalled();
+  });
+
+  it('cold launch — 캐시가 비어도 storage의 corrId를 hydrate 대기해 잡는다', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    mockGetItem.mockImplementation(async (k) => (k.includes('corr') ? 'stored-corr' : null));
+    await expect(captureTripEndIdentity()).resolves.toBe('stored-corr');
+  });
+
+  it('corrId가 어디에도 없으면 start:<startedAt>, startedAt도 없으면 null', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    await expect(captureTripEndIdentity()).resolves.toBe('start:1700000000000');
+    mockGetStartedAt.mockResolvedValue(null);
+    await expect(captureTripEndIdentity()).resolves.toBeNull();
+  });
+
+  it('storage/startedAt 읽기가 실패해도 reject하지 않고 null', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    mockGetItem.mockRejectedValue(new Error('io'));
+    mockGetStartedAt.mockRejectedValue(new Error('io'));
+    await expect(captureTripEndIdentity()).resolves.toBeNull();
+  });
+
+  it('같은 identity를 넘긴 두 호출은 알림 시점 corrId가 달라져도 1건 (사유가 달라도)', async () => {
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: 'corr-1' });
+    mockGetCorrId.mockReturnValue(null); // 다른 경로의 cleanup이 corrId를 지운 뒤
+    await notifyTripEnded({ destination: null, reason: 'backend-silent', identity: 'corr-1' });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('거부 — 다른 identity는 별개 종료라 각각 알린다', async () => {
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: 'corr-1' });
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: 'corr-2' });
+    expect(mockSchedule).toHaveBeenCalledTimes(2);
+  });
+
+  it('identity=null(캡처 시점에도 trip 불명)이면 분 단위 키로 폴백', async () => {
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: null });
+    await notifyTripEnded({ destination: null, reason: 'backend-silent', identity: null });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearAndNotifyTripEnded — clear를 동기로 먼저 실행하고 clear 전에 캡처한 identity로 알린다', async () => {
+    const clear = jest.fn(() => mockGetCorrId.mockReturnValue(null));
+    clearAndNotifyTripEnded(clear, { destination: null, reason: 'arrived' });
+    expect(clear).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    // 같은 trip(corr-1)의 다른 경로 알림은 이미 claim된 키라 막힌다 = 캡처가 clear 이전 값이었다.
+    await notifyTripEnded({ destination: null, reason: 'backend-silent', identity: 'corr-1' });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
   });
 });
