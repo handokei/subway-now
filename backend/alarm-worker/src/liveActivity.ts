@@ -683,7 +683,7 @@ export async function cleanupTripWithLa(
     // 확인하고 자체 cleanup한다. KV write 실패는 cleanup 흐름을 차단하지 않는다 —
     // alert push가 best-effort라면 retention도 best-effort.
     try {
-      await writeTripEndedStatus(env.TRIPS, trip.token, reason, now);
+      await writeTripEndedStatus(env.TRIPS, trip.token, reason, now, trip.corrId);
     } catch (e) {
       log('trip-status write failed', {
         token: trip.token.slice(0, 8),

@@ -60,6 +60,7 @@ import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { notifyTripEnded } from '../utils/tripEndedNotification';
 import { handleTripGone } from '../utils/tripGoneSelfEnd';
+import { isEndedMarkerOfOtherTrip } from '../utils/tripStatusCorrId';
 import { cleanupBackendConfirmedEndedTrip } from '../utils/tripEndedCleanupSequence';
 import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
@@ -223,6 +224,11 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     }
 
     // status === 'ended'. silent push miss를 backstop으로 복구.
+    // #3005 PR-D-b — 이전 trip의 marker(corrId 불일치)면 현재 trip을 정리하지 않는다.
+    if (isEndedMarkerOfOtherTrip(result.corrId, getCurrentTripCorrIdSync())) {
+      logger.info('trip ended marker는 이전 trip(corrId 불일치) — 현재 trip 유지');
+      return;
+    }
     // #3143 — 미발사 도착 알람이 남아 있으면 유예: 키·store를 보존해 다음 launch/FG pull이 재시도한다
     // (gone 분기의 deferred(alarm)와 동일 가드, 최후 보루는 9h backstop).
     if (await hasFutureTripArrivalAlarm(tripToken)) {

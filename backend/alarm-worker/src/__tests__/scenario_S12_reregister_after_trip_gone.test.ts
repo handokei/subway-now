@@ -21,7 +21,7 @@
  *
  * 실제 메커니즘은 validateTrip이 아니라 그 *뒤*에 있는 `#1425 trip-recently-ended` 쿨다운
  * (`index.ts:953~`, 이미 `index.test.ts:6044` describe 블록으로 포괄 검증됨)이다 — 같은
- * token이 `TRIP_STATUS_RETENTION_MS`(1시간, `tripStatus.ts:45`) 내에 (seoul-outage 제외)
+ * token이 `REGISTER_COOLDOWN_MS`(1시간, `tripStatus.ts`; #3005 PR-D-b로 status 보존과 분리) 내에 (seoul-outage 제외)
  * 어떤 이유로든 종료됐으면, **payload가 완전히 유효해도(waypoints 비지 않음)** 재등록이
  * 400으로 거부된다. 10/7 트립은 06:48:31 destination-arrived로 종료됐고, 재시도는
  * +1:42/+1:58/+2:30/+3:32 뒤 — 전부 1시간 retention 안이다.

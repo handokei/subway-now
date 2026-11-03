@@ -210,6 +210,7 @@ import {
 } from './dijkstraRoute';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
+  REGISTER_COOLDOWN_MS,
   TRIP_STATUS_RETENTION_MS,
   readTripEndedStatus,
   deleteTripEndedStatus,
@@ -1164,7 +1165,7 @@ app.post('/trips', async (c) => {
   //   1) boardingLock.trainCode가 양쪽 모두 같으면 같은 세션 (cold restart 후 createdAt이 바뀌어도 OK)
   //   2) trainCode가 한쪽이라도 없으면 createdAt drift 5s 이내일 때만 같은 세션 (lock 등록 전 단계)
   //   3) 그 외 (다른 trainCode 또는 큰 drift) → 새 세션, 전면 교체
-  // #1425 — trip-ended retention(1시간) 안에 같은 token 재등록 차단.
+  // #1425 — trip-ended 쿨다운(REGISTER_COOLDOWN_MS, 1시간) 안에 같은 token 재등록 차단.
   // silent push `trip-ended:eta-missing`(scheduled.ts:878) 후 device가 자동 재시도(또는
   // BG 5h 후 FG 복귀 시 useStateRehydration 보조 trigger)로 같은 token POST하면 기존 코드는
   // `getTrip()` 결과(=null, 이미 삭제됨)만 확인하고 무조건 새 trip으로 처리 → backend auto-revive
@@ -1176,7 +1177,7 @@ app.post('/trips', async (c) => {
   //
   // `Date.now()` 기준 — device 시계 drift 위험을 피하려면 backend wall clock 사용해야 한다.
   const recentlyEnded = await readTripEndedStatus(c.env.TRIPS, incoming.token);
-  if (recentlyEnded && Date.now() - recentlyEnded.endedAt < TRIP_STATUS_RETENTION_MS) {
+  if (recentlyEnded && Date.now() - recentlyEnded.endedAt < REGISTER_COOLDOWN_MS) {
     // #1663 — Seoul outage로 강제 종료된 trip은 cooldown 면제. 사용자가 재등록하면 즉시 허용.
     // 원래 #1425 cooldown 목적(device race/자동 재시도 차단)과 충돌 없음 — outage false-end는
     // 사용자 명시 재등록이며, 같은 token의 device race가 아니다.
@@ -4596,6 +4597,7 @@ app.get('/trips/:tripToken/status', async (c) => {
         status: 'ended' as const,
         endedAt: indexedEnded.endedAt,
         endReason: indexedEnded.endReason,
+        ...(indexedEnded.corrId ? { corrId: indexedEnded.corrId } : {}),
       });
     }
   }
@@ -4614,6 +4616,7 @@ app.get('/trips/:tripToken/status', async (c) => {
     status: 'ended' as const,
     endedAt: ended.endedAt,
     endReason: ended.endReason,
+    ...(ended.corrId ? { corrId: ended.corrId } : {}),
   });
 });
 

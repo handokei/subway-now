@@ -38,6 +38,8 @@ import { cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import { cleanupBackendConfirmedEndedTrip } from './tripEndedCleanupSequence';
 import { hasFutureTripArrivalAlarm } from './tripGone';
 import { handleTripGone } from './tripGoneSelfEnd';
+import { isEndedMarkerOfOtherTrip } from './tripStatusCorrId';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { appendAlarmLog } from './alarmLog';
 import { markBackendLiveActivityTokenMissing } from './liveActivityPushChannel';
 import { createLogger } from '../../../shared/utils/logger';
@@ -142,6 +144,12 @@ export async function checkTripDeathByPull(
   if (result.status === 'active') {
     // #3163 후속 P1-a — backend가 몰래 LA 토큰을 지웠으면(false) device 등록 dedup을 풀고 재등록. 필드 부재(구 backend)는 무동작.
     if (result.hasLiveActivityToken === false) markBackendLiveActivityTokenMissing();
+    return 'alive';
+  }
+
+  // #3005 PR-D-b — 이전 trip의 marker(corrId 불일치)는 현재 trip의 death 증거가 아니다.
+  if (isEndedMarkerOfOtherTrip(result.corrId, getCurrentTripCorrIdSync())) {
+    logger.info(`ended marker는 이전 trip(corrId 불일치) — 무동작 (site=${site})`);
     return 'alive';
   }
 
