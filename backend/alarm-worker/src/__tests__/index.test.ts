@@ -3565,6 +3565,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
         laCandidatePresent: false,
+        action: 'boarded',
         lockState: 'none',
         outcome: 'invalid-route',
         anchorSource: 'tap',
@@ -3615,9 +3616,73 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
         laCandidatePresent: false,
+        action: 'boarded',
         lockState: 'leg2',
         outcome: 'resolved',
         anchorSource: 'currentLegAnchor',
+      });
+    });
+
+    describe('#3301 boarding-confirm-result meta action / resolveError', () => {
+      async function runConfirm(
+        overrides: Record<string, unknown>,
+        trip: Record<string, unknown> = legTransferTripBody(),
+      ): Promise<Record<string, unknown>> {
+        const { db, inserts } = captureEventInsertsGlobal();
+        const env = makeKvEnv();
+        env.DB = db;
+        await env.TRIPS.put(`trip:tok-bc`, JSON.stringify(trip));
+        const res = await post('/trips/tok-bc/boarding-confirm', confirmBody(overrides), env);
+        expect(res.status).toBe(200);
+        const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
+        expect(events).toHaveLength(1);
+        return JSON.parse(events[0][5] as string) as Record<string, unknown>;
+      }
+
+      it('not-boarded 탭 → meta.action==="not-boarded", resolveError 없음', async () => {
+        const meta = await runConfirm({ action: 'not-boarded' });
+        expect(meta.action).toBe('not-boarded');
+        expect(meta.lockState).toBe('none');
+        expect(meta).not.toHaveProperty('resolveError');
+      });
+
+      it('disembarked 탭 → meta.action==="disembarked"', async () => {
+        const meta = await runConfirm({ action: 'disembarked' });
+        expect(meta.action).toBe('disembarked');
+        expect(meta).not.toHaveProperty('resolveError');
+      });
+
+      it('boarded + live 해소 예외 → meta.action==="boarded", resolveError===true', async () => {
+        // Seoul 응답 파싱 중 throw(응답 undefined) -> resolver 예외 -> catch.
+        fetchSpy.mockResolvedValue(undefined as unknown as Response);
+        const meta = await runConfirm(
+          { action: 'boarded', station: '건대입구' },
+          tripBody({
+            promptDisplay: { originStation: '용마산', line: '2' },
+            currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+            legBoardingEligibleAt: CREATED,
+            waypoints: [{ stationName: '어린이대공원', line: '7', kind: 'destination' }],
+            infoModeEnabled: true,
+          }),
+        );
+        expect(meta.action).toBe('boarded');
+        expect(meta.resolveError).toBe(true);
+        expect(meta.lockState).toBe('none');
+        expect(JSON.stringify(meta)).not.toContain('boom');
+      });
+
+      it('boarded 정상 resolved → action==="boarded", resolveError 없음', async () => {
+        fetchSpy.mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              realtimePositionList: [positionEntry({ statnNm: '건대입구', updnLine: '0', trainNo: '7256' })],
+            }),
+            { status: 200 },
+          ),
+        );
+        const meta = await runConfirm({ action: 'boarded', station: '전혀다른역', line: '9' });
+        expect(meta.action).toBe('boarded');
+        expect(meta).not.toHaveProperty('resolveError');
       });
     });
 
@@ -4818,6 +4883,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
         laCandidatePresent: false,
+        action: 'boarded',
         lockState: 'leg1',
         outcome: 'resolved',
         anchorSource: 'promptDisplay',
@@ -4847,6 +4913,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
         laCandidatePresent: false,
+        action: 'boarded',
         lockState: 'none',
         outcome: 'ambiguous',
         anchorSource: 'promptDisplay',
@@ -4880,8 +4947,11 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0][5] as string)).toEqual({
         laCandidatePresent: false,
+        action: 'boarded',
         lockState: 'none',
         anchorSource: 'currentLegAnchor',
+        // 이 테스트는 fetch를 mock하지 않아 resolver가 예외로 끝난다 -> #3301 resolveError 표시.
+        resolveError: true,
       });
     });
 
@@ -4909,7 +4979,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
-      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'leg1', laCandidatePresent: false });
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'leg1', laCandidatePresent: false, action: 'boarded' });
     });
 
     it('disembarked — meta={lockState:released}, outcome 없음', async () => {
@@ -4940,7 +5010,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
-      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'released', laCandidatePresent: false });
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'released', laCandidatePresent: false, action: 'disembarked' });
     });
 
     it('not-boarded — meta={lockState:none}, outcome 없음', async () => {
@@ -4957,7 +5027,7 @@ describe('POST /trips/:token/boarding-confirm (#2527)', () => {
 
       const events = inserts.filter((args) => args[2] === 'boarding-confirm-result');
       expect(events).toHaveLength(1);
-      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'none', laCandidatePresent: false });
+      expect(JSON.parse(events[0][5] as string)).toEqual({ lockState: 'none', laCandidatePresent: false, action: 'not-boarded' });
     });
   });
 });

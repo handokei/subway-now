@@ -2665,6 +2665,9 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // body(device가 탭한 알림)인지 stamp(backend 마지막 발사 기록)인지 D1 meta에 남긴다. 둘 다
   // 일어나지 않은 경로(live 재해소/이미 active lock/disembarked 등)는 undefined로 생략.
   let trainCodeSource: 'body' | 'stamp' | undefined;
+  // #3301 — boarded live 재해소가 예외로 끝났는가(D1 meta용). 'none'+outcome 부재가 not-boarded인지
+  // 해소 예외인지 구분하기 위한 관측 전용 플래그. 에러 메시지는 남기지 않는다(아래 S5145 주석).
+  let resolveError = false;
   // #3055 B — 기존 lock을 release하지 않고 유지한 판정 사유(`decideLegLockReleaseForBoardedTap`).
   // 응답에 기존 lock의 trainCode를 실어도 되는지(`buildBoardingConfirmResolution`) 가르는 입력이다.
   // lock이 없었거나 이번 요청이 release했으면 undefined.
@@ -2875,6 +2878,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         // 신규코드 게이트에서 taint로 잡힌다. 정적 msg만 남기고 error 내용도 로깅하지 않는다
         // (Error 메시지에 요청 파생 문자열이 섞일 수 있어 안전하지 않음).
         console.log(JSON.stringify({ msg: 'boarding-confirm: boarded resolution error' }));
+        resolveError = true;
       }
       // #3221 PR-3b — 3분 초과 후보: live가 먼저, live가 lock을 못 만들었으면(none/ambiguous/오류) 검증된 후보로 fallback.
       if (laVerdict?.kind === 'fallback' && laCandidate !== undefined) {
@@ -2990,7 +2994,12 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
       liveWasAttempted ? undefined : resolveNoneReason,
       trainCodeSource,
       resolveTier,
-      { source: payload.source, laCandidatePresent: payload.laCandidatePresent },
+      {
+        source: payload.source,
+        laCandidatePresent: payload.laCandidatePresent,
+        action: payload.action,
+        ...(resolveError ? { resolveError } : {}),
+      },
       laCandidateDecision !== undefined
         ? {
             decision: laCandidateDecision,
@@ -3096,7 +3105,14 @@ export function buildBoardingConfirmEventMeta(
   noneReason?: BoardingResolveNoneReason,
   trainCodeSource?: 'body' | 'stamp',
   resolveTier?: BoardingResolveTier,
-  requestOrigin?: { source?: BoardingConfirmSource; laCandidatePresent: boolean },
+  requestOrigin?: {
+    source?: BoardingConfirmSource;
+    laCandidatePresent: boolean;
+    /** #3301 — 검증된 enum(`validateBoardingConfirmPayload` 통과값)만. 요청 원문 아님. */
+    action?: BoardingConfirmPayload['action'];
+    /** #3301 — boarded live 해소 예외 여부. true일 때만 전달(생략=정상/미시도). */
+    resolveError?: boolean;
+  },
   laCandidate?: {
     decision: LaCandidateDecision;
     agrees?: boolean;
@@ -3113,6 +3129,8 @@ export function buildBoardingConfirmEventMeta(
   resolveTier?: BoardingResolveTier;
   source?: BoardingConfirmSource;
   laCandidatePresent?: boolean;
+  action?: BoardingConfirmPayload['action'];
+  resolveError?: boolean;
   laCandidateDecision?: LaCandidateDecision;
   laCandidateAgrees?: boolean;
   liveOutcome?: BoardingResolveOutcome;
@@ -3129,6 +3147,9 @@ export function buildBoardingConfirmEventMeta(
     // #3055 PR-0 — 요청 출처 계측(LA 버튼 경로를 D1만으로 구분).
     ...(requestOrigin?.source !== undefined ? { source: requestOrigin.source } : {}),
     ...(requestOrigin !== undefined ? { laCandidatePresent: requestOrigin.laCandidatePresent } : {}),
+    // #3301 — lockState='none' + outcome 부재의 원인 구분(not-boarded 탭 vs boarded 해소 예외).
+    ...(requestOrigin?.action !== undefined ? { action: requestOrigin.action } : {}),
+    ...(requestOrigin?.resolveError === true ? { resolveError: true } : {}),
     // #3221 PR-3b — LA 버튼 후보 판정 결과(분포·창 길이 재검토 신호 `window-expired-live && laCandidateAgrees=false`).
     ...(laCandidate !== undefined ? { laCandidateDecision: laCandidate.decision } : {}),
     ...(laCandidate?.agrees !== undefined ? { laCandidateAgrees: laCandidate.agrees } : {}),

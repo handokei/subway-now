@@ -206,8 +206,14 @@ describe('#3089 10/19 저녁 취침 트립 — 현재 결함 문서화 (it.fails
     const confirmEvents = r.events.filter((e) => e.kind === 'boarding-confirm-result').map((e) => e.meta);
     // #3300 — 재생은 수정 후 코드: 첫 탭이 lock을 만들고(walk-gated 아님) 둘째 탭은 이미 lock이 있어 재평가하지 않는다.
     expect(confirmEvents.slice(0, 2)).toEqual([
-      { lockState: 'leg2', outcome: 'resolved', anchorSource: 'currentLegAnchor', laCandidatePresent: false },
-      { lockState: 'leg1', laCandidatePresent: false },
+      {
+        lockState: 'leg2',
+        outcome: 'resolved',
+        anchorSource: 'currentLegAnchor',
+        laCandidatePresent: false,
+        action: 'boarded', // #3301 계측 필드
+      },
+      { lockState: 'leg1', laCandidatePresent: false, action: 'boarded' },
     ]);
     expect(confirmEvents[2]).toMatchObject({ lockState: 'leg2' }); // 이미 lock 보유 — 재평가 없음
     // D1 실측과 동일(탭 3회: walk-gated, walk-gated, leg2/body).
