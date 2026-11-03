@@ -140,7 +140,7 @@ describe('end-prompt due(15분 정지 종료 제안) — split trip은 탑승 LA
       phase: 'end-prompt',
       originStation: '중곡',
       title: strings.endPromptTitle,
-      body: strings.endPromptBody({ destinationStation: '용마산' }),
+      body: strings.endPromptBody,
     });
     const rows = inserts.filter((a) => a[2] === 'la-boarding-start');
     expect(rows).toHaveLength(1);
