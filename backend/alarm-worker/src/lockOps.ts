@@ -145,6 +145,10 @@ export function lockLegKey(lock: BoardingLockMeta): string {
 const sameIdentity = (a: BoardingLockMeta | undefined, b: BoardingLockMeta | undefined): boolean =>
   a === undefined || b === undefined ? a === b : a.trainCode === b.trainCode && lockLegKey(a) === lockLegKey(b);
 
+/** 활성 lock 판정 — scheduled.ts `isBoardingLockActive`와 같은 의미(만료 lock 객체는 "lock 없음"). */
+const isLockActive = (lock: BoardingLockMeta | undefined, now: number): boolean =>
+  lock !== undefined && lock.expiresAt > now;
+
 const noop = (cell: LockCell): LockOpResult => ({ outcome: 'noop', cell });
 const conflict = (cell: LockCell): LockOpResult => ({ outcome: 'conflict', cell });
 
@@ -183,7 +187,7 @@ type Handlers = {
 
 const HANDLERS: Handlers = {
   attachIfNone: (cell, op, now) => {
-    if (cell.lock !== undefined) return noop(cell);
+    if (isLockActive(cell.lock, now)) return noop(cell);
     if (op.authority === 'auto' && cell.rev !== op.expectedRev) return conflict(cell);
     return applied(cell, op, now, attachPatch(op.lock), true);
   },
@@ -191,7 +195,7 @@ const HANDLERS: Handlers = {
   userBoarded: (cell, op, now) => {
     const revMatches = cell.rev === op.expectedRev;
     // 낡은 시야인데 셀에 이미 lock이 있으면 사용자 탭이라도 기존 lock을 지우지 않는다(응답은 셀 기준).
-    if (!revMatches && cell.lock !== undefined) return { outcome: 'conflict-kept', cell };
+    if (!revMatches && isLockActive(cell.lock, now)) return { outcome: 'conflict-kept', cell };
     if (op.lock !== undefined) return applied(cell, op, now, attachPatch(op.lock), true);
     if (revMatches && op.releaseFirst && cell.lock !== undefined) return applied(cell, op, now, CLEARED, true);
     return noop(cell);
