@@ -2782,7 +2782,8 @@ async function catchUpToLockTrain(
   await fireSyncConsumedPrecedingAlarms(env, trip, consumedCount, deps, now, log, generatePushId, { source: 'cron-catchup' });
 
   for (const { stationName } of skipped) appendPassedStation(trip, stationName);
-  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+  // #3319 — stamp 후 통째로 되쓰므로 cacheTtl 없이 현재 값을 읽는다(같은 tick advance의 currentStationId 보존).
+  const ssot = await readSsot(env.TRIPS, trip.token);
   if (ssot !== null) {
     for (const { stationName } of skipped) {
       await stampPassedStationAlarmEvent(ssot, trip.token, stationName, 'station-passed', now);
@@ -6925,9 +6926,8 @@ export async function completeWaypointAdvance(
   // completeWaypointAdvance는 'destination' kind를 받지 않는다(caller가 그 경우 직접
   // cleanupTripWithLa+deleteSsot로 처리하고 이 함수를 호출하지 않음) — 'transfer'만 구분.
   const alarmEventType: AlarmEventType = waypoint.kind === 'transfer' ? 'transfer' : 'station-passed';
-  const ssotForAlarmEvent = await readSsot(env.TRIPS, trip.token, {
-    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-  });
+  // #3319 — stamp 후 통째로 되쓰므로 cacheTtl 없이 현재 값을 읽는다(같은 tick advance의 currentStationId 보존).
+  const ssotForAlarmEvent = await readSsot(env.TRIPS, trip.token);
   if (ssotForAlarmEvent !== null) {
     await stampPassedStationAlarmEvent(
       ssotForAlarmEvent,
