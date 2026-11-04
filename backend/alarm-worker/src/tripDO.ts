@@ -35,6 +35,7 @@
  * 등 타입은 `@cloudflare/workers-types`의 ambient global이라 import 없이 사용 가능.
  */
 
+import { applyLaOp, emptyLaCell, type LaCell, type LaOp } from './laCellOps';
 import { applyLockOp, emptyLockCell, type LockCell, type LockOp } from './lockOps';
 import type { Trip } from './types';
 import type { TripPositionSSoT } from './tripPositionSsot';
@@ -49,6 +50,8 @@ const SSOT_ROW_KEY = 'ssot';
 const SSOT_ROW_UPDATED_AT_KEY = 'ssotUpdatedAt';
 /** DO storage row key — lock 셀(#3300 옵션 D, `LockCell`). */
 const LOCK_ROW_KEY = 'lock';
+/** DO storage row key — Live Activity 셀(#3300 PR-3a, `LaCell`). */
+const LA_ROW_KEY = 'la';
 
 /**
  * `DurableObjectState.storage`의 최소 부분집합 포트. 실제 프로덕션에서는
@@ -98,6 +101,9 @@ export async function seedSsotRow(
  *  - `POST /ssot` → body `TripPositionSSoT` 그대로 seed, `204`
  *  - `GET  /lock` → `{ cell: LockCell | null }` (#3300)
  *  - `POST /lock/op` → body `{ op: LockOp, now?: number }` → `{ outcome, cell }`. 잘못된 body/op는 `400`
+ *  - `GET  /la` → `{ cell: LaCell | null }` (#3300 PR-3a)
+ *  - `POST /la/op` → body `{ op: LaOp, now?: number }` → `{ outcome, cell }`. 잘못된 body/op는 `400`
+ *  - `GET  /cells` → `{ lock: LockCell | null, la: LaCell | null }` — overlay용 1회 조회
  *
  * **fire 없음** — Phase 2(#2260 후속 이슈) 스코프. 본 클래스는 state 보관/조회만 수행한다.
  */
@@ -119,25 +125,34 @@ export class TripDO implements DurableObject {
     return run;
   }
 
-  private async handleLockOp(request: Request): Promise<Response> {
-    let body: { op?: LockOp; now?: number };
+  /**
+   * 셀 op 공통 핸들러 — body 파싱 → (직렬화) get → apply → applied만 put. storage 외 await 금지.
+   * lock 셀과 LA 셀이 같은 계약(`{ outcome, cell }`, 잘못된 op는 400)을 공유한다.
+   */
+  private async handleCellOp<Cell, Op extends { type: string }>(
+    request: Request,
+    rowKey: string,
+    empty: () => Cell,
+    apply: (cell: Cell, op: Op, now: number) => { outcome: string; cell: Cell },
+  ): Promise<Response> {
+    let body: { op?: Op; now?: number };
     try {
-      body = (await request.json()) as { op?: LockOp; now?: number };
+      body = (await request.json()) as { op?: Op; now?: number };
     } catch {
       return new Response('invalid json', { status: 400 });
     }
     const { op, now } = body;
     if (typeof op?.type !== 'string') return new Response('invalid op', { status: 400 });
     return this.serialize(async () => {
-      const stored = await this.storage.get<LockCell>(LOCK_ROW_KEY);
-      let result: ReturnType<typeof applyLockOp>;
+      const stored = await this.storage.get<Cell>(rowKey);
+      let result: ReturnType<typeof apply>;
       try {
-        result = applyLockOp(stored ?? emptyLockCell(), op, now ?? Date.now());
+        result = apply(stored ?? empty(), op, now ?? Date.now());
       } catch {
         return new Response('invalid op', { status: 400 });
       }
       // applied만 영속 — noop/conflict/conflict-kept는 셀을 바꾸지 않는다.
-      if (result.outcome === 'applied') await this.storage.put({ [LOCK_ROW_KEY]: result.cell });
+      if (result.outcome === 'applied') await this.storage.put({ [rowKey]: result.cell });
       return Response.json(result);
     });
   }
@@ -153,7 +168,26 @@ export class TripDO implements DurableObject {
     }
 
     if (request.method === 'POST' && url.pathname === '/lock/op') {
-      return this.handleLockOp(request);
+      return this.handleCellOp<LockCell, LockOp>(request, LOCK_ROW_KEY, emptyLockCell, applyLockOp);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/la') {
+      return this.serialize(async () => {
+        const cell = await this.storage.get<LaCell>(LA_ROW_KEY);
+        return Response.json({ cell: cell ?? null });
+      });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/la/op') {
+      return this.handleCellOp<LaCell, LaOp>(request, LA_ROW_KEY, emptyLaCell, applyLaOp);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/cells') {
+      return this.serialize(async () => {
+        const lock = await this.storage.get<LockCell>(LOCK_ROW_KEY);
+        const la = await this.storage.get<LaCell>(LA_ROW_KEY);
+        return Response.json({ lock: lock ?? null, la: la ?? null });
+      });
     }
 
     if (request.method === 'GET' && url.pathname === '/trip') {

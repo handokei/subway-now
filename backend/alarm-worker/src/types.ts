@@ -369,6 +369,12 @@ export interface Trip {
    */
   lockEverAttached?: boolean;
   /**
+   * #3300 PR-3a — **비영속** 필드. DO lock 셀 overlay(`getTrip(env, ...)`)가 읽은 셀의 식별 rev.
+   * 같은 요청 안에서 op 전제조건(`expectedRev`)으로 전달된다. `putTrip`은 직렬화 사본에서만 제거하고
+   * 객체는 유지한다(같은 객체로 다음 op가 성공해야 한다). overlay가 꺼졌거나 실패하면 undefined.
+   */
+  __lockRev?: number;
+  /**
    * #2628 — boarding-prompt(탑승/하차/미탑승) 응답을 사용자가 1회라도 보냈는지. 응답 채널은
    * 두 곳 — `POST /trips/:token/boarding-confirm`(action 값 boarded/disembarked/not-boarded
    * 무관) + `POST /boarding-prompt/dismiss`(구/병행 클라가 쓰는 'not-boarded'의 동의어 경로).
