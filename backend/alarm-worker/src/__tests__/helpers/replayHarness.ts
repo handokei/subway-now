@@ -23,6 +23,9 @@ import { SeoulArrivalClient } from '../../seoul';
 import { isLossyFixture, type ReplayFixture } from '../../replayFixture';
 import { MID_CYCLE_OFFSET_MS } from '../../cronConstants';
 import { appendPositionPoint } from '../../positionSeries';
+import { resetCellStageCache } from '../../tripDoCells';
+import { setTripDoFlag } from '../../tripDoFlag';
+import { makeFakeTripDoNamespace } from './fakeTripDoNamespace';
 import type { Env, PositionPoint, Trip } from '../../types';
 import { InMemoryKV } from '../inMemoryKv';
 
@@ -416,6 +419,14 @@ export async function runCaptureReplay(opts: {
 
   const apnsConfig = await getTestApnsConfig();
   const env = makeEnv(kv, apnsConfig);
+  // #3055 PR-3b — opt-in 회귀 스위프: `LOCK_CELL_REPLAY_FLAG=lock@1 npx vitest run`이면 모든 replay가 셀 권위(cron 포함)로 돈다.
+  // 기본(미설정)은 거동 100% 무변경. flag 각 단계에서 기존 replay가 green인지 로컬/CI에서 한 번에 확인하는 용도(plan §6).
+  const lockCellFlag = process.env.LOCK_CELL_REPLAY_FLAG;
+  if (lockCellFlag) {
+    await setTripDoFlag(kv as unknown as KVNamespace, lockCellFlag);
+    resetCellStageCache(kv);
+    (env as unknown as { TRIP_DO: DurableObjectNamespace }).TRIP_DO = makeFakeTripDoNamespace().ns;
+  }
 
   const capturedPushes: CapturedPush[] = [];
   const apnsFetchImpl =
