@@ -88,7 +88,7 @@ describe('TripDO /la · /cells 라우트', () => {
   it('applied만 영속하고 /la·/cells로 읽힌다', async () => {
     const stub = stubOf();
     expect(await (await stub.fetch(new Request('https://trip-do/la'))).json()).toEqual({ cell: null });
-    expect(await (await stub.fetch(new Request('https://trip-do/cells'))).json()).toEqual({ lock: null, la: null });
+    expect(await (await stub.fetch(new Request('https://trip-do/cells'))).json()).toEqual({ lock: null, la: null, progress: null });
     const res = await postLa(stub, JSON.stringify({ op: { type: 'registerLaToken', source: 't', token: 'A' }, now: NOW }));
     expect(((await res.json()) as LaOpResult).outcome).toBe('applied');
     const noop = await postLa(stub, JSON.stringify({ op: { type: 'registerLaToken', source: 't', token: 'A' }, now: NOW }));

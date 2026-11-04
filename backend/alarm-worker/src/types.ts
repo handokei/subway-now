@@ -375,6 +375,12 @@ export interface Trip {
    */
   __lockRev?: number;
   /**
+   * #3055 PR-4a — **비영속** 필드. `progress@N` 이상에서 DO 진행 셀 overlay가 성공했을 때의 셀 rev(성공 표식 겸 관측값).
+   * undefined면 진행 셀 시야가 없다는 뜻이라 cron은 진행(전진·스탬프) 변경을 그 trip에서 건너뛴다(fail-closed).
+   * `putTrip`은 `__lockRev`와 같이 직렬화 사본에서만 제거한다.
+   */
+  __progressRev?: number;
+  /**
    * K5 #2926 PR-B — lock이 마지막으로 풀린 시각(epoch ms) = lockless 시한 종료(`locklessTimeout.ts`)의 기준 시각.
    * `putTrip`이 "lock 이력(lockEverAttached)이 있는데 현재 boardingLock이 없는" 첫 쓰기에서 stamp하고(해제 경로가
    * 흩어져 있어 단일 쓰기 지점에서 잡는다 — 해제 직후 같은 tick의 putTrip이므로 오차 < 1 cron), lock이 다시 부착되면 지운다.

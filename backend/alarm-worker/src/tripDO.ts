@@ -37,6 +37,7 @@
 
 import { applyLaOp, emptyLaCell, type LaCell, type LaOp } from './laCellOps';
 import { applyLockOp, emptyLockCell, type LockCell, type LockOp } from './lockOps';
+import { applyProgressOp, emptyProgressCell, type ProgressCell, type ProgressOp } from './progressOps';
 import type { Trip } from './types';
 import type { TripPositionSSoT } from './tripPositionSsot';
 
@@ -52,6 +53,8 @@ const SSOT_ROW_UPDATED_AT_KEY = 'ssotUpdatedAt';
 const LOCK_ROW_KEY = 'lock';
 /** DO storage row key — Live Activity 셀(#3300 PR-3a, `LaCell`). */
 const LA_ROW_KEY = 'la';
+/** DO storage row key — 진행 셀(#3055 PR-4a, `ProgressCell`). */
+const PROGRESS_ROW_KEY = 'progress';
 
 /**
  * `DurableObjectState.storage`의 최소 부분집합 포트. 실제 프로덕션에서는
@@ -103,7 +106,10 @@ export async function seedSsotRow(
  *  - `POST /lock/op` → body `{ op: LockOp, now?: number }` → `{ outcome, cell }`. 잘못된 body/op는 `400`
  *  - `GET  /la` → `{ cell: LaCell | null }` (#3300 PR-3a)
  *  - `POST /la/op` → body `{ op: LaOp, now?: number }` → `{ outcome, cell }`. 잘못된 body/op는 `400`
- *  - `GET  /cells` → `{ lock: LockCell | null, la: LaCell | null }` — overlay용 1회 조회
+ *  - `GET  /progress` → `{ cell: ProgressCell | null }` (#3055 PR-4a)
+ *  - `POST /progress/op` → body `{ op: ProgressOp, now?: number }` → `{ outcome, cell, lock? }`. lock 셀과 결합된 op는
+ *    두 셀을 **한 번의 storage 쓰기**로 영속한다. 잘못된 body/op는 `400`
+ *  - `GET  /cells` → `{ lock: LockCell | null, la: LaCell | null, progress: ProgressCell | null }` — overlay용 1회 조회
  *
  * **fire 없음** — Phase 2(#2260 후속 이슈) 스코프. 본 클래스는 state 보관/조회만 수행한다.
  */
@@ -157,6 +163,36 @@ export class TripDO implements DurableObject {
     });
   }
 
+  /**
+   * 진행 셀 op — 진행 셀 + (결합 op용) lock 셀을 get -> apply -> 한 번의 put으로 적용한다. storage 외 await 금지.
+   * lock 쪽이 `applied`일 때만 lock 행을 쓴다(advanceHead.releaseLock이 conflict면 전진만 영속).
+   */
+  private async handleProgressOp(request: Request): Promise<Response> {
+    let body: { op?: ProgressOp; now?: number };
+    try {
+      body = (await request.json()) as { op?: ProgressOp; now?: number };
+    } catch {
+      return new Response('invalid json', { status: 400 });
+    }
+    const { op, now } = body;
+    if (typeof op?.type !== 'string') return new Response('invalid op', { status: 400 });
+    return this.serialize(async () => {
+      const stored = await this.storage.get<ProgressCell>(PROGRESS_ROW_KEY);
+      const lockStored = await this.storage.get<LockCell>(LOCK_ROW_KEY);
+      let result: ReturnType<typeof applyProgressOp>;
+      try {
+        result = applyProgressOp(stored ?? emptyProgressCell(), lockStored ?? null, op, now ?? Date.now());
+      } catch {
+        return new Response('invalid op', { status: 400 });
+      }
+      const entries: Record<string, unknown> = {};
+      if (result.outcome === 'applied') entries[PROGRESS_ROW_KEY] = result.cell;
+      if (result.lock?.outcome === 'applied') entries[LOCK_ROW_KEY] = result.lock.cell;
+      if (Object.keys(entries).length > 0) await this.storage.put(entries);
+      return Response.json(result);
+    });
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
@@ -182,11 +218,23 @@ export class TripDO implements DurableObject {
       return this.handleCellOp<LaCell, LaOp>(request, LA_ROW_KEY, emptyLaCell, applyLaOp);
     }
 
+    if (request.method === 'GET' && url.pathname === '/progress') {
+      return this.serialize(async () => {
+        const cell = await this.storage.get<ProgressCell>(PROGRESS_ROW_KEY);
+        return Response.json({ cell: cell ?? null });
+      });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/progress/op') {
+      return this.handleProgressOp(request);
+    }
+
     if (request.method === 'GET' && url.pathname === '/cells') {
       return this.serialize(async () => {
         const lock = await this.storage.get<LockCell>(LOCK_ROW_KEY);
         const la = await this.storage.get<LaCell>(LA_ROW_KEY);
-        return Response.json({ lock: lock ?? null, la: la ?? null });
+        const progress = await this.storage.get<ProgressCell>(PROGRESS_ROW_KEY);
+        return Response.json({ lock: lock ?? null, la: la ?? null, progress: progress ?? null });
       });
     }
 

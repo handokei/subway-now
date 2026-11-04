@@ -10,6 +10,7 @@
  */
 import { applyLaCell, type LaCell, type LaOp, type LaOpResult } from './laCellOps';
 import { applyLockCell, type LockCell, type LockOp, type LockOpResult } from './lockOps';
+import { applyProgressCell, type ProgressCell, type ProgressOp, type ProgressOpResult } from './progressOps';
 import { getTripDoFlag, TRIP_DO_FLAG_DEFAULT, type TripDoFlag } from './tripDoFlag';
 import type { Env, Trip } from './types';
 
@@ -48,6 +49,14 @@ export async function readCellStage(env: CellEnv): Promise<TripDoFlag | null> {
   return flag.stage === 'off' ? null : flag;
 }
 
+/**
+ * 진행 셀(waypoints 계열)이 권위인 단계인지 — `progress@N` 이상. `lock@N`에서는 진행 셀을 읽지도 시드하지도 쓰지도 않는다
+ * (롤백 `lock@N`이면 progress KV 맞춤 경로가 그대로 살아난다).
+ */
+export function isProgressStage(flag: TripDoFlag | null): flag is TripDoFlag {
+  return flag !== null && (flag.stage === 'progress' || flag.stage === 'full');
+}
+
 /** 테스트용 — flag 캐시를 비운다. */
 export function resetCellStageCache(kv: object): void {
   flagCache.delete(kv);
@@ -78,6 +87,8 @@ async function callJson<T>(stub: DurableObjectStub, stage: string, path: string,
 export interface Cells {
   lock: LockCell | null;
   la: LaCell | null;
+  /** 진행 셀 — `progress@N` 이전에는 항상 null(아무도 쓰지 않는다). */
+  progress: ProgressCell | null;
 }
 
 export async function fetchCells(env: CellEnv, token: string): Promise<Cells> {
@@ -95,6 +106,11 @@ export async function runLockOp(env: CellEnv, token: string, op: LockOp, now: nu
   return callJson<LockOpResult>(stubFor(env, token, `lock:${op.type}`), `lock:${op.type}`, '/lock/op', { op, now });
 }
 
+/** 진행 셀 op(lock 셀 결합 op 포함). 실패는 `CellUnavailableError`. */
+export async function runProgressOp(env: CellEnv, token: string, op: ProgressOp, now: number): Promise<ProgressOpResult> {
+  return callJson<ProgressOpResult>(stubFor(env, token, `progress:${op.type}`), `progress:${op.type}`, '/progress/op', { op, now });
+}
+
 /** LA 셀 op. 실패는 `CellUnavailableError`. */
 export async function runLaOp(env: CellEnv, token: string, op: LaOp, now: number): Promise<LaOpResult> {
   return callJson<LaOpResult>(stubFor(env, token, `la:${op.type}`), `la:${op.type}`, '/la/op', { op, now });
@@ -103,6 +119,15 @@ export async function runLaOp(env: CellEnv, token: string, op: LaOp, now: number
 /** op 결과를 메모리 trip에 반영하고 같은 요청의 다음 op를 위한 rev를 갱신한다. */
 export function applyLockResult(trip: Trip, result: LockOpResult): Trip {
   return { ...applyLockCell(trip, result.cell), __lockRev: result.cell.rev };
+}
+
+/**
+ * 진행 셀 op 결과를 메모리 trip에 반영하고 `__progressRev`를 갱신한다. lock을 함께 건드린 op면 lock 결과도 반영한다
+ * (셀이 권위 — applied가 아니어도 최신 셀 값을 반영해 이후 판정이 같은 시야를 보게 한다).
+ */
+export function applyProgressResult(trip: Trip, result: ProgressOpResult): Trip {
+  const withProgress: Trip = { ...applyProgressCell(trip, result.cell), __progressRev: result.cell.rev };
+  return result.lock ? applyLockResult(withProgress, result.lock) : withProgress;
 }
 
 /**
@@ -128,13 +153,29 @@ export async function seedCells(
     | 'renumberSuccessor'
     | 'activityPushToken'
     | 'activityState'
-  >,
+  > &
+    Partial<
+      Pick<
+        Trip,
+        | 'waypoints'
+        | 'routeWaypoints'
+        | 'currentLegAnchor'
+        | 'legBoardingEligibleAt'
+        | 'legBoardingPromptState'
+        | 'legResolveStreak'
+        | 'promptDisplay'
+        | 'transferObservedAt'
+        | 'lastTrackedArrivalEpoch'
+        | 'lastLaPushEpoch'
+        | 'lastLaPushAt'
+      >
+    >,
   flag: TripDoFlag,
   now: number,
-): Promise<{ lock: LockCell; la: LaCell }> {
+): Promise<{ lock: LockCell; la: LaCell; progress?: ProgressCell }> {
   const { token, createdAt } = snapshot;
   const cells = await fetchCells(env, token);
-  let { lock, la } = cells;
+  let { lock, la, progress } = cells;
   const seeds: Promise<void>[] = [];
   if (!lock || needsSeed(lock.session.createdAt, lock.seededEpoch, createdAt, flag.epoch)) {
     seeds.push(
@@ -177,9 +218,42 @@ export async function seedCells(
       }),
     );
   }
+  // 진행 셀은 progress@N 이상에서만 시드한다 — lock@N에서는 DO 호출·동작이 PR-3b와 같다.
+  const withProgress = isProgressStage(flag);
+  if (withProgress && (!progress || needsSeed(progress.session.createdAt, progress.seededEpoch, createdAt, flag.epoch))) {
+    seeds.push(
+      runProgressOp(
+        env,
+        token,
+        {
+          type: 'seedProgressFromKv',
+          source: 'overlay',
+          epoch: flag.epoch,
+          snapshot: {
+            createdAt,
+            waypoints: snapshot.waypoints,
+            routeWaypoints: snapshot.routeWaypoints,
+            currentLegAnchor: snapshot.currentLegAnchor,
+            legBoardingEligibleAt: snapshot.legBoardingEligibleAt,
+            legBoardingPromptState: snapshot.legBoardingPromptState,
+            legResolveStreak: snapshot.legResolveStreak,
+            promptDisplay: snapshot.promptDisplay,
+            transferObservedAt: snapshot.transferObservedAt,
+            lastTrackedArrivalEpoch: snapshot.lastTrackedArrivalEpoch,
+            lastLaPushEpoch: snapshot.lastLaPushEpoch,
+            lastLaPushAt: snapshot.lastLaPushAt,
+          },
+        },
+        now,
+      ).then((r) => {
+        progress = r.cell;
+      }),
+    );
+  }
   await Promise.all(seeds);
   if (!lock || !la) throw new CellUnavailableError('seed', new Error('cell missing after seed'));
-  return { lock, la };
+  if (withProgress && !progress) throw new CellUnavailableError('seed', new Error('progress cell missing after seed'));
+  return withProgress && progress ? { lock, la, progress } : { lock, la };
 }
 
 /**
@@ -188,9 +262,11 @@ export async function seedCells(
  */
 export async function overlayTripCells(env: CellEnv, trip: Trip, flag: TripDoFlag): Promise<Trip> {
   try {
-    const { lock, la } = await seedCells(env, trip, flag, Date.now());
-    return { ...applyLaCell(applyLockCell(trip, lock), la), __lockRev: lock.rev };
+    const { lock, la, progress } = await seedCells(env, trip, flag, Date.now());
+    const withCells = { ...applyLaCell(applyLockCell(trip, lock), la), __lockRev: lock.rev };
+    // 진행 셀은 progress@N 이상에서만 덮는다 — lock@N에서는 KV waypoints 그대로(롤백 시 progress KV 맞춤이 살아난다).
+    return progress ? { ...applyProgressCell(withCells, progress), __progressRev: progress.rev } : withCells;
   } catch {
-    return { ...trip, __lockRev: undefined };
+    return { ...trip, __lockRev: undefined, __progressRev: undefined };
   }
 }
