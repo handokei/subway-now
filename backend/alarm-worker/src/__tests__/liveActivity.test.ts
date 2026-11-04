@@ -1372,6 +1372,68 @@ describe('cleanupTripWithLa', () => {
     });
   });
 
+  // #3005 PR-D-0 — 종료 alert push 발송 결과 관측(D1 trip_events kind='trip-end-push').
+  describe('trip-end-push D1 observation (#3005 PR-D-0)', () => {
+    type Row = { kind: string; meta: Record<string, unknown> };
+    const arrange = async (opts: { failRun?: boolean; preDedup?: boolean } = {}) => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      if (opts.preDedup) await kv.put(`tripEndedAlert:devtoken:${NOW}`, '1');
+      const rows: Row[] = [];
+      const prepare = vi.fn().mockImplementation((sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          run: async () => {
+            if (sql.includes('trip_events') && args[2] === 'trip-end-push') {
+              if (opts.failRun) throw new Error('d1 down');
+              rows.push({ kind: args[2] as string, meta: JSON.parse(args[5] as string) });
+            }
+            return { success: true };
+          },
+        }),
+      }));
+      const env = { TRIPS: kv as unknown as KVNamespace, DB: { prepare } as unknown as D1Database } as unknown as Env;
+      return { kv, trip, env, rows };
+    };
+    const run = (c: Awaited<ReturnType<typeof arrange>>, fetchImpl: unknown, reason: TripEndedReason = 'eta-missing') =>
+      cleanupTripWithLa(c.trip, c.env, makeDeps(fetchImpl as typeof fetch), makeStats(), NOW, () => undefined, { reason });
+
+    it('발송 성공 시 1행: status 200, dedupSkipped false, reason', async () => {
+      const c = await arrange();
+      await run(c, vi.fn(async () => new Response('', { status: 200 })));
+      expect(c.rows).toEqual([{ kind: 'trip-end-push', meta: { status: 200, dedupSkipped: false, reason: 'eta-missing' } }]);
+    });
+
+    it('APNs 실패 시 1행: status 4xx (마지막 시도 상태)', async () => {
+      const c = await arrange();
+      await run(c, vi.fn(async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 })));
+      expect(c.rows).toHaveLength(1);
+      expect(c.rows[0].meta).toMatchObject({ status: 400, dedupSkipped: false, reason: 'eta-missing' });
+    });
+
+    it('dedup으로 skip 시 1행: dedupSkipped true, status skipped, fetch 0회', async () => {
+      const c = await arrange({ preDedup: true });
+      const fetchImpl = vi.fn();
+      await run(c, fetchImpl, 'destination-arrived');
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(c.rows).toEqual([
+        { kind: 'trip-end-push', meta: { status: 'skipped', dedupSkipped: true, reason: 'destination-arrived' } },
+      ]);
+    });
+
+    it('발송 throw 시 1행: status error', async () => {
+      const c = await arrange();
+      await run(c, vi.fn(async () => { throw new Error('network down'); }), 'expired');
+      expect(c.rows).toEqual([{ kind: 'trip-end-push', meta: { status: 'error', dedupSkipped: false, reason: 'expired' } }]);
+    });
+
+    it('기록(D1) 실패해도 종료 흐름은 계속된다 (throw 안 함, trip 삭제)', async () => {
+      const c = await arrange({ failRun: true });
+      await expect(run(c, vi.fn(async () => new Response('', { status: 200 })))).resolves.toBeUndefined();
+      expect(await c.kv.get('trip:devtoken')).toBeNull();
+    });
+  });
+
   // #1339 — launch reconciliation 백스톱. cleanupTripWithLa가 reason과 함께 호출되면
   // 모든 trip-ended 경로(scheduled.ts의 4 발사 지점)가 자동으로 status marker를 KV에 적재한다.
   describe('writes trip-ended status marker for launch reconciliation (#1339)', () => {

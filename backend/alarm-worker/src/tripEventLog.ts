@@ -272,7 +272,10 @@ export type TripEventKind =
   | 'progress-reconcile'
   // #2308 — lock epoch 시작에서 routeWaypoints로 탑승역 다음부터 waypoints·segmentStations를 다시 깐 1건.
   // station=재고정 후 head, line=lock 노선, meta={ fromKey, toKey, trainCode }. 관측 전용.
-  | 'lock-reanchor';
+  | 'lock-reanchor'
+  // #3005 PR-D-0 — 종료 alert push(`fireTripEndedAlertPush`) 발송 결과. 호출당 1행(trip 종료당 최대 1~2행, KV write 0).
+  // meta={ status: APNs HTTP status|'skipped'(dedup)|'error'(throw), dedupSkipped, reason }. 관측 전용.
+  | 'trip-end-push';
 
 /** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
 export type LockAttachPath =
