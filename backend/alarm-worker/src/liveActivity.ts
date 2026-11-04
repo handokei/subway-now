@@ -799,6 +799,19 @@ function arrivalAlarmSound(
  * `cleanupTripWithLa`가 같은 reason으로 재호출해도 중복 발사를 막아준다 — 새 dedup 메커니즘
  * 신설 없음.
  */
+/**
+ * #3005 PR-D-0 — 종료 alert push 발송 결과를 D1 trip_events kind='trip-end-push'에 1행 기록(관측 전용).
+ * status = APNs HTTP status | 'skipped'(dedup) | 'error'(throw). 발송 로직·조건에는 관여하지 않는다.
+ * recordTripEvent가 실패를 swallow하므로 종료 흐름을 차단하지 않는다. KV write 0.
+ */
+async function recordTripEndPush(
+  env: Env,
+  trip: Trip,
+  meta: { status: number | 'skipped' | 'error'; dedupSkipped: boolean; reason: TripEndedReason },
+): Promise<void> {
+  await recordTripEvent(env.DB, { tokenHash: hashTripToken(trip.token), kind: 'trip-end-push', meta });
+}
+
 export async function fireTripEndedAlertPush(
   trip: Trip,
   reason: TripEndedReason,
@@ -815,6 +828,7 @@ export async function fireTripEndedAlertPush(
       token: trip.token.slice(0, 8),
       reason,
     });
+    await recordTripEndPush(env, trip, { status: 'skipped', dedupSkipped: true, reason });
     return;
   }
   const pushId = crypto.randomUUID();
@@ -876,15 +890,18 @@ export async function fireTripEndedAlertPush(
         apnsEnv: trip.apnsEnv,
         envMismatchExhausted: heal.envMismatchExhausted,
       });
+      await recordTripEndPush(env, trip, { status: heal.result.status, dedupSkipped: false, reason });
       // 실패 시에는 dedup stamp를 남기지 않아 다음 cron cycle에서 재시도 허용.
       return;
     }
+    await recordTripEndPush(env, trip, { status: heal.result.status, dedupSkipped: false, reason });
   } catch (e) {
     log('trip-ended push threw', {
       token: trip.token.slice(0, 8),
       reason,
       error: String(e),
     });
+    await recordTripEndPush(env, trip, { status: 'error', dedupSkipped: false, reason });
     return;
   }
   // 성공 push만 dedup stamp — 같은 trip의 후속 cleanup race가 중복 alert를 발사하지 못하도록.
