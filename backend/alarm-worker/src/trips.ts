@@ -166,9 +166,10 @@ export async function putTrip(kv: KVNamespace, trip: Trip): Promise<void> {
  * 호출자의 trip 객체는 그대로 둬야 putTrip 직후 같은 객체로 다음 op(`expectedRev`)가 성공한다.
  */
 function withoutLockRev(trip: Trip): Trip {
-  if (trip.__lockRev === undefined) return trip;
+  if (trip.__lockRev === undefined && trip.__progressRev === undefined) return trip;
   const copy = { ...trip };
   delete copy.__lockRev;
+  delete copy.__progressRev;
   return copy;
 }
 
