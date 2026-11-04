@@ -55,6 +55,8 @@ async function run(opts: RunOpts) {
   let injected = false;
   let kvRef: KVNamespace | undefined;
   let currentTick = 0;
+  /** 주입이 일어난 tick의 **직후**(다음 tick 시작 직전) 셀 — 이후 tick의 정상 추적/해제와 분리해서 본다. */
+  let afterInjection: Awaited<ReturnType<typeof fetchCells>> | undefined;
   const rawEnv = (): Pick<Env, 'TRIPS' | 'TRIP_DO'> => ({ TRIPS: kvRef as KVNamespace, TRIP_DO: cells.doNs.ns });
   const wrapped = interceptTripDo(cells.doNs.ns, {
     after: async ({ path, body }) => {
@@ -93,6 +95,7 @@ async function run(opts: RunOpts) {
     apns: 'capture',
     beforeTick: async ({ tick, tickIndex, env, kv }) => {
       kvRef = kv;
+      if (injected && afterInjection === undefined) afterInjection = await fetchCells(rawEnv(), TOKEN);
       currentTick = tick;
       vi.setSystemTime(tick);
       attachDb(env as Env, db);
@@ -101,7 +104,7 @@ async function run(opts: RunOpts) {
     },
   });
   const finalCells = kvRef ? await fetchCells(rawEnv(), TOKEN) : null;
-  return { result, events, finalCells, injected };
+  return { result, events, finalCells, injected, afterInjection };
 }
 
 const promptTrip = (at: number): Trip =>
@@ -131,7 +134,7 @@ describe('#3055 PR-3b — A: tick 시작 후 사용자 부착이 origin 질문 �
       (p) => p.simNowMs === firstFireTick && (p.body.body as Record<string, unknown> | undefined)?.kind === 'boarding-prompt',
     );
     expect(atTick, `질문이 ${kstOf(firstFireTick)} tick에 발사됨`).toEqual([]);
-    expect(r.finalCells?.lock?.lock?.trainCode).toBe('7999');
+    expect(r.afterInjection?.lock?.lock?.trainCode).toBe('7999');
   });
 });
 
@@ -166,8 +169,8 @@ describe('#3055 PR-3b — B: cron releaseAuto는 사용자 부착 앞에서 conf
       inject: { atTick: (_tick, index) => index === 0, when: (_path, opType) => opType === 'releaseAuto' },
     });
     expect(r.injected).toBe(true);
-    expect(r.finalCells?.lock?.lock?.trainCode).toBe('7999');
-    expect(r.events.filter((e) => e.kind === 'lock-released')).toEqual([]);
+    expect(r.afterInjection?.lock?.lock?.trainCode).toBe('7999');
+    expect(r.events.filter((e) => e.kind === 'lock-released').filter((e) => e.meta.reason === 'stale-line')).toEqual([]);
     const conflicts = r.events.filter((e) => e.kind === 'lock-op-conflict');
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0].meta).toEqual({ op: 'releaseAuto', source: 'cron' });

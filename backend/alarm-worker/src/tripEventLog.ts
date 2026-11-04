@@ -278,7 +278,14 @@ export type TripEventKind =
   | 'lock-reanchor'
   // #3005 PR-D-0 — 종료 alert push(`fireTripEndedAlertPush`) 발송 결과. 호출당 1행(trip 종료당 최대 1~2행, KV write 0).
   // meta={ status: APNs HTTP status|'skipped'(dedup)|'error'(throw), dedupSkipped, reason }. 관측 전용.
-  | 'trip-end-push';
+  | 'trip-end-push'
+  // #3055 PR-3b — lock 셀에서 lock이 **해제된** 1건(cron `releaseAuto` applied). 지금까지 해제는 D1에 기록되지 않아 "정당한 해제"와
+  // "소실"을 구분할 수 없었다(plan §0.3). meta={ reason('stale-line'|'vanish'|'demote'|'transfer'), source, rev(해제 후 셀 rev) }.
+  // 해제 1건당 1행이라 D1 쿼터 영향 미미(#2073). M1′ = origin fired 앞에 lock-attached가 있고 그 사이 이 kind가 없는 건수 = 0.
+  | 'lock-released'
+  // #3055 PR-3b — cron op가 셀의 최신 상태와 충돌(rev/leg 불일치)해 **물러선** 1건. 낡은 시야로 사용자 lock을 지우려던 시도를
+  // 막았다는 직접 증거. meta={ op, source }. conflict에만 기록(applied/noop은 기록하지 않는다).
+  | 'lock-op-conflict';
 
 /** #3144 — `lock-attached` 이벤트의 부착 경로. 데이터 주도(신규 경로는 여기에만 추가). */
 export type LockAttachPath =

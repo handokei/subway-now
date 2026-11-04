@@ -46,12 +46,13 @@ const ALLOWED_WRITES: Record<string, Record<string, number>> = {
     // #12 reanchor segment — setSegment.
     reconcileLockTripProgress: 1,
     // #13 vanish swap / #14 timetable successor — swapAuto.
-    attemptVanishSwap: 5,
-    attemptTimetableSuccessorReattach: 4,
-    // #15/#16/#17 — releaseAuto / setEtaMissing.
-    handleEtaMissing: 11,
-    // #17 성공 사이클 카운터 0 — setEtaMissing.
-    runTrainCodeTracking: 1,
+    // (legacy 직접 대입 4 + op 입력/이력 조립 리터럴)
+    attemptVanishSwap: 6,
+    attemptTimetableSuccessorReattach: 5,
+    // #15/#16 — releaseAuto. legacy 대입 4 + 로그 객체 리터럴(`consecutiveEtaMissing: nextMissCount`, 쓰기 아님).
+    handleEtaMissing: 8,
+    // #17 카운터 — setEtaMissing(legacy만 직접 대입).
+    setEtaMissingCount: 1,
     // #18 환승 해제 — releaseAuto(cron) / 메모리(HTTP sync-mixed는 index.ts가 op).
     completeWaypointAdvance: 2,
   },
@@ -64,8 +65,9 @@ const REQUIRED_OPS: Record<string, Record<string, string[]>> = {
     reconcileLockTripProgress: ["'setSegment'"],
     attemptVanishSwap: ["'swapAuto'"],
     attemptTimetableSuccessorReattach: ["'swapAuto'"],
-    handleEtaMissing: ["'releaseAuto'", "'setEtaMissing'"],
-    runTrainCodeTracking: ["'setEtaMissing'"],
+    handleEtaMissing: ["'releaseAuto'", 'setEtaMissingCount('],
+    runTrainCodeTracking: ['setEtaMissingCount('],
+    setEtaMissingCount: ["'setEtaMissing'"],
     completeWaypointAdvance: ["'releaseAuto'"],
     fireBoardingPromptForAnchor: ['freshLockActive('],
   },

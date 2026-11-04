@@ -39,6 +39,7 @@ import { logPushFailure } from './pushFailureLog';
 import { hashTripToken } from './sentry';
 import { computeLegProgressContext, computeMultiHopContext, computeNextStopContext } from './tripMultiHop';
 import { deleteSsot, type TripPositionSSoT } from './tripPositionSsot';
+import { clearLaTokenViaCell, endLockSession } from './cronLockCell';
 import { recordTripEvent } from './tripEventLog';
 import { recordLaPushIfChanged, type LaPushPath } from './laPushLog';
 import {
@@ -531,6 +532,9 @@ export async function fireLiveActivityUpdate(
     trip.activityPushToken = undefined;
     trip.activityState = 'ended';
     stats.laTokenCleared += 1;
+    // #3055 PR-3b (§10) — 셀 모드(cron 추적 trip)는 LA 셀에도 반영한다. 그 사이 새 토큰이 등록됐으면(expectedToken 불일치) 지우지 않고
+    // trip에 셀의 현재 토큰을 되돌린다. legacy(flag off)는 no-op.
+    await clearLaTokenViaCell(trip, activityToken, 'token-invalid', now);
     return { dirty: true, sent: false };
   }
   return { dirty: false, sent: false };
@@ -675,6 +679,8 @@ export async function cleanupTripWithLa(
 ): Promise<void> {
   const { reason, metricsReason, endPath, arrivalAlert } = options ?? {};
   stats.tripEndedTokens?.add(trip.token);
+  // #3055 PR-3b (§3 #20) — lock 셀 세션을 닫는다(flag on일 때만 DO 호출). 같은 token의 다음 trip이 이전 lock/rev를 이어받지 않게 한다.
+  await endLockSession(env, trip, 'cleanup', now);
   await fireLiveActivityDismissal(trip, { ...deps, db: deps.db ?? env.DB }, stats, now, log);
   if (reason) {
     await fireTripEndedAlertPush(trip, reason, env, deps, now, log, arrivalAlert);
