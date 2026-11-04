@@ -242,17 +242,15 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
         mirrorStation = null;
       }
       // #3319 PR-d — 위 가드는 BG에서 GPS가 60s+ stale이면 꺼진다(11/04: 22분 묵은 '성수' 미러가 7호선 구간 LA에
-      // 표시). GPS와 무관하게 (a) 묵은 미러 (b) 현재 leg 탑승 anchor(이 trip의 lock 탑승역)보다 앞선 역 미러를 거른다.
-      // lock 부재/다른 trip의 lock/arc 밖 anchor는 -1 → (b) 판정 근거 없음(안전 기본, 기존 동작 유지).
+      // 표시). GPS와 무관하게 현재 leg 탑승 anchor(이 trip의 lock 탑승역)보다 앞선 역 미러를 거른다(lastAdvanceAt 묵음은 보지 않음).
+      // lock 부재/다른 trip의 lock/arc 밖 anchor는 -1 → 판정 근거 없음(안전 기본, 기존 동작 유지).
       const anchorStationId = lock?.destinationId === destination.id ? lock.boardingStationId : null;
       const anchorArcIndex = arcStations.findIndex((s) => s.id === anchorStationId);
       if (
         mirrorStation &&
         isBgMirrorUnadoptable({
-          mirrorLastAdvanceAt: mirror.lastAdvanceAt,
           mirrorArcIndex,
           anchorArcIndex,
-          now: Date.now(),
         })
       ) {
         logger.info(

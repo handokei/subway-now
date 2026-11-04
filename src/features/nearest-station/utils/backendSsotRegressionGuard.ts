@@ -65,8 +65,6 @@
  * (`backendSsotMirror.ts`) / #2481 게이트 / GPS에 표시 외 결정권 부여(이 가드는 "낡은 mirror 거부"만).
  */
 
-import { BG_MIRROR_MAX_ADVANCE_AGE_MS } from '../../../shared/constants/bgMirrorAdoption';
-
 /**
  * backend가 이 시간 이상 advance하지 않았으면 "추적이 멈췄을 수 있다"고 본다.
  * 지하 한 구간(역간 2~3분) + 여유. `BACKEND_SSOT_MIRROR_MAX_AGE_MS`(180s, receivedAt 상한)와
@@ -136,25 +134,20 @@ export function isBackendSsotRouteRegression(inputs: BackendSsotRegressionInputs
 }
 
 export interface BgMirrorAdoptionInputs {
-  /** mirror가 보고한 backend의 마지막 advance 시각(epoch ms). 0/미정착이면 묵음 판정하지 않는다. */
-  mirrorLastAdvanceAt: number;
   /** mirror station의 경로(arc) 인덱스. -1이면 anchor 판정하지 않는다. */
   mirrorArcIndex: number;
   /** 현재 leg 탑승 anchor(lock 탑승역)의 경로(arc) 인덱스. -1이면 anchor 판정하지 않는다. */
   anchorArcIndex: number;
-  now: number;
 }
 
 /**
  * #3319 PR-d — BG(silent push) LA 갱신 전용. `isBackendSsotRouteRegression`은 BG에서 GPS가 60s+ stale이면
- * 꺼진 채 남아(11/04: 22분 묵은 2호선 '성수' 미러가 7호선 구간 LA에 표시) 못 막는 경우를 GPS와 무관하게 거른다.
- *   (a) `lastAdvanceAt`이 `BG_MIRROR_MAX_ADVANCE_AGE_MS`를 넘어 묵었다
- *   (b) 미러 역이 현재 leg 탑승 anchor보다 route 순서상 앞이다(이미 지난 역)
+ * 꺼진 채 남아(11/04: 2호선 '성수' 미러가 7호선 구간 LA에 표시) 못 막는 경우를 GPS와 무관하게 거른다:
+ * 미러 역이 현재 leg 탑승 anchor(lock 탑승역)보다 route 순서상 앞(이미 지난 역)이면 거부.
+ * `lastAdvanceAt` 묵음은 판정하지 않는다 — 긴 구간·정차에서 맞는 미러를 거부해 #2261 deadlock을 다시 연다.
  * @returns true면 이 mirror를 BG 경로에서 채택하지 않는다.
  */
 export function isBgMirrorUnadoptable(inputs: BgMirrorAdoptionInputs): boolean {
-  const { mirrorLastAdvanceAt, mirrorArcIndex, anchorArcIndex, now } = inputs;
-  const stale = mirrorLastAdvanceAt > 0 && now - mirrorLastAdvanceAt > BG_MIRROR_MAX_ADVANCE_AGE_MS;
-  const behindAnchor = mirrorArcIndex >= 0 && anchorArcIndex >= 0 && mirrorArcIndex < anchorArcIndex;
-  return stale || behindAnchor;
+  const { mirrorArcIndex, anchorArcIndex } = inputs;
+  return mirrorArcIndex >= 0 && anchorArcIndex >= 0 && mirrorArcIndex < anchorArcIndex;
 }
