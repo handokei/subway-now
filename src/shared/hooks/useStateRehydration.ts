@@ -15,9 +15,7 @@ import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
   resolveTripEndedSentinelVerdict,
-  setTripEndedSentinel,
 } from '../../features/alarm/utils/tripEndedSentinel';
-import { runTripBoundCleanups } from '../../features/alarm/store/tripBoundCleanups';
 import {
   getTripStartedAt,
   tripLifecyclePhase,
@@ -27,14 +25,8 @@ import {
   isPauseAutoEndDue,
 } from '../../features/alarm/utils/navigationPauseStorage';
 import { appendAlarmLog } from '../../features/alarm/utils/alarmLog';
-import {
-  notifyTripEnded,
-  type TripEndedReason,
-} from '../../features/alarm/utils/tripEndedNotification';
-import {
-  claimTripEndAction,
-  type TripEndActionClaim,
-} from '../../features/alarm/utils/tripEndClaim';
+import { runTripBoundCleanups } from '../../features/alarm/store/tripBoundCleanups';
+import { cleanupDeviceSelfEndedTrip } from '../../features/alarm/utils/tripEndedCleanupSequence';
 import {
   clearBackendSsotMirror,
   readBackendSsotMirror,
@@ -210,11 +202,6 @@ async function clearStaleBackendSsotMirrorIfNoTrip(
   }
 }
 
-/** 조용한 자동 종료(9h / 일시정지)의 종료 알림 — 반드시 cleanup 앞에서 호출한다(corrId·tripToken 소실 전). */
-function notifyAutoEnd(reason: Extract<TripEndedReason, 'lifecycle' | 'paused'>): Promise<void> {
-  return notifyTripEnded({ destination: useDestinationStore.getState().destination, reason });
-}
-
 /**
  * #1573 (T10) — trip 시작 시각 기준 단계 판정 후 backstop 실행. throw 없음 — launch 차단 금지.
  *
@@ -223,7 +210,6 @@ function notifyAutoEnd(reason: Extract<TripEndedReason, 'lifecycle' | 'paused'>)
  * 직접 호출은 #1351 R2와 동일 이유(prev=null 시 isSwitch=false로 cleanup chain skip되는 버그 회피).
  */
 async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> {
-  let endClaim: TripEndActionClaim | null = null;
   try {
     const startedAt = await getTripStartedAt();
     if (startedAt === null) return;
@@ -245,49 +231,21 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
       return;
     }
 
-    // PR-2 — 같은 launch에서 backend-gone 자가 종료(launch/FG tick)와 동시에 이 지점을 통과할 수 있다.
-    // 동기 claim으로 한 경로만 종료한다(진 쪽은 통지·cleanup·sentinel 모두 skip). 실패 시 release.
-    endClaim = await claimTripEndAction();
-    if (!endClaim.claimed) return;
-
-    // force-end (9h+). silent push trip-ended와 동일 시퀀스.
+    // force-end (9h+). #3005 PR-C — 정본 시퀀스로 수렴. PR-2의 동기 claim(같은 launch의 backend-gone 자가 종료와
+    // 동시 통과 방지)·PR-3b의 종료 알림(조용한 자동 종료 — cleanup이 corrId·tripToken을 지우기 전에)·#2302 사유·
+    // #2715 lock release 사유·#2114 sentinel corrId는 모두 정본이 수행한다. 선점당하면 통지·cleanup·sentinel 전부 skip.
+    logger.info(`trigger=${trigger} force-end elapsedMs=${elapsedMs} → cleanup`);
+    const outcome = await cleanupDeviceSelfEndedTrip(now, 'lifecycle-9h-force-end', {
+      notifyReason: 'lifecycle',
+    });
+    if (outcome === 'skipped') return;
     appendAlarmLog({
       ts: now,
       source: 'lifecycle-backstop',
       outcome: 'fired',
       reason: 'trip-lifecycle-force-ended',
     });
-    logger.info(`trigger=${trigger} force-end elapsedMs=${elapsedMs} → cleanup`);
-    // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
-    const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-    // PR-3b(#2675) — 9시간 force-end는 사용자가 한 행동이 아니라 조용한 자동 종료다. cleanup **앞**에서
-    // 알린다: corrId(dedupe 키)와 ACTIVE_TRIP_KEY(data.tripToken)가 cleanup에서 지워진다. 알림 실패는
-    // notifyTripEnded가 삼키므로 아래 cleanup을 막지 않는다.
-    await notifyAutoEnd('lifecycle');
-    // #2302 — backend end_reason도 breadcrumb/releaseLock과 동일 사유로 기록한다.
-    await runTripBoundCleanups('lifecycle-9h-force-end');
-    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
-    await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-    useDestinationStore.setState({
-      destination: null,
-      customOrigin: null,
-      tripOrigin: null,
-    });
-    addDomainBreadcrumb('trip', 'end', { reason: 'lifecycle-9h-force-end' });
-    // #2715 — 위 breadcrumb과 동일 사유 문자열을 release reason으로도 재사용.
-    //
-    // #3005 — **이 호출은 정상 경로에서 no-op이다.** 위 `runTripBoundCleanups(reason)`이 이미
-    // 같은 사유로 lock을 release했고 `releaseLock`은 `if (prev)` 가드로 두 번째 호출을 기록하지
-    // 않는다(`useBoardingLockStore.ts`). #3005 이전에는 cleanup이 사유를 받지 못해 lifecycle
-    // 버퍼에 `'trip-cleanup'`만 남고 **이 사유는 유실**됐다 — 이제 cleanup이 같은 값을 기록한다.
-    // 이 줄은 cleanup이 부분 실패해 lock이 남은 경우에만 실제로 동작하는 backstop으로 존치한다
-    // (사유가 cleanup 쪽과 동일하므로 드리프트 없음). 같은 패턴이 sentinel/pause 분기와
-    // `useDeviceSelfEnd`에도 있다.
-    await useBoardingLockStore.getState().releaseLock('lifecycle-9h-force-end');
-    // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
-    await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
-    endClaim?.release();
     logger.warn('lifecycle backstop 실패 (graceful)', e);
   }
 }
@@ -306,46 +264,25 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
  * 인지하도록 한다 — 누락 시 backend trip이 계속 살아있을 수 있음(버그 #3).
  */
 async function runNavigationPauseBackstop(trigger: 'mount' | 'active'): Promise<void> {
-  let endClaim: TripEndActionClaim | null = null;
   try {
     const pausedAt = await getNavigationPausedAt();
     const now = Date.now();
     if (!isPauseAutoEndDue(pausedAt, now)) return;
 
-    // PR-2 — 9h force-end 와 같은 이유로 종료 행동을 동기 claim 한다(실패 시 release).
-    endClaim = await claimTripEndAction();
-    if (!endClaim.claimed) return;
-
+    // #3005 PR-C — 정본 시퀀스로 수렴(9h와 동일). #2302 경로 고유 사유 / #2425 sentinel(BG 채널이 이 종료를 인지하도록)
+    // / PR-2 claim / PR-3b 종료 알림이 모두 정본 안에 있어 이 경로에서 따로 빠질 수 없다.
+    logger.info(`trigger=${trigger} pause auto-end (pausedAt=${pausedAt}) → cleanup`);
+    const outcome = await cleanupDeviceSelfEndedTrip(now, 'navigation-pause-auto-end', {
+      notifyReason: 'paused',
+    });
+    if (outcome === 'skipped') return;
     appendAlarmLog({
       ts: now,
       source: 'lifecycle-backstop',
       outcome: 'fired',
       reason: 'trip-paused-auto-ended',
     });
-    logger.info(`trigger=${trigger} pause auto-end (pausedAt=${pausedAt}) → cleanup`);
-    // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
-    const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-    // PR-3b(#2675) — 일시정지 15분 자동 종료도 조용한 종료였다(트리거 불변, 통지만 추가). 9h와 같은
-    // 이유로 cleanup 앞에서 알린다.
-    await notifyAutoEnd('paused');
-    // #2302 — 2026-10-15 실측에서 이 경로가 "생성 6초 후 DELETE"의 용의자였는데 모든 경로가
-    // 'user-delete'로 기록돼 배제도 확정도 불가했다. 경로 고유 사유로 기록한다.
-    await runTripBoundCleanups('navigation-pause-auto-end');
-    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
-    await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-    useDestinationStore.setState({
-      destination: null,
-      customOrigin: null,
-      tripOrigin: null,
-    });
-    addDomainBreadcrumb('trip', 'end', { reason: 'navigation-pause-auto-end' });
-    // #2715 — 위 breadcrumb과 동일 사유 문자열을 release reason으로도 재사용.
-    await useBoardingLockStore.getState().releaseLock('navigation-pause-auto-end');
-    // #2114 (방안 C′) — sentinel에 corrId 동봉해 다음 소비 시점 trip 인스턴스 스코프 비교 가능하게.
-    // force-end 경로와 동일 — BG 채널(silent push 등)이 이 종료를 인지하도록 mirror 남김.
-    await setTripEndedSentinel(now, endedCorrIdSnapshot);
   } catch (e) {
-    endClaim?.release();
     logger.warn('navigation pause backstop 실패 (graceful)', e);
   }
 }

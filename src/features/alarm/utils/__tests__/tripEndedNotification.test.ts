@@ -31,15 +31,25 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
   default: { getItem: (k: string) => mockGetItem(k) },
 }));
+// #3005 PR-C — lock-only-alerts 판정용: 메모리 lock / storage lock을 테스트가 제어한다.
+let mockMemoryLock: unknown = null;
+jest.mock('../../store/useBoardingLockStore', () => ({
+  useBoardingLockStore: { getState: () => ({ lock: mockMemoryLock }) },
+}));
+const mockGetStoredLock = jest.fn<Promise<unknown>, []>();
+jest.mock('../boardingLockStorage', () => ({ getBoardingLock: () => mockGetStoredLock() }));
 const mockAppendAlarmLog = jest.fn();
 jest.mock('../alarmLog', () => ({ appendAlarmLog: (e: unknown) => mockAppendAlarmLog(e) }));
 
 import i18next from 'i18next';
+import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { Platform } from 'react-native';
 import type { Station } from '../../../../shared/types/station';
 import {
   captureTripEndIdentity,
+  captureTripEndSnapshot,
   clearAndNotifyTripEnded,
+  hasBoardingLock,
   notifyTripEnded,
   TRIP_ENDED_AUTO_KIND,
   TRIP_ENDED_NOTIFICATION_ID,
@@ -88,6 +98,8 @@ function resetAll(): void {
   mockGetCorrId.mockReturnValue('corr-1');
   mockGetStartedAt.mockResolvedValue(1_700_000_000_000);
   mockGetItem.mockResolvedValue(null);
+  mockMemoryLock = null;
+  mockGetStoredLock.mockResolvedValue(null);
   __resetTripEndClaimsForTests__();
   useSettingsStore.setState({ sleepMode: false });
 }
@@ -309,7 +321,9 @@ describe('captureTripEndIdentity / identity 인자 (#3005 PR-B)', () => {
 
   it('corrId 캐시가 있으면 storage를 읽지 않고 그 값', async () => {
     await expect(captureTripEndIdentity()).resolves.toBe('corr-1');
-    expect(mockGetItem).not.toHaveBeenCalled();
+    // corrId/startedAt은 읽지 않는다(ACTIVE_TRIP_KEY는 snapshot의 expected 신원용).
+    expect(mockGetItem.mock.calls.map(([key]) => key)).toEqual([ACTIVE_TRIP_KEY]);
+    expect(mockGetStartedAt).not.toHaveBeenCalled();
   });
 
   it('cold launch — 캐시가 비어도 storage의 corrId를 hydrate 대기해 잡는다', async () => {
@@ -351,13 +365,70 @@ describe('captureTripEndIdentity / identity 인자 (#3005 PR-B)', () => {
     expect(mockSchedule).toHaveBeenCalledTimes(1);
   });
 
-  it('clearAndNotifyTripEnded — clear를 동기로 먼저 실행하고 clear 전에 캡처한 identity로 알린다', async () => {
+  it('clearAndNotifyTripEnded(lock trip) — clear를 동기로 먼저 실행하고 clear 전에 캡처한 identity로 알린다', async () => {
+    mockMemoryLock = { trainCode: 'T1' };
     const clear = jest.fn(() => mockGetCorrId.mockReturnValue(null));
     clearAndNotifyTripEnded(clear, { destination: null, reason: 'arrived' });
     expect(clear).toHaveBeenCalledTimes(1);
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
     // 같은 trip(corr-1)의 다른 경로 알림은 이미 claim된 키라 막힌다 = 캡처가 clear 이전 값이었다.
     await notifyTripEnded({ destination: null, reason: 'backend-silent', identity: 'corr-1' });
     expect(mockSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearAndNotifyTripEnded(lockless trip) — 종료(clear)는 하되 알림은 내지 않는다 (lock-only-alerts)', async () => {
+    const clear = jest.fn();
+    clearAndNotifyTripEnded(clear, { destination: null, reason: 'arrived' });
+    expect(clear).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(mockSchedule).not.toHaveBeenCalled();
+  });
+});
+
+describe('captureTripEndSnapshot / hasBoardingLock (#3005 PR-C)', () => {
+  beforeEach(resetAll);
+
+  it('snapshot — corrId 캐시 + ACTIVE_TRIP 토큰을 한 번에 캡처한다', async () => {
+    mockGetItem.mockImplementation(async (k) => (k === ACTIVE_TRIP_KEY ? 'tok-1' : null));
+    await expect(captureTripEndSnapshot()).resolves.toEqual({
+      identity: 'corr-1',
+      corrId: 'corr-1',
+      activeTripToken: 'tok-1',
+    });
+  });
+
+  it('snapshot — cold launch(캐시 비어 있음): identity는 storage corrId로 hydrate하되 expected corrId는 캐시값(null) 그대로', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    mockGetItem.mockImplementation(async (k) => (k === ACTIVE_TRIP_KEY ? 'tok-1' : 'stored-corr'));
+    await expect(captureTripEndSnapshot()).resolves.toEqual({
+      identity: 'stored-corr',
+      corrId: null,
+      activeTripToken: 'tok-1',
+    });
+  });
+
+  it('snapshot — ACTIVE_TRIP 읽기 실패는 null로 흡수', async () => {
+    mockGetItem.mockRejectedValue(new Error('io'));
+    await expect(captureTripEndSnapshot()).resolves.toEqual({
+      identity: 'corr-1',
+      corrId: 'corr-1',
+      activeTripToken: null,
+    });
+  });
+
+  it('hasBoardingLock — 메모리 lock이 있으면 storage를 읽지 않고 true', async () => {
+    mockMemoryLock = { trainCode: 'T1' };
+    await expect(hasBoardingLock()).resolves.toBe(true);
+    expect(mockGetStoredLock).not.toHaveBeenCalled();
+  });
+
+  it('hasBoardingLock — 메모리가 비어도(cold launch 재수화 전) storage lock이 있으면 true', async () => {
+    mockGetStoredLock.mockResolvedValue({ trainCode: 'T1' });
+    await expect(hasBoardingLock()).resolves.toBe(true);
+  });
+
+  it('hasBoardingLock — 어디에도 없으면 false', async () => {
+    await expect(hasBoardingLock()).resolves.toBe(false);
   });
 });

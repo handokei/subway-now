@@ -78,12 +78,12 @@ jest.mock('../../../route/store/useDestinationStore', () => {
   return { useDestinationStore };
 });
 
+// #3005 PR-C — DSE는 정본 시퀀스(`cleanupDeviceSelfEndedTrip`)를 호출한다. 정본은 lock 유무(알림 판정)를 읽고
+// 정리 뒤 `releaseLock(reason)` backstop을 부르므로 `getState`가 필요하다. lock은 기본 없음(lockless).
 jest.mock('../../store/useBoardingLockStore', () => {
-  function useBoardingLockStore(
-    selector: (s: { releaseLock: () => Promise<void> }) => unknown,
-  ): unknown {
-    return selector({ releaseLock: mockReleaseLock });
-  }
+  const useBoardingLockStore = {
+    getState: () => ({ lock: null, releaseLock: mockReleaseLock }),
+  };
   return { useBoardingLockStore };
 });
 
@@ -344,6 +344,8 @@ describe('useDeviceSelfEnd', () => {
       // 같은 사건이 D1과 lock lifecycle에서 다른 이름으로 기록된다.
       expect(mockRunTripBoundCleanups).toHaveBeenCalledWith(
         'trip-device-self-end-fusion-destination',
+        // #3005 PR-C — 정본이 진입 시점 신원을 cleanup `expected`로 전달한다.
+        { expected: expect.objectContaining({ capturedAt: expect.any(Number) }) },
       );
       expect(mockAppendAlarmLog).toHaveBeenCalledWith(
         expect.objectContaining({

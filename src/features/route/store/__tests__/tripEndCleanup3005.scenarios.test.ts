@@ -76,8 +76,9 @@ jest.mock('../../../alarm/api/tripStatus', () => ({
 jest.mock('../../../alarm/api/signalDumpBackend', () => ({
   flushSignalDumpOutbox: jest.fn().mockResolvedValue(undefined),
 }));
+// 알림 표시(OS 경계)만 격리하고 identity/lock 캡처는 실제 구현을 쓴다(#3005 PR-C: 정본이 진입 시점 신원을 캡처).
 jest.mock('../../../alarm/utils/tripEndedNotification', () => ({
-  captureTripEndIdentity: jest.fn().mockResolvedValue(null),
+  ...jest.requireActual('../../../alarm/utils/tripEndedNotification'),
   notifyTripEnded: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -391,11 +392,17 @@ describe('#3005 S3 직전 트립 종료 뒤 도착한 silent push stamp가 새 �
     await drain();
     await registerAck(TOKEN_X);
     await setLastSilentPushReceivedAt(Date.now()); // 같은 트립 중 마지막 silent push
+    // lock-only-alerts(10-21): 종료 알림은 lock trip에만 — 이 거부 케이스는 "알림이 나가는 trip"이므로 lock을 시드한다.
+    useBoardingLockStore.setState({ lock: { ...lockInput(Date.now()) } as never });
 
     jest.setSystemTime(Date.now() + SIGNAL_4_SILENT_PUSH_TIMEOUT_MS + 60_000);
     await runLaunchTripReconciliation();
 
     expect(notifyTripEnded).toHaveBeenCalledTimes(1);
-    expect(clearActiveTrip).toHaveBeenCalledWith(TOKEN_X, 'launch-backend-silent-timeout');
+    expect(clearActiveTrip).toHaveBeenCalledWith(
+      TOKEN_X,
+      'launch-backend-silent-timeout',
+      expect.any(String),
+    );
   });
 });

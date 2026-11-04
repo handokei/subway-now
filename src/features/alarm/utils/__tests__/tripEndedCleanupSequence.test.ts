@@ -3,8 +3,10 @@ import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import {
   cleanupBackendConfirmedEndedTrip,
   cleanupBackendGoneTrip,
+  cleanupDeviceSelfEndedTrip,
   cleanupUserInitiatedEndedTrip,
 } from '../tripEndedCleanupSequence';
+import { __resetTripEndClaimsForTests__ } from '../tripEndClaim';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
 
@@ -38,6 +40,9 @@ jest.mock('../../../debug/utils/triggerTripGroundTruthPrompt', () => ({
   triggerTripGroundTruthPrompt: (...args: unknown[]) => mockTriggerTripGroundTruthPrompt(...args),
 }));
 
+// #3005 PR-C — 정본은 진입 시점 신원을 캡처해 cleanup에 `expected`로 넘긴다(PR-A compare-and-clear).
+const EXPECTED_ARG = { expected: expect.objectContaining({ capturedAt: expect.any(Number) }) };
+
 describe('cleanupBackendConfirmedEndedTrip', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -58,7 +63,7 @@ describe('cleanupBackendConfirmedEndedTrip', () => {
   it('in-memory destination/customOrigin/tripOrigin을 null로 reset', async () => {
     await cleanupBackendConfirmedEndedTrip(1_700_000_000_000);
     // #2302 — 진입점의 reason이 cleanup까지 pass-through돼야 한다(두 진입점 구별).
-    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed', EXPECTED_ARG);
 
     const state = useDestinationStore.getState();
     expect(state.destination).toBeNull();
@@ -98,6 +103,10 @@ describe('cleanupBackendConfirmedEndedTrip', () => {
     expect(promptOrder).toBeLessThan(sentinelOrder);
     expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledWith('corr-1');
     expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(1_700_000_000_000, 'corr-1');
+    // #3005 PR-C — 진입 시점 신원(corrId + backend token)이 cleanup `expected`로 전달된다.
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed', {
+      expected: { corrId: 'corr-1', activeTripToken: 'tk', capturedAt: expect.any(Number) },
+    });
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
   });
 
@@ -145,7 +154,7 @@ describe('cleanupUserInitiatedEndedTrip', () => {
     expect(mockRunTripBoundCleanups).toHaveBeenCalled();
     // #2302 — 사용자 명시 종료는 backend end_reason에서도 backend-confirmed와 구별돼야 한다
     // (그 구별이 "자동 종료 비율"의 분모를 정확하게 만든다).
-    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('user-end-trip-button');
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('user-end-trip-button', EXPECTED_ARG);
     expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledWith('corr-2');
     expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(1_700_000_100_000, 'corr-2');
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
@@ -175,7 +184,10 @@ describe('cleanupBackendGoneTrip (PR-2, B 최소판)', () => {
     await cleanupBackendGoneTrip(1_700_000_200_000);
 
     expect(mockTriggerTripEndRecall).toHaveBeenCalled();
-    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-gone-device-confirmed');
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith(
+      'backend-gone-device-confirmed',
+      EXPECTED_ARG,
+    );
     expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledWith('corr-gone');
     // #2114 — sentinel에 corrId 동봉(다음 트립이 stale sentinel로 지워지지 않게).
     expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(1_700_000_200_000, 'corr-gone');
@@ -194,5 +206,37 @@ describe('cleanupBackendGoneTrip (PR-2, B 최소판)', () => {
     expect(state.customOrigin).toBeNull();
     expect(state.tripOrigin).toBeNull();
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+  });
+});
+
+describe('cleanupDeviceSelfEndedTrip (#3005 PR-C)', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    __resetTripEndClaimsForTests__();
+    mockGetCurrentTripCorrIdSync.mockReturnValue('corr-dev');
+    await AsyncStorage.clear();
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    useDestinationStore.setState({ destination: MOCK_STATIONS.gangnam });
+  });
+
+  it('옵션 없이 부르면 알림 없이 정본 시퀀스만 수행하고 ended를 돌려준다', async () => {
+    await expect(cleanupDeviceSelfEndedTrip(7, 'lifecycle-9h-force-end')).resolves.toBe('ended');
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('lifecycle-9h-force-end', EXPECTED_ARG);
+    expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(7, 'corr-dev');
+  });
+
+  it('같은 trip의 두 번째 호출은 선점당해 skipped — 어떤 단계도 다시 실행하지 않는다', async () => {
+    await cleanupDeviceSelfEndedTrip(7, 'navigation-pause-auto-end');
+    mockRunTripBoundCleanups.mockClear();
+    mockTriggerTripEndRecall.mockClear();
+    await expect(cleanupDeviceSelfEndedTrip(8, 'lifecycle-9h-force-end')).resolves.toBe('skipped');
+    expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+  });
+
+  it('시퀀스가 throw하면 claim을 풀고 다시 던진다 — 다음 시도가 재시도한다', async () => {
+    mockTriggerTripEndRecall.mockRejectedValueOnce(new Error('recall boom'));
+    await expect(cleanupDeviceSelfEndedTrip(7, 'lifecycle-9h-force-end')).rejects.toThrow('recall boom');
+    await expect(cleanupDeviceSelfEndedTrip(8, 'lifecycle-9h-force-end')).resolves.toBe('ended');
   });
 });

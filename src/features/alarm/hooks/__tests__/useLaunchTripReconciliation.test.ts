@@ -11,6 +11,7 @@ import {
 } from '../useLaunchTripReconciliation';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
+import { __resetTripEndClaimsForTests__, claimTripEndAction } from '../../utils/tripEndClaim';
 
 const mockFetchTripStatus = jest.fn();
 jest.mock('../../api/tripStatus', () => ({
@@ -58,9 +59,11 @@ jest.mock('../../store/tripBoundCleanups', () => ({
 
 // PR-3b — Signal 4 self-end의 종료 알림.
 const mockNotifyTripEnded = jest.fn();
-const mockCaptureTripEndIdentity = jest.fn();
+const mockCaptureTripEndSnapshot = jest.fn();
+const mockHasBoardingLock = jest.fn();
 jest.mock('../../utils/tripEndedNotification', () => ({
-  captureTripEndIdentity: (...args: unknown[]) => mockCaptureTripEndIdentity(...args),
+  captureTripEndSnapshot: (...args: unknown[]) => mockCaptureTripEndSnapshot(...args),
+  hasBoardingLock: (...args: unknown[]) => mockHasBoardingLock(...args),
   notifyTripEnded: (...args: unknown[]) => mockNotifyTripEnded(...args),
 }));
 
@@ -121,7 +124,15 @@ beforeEach(async () => {
   mockClearSentinel.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
   mockNotifyTripEnded.mockResolvedValue(undefined);
-  mockCaptureTripEndIdentity.mockResolvedValue('corr-captured');
+  // #3005 PR-C — 정본이 진입 직후 캡처하는 신원. corrId는 테스트가 제어하는 sync cache와 같은 값으로 돌려준다.
+  mockCaptureTripEndSnapshot.mockImplementation(async () => ({
+    identity: 'corr-captured',
+    corrId: mockGetCurrentTripCorrIdSync(),
+    activeTripToken: null,
+  }));
+  // Signal 4 알림은 lock trip에만(lock-only-alerts) — 기본은 lock 있음.
+  mockHasBoardingLock.mockResolvedValue(true);
+  __resetTripEndClaimsForTests__();
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
   mockClearBackendSsotMirror.mockResolvedValue(undefined);
@@ -144,6 +155,9 @@ beforeEach(async () => {
 afterEach(() => {
   delete process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
 });
+
+// #3005 PR-C — 정본은 진입 시점 신원(corrId + backend token)을 cleanup `expected`로 넘긴다.
+const EXPECTED_ARG = { expected: expect.objectContaining({ capturedAt: expect.any(Number) }) };
 
 describe('runLaunchTripReconciliation', () => {
   it('URL 미설정 → skip (fetch 호출 없음)', async () => {
@@ -500,7 +514,7 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
       // #2302 — 이 경로는 alarmLog에 흔적을 남기지 않으므로(logger.info만) backend end_reason이
       // 유일한 사후 식별 수단이다. status='ended' 분기('backend-confirmed')와 구별돼야 한다.
-      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout', EXPECTED_ARG);
       expect(mockTriggerTripGroundTruthPrompt).toHaveBeenCalledTimes(1);
       expect(mockSetSentinel).toHaveBeenCalledWith(now, null);
       expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
@@ -536,16 +550,36 @@ describe('runLaunchTripReconciliation', () => {
         reason: 'backend-silent',
         identity: 'corr-captured',
       });
-      // #3005 PR-B — identity는 recall(await) 앞에서 캡처한다.
-      expect(mockCaptureTripEndIdentity.mock.invocationCallOrder[0]).toBeLessThan(
-        mockTriggerTripEndRecall.mock.invocationCallOrder[0],
-      );
-      // corrId는 runTripBoundCleanups가 지우므로 알림이 먼저. recall(storage 입력 필요)은 그보다 앞.
+      // #3005 PR-B/PR-C — identity는 정본 진입 직후(알림·recall await 앞)에 캡처한다.
+      const captureOrder = mockCaptureTripEndSnapshot.mock.invocationCallOrder[0];
       const recallOrder = mockTriggerTripEndRecall.mock.invocationCallOrder[0];
       const noticeOrder = mockNotifyTripEnded.mock.invocationCallOrder[0];
       const cleanupOrder = mockRunTripBoundCleanups.mock.invocationCallOrder[0];
-      expect(recallOrder).toBeLessThan(noticeOrder);
-      expect(noticeOrder).toBeLessThan(cleanupOrder);
+      expect(captureOrder).toBeLessThan(noticeOrder);
+      // corrId는 runTripBoundCleanups가 지우므로 알림은 cleanup보다 먼저. (정본 순서: 알림 -> recall -> cleanup)
+      expect(noticeOrder).toBeLessThan(recallOrder);
+      expect(recallOrder).toBeLessThan(cleanupOrder);
+    });
+
+    it('#3005 PR-C — lock 없는 trip의 Signal 4는 종료(정리)는 하되 알림은 내지 않는다 (lock-only-alerts)', async () => {
+      mockHasBoardingLock.mockResolvedValue(false);
+      mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
+      mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
+      await runLaunchTripReconciliation();
+      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout', EXPECTED_ARG);
+      expect(mockSetSentinel).toHaveBeenCalledTimes(1);
+    });
+
+    it('#3005 PR-C — 같은 종료를 다른 경로가 먼저 선점했으면 알림·recall·cleanup·sentinel 모두 생략', async () => {
+      mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
+      mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
+      expect((await claimTripEndAction('corr-captured')).claimed).toBe(true);
+      await runLaunchTripReconciliation();
+      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+      expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
     });
 
     it('PR-3b 거부 — Signal 4가 판정되지 않으면(정상 silent push / 10h+ / 미수신) 알리지 않는다', async () => {
@@ -661,7 +695,7 @@ describe('runLaunchTripReconciliation', () => {
         expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', 'https://api.test.dev');
         expect(mockNotifyTripEnded).not.toHaveBeenCalled();
         expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
-        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed', EXPECTED_ARG);
         expect(mockRunTripBoundCleanups).not.toHaveBeenCalledWith('launch-backend-silent-timeout');
         expect(mockSetSentinel).toHaveBeenCalledTimes(1);
         expect(mockSetSentinel.mock.calls[0][0]).toBe(DUMP_ENDED_AT);
@@ -678,7 +712,7 @@ describe('runLaunchTripReconciliation', () => {
         });
         await runLaunchTripReconciliation();
         expect(mockNotifyTripEnded).not.toHaveBeenCalled();
-        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed', EXPECTED_ARG);
       });
 
       it('ended + 미래 도착 알람 있음 → 정리 유예 (알람 유지, 알림 0, 정리·sentinel·키 제거 없음)', async () => {
@@ -706,7 +740,7 @@ describe('runLaunchTripReconciliation', () => {
         });
         await runLaunchTripReconciliation();
         expect(mockHasFutureTripArrivalAlarm).toHaveBeenCalledWith('tk');
-        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed', EXPECTED_ARG);
       });
 
       it('ended지만 endedAt 누락 → 현재 시각으로 정본 정리 (알림 0)', async () => {
@@ -729,7 +763,7 @@ describe('runLaunchTripReconciliation', () => {
         expect(mockNotifyTripEnded).toHaveBeenCalledWith(
           expect.objectContaining({ reason: 'backend-silent' }),
         );
-        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout', EXPECTED_ARG);
         expect(mockRunTripBoundCleanups).not.toHaveBeenCalledWith('backend-confirmed');
       });
 
@@ -739,7 +773,7 @@ describe('runLaunchTripReconciliation', () => {
         expect(mockNotifyTripEnded).toHaveBeenCalledWith(
           expect.objectContaining({ reason: 'backend-silent' }),
         );
-        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout', EXPECTED_ARG);
       });
 
       it('거부 — status gone(404/410)이어도 기존 Signal 4 동작 (handleTripGone 미호출)', async () => {
@@ -757,7 +791,7 @@ describe('runLaunchTripReconciliation', () => {
         expect(mockNotifyTripEnded).toHaveBeenCalledWith(
           expect.objectContaining({ reason: 'backend-silent' }),
         );
-        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout', EXPECTED_ARG);
       });
 
       it('Signal 4 조건 미충족이면 status는 1회만 조회된다 (선조회가 일반 경로와 중복되지 않음)', async () => {

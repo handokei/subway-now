@@ -53,9 +53,14 @@ export interface TripEndActionClaim {
 /**
  * 같은 트립의 종료 행동(9h force-end / 일시정지 / backend-gone 자가 종료)을 한 경로만 실행하게 선점한다.
  * identity를 알 수 없으면(종료할 트립이 없음) 조정 대상이 없으므로 claimed=true.
+ *
+ * @param capturedIdentity 경로 진입 시점에 이미 캡처한 identity(#3005 PR-C — 정본이 알림 키와 같은 값으로 선점).
+ *   생략(undefined)하면 지금 조회한다. `null`은 "캡처 시점에도 트립을 알 수 없음"이다.
  */
-export async function claimTripEndAction(): Promise<TripEndActionClaim> {
-  const identity = await resolveTripEndIdentity();
+export async function claimTripEndAction(
+  capturedIdentity?: string | null,
+): Promise<TripEndActionClaim> {
+  const identity = capturedIdentity === undefined ? await resolveTripEndIdentity() : capturedIdentity;
   if (identity === null) return { claimed: true, release: () => undefined };
   const key = `${ACTION_CLAIM_PREFIX}${identity}`;
   const claimed = claimTripEnd(key);

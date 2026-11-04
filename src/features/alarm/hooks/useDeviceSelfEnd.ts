@@ -66,16 +66,11 @@ import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
   resolveTripEndedSentinelVerdict,
-  setTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
-import { runTripBoundCleanups } from '../store/tripBoundCleanups';
-import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
-import { captureTripEndIdentity, notifyTripEnded } from '../utils/tripEndedNotification';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
-import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { appendAlarmLog, getAlarmLog } from '../utils/alarmLog';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
-import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { cleanupDeviceSelfEndedTrip } from '../utils/tripEndedCleanupSequence';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 
 const logger = createLogger('useDeviceSelfEnd');
@@ -121,7 +116,6 @@ export interface UseDeviceSelfEndInputs {
  */
 export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
   const destination = useDestinationStore((s) => s.destination);
-  const releaseLock = useBoardingLockStore((s) => s.releaseLock);
   const [tripStartedAt, setTripStartedAt_] = useState<number | null>(null);
 
   // signal 지속 시간 tracker refs — 각 signal 최초 진입 tick의 ts.
@@ -207,40 +201,19 @@ export function useDeviceSelfEnd(inputs: UseDeviceSelfEndInputs): void {
           reason: REASON_TO_ALARM_LOG_REASON[reason],
         });
 
-        // silent push trip-ended / lifecycle-backstop force-end 와 동일 시퀀스.
-        // recall이 cleanup 전에 호출돼야 ROUTE_KEY / DESTINATION_KEY / TRIP_STARTED_AT_KEY 를 읽을 수 있다.
-        // #2675 — 자동 종료를 사용자에게 알린다. 이 경로는 앱이 BG/종료 상태에서도 발화하므로
-        // 화면 내 배너/토스트로는 도달하지 못한다("도착 안내도 종료 알림도 없이 조용히 사라짐",
-        // 2026-09-17 사용자 보고). cleanup 전에 destination snapshot을 읽어 문구에 역명을 싣는다.
-        // #3005 PR-B — identity는 진입 직후 캡처(다른 종료 경로 cleanup이 corrId를 지워도 같은 키).
-        const endedDestination = useDestinationStore.getState().destination;
-        const endIdentity = await captureTripEndIdentity();
-        void notifyTripEnded({
-          destination: endedDestination,
-          reason: 'arrived',
-          identity: endIdentity,
+        // #3005 PR-C — 정본 시퀀스로 수렴. #2675 종료 알림(진입 시점 identity로 dedupe, recall 앞) / recall / #2302
+        // backend end_reason(alarmLog reason과 같은 매핑 — 새 어휘 금지) / prompt / 메모리 reset / #2715 lock release
+        // 사유 / #2114 sentinel corrId를 정본이 수행한다. 도착 종료 알림은 lock trip에만(lock-only-alerts, 2026-10-21).
+        await cleanupDeviceSelfEndedTrip(now, REASON_TO_ALARM_LOG_REASON[reason], {
+          notifyReason: 'arrived',
+          notifyRequiresLock: true,
         });
-        await triggerTripEndRecall();
-        // #2302 — alarmLog reason(위 appendAlarmLog)과 lock release 사유(아래 releaseLock)에
-        // 쓰는 같은 매핑을 backend end_reason에도 그대로 재사용한다 — 새 어휘 금지.
-        await runTripBoundCleanups(REASON_TO_ALARM_LOG_REASON[reason]);
-        await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-        useDestinationStore.setState({
-          destination: null,
-          customOrigin: null,
-          tripOrigin: null,
-        });
-        // #2715 — device self-end는 자동 종료다. 이미 alarmLog에 매핑해둔 REASON_TO_ALARM_LOG_REASON
-        // 값을 그대로 lock release reason으로도 재사용 — 새 사유 체계를 만들지 않는다.
-        await releaseLock(REASON_TO_ALARM_LOG_REASON[reason]);
-        // #2114 (방안 C′) — sentinel에 corrId 동봉.
-        await setTripEndedSentinel(now, endedCorrIdSnapshot);
       } catch (e) {
         // graceful — 다음 tick 재평가에서 다시 시도. sentinel/refs 상태에 따라 자연 dedup.
         logger.warn('device self-end 실패 (graceful)', e);
       }
     },
-    [releaseLock, tripStartedAt],
+    [tripStartedAt],
   );
 
   // #2341 — Signal 1(fusion-destination)의 destination 도착 판정이 backend destination push

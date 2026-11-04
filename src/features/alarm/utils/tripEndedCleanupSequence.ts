@@ -43,50 +43,91 @@ import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { setTripEndedSentinel } from './tripEndedSentinel';
 import { triggerTripEndRecall } from './triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import type { TripEndReason } from '../../../shared/types/tripEnd';
+import {
+  captureTripEndSnapshot,
+  hasBoardingLock,
+  notifyTripEnded,
+  type TripEndedReason,
+} from './tripEndedNotification';
+import { claimTripEndAction } from './tripEndClaim';
 
 /**
- * breadcrumb에서 trip 종료 트리거를 구분하는 reason.
+ * 정본 시퀀스 옵션.
  *
- * #2302 — 이 정본 시퀀스가 커버하는 두 진입점만 허용한다. 공용 `TripEndReason`의 부분집합으로
- * 선언해 backend end_reason 어휘와 드리프트하지 않게 한다(`Extract`가 오타/신규 값을
- * 컴파일 타임에 차단).
+ * - `claim` — 종료 행동을 `claimTripEndAction`으로 선점한다(진입 직후 캡처한 identity로). 선점 실패면 아무것도 하지
+ *   않고 `'skipped'`. 이미 호출부에서 선점한 진입점(backend-gone 등)은 켜지 않는다(같은 키라 스스로 막힌다).
+ * - `notifyReason` — 주면 cleanup 앞에서 종료 알림 1건(진입 시점 identity로 dedupe). 생략하면 알리지 않는다
+ *   (backend가 확정한 종료는 backend alert가 알린다, 사용자가 직접 끝낸 종료는 알리지 않는다).
+ * - `notifyRequiresLock` — lock 없는 trip(역 탭·목적지 설정만)에는 알리지 않는다(lock-only-alerts, 2026-10-21).
  */
-type SequenceTripEndReason = Extract<
-  TripEndReason,
-  'backend-confirmed' | 'user-end-trip-button' | 'user-end-offer' | 'backend-gone-device-confirmed'
->;
+export interface TripEndSequenceOptions {
+  claim?: boolean;
+  notifyReason?: TripEndedReason;
+  notifyRequiresLock?: boolean;
+}
+
+export type TripEndSequenceOutcome = 'ended' | 'skipped';
 
 /**
- * trip-ended cleanup 5단 시퀀스 본체. `cleanupBackendConfirmedEndedTrip` /
- * `cleanupUserInitiatedEndedTrip`(#2428) 양쪽이 공유하는 단일 구현 — drift 방지를 위해
- * 여기 외에는 재구현하지 않는다.
+ * trip-ended cleanup 시퀀스 본체. `cleanupBackendConfirmedEndedTrip` / `cleanupUserInitiatedEndedTrip`(#2428) /
+ * `cleanupDeviceSelfEndedTrip`(#3005 PR-C: Signal 4 / 9h / 일시정지 / device self-end)이 공유하는 단일 구현 —
+ * drift 방지를 위해 여기 외에는 재구현하지 않는다.
+ *
+ * #3005 — 진입 직후 trip 신원을 한 번 캡처(`captureTripEndSnapshot`)해 claim·알림 키·cleanup `expected`·prompt corrId에
+ * 같은 값을 쓴다. recall await 중 새 trip이 등록되면(운영 token은 APNs 토큰이라 고정이므로 corrId로만 구분된다)
+ * 신원에 묶인 정리와 아래 꼬리 단계(메모리 reset·lock release·sentinel·ACTIVE_TRIP 제거)는 새 trip을 건드리지 않는다.
  */
 async function runFullTripEndCleanupSequence(
   endedAt: number,
-  reason: SequenceTripEndReason,
-): Promise<void> {
-  await triggerTripEndRecall();
-  // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
-  const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-  // #2302 — 이 정본 시퀀스는 두 진입점(backend 확정 / 사용자 [안내 종료] 탭)을 가지며,
-  // breadcrumb과 같은 `reason`을 backend end_reason으로도 전달한다.
-  await runTripBoundCleanups(reason);
-  // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
-  await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-  // #2419 — in-memory destination/customOrigin/tripOrigin reset. runTripBoundCleanups는
-  // storage만 정리하므로 이게 없으면 stale destination이 메모리에 남아 lockless trip이
-  // 유령 재시작된다 (헤더 주석 참고).
-  useDestinationStore.setState({ destination: null, customOrigin: null, tripOrigin: null });
-  // #2428 — trip 종료 트리거 구분 breadcrumb (V/X dashboard 관측용: Sentry breadcrumb trail).
-  addDomainBreadcrumb('trip', 'end', { reason });
-  // #2114 (방안 C′) — sentinel에 corrId 동봉.
-  await setTripEndedSentinel(endedAt, endedCorrIdSnapshot);
-  await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+  reason: TripEndReason,
+  options: TripEndSequenceOptions = {},
+): Promise<TripEndSequenceOutcome> {
+  const { claim = false, notifyReason, notifyRequiresLock = false } = options;
+  const capturedAt = Date.now();
+  const { identity, corrId, activeTripToken } = await captureTripEndSnapshot();
+  const endedDestination = useDestinationStore.getState().destination;
+  const lockTrip = notifyReason !== undefined && notifyRequiresLock ? await hasBoardingLock() : false;
+  const endClaim = claim ? await claimTripEndAction(identity) : null;
+  if (endClaim && !endClaim.claimed) return 'skipped';
+  try {
+    // 알림은 recall·cleanup 앞 — corrId(dedupe 키)·ACTIVE_TRIP_KEY(data.tripToken)가 cleanup에서 지워진다.
+    // 알림 실패는 notifyTripEnded가 삼킨다.
+    if (notifyReason !== undefined && (!notifyRequiresLock || lockTrip)) {
+      await notifyTripEnded({ destination: endedDestination, reason: notifyReason, identity });
+    }
+    await triggerTripEndRecall();
+    // 알림·recall await 사이에 다른 trip이 등록됐는지(corrId 인스턴스 비교). 이후 await 없이 cleanup에 진입한다.
+    const sameTrip = getCurrentTripCorrIdSync() === corrId;
+    // #2302 — 이 정본 시퀀스의 모든 진입점은 자기 `reason`을 backend end_reason·breadcrumb·lock release 사유로
+    // 동일하게 전달한다. #3005 PR-A — `expected`로 신원에 묶인 정리를 캡처한 trip에만 적용한다.
+    await runTripBoundCleanups(reason, { expected: { corrId, activeTripToken, capturedAt } });
+    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, 진입 시점 corrId snapshot으로).
+    await triggerTripGroundTruthPrompt(corrId);
+    // #2428 — trip 종료 트리거 구분 breadcrumb (V/X dashboard 관측용: Sentry breadcrumb trail).
+    addDomainBreadcrumb('trip', 'end', { reason });
+    if (sameTrip) {
+      // #2419 — in-memory destination/customOrigin/tripOrigin reset. runTripBoundCleanups는
+      // storage만 정리하므로 이게 없으면 stale destination이 메모리에 남아 lockless trip이
+      // 유령 재시작된다 (헤더 주석 참고).
+      useDestinationStore.setState({ destination: null, customOrigin: null, tripOrigin: null });
+      // #2715 — cleanup이 같은 사유로 이미 release했으므로 정상 경로에선 no-op(`releaseLock`의 `if (prev)` 가드).
+      // cleanup이 부분 실패해 lock이 남은 경우에만 동작하는 backstop이다(사유가 같아 드리프트 없음).
+      await useBoardingLockStore.getState().releaseLock(reason);
+      // #2114 (방안 C′) — sentinel에 corrId 동봉.
+      await setTripEndedSentinel(endedAt, corrId);
+      await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+    }
+    return 'ended';
+  } catch (e) {
+    endClaim?.release();
+    throw e;
+  }
 }
 
 /**
@@ -126,4 +167,21 @@ export async function cleanupUserInitiatedEndedTrip(endedAt: number): Promise<vo
  */
 export async function cleanupUserEndOfferEndedTrip(endedAt: number): Promise<void> {
   await runFullTripEndCleanupSequence(endedAt, 'user-end-offer');
+}
+
+/**
+ * #3005 PR-C — device가 스스로 종료를 판정한 경로(Signal 4 / 9시간 force-end / 일시정지 backstop /
+ * device self-end)의 진입점. 정본 시퀀스를 그대로 쓰되 `claim`으로 같은 종료의 중복 실행을 막는다.
+ * 선점당하면 `'skipped'`(알림·recall·cleanup·sentinel 전부 생략). 시퀀스가 throw하면 claim을 풀고 다시 던진다 —
+ * 호출부는 자기 graceful 처리로 삼키면 다음 진입이 재시도한다.
+ *
+ * @param endedAt 종료 판정 시각(epoch ms) — sentinel에 기록된다.
+ * @param reason  경로 고유 사유 — backend end_reason / breadcrumb / lock release 사유로 동일하게 쓰인다.
+ */
+export function cleanupDeviceSelfEndedTrip(
+  endedAt: number,
+  reason: TripEndReason,
+  options: Pick<TripEndSequenceOptions, 'notifyReason' | 'notifyRequiresLock'> = {},
+): Promise<TripEndSequenceOutcome> {
+  return runFullTripEndCleanupSequence(endedAt, reason, { ...options, claim: true });
 }
