@@ -65,9 +65,12 @@ jest.mock('../../../features/alarm/utils/tripEndedNotification', () => ({
 }));
 const NOTICE_DESTINATION = { id: '2-010', name: '뚝섬', line: '2' };
 
-const mockClaimTripEndAction = jest.fn();
-jest.mock('../../../features/alarm/utils/tripEndClaim', () => ({
-  claimTripEndAction: () => mockClaimTripEndAction(),
+// #3005 PR-C — 9h / 일시정지 backstop은 정본(`cleanupDeviceSelfEndedTrip`)을 호출한다. 정본의 8단 단계별 동작(알림·
+// recall·DELETE·prompt·메모리·breadcrumb·lock 사유·sentinel)은 alarm/__tests__/tripEndConvergence3005.test.ts가
+// 실제 정본으로 검증한다. 여기서는 이 hook의 배선(사유·알림 사유·outcome 처리)만 본다.
+const mockCleanupDeviceSelfEndedTrip = jest.fn();
+jest.mock('../../../features/alarm/utils/tripEndedCleanupSequence', () => ({
+  cleanupDeviceSelfEndedTrip: (...args: unknown[]) => mockCleanupDeviceSelfEndedTrip(...args),
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -119,7 +122,7 @@ beforeEach(() => {
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockSetSentinel.mockResolvedValue(undefined);
   mockNotifyTripEnded.mockResolvedValue(undefined);
-  mockClaimTripEndAction.mockResolvedValue({ claimed: true, release: jest.fn() });
+  mockCleanupDeviceSelfEndedTrip.mockResolvedValue('ended');
   // 기본은 trip 미존재(none) — 기존 테스트들이 backstop 영향 받지 않도록.
   mockGetTripStartedAt.mockResolvedValue(null);
   mockTripLifecyclePhase.mockReturnValue('none');
@@ -509,33 +512,53 @@ describe('useStateRehydration', () => {
       expect(mockSetSentinel).not.toHaveBeenCalled();
     });
 
-    it("phase='force-end' (9h+) — runTripBoundCleanups + setState reset + releaseLock + sentinel + alarmLog fired", async () => {
+    it("phase='force-end' (9h+) — 정본을 사유 lifecycle-9h-force-end + 알림 lifecycle로 호출하고 alarmLog fired 적재", async () => {
       mockGetTripStartedAt.mockResolvedValue(1_000_000);
       mockTripLifecyclePhase.mockReturnValue('force-end');
       mockAppState();
       renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
-      expect(mockAppendAlarmLog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          source: 'lifecycle-backstop',
-          outcome: 'fired',
-          reason: 'trip-lifecycle-force-ended',
-        }),
+      await waitFor(() =>
+        expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'lifecycle-backstop',
+            outcome: 'fired',
+            reason: 'trip-lifecycle-force-ended',
+          }),
+        ),
       );
-      expect(mockRunTripBoundCleanups).toHaveBeenCalled();
-      // #2302 — backend end_reason도 같은 사유로 기록돼야 한다(releaseLock/breadcrumb과 동일 문자열).
-      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('lifecycle-9h-force-end');
-      expect(mockSetState).toHaveBeenCalledWith({
-        destination: null,
-        customOrigin: null,
-        tripOrigin: null,
-      });
-      // #2715 — 9h+ force-end는 자동 backstop이다. 같은 breadcrumb reason을 그대로
-      // lock release reason으로도 사용해 'user' 오기록을 막는다.
-      expect(mockReleaseLock).toHaveBeenCalledWith('lifecycle-9h-force-end');
-      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
-        reason: 'lifecycle-9h-force-end',
-      });
+      // #2302 — backend end_reason / breadcrumb / lock release 사유가 모두 이 문자열(정본이 같은 값을 전달).
+      expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledTimes(1);
+      expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledWith(
+        expect.any(Number),
+        'lifecycle-9h-force-end',
+        { notifyReason: 'lifecycle' },
+      );
+    });
+
+    it('phase=force-end인데 다른 경로가 선점해 정본이 skipped면 alarmLog fired를 남기지 않는다', async () => {
+      mockCleanupDeviceSelfEndedTrip.mockResolvedValue('skipped');
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('force-end');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-lifecycle-force-ended' }),
+      );
+    });
+
+    it('정본이 throw해도 graceful — hook은 죽지 않고 fired 로그도 없다(claim 해제·재시도는 정본이 보장)', async () => {
+      mockCleanupDeviceSelfEndedTrip.mockRejectedValue(new Error('io'));
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('force-end');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-lifecycle-force-ended' }),
+      );
     });
 
     it("backstop 실패는 graceful (다음 launch 영향 X)", async () => {
@@ -573,7 +596,7 @@ describe('useStateRehydration', () => {
       (Date.now as jest.Mock).mockRestore();
     });
 
-    it('pausedAt 존재 + 경과 ≥ PAUSE_AUTO_END_MS — runTripBoundCleanups + setState reset + releaseLock + sentinel + alarmLog fired (RED: cold-start 자동 종료)', async () => {
+    it('pausedAt 존재 + 경과 ≥ PAUSE_AUTO_END_MS — 정본을 사유 navigation-pause-auto-end + 알림 paused로 호출하고 alarmLog fired 적재', async () => {
       const now = 1_700_000_000_000;
       jest.spyOn(Date, 'now').mockReturnValue(now);
       mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
@@ -588,22 +611,27 @@ describe('useStateRehydration', () => {
           }),
         ),
       );
-      expect(mockRunTripBoundCleanups).toHaveBeenCalled();
-      // #2302 — 2026-10-15 실측에서 이 경로가 6초 DELETE의 용의자였는데 `user-delete` 라벨
-      // 때문에 배제도 확정도 불가했다. backend end_reason으로 구분 가능해야 한다.
-      expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('navigation-pause-auto-end');
-      expect(mockSetState).toHaveBeenCalledWith({
-        destination: null,
-        customOrigin: null,
-        tripOrigin: null,
+      // #2302 — 2026-10-15 실측에서 이 경로가 6초 DELETE의 용의자였는데 `user-delete` 라벨 때문에 배제도 확정도
+      // 불가했다. 경로 고유 사유로 구분 가능해야 한다. #2425 sentinel은 정본이 항상 남긴다(경로별 누락 불가).
+      expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledTimes(1);
+      expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledWith(now, 'navigation-pause-auto-end', {
+        notifyReason: 'paused',
       });
-      // #2715 — 일시정지 자동종료도 자동 사유로 기록돼야 한다.
-      expect(mockReleaseLock).toHaveBeenCalledWith('navigation-pause-auto-end');
-      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
-        reason: 'navigation-pause-auto-end',
-      });
-      // 버그 #3 fix — force-end 경로와 동일하게 종료 시 sentinel set, BG 채널이 인지 가능.
-      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it('일시정지 경과인데 정본이 skipped면 alarmLog fired를 남기지 않는다', async () => {
+      const now = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      mockCleanupDeviceSelfEndedTrip.mockResolvedValue('skipped');
+      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'trip-paused-auto-ended' }),
+      );
       (Date.now as jest.Mock).mockRestore();
     });
 
@@ -616,87 +644,15 @@ describe('useStateRehydration', () => {
   });
 
   describe('PR-3b — 조용한 종료 경로의 종료 알림 (plan 2026-10-21 Part 3)', () => {
-    it("9h force-end — reason 'lifecycle'로 1회 알리고, runTripBoundCleanups보다 먼저(corrId가 cleanup에서 지워진다)", async () => {
+    it('9h force-end와 일시정지는 알림 사유(lifecycle / paused)를 정본에 넘긴다 — 알림은 정본이 cleanup 앞에서 1회', async () => {
       mockGetTripStartedAt.mockResolvedValue(1_000_000);
       mockTripLifecyclePhase.mockReturnValue('force-end');
       mockAppState();
       renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
-      expect(mockNotifyTripEnded).toHaveBeenCalledTimes(1);
-      expect(mockNotifyTripEnded).toHaveBeenCalledWith({
-        destination: NOTICE_DESTINATION,
-        reason: 'lifecycle',
-      });
-      expect(mockNotifyTripEnded.mock.invocationCallOrder[0]).toBeLessThan(
-        mockRunTripBoundCleanups.mock.invocationCallOrder[0],
-      );
-    });
-
-    it("일시정지 15분 backstop — reason 'paused'로 1회, cleanup보다 먼저", async () => {
-      const now = 1_700_000_000_000;
-      jest.spyOn(Date, 'now').mockReturnValue(now);
-      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
-      mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
-      expect(mockNotifyTripEnded).toHaveBeenCalledTimes(1);
-      expect(mockNotifyTripEnded).toHaveBeenCalledWith({
-        destination: NOTICE_DESTINATION,
-        reason: 'paused',
-      });
-      expect(mockNotifyTripEnded.mock.invocationCallOrder[0]).toBeLessThan(
-        mockRunTripBoundCleanups.mock.invocationCallOrder[0],
-      );
-      (Date.now as jest.Mock).mockRestore();
-    });
-
-    it('PR-2 경쟁 — 9h force-end: 다른 경로(B)가 같은 종료를 먼저 선점했으면 통지·cleanup·sentinel 모두 skip', async () => {
-      mockClaimTripEndAction.mockResolvedValue({ claimed: false, release: jest.fn() });
-      mockGetTripStartedAt.mockResolvedValue(1_000_000);
-      mockTripLifecyclePhase.mockReturnValue('force-end');
-      mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
-      expect(mockNotifyTripEnded).not.toHaveBeenCalled();
-      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
-      expect(mockSetSentinel).not.toHaveBeenCalled();
-    });
-
-    it('PR-2 경쟁 — 일시정지 backstop도 선점당하면 skip', async () => {
-      const now = 1_700_000_000_000;
-      jest.spyOn(Date, 'now').mockReturnValue(now);
-      mockClaimTripEndAction.mockResolvedValue({ claimed: false, release: jest.fn() });
-      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
-      mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
-      expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
-      expect(mockSetSentinel).not.toHaveBeenCalled();
-      (Date.now as jest.Mock).mockRestore();
-    });
-
-    it('PR-2 — 9h cleanup이 throw하면 claim을 release해 다음 진입이 재시도할 수 있다', async () => {
-      const release = jest.fn();
-      mockClaimTripEndAction.mockResolvedValue({ claimed: true, release });
-      mockRunTripBoundCleanups.mockRejectedValue(new Error('io'));
-      mockGetTripStartedAt.mockResolvedValue(1_000_000);
-      mockTripLifecyclePhase.mockReturnValue('force-end');
-      mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(release).toHaveBeenCalledTimes(1));
-    });
-
-    it('PR-2 — 일시정지 cleanup이 throw하면 claim을 release한다', async () => {
-      const now = 1_700_000_000_000;
-      jest.spyOn(Date, 'now').mockReturnValue(now);
-      const release = jest.fn();
-      mockClaimTripEndAction.mockResolvedValue({ claimed: true, release });
-      mockRunTripBoundCleanups.mockRejectedValue(new Error('io'));
-      mockGetNavigationPausedAt.mockResolvedValue(now - PAUSE_AUTO_END_MS);
-      mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(release).toHaveBeenCalledTimes(1));
-      (Date.now as jest.Mock).mockRestore();
+      await waitFor(() => expect(mockCleanupDeviceSelfEndedTrip).toHaveBeenCalledTimes(1));
+      expect(mockCleanupDeviceSelfEndedTrip.mock.calls[0][2]).toEqual({ notifyReason: 'lifecycle' });
+      // lock 유무와 무관한 조용한 자동 종료 — notifyRequiresLock을 켜지 않는다(Signal 4 / DSE만 lock 전용).
+      expect(mockCleanupDeviceSelfEndedTrip.mock.calls[0][2]).not.toHaveProperty('notifyRequiresLock');
     });
 
     it.each([
@@ -709,6 +665,7 @@ describe('useStateRehydration', () => {
       renderHook(() => useStateRehydration());
       await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
       expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+      expect(mockCleanupDeviceSelfEndedTrip).not.toHaveBeenCalled();
     });
 
     it('거부 — 일시정지 15분 미경과면 알리지 않는다', async () => {
@@ -719,6 +676,7 @@ describe('useStateRehydration', () => {
       renderHook(() => useStateRehydration());
       await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
       expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+      expect(mockCleanupDeviceSelfEndedTrip).not.toHaveBeenCalled();
       (Date.now as jest.Mock).mockRestore();
     });
 

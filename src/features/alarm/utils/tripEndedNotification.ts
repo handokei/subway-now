@@ -35,6 +35,8 @@ import { appendAlarmLog } from './alarmLog';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { claimTripEnd, resolveTripEndIdentity } from './tripEndClaim';
 import { getTripStartedAt } from './tripStartStorage';
+import { getBoardingLock } from './boardingLockStorage';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
 
 const log = createLogger('tripEndedNotification');
 
@@ -102,21 +104,48 @@ async function resolveEndClaimKey(captured: string | null | undefined): Promise<
   return identity ?? `min:${Math.floor(Date.now() / MINUTE_MS)}`;
 }
 
+/** 종료 경로 진입 시점에 캡처한 trip 신원. cleanup이 아래 값들을 지우기 전의 스냅샷이다. */
+export interface TripEndSnapshot {
+  /** dedupe/claim 키 — corrId 1순위 -> `start:<startedAt>` -> null(캡처 시점에도 trip을 알 수 없음). */
+  identity: string | null;
+  /** 진입 시점의 corrId 메모리 캐시(PR-A `expected.corrId`와 같은 출처). */
+  corrId: string | null;
+  /** 진입 시점의 ACTIVE_TRIP_KEY(backend trip token). */
+  activeTripToken: string | null;
+}
+
 /**
- * 종료 경로 **진입 직후** trip identity를 캡처한다(corrId 1순위 -> `start:<startedAt>` -> null).
- * corrId 메모리 캐시가 cold launch로 아직 비어 있으면 storage를 직접 읽어 hydrate 완료를 기다린다 —
- * `getCurrentTripCorrId()`는 캐시를 덮어써 cleanup이 지운 corrId를 되살릴 수 있어 쓰지 않는다.
- * 읽기는 호출 즉시(동기 구간에서) 시작되므로 뒤이은 cleanup이 지우기 전의 값을 잡는다.
+ * 종료 경로 **진입 직후** trip 신원을 캡처한다(#3005 PR-B identity + PR-A expected 신원).
+ * identity는 corrId 1순위 -> `start:<startedAt>` -> null. corrId 메모리 캐시가 cold launch로 아직 비어 있으면
+ * storage를 직접 읽어 hydrate 완료를 기다린다 — `getCurrentTripCorrId()`는 캐시를 덮어써 cleanup이 지운 corrId를
+ * 되살릴 수 있어 쓰지 않는다. 읽기는 호출 즉시(동기 구간에서) 시작되므로 뒤이은 cleanup이 지우기 전의 값을 잡는다.
  */
-export async function captureTripEndIdentity(): Promise<string | null> {
+export async function captureTripEndSnapshot(): Promise<TripEndSnapshot> {
   const cached = getCurrentTripCorrIdSync();
-  if (cached) return cached;
-  const [stored, startedAt] = await Promise.all([
-    AsyncStorage.getItem(TRIP_CORR_ID_KEY).catch(() => null),
-    getTripStartedAt().catch(() => null),
+  const [stored, startedAt, activeTripToken] = await Promise.all([
+    cached ? Promise.resolve(null) : AsyncStorage.getItem(TRIP_CORR_ID_KEY).catch(() => null),
+    cached ? Promise.resolve(null) : getTripStartedAt().catch(() => null),
+    AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null),
   ]);
-  if (stored) return stored;
-  return startedAt === null ? null : `start:${startedAt}`;
+  const corrId = cached ?? null;
+  const identity =
+    cached ?? stored ?? (startedAt === null ? null : `start:${startedAt}`);
+  return { identity, corrId, activeTripToken };
+}
+
+/** identity만 필요한 호출부용(`clearAndNotifyTripEnded` 등). */
+export async function captureTripEndIdentity(): Promise<string | null> {
+  const { identity } = await captureTripEndSnapshot();
+  return identity;
+}
+
+/**
+ * 지금 lock 있는 trip인가 — 메모리 우선, 없으면 storage(cold launch에서 lock store가 아직 재수화 전일 수 있다).
+ * lock-only-alerts(10-21): lock 없는 trip의 종료는 알림을 내지 않는다. cleanup이 lock을 지우기 **전에** 불러야 한다.
+ */
+export async function hasBoardingLock(): Promise<boolean> {
+  if (useBoardingLockStore.getState().lock !== null) return true;
+  return (await getBoardingLock()) !== null;
 }
 
 /**
@@ -175,11 +204,16 @@ export async function notifyTripEnded(input: NotifyTripEndedInput): Promise<void
 }
 
 /**
- * 자동 해제 호출부(HomeScreen 도착 / 목적지 자동 해제)용: identity를 **clear 이전에** 캡처하고, clear를
+ * 자동 해제 호출부(HomeScreen 도착 / 목적지 자동 해제)용: identity와 lock 유무를 **clear 이전에** 캡처하고, clear를
  * 동기로 실행한 뒤 캡처한 identity로 알린다. clear가 corrId를 지워도 다른 종료 경로와 같은 키를 쓴다.
+ * lock 없는 trip(역 탭·목적지 설정만)은 알림을 내지 않는다(lock-only-alerts, 2026-10-21 — lockless의 종료 안내는
+ * 시한 종료 1회뿐이다). 종료(clear) 자체는 lock과 무관하게 항상 수행한다.
  */
 export function clearAndNotifyTripEnded(clear: () => void, input: NotifyTripEndedInput): void {
   const captured = captureTripEndIdentity();
+  const lockTrip = hasBoardingLock();
   clear();
-  void captured.then((identity) => notifyTripEnded({ ...input, identity }));
+  void Promise.all([captured, lockTrip]).then(([identity, hasLock]) =>
+    hasLock ? notifyTripEnded({ ...input, identity }) : undefined,
+  );
 }

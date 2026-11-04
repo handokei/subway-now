@@ -17,6 +17,9 @@ import { __resetTripEndClaimsForTests__ } from '../utils/tripEndClaim';
 import { setLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { setTripStartedAt } from '../utils/tripStartStorage';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { setBoardingLock } from '../utils/boardingLockStorage';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import {
   clearTripCorrId,
   getCurrentTripCorrId,
@@ -76,6 +79,16 @@ const TRIP_STARTED_AT = Date.parse('2026-11-03T18:30:00+09:00');
 const CORR_ID = `${TRIP_STARTED_AT}-a1b2c3d4`;
 // 덤프의 APNs 토큰은 가린다.
 const TRIP_TOKEN = 'REDACTED-APNS-TOKEN';
+// #3005 PR-C — lock-only-alerts(10-21): Signal 4 / 도착 자동 해제의 종료 알림은 lock trip에만 나간다. 이 이중 알림
+// 시나리오는 "알림이 나가는 trip"(= lock 있음)에서만 성립하므로 lock을 시드한다(덤프 값은 그대로).
+const LOCK = {
+  destinationId: '7-015',
+  trainCode: '7123',
+  boardingStationId: '7-001',
+  boardingLine: '7',
+  boardedAt: TRIP_STARTED_AT,
+  expectedDurationMs: 3_600_000,
+} as BoardingLock;
 
 const scheduleMock = Notifications.scheduleNotificationAsync as jest.Mock;
 
@@ -100,6 +113,8 @@ describe('#3005 PR-B — 11/03 종료 알림 중복 (replay)', () => {
     await AsyncStorage.setItem(TRIP_CORR_ID_KEY, CORR_ID);
     if (opts.corrIdHydrated) await getCurrentTripCorrId();
     useDestinationStore.setState({ destination: YONGMASAN, customOrigin: null, tripOrigin: null });
+    await setBoardingLock(LOCK);
+    useBoardingLockStore.setState({ lock: LOCK });
   }
 
   /** HomeScreen 도착 자동 해제(HS:497)와 같은 호출 모양. */
@@ -119,6 +134,7 @@ describe('#3005 PR-B — 11/03 종료 알림 중복 (replay)', () => {
     await AsyncStorage.clear();
     await clearTripCorrId();
     useDestinationStore.setState({ destination: null, customOrigin: null, tripOrigin: null });
+    useBoardingLockStore.setState({ lock: null });
     recallResolvers.length = 0;
     // Signal 4의 recall(첫 호출)만 보류시켜 await 중에 다른 경로가 끼어들 수 있게 한다.
     // 끼어든 경로(도착 해제)의 recall은 즉시 끝나 cleanup이 corrId를 먼저 지운다 — 11/03 실측 순서.

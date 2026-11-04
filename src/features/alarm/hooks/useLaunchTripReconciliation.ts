@@ -51,24 +51,21 @@ import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
   resolveTripEndedSentinelVerdict,
-  setTripEndedSentinel,
 } from '../utils/tripEndedSentinel';
 import { getLastSilentPushReceivedAt } from '../utils/lastSilentPushReceivedAt';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { fetchTripStatus } from '../api/tripStatus';
-import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
-import { runTripBoundCleanups } from '../store/tripBoundCleanups';
-import { captureTripEndIdentity, notifyTripEnded } from '../utils/tripEndedNotification';
 import { handleTripGone } from '../utils/tripGoneSelfEnd';
 import { isEndedMarkerOfOtherTrip } from '../utils/tripStatusCorrId';
-import { cleanupBackendConfirmedEndedTrip } from '../utils/tripEndedCleanupSequence';
+import {
+  cleanupBackendConfirmedEndedTrip,
+  cleanupDeviceSelfEndedTrip,
+} from '../utils/tripEndedCleanupSequence';
 import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
-import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { logCrossTripMirrorSkip } from '../utils/alarmLog';
 import { hasFutureTripArrivalAlarm } from '../utils/tripGone';
-import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useLaunchTripReconciliation');
@@ -226,31 +223,13 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       logger.info(
         `Signal 4 backend-timeout self-end: silentPushGap=${now - lastReceivedAt}ms tripAge=${now - startedAt}ms`,
       );
-      // #3005 PR-B — 종료 identity는 진입 직후(recall await 앞) 캡처한다. recall await 중 다른 종료 경로의
-      // cleanup이 corrId를 지우면 알림 시점 조회는 다른 키(`min:<분>`)로 내려가 dedupe가 뚫린다.
-      const endIdentity = await captureTripEndIdentity();
-      // 기존 status=ended 분기와 동일한 순서 — recall이 cleanup 이전이어야 storage 입력 유지.
-      await triggerTripEndRecall();
-      // 알림은 cleanup 앞 — corrId(dedupe 키)·ACTIVE_TRIP_KEY(tripToken)가 cleanup에서 지워진다.
-      // recall은 storage 입력이 필요해 그보다 앞. 알림 실패는 notifyTripEnded가 삼킨다.
-      await notifyTripEnded({
-        destination: useDestinationStore.getState().destination,
-        reason: 'backend-silent',
-        identity: endIdentity,
+      // #3005 PR-C — 정본 시퀀스로 수렴. identity 캡처·claim·알림(lock trip 전용)·recall·cleanup(expected)·prompt·
+      // 메모리 reset·sentinel·ACTIVE_TRIP 제거를 정본이 수행한다(#2302 사유 / #2419 메모리 / #2114 sentinel corrId 동일).
+      // 알림 문구 `backend-silent`는 원인을 명시하므로 잘못된 신호가 아니다(PR-3b) — 다만 lock 없는 trip은 알림이 없다.
+      await cleanupDeviceSelfEndedTrip(now, 'launch-backend-silent-timeout', {
+        notifyReason: 'backend-silent',
+        notifyRequiresLock: true,
       });
-      const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
-      // #2302 — Signal 4(backend 30분 무음) self-end. 이 경로도 alarmLog에 흔적을 남기지
-      // 않으므로(logger.info만) backend end_reason이 유일한 사후 식별 수단이다.
-      await runTripBoundCleanups('launch-backend-silent-timeout');
-      await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
-      // #2419 — in-memory destination/customOrigin/tripOrigin reset. runTripBoundCleanups는
-      // storage만 정리하므로 이게 없으면 stale destination이 메모리에 남아 lockless trip이
-      // 유령 재시작된다. status='ended' 분기는 cleanupBackendConfirmedEndedTrip을 경유해
-      // 동일하게 처리됨 (tripEndedCleanupSequence.ts 헤더 주석).
-      useDestinationStore.setState({ destination: null, customOrigin: null, tripOrigin: null });
-      // #2114 (방안 C′) — sentinel에 corrId 동봉.
-      await setTripEndedSentinel(now, endedCorrIdSnapshot);
-      await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
       return;
     }
 
