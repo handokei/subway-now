@@ -196,6 +196,42 @@ describe('trips KV CRUD', () => {
     });
   });
 
+  describe('putTrip locklessSince 자동 stamp (K5 #2926 PR-B)', () => {
+    const lock = {
+      trainCode: '7246',
+      line: '7' as const,
+      subwayId: '1007',
+      selectedDepartureTime: Date.now(),
+      segmentStations: ['상봉', '중화'],
+      expiresAt: Date.now() + 3600_000,
+    };
+
+    it('lock 이력이 있고 현재 lock이 없는 쓰기 -> locklessSince = 쓰기 시각', async () => {
+      const before = Date.now();
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ lockEverAttached: true }));
+      const loaded = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(loaded?.locklessSince).toBeGreaterThanOrEqual(before);
+    });
+
+    it('이미 있는 locklessSince는 재write로 갱신하지 않는다(해제 시각 고정)', async () => {
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ lockEverAttached: true, locklessSince: 5 }));
+      const loaded = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(loaded?.locklessSince).toBe(5);
+    });
+
+    it('lock이 한 번도 없던 trip은 stamp하지 않는다', async () => {
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      expect((await getTrip(kv as unknown as KVNamespace, 'tok-1'))?.locklessSince).toBeUndefined();
+    });
+
+    it('lock이 다시 부착되면 locklessSince를 지운다(다음 해제 때 새로 stamp)', async () => {
+      await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: lock, locklessSince: 5 }));
+      const loaded = await getTrip(kv as unknown as KVNamespace, 'tok-1');
+      expect(loaded?.locklessSince).toBeUndefined();
+      expect(loaded?.lockEverAttached).toBe(true);
+    });
+  });
+
   it('get returns null for unknown key', async () => {
     expect(await getTrip(kv as unknown as KVNamespace, 'missing')).toBeNull();
   });
