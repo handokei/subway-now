@@ -40,15 +40,6 @@ import { isDegenerateDestination } from '../utils/isDegenerateDestination';
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = (): void => {};
 
-/** customOrigin 영속화 단일 경로 — setCustomOrigin / setCustomOriginExplicit 공용 (#3076). */
-function persistCustomOrigin(station: Station | null): void {
-  if (station) {
-    AsyncStorage.setItem(CUSTOM_ORIGIN_KEY, JSON.stringify(station)).catch(noop);
-  } else {
-    AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
-  }
-}
-
 /**
  * #1321 — trip transition(목적지 switch/null) cleanup 직렬화 큐.
  *
@@ -64,6 +55,29 @@ function persistCustomOrigin(station: Station | null): void {
  * 옛 알람이 이미 정리돼 있고 이후 어떤 cleanup도 새 알람을 쓸어가지 않는다.
  */
 let tripTransitionQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * customOrigin clear 횟수 — loadCustomOrigin이 getItem in-flight 중 발생한 clear를 감지해
+ * stale 저장값으로 부활시키지 않기 위한 카운터 (#3086, 구 #3080).
+ */
+let customOriginClearSeq = 0;
+
+/** 마지막 customOrigin storage 쓰기 — loadCustomOrigin이 완료 뒤에 읽도록 대기 대상. */
+let customOriginPersist: Promise<unknown> = Promise.resolve();
+
+/**
+ * customOrigin 영속화 단일 경로 — setCustomOrigin / setCustomOriginExplicit / SSOT override 공용 (#3076).
+ * 호출은 동기로 발행하되 promise를 보관한다. #3086 — fire-and-forget이면 removeItem이 끝나기 전
+ * AppState 'active' hydrate가 getItem해 clear된 값을 되살렸다.
+ */
+function persistCustomOrigin(station: Station | null): void {
+  if (station === null) customOriginClearSeq += 1;
+  customOriginPersist = (
+    station
+      ? AsyncStorage.setItem(CUSTOM_ORIGIN_KEY, JSON.stringify(station))
+      : AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY)
+  ).catch(noop);
+}
 
 /**
  * #3086 — HomeScreen이 계산한 route를 ROUTE_KEY에 저장한다. destination-switch cleanup의
@@ -303,6 +317,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       // #2803 — 클리어는 trip 종료(station === null)에서만. 목적지 설정(station != null)은
       // 사용자가 방금 지도탭에서 명시 설정한 출발역을 보존해야 한다(GPS 폴백 회귀 fix).
       if (!station && get().customOrigin !== null) {
+        customOriginClearSeq += 1;
         set({ customOrigin: null });
       }
       // alarmEvent 메모리 상태 동기화 — 이전 trip 알람이 새 trip UI에 leak되지 않도록.
@@ -399,13 +414,17 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       ssot: ssotStation.name,
     });
     set({ customOrigin: null });
-    AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
+    persistCustomOrigin(null);
     return true;
   },
 
   loadCustomOrigin: async () => {
     try {
+      // #3086 — 진행 중인 clear/persist·trip transition cleanup이 끝난 뒤에 읽고, 읽는 사이 clear가 있었으면 폐기한다.
+      const clearSeq = customOriginClearSeq;
+      await Promise.all([customOriginPersist, tripTransitionQueue]);
       const raw = await AsyncStorage.getItem(CUSTOM_ORIGIN_KEY);
+      if (clearSeq !== customOriginClearSeq) return;
       // #3076 — in-flight hydration이 그 사이 명시 지정된 값을 stale 값으로 덮지 않는다.
       const { originEpoch, customOrigin } = get();
       if (raw && originEpoch === 0 && customOrigin === null) {
