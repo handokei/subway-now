@@ -126,6 +126,7 @@ describe('#3086 customOrigin rehydrate vs clear race', () => {
 
   it('거부 케이스: clear 후 다시 set(persist)한 값은 이후 hydrate에서 유지된다', async () => {
     useDestinationStore.getState().setCustomOrigin(null);
+    await flush();
     useDestinationStore.getState().setCustomOrigin(origin);
     await flush();
     useDestinationStore.setState({ customOrigin: null });
