@@ -14,6 +14,13 @@ import { haversine } from '../../../shared/utils/haversine';
 import { LINE_BADGE_LABEL } from '../../../shared/constants/lineColors';
 import { groupStationsByName } from '../../nearest-station/utils/groupStationsByName';
 import { useTheme, typography } from '../../../shared/theme';
+import type { RouteCoordinatePath, RouteStationRole } from '../../route/utils/routeToCoordinates';
+
+const ROLE_LABEL_KEY = {
+  origin: 'map.originBadge',
+  transfer: 'map.transferBadge',
+  destination: 'map.destinationBadge',
+} as const satisfies Record<RouteStationRole, string>;
 
 interface StationMapProps {
   userLat: number;
@@ -24,15 +31,48 @@ interface StationMapProps {
   // web fallback은 리스트 UI라 정확도 원/uncertain 시각 변경 없음.
   accuracyMeters?: number | null;
   locationUncertain?: boolean;
+  // 웹 fallback은 지도가 없어 폴리라인 대신 경로의 출발/환승/도착 키 역을 순서대로 나열한다.
+  routeCoords?: RouteCoordinatePath | null;
 }
 
-export function StationMap({ userLat, userLng, nearestStation, nearbyStations }: StationMapProps) {
+function RouteSection({ routeCoords }: { routeCoords?: RouteCoordinatePath | null }) {
+  const { colors } = useTheme();
+  const { t } = useTranslation();
+  if (!routeCoords || routeCoords.path.length === 0) return null;
+  return (
+    <View testID="route-section" style={[styles.routeSection, { backgroundColor: colors.card }]}>
+      <Text style={[styles.header, { color: colors.muted }]}>{t('map.routeHeader')}</Text>
+      {routeCoords.keyStations.map(({ station, role }, idx) => (
+        <View
+          key={`${station.id}-${role}-${idx}`}
+          style={styles.routeRow}
+          testID={`route-station-${idx}-${role}`}
+        >
+          <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
+            <Text style={styles.badgeText}>{LINE_BADGE_LABEL[station.line]}</Text>
+          </View>
+          <Text style={[styles.name, { color: colors.ink }]}>{station.name}</Text>
+          <Text style={[styles.distance, { color: colors.accent }]}>{t(ROLE_LABEL_KEY[role])}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+export function StationMap({
+  userLat,
+  userLng,
+  nearestStation,
+  nearbyStations,
+  routeCoords,
+}: StationMapProps) {
   const { colors } = useTheme();
   const { t } = useTranslation();
 
   if (nearbyStations.length === 0) {
     return (
       <View style={[styles.fallback, { backgroundColor: colors.bg }]}>
+        <RouteSection routeCoords={routeCoords} />
         <Text style={[styles.emptyText, { color: colors.muted }]}>{t('map.noNearbyStations')}</Text>
       </View>
     );
@@ -48,6 +88,7 @@ export function StationMap({ userLat, userLng, nearestStation, nearbyStations }:
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.bg }]} contentContainerStyle={styles.content}>
+      <RouteSection routeCoords={routeCoords} />
       <Text style={[styles.header, { color: colors.muted }]}>{t('map.nearbyStationsHeader')}</Text>
       {sorted.map(({ group, distanceM }) => {
         const isNearest = nearestStation
@@ -101,6 +142,18 @@ const styles = StyleSheet.create({
   emptyText: {
     ...typography.bodySm,
     textAlign: 'center',
+  },
+  routeSection: {
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 16,
+    alignSelf: 'stretch',
+  },
+  routeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 4,
   },
   header: {
     ...typography.captionSm,

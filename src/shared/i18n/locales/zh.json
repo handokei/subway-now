@@ -163,6 +163,8 @@
   "map": {
     "originBadge": "出发",
     "destinationBadge": "目的地",
+    "transferBadge": "换乘",
+    "routeHeader": "路线",
     "setAsOrigin": "设为出发站",
     "setAsDestination": "设为目的地",
     "assignAsSlot": "保存为{{label}}",
