@@ -156,8 +156,8 @@ describe('#3007 PR-1 — 질문 +5분 평가 (계측만)', () => {
   const SHOWN_AT = NOW - END_PROMPT_AUTO_END_GRACE_MS;
   const evidence = () => stationary(NOW, END_PROMPT_STATIONARY_MS + END_PROMPT_AUTO_END_GRACE_MS);
 
-  it('질문 +5분 정지 -> end-prompt-auto-end-due 1행, 종료하지 않는다', async () => {
-    const { kv, db, inserts, token } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
+  it('질문 +5분 정지 -> end-prompt-auto-end-due 1행 (이어서 종료는 아래 PR-3 블록)', async () => {
+    const { kv, db, inserts } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
     await runAt(kv, db, NOW);
     const rows = kind(inserts, 'end-prompt-auto-end-due');
     expect(rows).toHaveLength(1);
@@ -167,11 +167,13 @@ describe('#3007 PR-1 — 질문 +5분 평가 (계측만)', () => {
     });
   });
 
-  it('같은 질문을 다음 tick에 재평가해도 중복 행 없음', async () => {
-    const { kv, db, inserts } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
+  it('이미 적재한 질문(마커 == shownAt)은 재적재 안 함', async () => {
+    const { kv, db, inserts } = await setup(evidence(), {
+      endPromptShownAt: SHOWN_AT,
+      endPromptAutoEndDueLoggedFor: SHOWN_AT,
+    });
     await runAt(kv, db, NOW);
-    await runAt(kv, db, NOW + 60_000);
-    expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(1);
+    expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(0);
   });
 
   it('질문 +5분 미만이면 0행', async () => {
@@ -192,14 +194,13 @@ describe('#3007 PR-1 — 질문 +5분 평가 (계측만)', () => {
     expect((await readTrip(kv, token))?.endPromptShownAt).toBeUndefined();
   });
 
-  it('새 질문(shownAt 갱신)은 새 행을 허용한다', async () => {
-    const { kv, db, inserts, token } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
+  it('새 질문(마커 != shownAt)은 새 행을 허용한다', async () => {
+    const { kv, db, inserts } = await setup(evidence(), {
+      endPromptShownAt: SHOWN_AT,
+      endPromptAutoEndDueLoggedFor: SHOWN_AT - 1_000,
+    });
     await runAt(kv, db, NOW);
-    const trip = (await readTrip(kv, token))!;
-    trip.endPromptShownAt = SHOWN_AT + 1_000;
-    await putTrip(kv as unknown as KVNamespace, trip);
-    await runAt(kv, db, NOW + 1_000);
-    expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(2);
+    expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(1);
   });
 
   it('endPromptAutoEnd capability 없는 구버전 앱 trip은 평가하지 않는다 ([계속] 채널 없음)', async () => {
@@ -297,7 +298,8 @@ describe('#3007 PR-3 — 질문 +5분 정지 -> 실제 종료', () => {
   });
 
   it('평가~종료 사이 사용자가 DELETE(trip 없음) -> 종료 안내 0, cleanup 0', async () => {
-    const { kv, db, inserts, token } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
+    const { kv, db, inserts } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
+    const token = 'autoend-tok';
     // 평가 시점 getTrip 이후 재조회에서 null이 되도록: 첫 읽기 이후 삭제를 흉내낸다.
     const realGet = kv.get.bind(kv);
     let tripReads = 0;
@@ -351,5 +353,16 @@ describe('#3007 PR-3 — 질문 +5분 정지 -> 실제 종료', () => {
     });
     await runAt(kv, db, NOW);
     expect(await readTrip(kv, token)).not.toBeNull();
+  });
+});
+
+describe('#3007 PR-3 — 외부 계약 매핑', () => {
+  it('end-prompt-timeout -> expired (tripStatus 마커 / alert push reason), 다른 사유는 불변', async () => {
+    const { toTripStatusEndReason, toExternalTripEndedReason } = await import('../tripStatus');
+    expect(toTripStatusEndReason('end-prompt-timeout')).toBe('expired');
+    expect(toTripStatusEndReason('la-stale-backstop')).toBe('expired');
+    expect(toTripStatusEndReason('destination-arrived')).toBe('destination');
+    expect(toExternalTripEndedReason('end-prompt-timeout')).toBe('expired');
+    expect(toExternalTripEndedReason('seoul-outage')).toBe('seoul-outage');
   });
 });

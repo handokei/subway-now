@@ -1487,6 +1487,11 @@ app.post('/trips', async (c) => {
           // `...incoming`이 항상 undefined로 덮는다(위 lockEverAttached/legResolveStreak 계열과 같은 클래스).
           // 소실되면 D3 resolver 게이트가 영구히 닫힌다.
           boardingResponse: existing.boardingResponse,
+          // #3007 PR-3 — 정지 질문 상태(질문 시각/[계속] 응답/due 적재 마커)는 backend-only. 재등록이 지우면 질문 후 5분 판정이
+          // 소실돼 자동 종료가 영영 안 되거나(shownAt) [계속]이 무시된다(continuedAt). 새 세션 branch는 `...incoming`이라 자연 소거.
+          endPromptShownAt: existing.endPromptShownAt,
+          endPromptContinuedAt: existing.endPromptContinuedAt,
+          endPromptAutoEndDueLoggedFor: existing.endPromptAutoEndDueLoggedFor,
           // #3221 — LA 분리 capability / push-to-start token. device가 재등록에 안 실어도(incoming 부재) 보존,
           // 실으면 incoming 채택(token rotation). putTrip 횟수는 불변(KV +0).
           laClient: incoming.laClient ?? existing.laClient,

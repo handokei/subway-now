@@ -6837,11 +6837,6 @@ describe('toTripStatusEndReason — #1933 la-stale-backstop 외부 contract 매�
     expect(toTripStatusEndReason('la-stale-backstop')).toBe('expired');
   });
 
-  it('#3007 PR-3 end-prompt-timeout → expired (외부 contract)', async () => {
-    const { toTripStatusEndReason } = await import('../tripStatus');
-    expect(toTripStatusEndReason('end-prompt-timeout')).toBe('expired');
-  });
-
   it('destination-arrived → destination (기존 매핑 유지)', async () => {
     const { toTripStatusEndReason } = await import('../tripStatus');
     expect(toTripStatusEndReason('destination-arrived')).toBe('destination');

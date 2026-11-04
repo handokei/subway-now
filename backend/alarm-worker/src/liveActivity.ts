@@ -49,7 +49,7 @@ import {
   resolveTripDeviceToken,
 } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, TripEndPath, Waypoint } from './types';
-import { writeTripEndedStatus } from './tripStatus';
+import { toExternalTripEndedReason, writeTripEndedStatus } from './tripStatus';
 
 // S7763 — direct re-export avoids local rebinding when only forwarding the type.
 export type { MultiHopContext } from './tripMultiHop';
@@ -836,8 +836,7 @@ export async function fireTripEndedAlertPush(
   // alert push payload에는 client가 인식하는 기존 reason(`'expired'`)으로 매핑한다 —
   // force-end(9h) 패턴과 동일한 backward-compat. client는 새 enum 분기를 추가하지 않아도
   // `'unknown'`으로 normalize되지 않고 기존 graceful handler가 그대로 동작한다.
-  const externalReason: TripEndedReason =
-    reason === 'la-stale-backstop' ? 'expired' : reason;
+  const externalReason = toExternalTripEndedReason(reason);
   // JWT 서명 / network reject 등의 throw가 cleanup 흐름을 차단하지 않도록 swallow.
   // trip-ended push는 graceful fail-soft — graceful loss 시 클라는 다음 FG hydrate에서 회복.
   try {
