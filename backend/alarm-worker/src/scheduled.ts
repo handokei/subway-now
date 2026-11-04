@@ -161,6 +161,7 @@ import {
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import {
   dedupeTripsByDeviceToken,
+  getTrip,
   hasBoardingResponseForCurrentLeg,
   listTrips,
   putTrip,
@@ -1959,7 +1960,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         if (started.dirty || started.sent) await putTrip(env.TRIPS, trip);
       }
     }
-    // #3007 PR-1 — 질문 이후 상태 평가(**계측만, 종료 연결은 PR-3**). 같은 이유로 stationary-skip `continue` 앞에 둔다.
+    // #3007 PR-1 — 질문 이후 상태 평가(PR-3: 'end'면 실제 종료). 같은 이유로 stationary-skip `continue` 앞에 둔다.
     // 추가 KV read 0(stationarySsot 재사용). KV write는 질문당 최대 +2회(cancel 시 필드 제거 1 / end 최초 적재 마커 1) — 둘 다
     // 질문이 실제로 있었던 드문 trip에서만 발생하며, 평소(none/wait)는 0.
     if (stationarySsot !== null) {
@@ -1968,23 +1969,35 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       if (verdict === 'cancel') {
         delete trip.endPromptShownAt;
         await putTrip(env.TRIPS, trip);
-      } else if (verdict === 'end' && shownAt !== undefined && trip.endPromptAutoEndDueLoggedFor !== shownAt) {
-        await recordTripEvent(env.DB, {
-          tokenHash: hashTripToken(trip.token),
-          kind: 'end-prompt-auto-end-due',
-          station: waypoint.stationName,
-          line: waypoint.line,
-          meta: {
-            shownAt,
-            graceMs: END_PROMPT_AUTO_END_GRACE_MS,
-            elapsedMs: now - shownAt,
-            deviceSyncStale: isDeviceSyncStale(stationarySsot, now),
-            motionState: stationarySsot.motionState,
-          },
+      } else if (verdict === 'end') {
+        if (shownAt !== undefined && trip.endPromptAutoEndDueLoggedFor !== shownAt) {
+          await recordTripEvent(env.DB, {
+            tokenHash: hashTripToken(trip.token),
+            kind: 'end-prompt-auto-end-due',
+            station: waypoint.stationName,
+            line: waypoint.line,
+            meta: {
+              shownAt,
+              graceMs: END_PROMPT_AUTO_END_GRACE_MS,
+              elapsedMs: now - shownAt,
+              deviceSyncStale: isDeviceSyncStale(stationarySsot, now),
+              motionState: stationarySsot.motionState,
+            },
+          });
+          // 같은 질문 중복 적재 방지 — 마커가 현재 질문의 shownAt과 같으면 재적재 안 함(새 질문은 shownAt이 달라 자동 무효).
+          trip.endPromptAutoEndDueLoggedFor = shownAt;
+          await putTrip(env.TRIPS, trip);
+        }
+        // #3007 PR-3 — 실제 종료. 종료 직전 재조회: 그 사이 사용자가 [종료]로 DELETE했으면(null) 종료 안내 중복 금지,
+        // [계속]이 도착했으면(재판정 'end' 아님) 종료 금지. 이 tick의 stale 스냅샷으로 종료하지 않는다.
+        const fresh = await getTrip(env.TRIPS, trip.token);
+        if (fresh === null || evaluateEndPromptAutoEnd(fresh, stationarySsot, now) !== 'end') continue;
+        log('cron: end-prompt auto-end', { token: trip.token.slice(0, 8), elapsedMs: now - (shownAt ?? now) });
+        await cleanupTripWithLa(fresh, env, deps, stats, now, log, {
+          reason: 'end-prompt-timeout',
+          endPath: 'end-prompt-auto-end',
         });
-        // 같은 질문 중복 적재 방지 — 마커가 현재 질문의 shownAt과 같으면 재적재 안 함(새 질문은 shownAt이 달라 자동 무효).
-        trip.endPromptAutoEndDueLoggedFor = shownAt;
-        await putTrip(env.TRIPS, trip);
+        continue;
       }
     }
     if (

@@ -102,6 +102,10 @@ export function buildTripEndedAlertContent(
       body: strings.tripArrivedEndedBody,
     };
   }
+  // #3007 PR-3 — 정지 질문 무응답 자동 종료는 사유를 밝힌다(다른 사유 문구는 불변). title은 기존 상수 유지.
+  if (reason === 'end-prompt-timeout') {
+    return { title: TRIP_ENDED_ALERT_TITLE, body: t(locale).tripIdleEndedBody };
+  }
   return { title: TRIP_ENDED_ALERT_TITLE, body: TRIP_ENDED_ALERT_BODY };
 }
 

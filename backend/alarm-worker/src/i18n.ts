@@ -144,6 +144,8 @@ interface I18nStrings {
    */
   tripArrivedEndedTitle: (destinationStation: string) => string;
   tripArrivedEndedBody: string;
+  /** #3007 PR-3 — 정지 질문 무응답 자동 종료 안내 본문(title은 "안내 종료" 상수). */
+  tripIdleEndedBody: string;
 }
 
 /**
@@ -214,6 +216,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     trainReconfirmBody: '다시 확인해주세요',
     tripArrivedEndedTitle: (destinationStation) => `${destinationStation} 도착 · 안내 종료`,
     tripArrivedEndedBody: '목적지에 도착해 경로 안내를 마쳤어요',
+    tripIdleEndedBody: '움직임이 없어 안내를 종료했어요',
   },
   en: {
     endPromptTitle: 'End guidance?',
@@ -272,6 +275,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     trainReconfirmBody: 'Please check again',
     tripArrivedEndedTitle: (destinationStation) => `Arrived at ${destinationStation} · Guidance ended`,
     tripArrivedEndedBody: 'You reached your destination and guidance has ended',
+    tripIdleEndedBody: 'Guidance ended because there was no movement',
   },
   ja: {
     endPromptTitle: '案内を終了しますか?',
@@ -326,6 +330,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     trainReconfirmBody: 'もう一度ご確認ください',
     tripArrivedEndedTitle: (destinationStation) => `${destinationStation}に到着 · 案内終了`,
     tripArrivedEndedBody: '目的地に到着したため、ルート案内を終了しました',
+    tripIdleEndedBody: '動きがないため案内を終了しました',
   },
   zh: {
     endPromptTitle: '要结束导航吗?',
@@ -381,6 +386,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     trainReconfirmBody: '请重新确认',
     tripArrivedEndedTitle: (destinationStation) => `已到达${destinationStation} · 导航结束`,
     tripArrivedEndedBody: '已到达目的地,路线导航已结束',
+    tripIdleEndedBody: '因没有移动,导航已结束',
   },
 };
 

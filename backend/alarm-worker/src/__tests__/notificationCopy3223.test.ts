@@ -225,6 +225,22 @@ describe('안내 종료 / 15분 정지', () => {
     expect(buildTripEndedAlertContent('destination-arrived', '뚝섬', lc)).toEqual({ title, body });
   });
 
+  it('#3007 PR-3: end-prompt-timeout 종료만 "움직임이 없어" 문구(title은 "안내 종료" 유지), 4언어', () => {
+    expect(buildTripEndedAlertContent('end-prompt-timeout', '뚝섬', 'ko')).toEqual({
+      title: '안내 종료',
+      body: '움직임이 없어 안내를 종료했어요',
+    });
+    expect(buildTripEndedAlertContent('end-prompt-timeout', undefined, 'en').body).toBe(
+      'Guidance ended because there was no movement',
+    );
+    expect(buildTripEndedAlertContent('end-prompt-timeout', undefined, 'ja').body).toBe(
+      '動きがないため案内を終了しました',
+    );
+    expect(buildTripEndedAlertContent('end-prompt-timeout', undefined, 'zh').body).toBe(
+      '因没有移动,导航已结束',
+    );
+  });
+
   it('15분 정지 질문: ko = 제목 "안내를 종료할까요?" + 본문 "5분 뒤 자동으로 종료돼요" (사용자 결정 11/04)', () => {
     expect(t('ko').endPromptTitle).toBe('안내를 종료할까요?');
     expect(t('ko').endPromptBody).toBe('5분 뒤 자동으로 종료돼요');
