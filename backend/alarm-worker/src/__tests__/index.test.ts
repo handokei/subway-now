@@ -812,6 +812,31 @@ describe('POST /trips — lastAutoPromptedAt 보존 (#916 follow-up B)', () => {
     expect(stored.lockCodeHistory).toBeUndefined();
   });
 
+  it('#3007 PR-3 same session 재등록 — endPrompt* 3필드 보존(자동 종료 판정 유지)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, {
+      endPromptShownAt: 111,
+      endPromptContinuedAt: 222,
+      endPromptAutoEndDueLoggedFor: 111,
+    });
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored).toMatchObject({
+      endPromptShownAt: 111,
+      endPromptContinuedAt: 222,
+      endPromptAutoEndDueLoggedFor: 111,
+    });
+  });
+
+  it('#3007 PR-3 new session — endPrompt* 소거', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, { endPromptShownAt: 111, endPromptContinuedAt: 222 });
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.endPromptShownAt).toBeUndefined();
+    expect(stored.endPromptContinuedAt).toBeUndefined();
+  });
+
   it('new session + window 밖 — 보존하지 않음(undefined)', async () => {
     const env = makeKvEnv();
     // existing의 createdAt도 같이 옛 시각으로 시뮬레이션 (둘 다 옛 시각이라야 incoming 새 시각과 drift)

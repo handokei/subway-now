@@ -1,6 +1,6 @@
 /**
  * #3007 PR-1 — cron 연결: 질문 전달 성공 시에만 `endPromptShownAt` 기록, 질문 +5분 정지면 D1
- * `end-prompt-auto-end-due` 1행(같은 질문 재평가 시 중복 없음), 움직이면 기록 제거. **종료는 하지 않는다**(PR-3).
+ * `end-prompt-auto-end-due` 1행(같은 질문 재평가 시 중복 없음), 움직이면 기록 제거. **종료는 PR-3 블록에서(아래 describe).
  *
  * fixture는 합성 — 덤프에 end-prompt 실측이 없다.
  */
@@ -105,8 +105,8 @@ function makeSeoul(now: () => number): SeoulArrivalClient {
   });
 }
 
-async function runAt(kv: InMemoryKV, db: Env['DB'], now: number, apnsStatus = 200): Promise<void> {
-  const fetchImpl = vi.fn(async () => new Response('', { status: apnsStatus }));
+async function runAt(kv: InMemoryKV, db: Env['DB'], now: number, apnsStatus = 200): Promise<ReturnType<typeof vi.fn>> {
+  const fetchImpl = vi.fn(async (..._args: unknown[]) => new Response('', { status: apnsStatus }));
   await runScheduled(makeEnv(kv, db), {
     seoul: makeSeoul(() => now),
     apnsConfig,
@@ -115,6 +115,7 @@ async function runAt(kv: InMemoryKV, db: Env['DB'], now: number, apnsStatus = 20
     now: () => now,
     generatePushId: () => 'autoend-push',
   } satisfies ScheduledDeps);
+  return fetchImpl;
 }
 
 async function setup(
@@ -164,7 +165,6 @@ describe('#3007 PR-1 — 질문 +5분 평가 (계측만)', () => {
       shownAt: SHOWN_AT,
       graceMs: END_PROMPT_AUTO_END_GRACE_MS,
     });
-    expect(await readTrip(kv, token)).not.toBeNull(); // 동작 변화 0 — trip 삭제 없음
   });
 
   it('같은 질문을 다음 tick에 재평가해도 중복 행 없음', async () => {
@@ -271,5 +271,85 @@ describe('#3007 PR-1 — heartbeat(legacy LA update) 경로 기록', () => {
 
   it('LA update 실패 -> 기록 없음', async () => {
     expect((await heartbeat(500)).endPromptShownAt).toBeUndefined();
+  });
+});
+
+describe('#3007 PR-3 — 질문 +5분 정지 -> 실제 종료', () => {
+  const SHOWN_AT = NOW - END_PROMPT_AUTO_END_GRACE_MS;
+  const evidence = () => stationary(NOW, END_PROMPT_STATIONARY_MS + END_PROMPT_AUTO_END_GRACE_MS);
+  const alertBodies = (f: ReturnType<typeof vi.fn>) =>
+    f.mock.calls.map((c) => String((c[1] as RequestInit | undefined)?.body ?? '')).filter((b) => b.includes('trip-ended'));
+
+  it('질문 +5분 정지 -> trip 삭제 + trip-end(end-prompt-timeout/end-prompt-auto-end) 1행 + 종료 alert 1회(무움직임 문구)', async () => {
+    const { kv, db, inserts, token } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
+    const f = await runAt(kv, db, NOW);
+    expect(await readTrip(kv, token)).toBeNull();
+    const ends = kind(inserts, 'trip-end');
+    expect(ends).toHaveLength(1);
+    const meta = JSON.parse(ends[0][5] as string);
+    expect(meta).toMatchObject({ reason: 'end-prompt-timeout', endPath: 'end-prompt-auto-end' });
+    const alerts = alertBodies(f);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain('움직임이 없어 안내를 종료했어요');
+    // 외부 계약: 클라가 아는 'expired'로 매핑
+    expect(alerts[0]).toContain('"reason":"expired"');
+    expect(alerts[0]).not.toContain('end-prompt-timeout');
+  });
+
+  it('평가~종료 사이 사용자가 DELETE(trip 없음) -> 종료 안내 0, cleanup 0', async () => {
+    const { kv, db, inserts, token } = await setup(evidence(), { endPromptShownAt: SHOWN_AT });
+    // 평가 시점 getTrip 이후 재조회에서 null이 되도록: 첫 읽기 이후 삭제를 흉내낸다.
+    const realGet = kv.get.bind(kv);
+    let tripReads = 0;
+    vi.spyOn(kv, 'get').mockImplementation((async (key: string, ...rest: unknown[]) => {
+      if (key === `trip:${token}`) {
+        tripReads += 1;
+        if (tripReads >= 2) return null;
+      }
+      return (realGet as (...a: unknown[]) => unknown)(key, ...rest);
+    }) as never);
+    const f = await runAt(kv, db, NOW);
+    expect(kind(inserts, 'trip-end')).toHaveLength(0);
+    expect(alertBodies(f)).toHaveLength(0);
+  });
+
+  it('[계속] 응답 후에는 종료 0', async () => {
+    const { kv, db, inserts, token } = await setup(evidence(), {
+      endPromptShownAt: SHOWN_AT,
+      endPromptContinuedAt: SHOWN_AT + 30_000,
+    });
+    const f = await runAt(kv, db, NOW);
+    expect(await readTrip(kv, token)).not.toBeNull();
+    expect(kind(inserts, 'trip-end')).toHaveLength(0);
+    expect(alertBodies(f)).toHaveLength(0);
+  });
+
+  it('질문 후 50m+ 이동 -> 종료 0', async () => {
+    const { kv, db, inserts, token } = await setup(
+      stationary(NOW, END_PROMPT_STATIONARY_MS + END_PROMPT_AUTO_END_GRACE_MS, 120),
+      { endPromptShownAt: SHOWN_AT },
+    );
+    const f = await runAt(kv, db, NOW);
+    expect(await readTrip(kv, token)).not.toBeNull();
+    expect(alertBodies(f)).toHaveLength(0);
+    expect(kind(inserts, 'trip-end')).toHaveLength(0);
+  });
+
+  it('capability 없는 구버전 앱 -> 종료 0', async () => {
+    const { kv, db, token } = await setup(evidence(), {
+      endPromptShownAt: SHOWN_AT,
+      laClient: { split: true, boardingStart: 'push-to-start' },
+    });
+    const f = await runAt(kv, db, NOW);
+    expect(await readTrip(kv, token)).not.toBeNull();
+    expect(alertBodies(f)).toHaveLength(0);
+  });
+
+  it('질문 +5분 미만 -> 종료 0', async () => {
+    const { kv, db, token } = await setup(evidence(), {
+      endPromptShownAt: NOW - END_PROMPT_AUTO_END_GRACE_MS + 60_000,
+    });
+    await runAt(kv, db, NOW);
+    expect(await readTrip(kv, token)).not.toBeNull();
   });
 });
