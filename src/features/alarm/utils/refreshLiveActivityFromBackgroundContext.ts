@@ -43,6 +43,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
 import { isLaDismissed } from './laDismissSentinel';
 import { logLaRefreshDecision, logLaWrite } from './alarmLog';
+import { getBoardingLock } from './boardingLockStorage';
 import { readStoredRouteLogged } from './readStoredRouteLogged';
 import {
   reconcileLiveActivityToken,
@@ -57,6 +58,7 @@ import { computeRouteArc } from '../../route/utils/routeProgress';
 import { arcIndexOfStation } from '../../route/utils/stationProgressEstimator';
 import {
   isBackendSsotRouteRegression,
+  isBgMirrorUnadoptable,
   BACKEND_SSOT_ADVANCE_STALE_GPS_MS,
 } from '../../nearest-station/utils/backendSsotRegressionGuard';
 
@@ -181,11 +183,12 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
     // 2순위: BG_LAST_STATION(GPS, backgroundLocationTask 적재) — mirror 부재/stale/거부 시 폴백.
     // 3순위: 없음 — no-op으로 마지막 정상 LA 상태 유지 (boardingLock fallback은 stale
     //   "탑승역" 표시(P1 #3) 위험이 있어 의도적으로 채택하지 않음 — 기존 동작 유지).
-    const [routeRaw, bgRaw, mirror, originRaw] = await Promise.all([
+    const [routeRaw, bgRaw, mirror, originRaw, lock] = await Promise.all([
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(BG_LAST_STATION_KEY),
       readBackendSsotMirror(),
       AsyncStorage.getItem(TRIP_ORIGIN_KEY),
+      getBoardingLock(),
     ]);
     const mirrorFresh = isBackendSsotMirrorFresh(mirror);
     const mirrorStationCandidate = mirrorFresh && mirror ? resolveBackendSsotMirrorStation(mirror) : null;
@@ -235,6 +238,25 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
       ) {
         logger.info(
           `mirror regression rejected (#2732 gap1): mirror=${mirrorStationCandidate.name} idx=${mirrorArcIndex} → BG 로컬 폴백`,
+        );
+        mirrorStation = null;
+      }
+      // #3319 PR-d — 위 가드는 BG에서 GPS가 60s+ stale이면 꺼진다(11/04: 22분 묵은 '성수' 미러가 7호선 구간 LA에
+      // 표시). GPS와 무관하게 (a) 묵은 미러 (b) 현재 leg 탑승 anchor(이 trip의 lock 탑승역)보다 앞선 역 미러를 거른다.
+      // lock 부재/다른 trip의 lock/arc 밖 anchor는 -1 → (b) 판정 근거 없음(안전 기본, 기존 동작 유지).
+      const anchorStationId = lock?.destinationId === destination.id ? lock.boardingStationId : null;
+      const anchorArcIndex = arcStations.findIndex((s) => s.id === anchorStationId);
+      if (
+        mirrorStation &&
+        isBgMirrorUnadoptable({
+          mirrorLastAdvanceAt: mirror.lastAdvanceAt,
+          mirrorArcIndex,
+          anchorArcIndex,
+          now: Date.now(),
+        })
+      ) {
+        logger.info(
+          `mirror unadoptable (#3319 PR-d): mirror=${mirrorStationCandidate.name} idx=${mirrorArcIndex} anchor=${anchorArcIndex} → BG 로컬 폴백`,
         );
         mirrorStation = null;
       }
