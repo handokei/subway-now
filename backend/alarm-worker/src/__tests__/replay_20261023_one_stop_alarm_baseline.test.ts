@@ -175,6 +175,7 @@ async function replay168(opts: ReplayOpts = {}) {
     },
   });
   const result = await runCaptureReplay({
+    locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
     fixture,
     seedTrips: [seedTrip],
     apns: 'capture',
@@ -242,6 +243,7 @@ async function replay171(opts: ReplayOpts = {}) {
     },
   });
   const result = await runCaptureReplay({
+    locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
     fixture,
     seedTrips: [seedTrip],
     apns: 'capture',

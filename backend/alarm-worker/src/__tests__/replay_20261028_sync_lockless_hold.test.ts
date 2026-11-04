@@ -171,34 +171,76 @@ describe('POST /boarding-lock/sync — lockless 순수 hold + 첫 transfer/desti
     expect(held()[0].meta).toMatchObject({ requested: 3, cappedTo: 0 });
   });
 
-  it('거부(고친 뒤에도 소비): 관측이 첫 transfer(건대입구)면 transfer까지 소비 — 168 환승 anchor 체인 유지', async () => {
+  // K5 #2926 PR-A — 기존 기대 "첫 transfer/destination까지 소비" -> 새 기대 "관측만 실은 lockless sync는 환승/목적지도 0".
+  // 사유: 10/21 결정(lock 없는 여정은 backend가 역 전진을 하지 않는다). 구 동작은 kill switch `lockless_advance_legacy` 뒤로.
+  it('K5: 관측이 첫 transfer(건대입구)여도 lockless sync는 소비하지 않는다 — head·앵커 불변, advance-held(requested -> 0)', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip());
     const { body } = await sync(TRANSFER_NAME);
     const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
-    expect(body.advanced).toBe(true);
-    expect(await heads()).toEqual(SEED_NAMES.slice(transferIdx + 1));
-    expect(held()).toEqual([]);
+    expect(body.advanced).toBe(false);
+    expect(await heads()).toEqual(SEED_NAMES);
+    expect(held()[0].meta).toMatchObject({ requested: transferIdx + 1, cappedTo: 0 });
     const after = await getTrip(kv as unknown as KVNamespace, TOKEN);
-    expect(after?.currentLegAnchor).toEqual({ boardingStation: TRANSFER_NAME, line: SEED_WAYPOINTS[transferIdx + 1].line });
+    expect(after?.currentLegAnchor).toBeUndefined();
   });
 
-  it('거부 + cap: 환승 너머 관측(성수)은 첫 transfer까지만 소비 — requested 5 -> 4, head 성수', async () => {
+  it('K5: 환승 너머 관측(성수)도 0 — requested 5 -> 0, head 불변', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip());
     const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
     const { body } = await sync(SEED_NAMES[transferIdx + 1]);
-    expect(body.advanced).toBe(true);
-    expect(await heads()).toEqual(SEED_NAMES.slice(transferIdx + 1));
-    expect(held()).toHaveLength(1);
-    expect(held()[0].meta).toMatchObject({ requested: transferIdx + 2, cappedTo: transferIdx + 1 });
+    expect(body.advanced).toBe(false);
+    expect(await heads()).toEqual(SEED_NAMES);
+    expect(held()[0].meta).toMatchObject({ requested: transferIdx + 2, cappedTo: 0 });
   });
 
-  it('cap: lockless에서 destination 관측도 첫 transfer까지만 소비(목적지 너머 점프 차단)', async () => {
+  it('K5: destination 관측도 0 (목적지 너머 점프 차단)', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip());
-    const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
     const { body } = await sync(DESTINATION_NAME);
-    expect(body.advanced).toBe(true);
-    expect(await heads()).toEqual(SEED_NAMES.slice(transferIdx + 1));
-    expect(held()[0].meta).toMatchObject({ cappedTo: transferIdx + 1 });
+    expect(body.advanced).toBe(false);
+    expect(await heads()).toEqual(SEED_NAMES);
+    expect(held()[0].meta).toMatchObject({ cappedTo: 0 });
+  });
+
+  describe('kill switch lockless_advance_legacy=true (롤백) — 구 동작: 첫 transfer/destination까지 소비', () => {
+    beforeEach(async () => {
+      await kv.put('kill-switch:lockless-advance-legacy', 'true');
+    });
+
+    it('관측이 첫 transfer(건대입구)면 transfer까지 소비 + 환승 앵커 기록', async () => {
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      const { body } = await sync(TRANSFER_NAME);
+      const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
+      expect(body.advanced).toBe(true);
+      expect(await heads()).toEqual(SEED_NAMES.slice(transferIdx + 1));
+      expect(held()).toEqual([]);
+      const after = await getTrip(kv as unknown as KVNamespace, TOKEN);
+      expect(after?.currentLegAnchor).toEqual({ boardingStation: TRANSFER_NAME, line: SEED_WAYPOINTS[transferIdx + 1].line });
+    });
+
+    it('환승 너머 관측(성수)은 첫 transfer까지만 — requested 5 -> 4', async () => {
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
+      const { body } = await sync(SEED_NAMES[transferIdx + 1]);
+      expect(body.advanced).toBe(true);
+      expect(await heads()).toEqual(SEED_NAMES.slice(transferIdx + 1));
+      expect(held()[0].meta).toMatchObject({ requested: transferIdx + 2, cappedTo: transferIdx + 1 });
+    });
+
+    it('destination 관측도 첫 transfer까지만', async () => {
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
+      const { body } = await sync(DESTINATION_NAME);
+      expect(body.advanced).toBe(true);
+      expect(await heads()).toEqual(SEED_NAMES.slice(transferIdx + 1));
+      expect(held()[0].meta).toMatchObject({ cappedTo: transferIdx + 1 });
+    });
+
+    it('순수 intermediate 관측(중곡)은 legacy여도 0 (#3083 PR-2 무변경)', async () => {
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      const { body } = await sync(FIRST_SYNC.station!);
+      expect(body.advanced).toBe(false);
+      expect(await heads()).toEqual(SEED_NAMES);
+    });
   });
 
   it('trainCode 동봉 lockless sync도 면제 없음(DP2=c) — 승격이 거부되면(확증 실패) hold, lock 미생성', async () => {
@@ -247,26 +289,32 @@ describe('POST /boarding-lock/sync — lockless 순수 hold + 첫 transfer/desti
   });
 });
 
-describe('capLocklessSyncAdvance — 단위 (#3083 PR-2)', () => {
+describe('capLocklessSyncAdvance — 단위 (#3083 PR-2 -> K5 #2926 PR-A)', () => {
   const NOW_MS = FIRST_SYNC.ts;
+  const transferIdx = () => SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
 
-  it('요청 0이면 0, transfer 전 intermediate만이면 0, 첫 transfer/destination 포함이면 그 index+1, 너머는 거기까지', () => {
-    const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
-    expect(capLocklessSyncAdvance({ shiftedCount: 0 }, makeTrip(), NOW_MS)).toEqual({ shiftedCount: 0 });
-    expect(capLocklessSyncAdvance({ shiftedCount: transferIdx }, makeTrip(), NOW_MS)).toEqual({ shiftedCount: 0 });
-    expect(capLocklessSyncAdvance({ shiftedCount: transferIdx + 1 }, makeTrip(), NOW_MS)).toEqual({
-      shiftedCount: transferIdx + 1,
+  it('K5: 관측만 실은 lockless sync는 요청 칸 수와 무관하게 0', () => {
+    for (const shiftedCount of [0, transferIdx(), transferIdx() + 1, SEED_WAYPOINTS.length]) {
+      expect(capLocklessSyncAdvance({ shiftedCount }, makeTrip(), NOW_MS)).toEqual({ shiftedCount: 0 });
+    }
+  });
+
+  it('allowToFirstGate(탭/롤백): 요청 0이면 0, transfer 전 intermediate만이면 0, 첫 transfer/destination 포함이면 그 index+1, 너머는 거기까지', () => {
+    expect(capLocklessSyncAdvance({ shiftedCount: 0 }, makeTrip(), NOW_MS, true)).toEqual({ shiftedCount: 0 });
+    expect(capLocklessSyncAdvance({ shiftedCount: transferIdx() }, makeTrip(), NOW_MS, true)).toEqual({ shiftedCount: 0 });
+    expect(capLocklessSyncAdvance({ shiftedCount: transferIdx() + 1 }, makeTrip(), NOW_MS, true)).toEqual({
+      shiftedCount: transferIdx() + 1,
     });
-    expect(capLocklessSyncAdvance({ shiftedCount: SEED_WAYPOINTS.length }, makeTrip(), NOW_MS)).toEqual({
-      shiftedCount: transferIdx + 1,
+    expect(capLocklessSyncAdvance({ shiftedCount: SEED_WAYPOINTS.length }, makeTrip(), NOW_MS, true)).toEqual({
+      shiftedCount: transferIdx() + 1,
     });
   });
 
-  it('환승 없는 경로는 destination이 첫 상한이다', () => {
+  it('allowToFirstGate: 환승 없는 경로는 destination이 첫 상한이다', () => {
     const noTransfer = SEED_WAYPOINTS.filter((w) => w.kind !== 'transfer');
     const destIdx = noTransfer.findIndex((w) => w.kind === 'destination');
     expect(
-      capLocklessSyncAdvance({ shiftedCount: noTransfer.length }, makeTrip({ waypoints: noTransfer }), NOW_MS),
+      capLocklessSyncAdvance({ shiftedCount: noTransfer.length }, makeTrip({ waypoints: noTransfer }), NOW_MS, true),
     ).toEqual({ shiftedCount: destIdx + 1 });
   });
 

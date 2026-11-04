@@ -46,7 +46,7 @@ import {
   maybeFireLegBoardingPrompt,
   maybeFireLiveActivityUpdate,
   maybeFireOriginBoardingPromptGpsFree,
-  runScheduled,
+  runScheduled as runScheduledImpl,
   tripLifecyclePhase,
   appendPassedStation,
   computeCronJitterMs,
@@ -85,6 +85,13 @@ import { END_PROMPT_STATIONARY_MS } from '../motionState';
 import type { AnalyticsEngineWriter, BoardingLockMeta, Env, PositionPoint, Route, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 import { makeSqliteD1, type TripEventRow } from './helpers/sqliteD1';
+
+// K5 #2926 PR-A — lockless cron 전진(C1/C2/C3)은 기본 hold(KillSwitch `lockless_advance_legacy` off)다. 이 파일의 기존
+// lockless 전진 케이스는 구 경로(kill switch legacy) 보호용이므로 기본값을 legacy=true로 주입한다(PR-C 물리 삭제 전까지).
+// 새 계약(hold 기본)은 `scheduled.locklessAdvanceHold.test.ts` / `replay_20261104_lockless_wait_advance.test.ts`가 소유하며,
+// 이 파일에서 hold를 보려면 deps에 `killSwitchLocklessAdvanceLegacy: false`를 명시한다.
+const runScheduled: typeof runScheduledImpl = (env, deps) =>
+  runScheduledImpl(env, { killSwitchLocklessAdvanceLegacy: true, ...deps });
 
 let apnsConfig: ApnsConfig;
 

@@ -103,6 +103,7 @@ import {
   isBoardingLockActive,
   isLockActiveForLeg,
   capLocklessSyncAdvance,
+  isLocklessForSync,
   capLockSyncAdvance,
   maybeFireHopEndPrompt,
   runMidCycleFireOnly,
@@ -806,7 +807,7 @@ app.post('/admin/arch-flag', async (c) => {
  * 없었다. `archFlag` 와 동일한 KV read/write 어댑터 패턴 — `key` 쿼리로 대상 게이트 선택.
  *
  * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
- * Query: `key` — 현재 유효값은 `lockless_intermediate` 하나(#1967 스코프 = Ff-1).
+ * Query: `key` — `lockless_intermediate`(#1967 Ff-1) | `lockless_advance_legacy`(K5 #2926).
  * Response 200: `{ key, value: 'true' | 'false' }`
  * Response 400: `{ error: 'invalid_key' }` — key 누락/미지원.
  * Response 401/503: 인증/binding 정책 동일 (TRIPS 미바인딩 시 503).
@@ -831,7 +832,7 @@ app.get('/admin/kill-switch', async (c) => {
  * 되살린다(배포 없음). 유효 값은 `true` / `false` 만. 그 외 body 는 400 으로 거절.
  *
  * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
- * Query: `key` — 현재 유효값은 `lockless_intermediate` 하나.
+ * Query: `key` — `lockless_intermediate` | `lockless_advance_legacy`.
  * Body: `{ value: 'true' | 'false' }`
  * Response 200: `{ key, value: 'true' | 'false' }`
  * Response 400: `{ error: 'invalid_key' }` | `{ error: 'invalid_body' }`
@@ -3583,7 +3584,18 @@ app.post('/boarding-lock/sync', async (c) => {
   // #3083 — (PR-2) lockless면 첫 transfer/destination까지만(없으면 0), (PR-1) 환승 체류(anchor ∧ 활성 lock 없음 ∧ 창 안)면
   // leg-2 waypoint 소비를 막는다. `advance` 객체 자체를 cap해 아래 소비자 전부(분기 진입/skipped 발사/slice/mirror/
   // catch-up)가 같은 값을 본다. 두 cap은 상한이라 합성 순서와 무관하게 더 작은 쪽이 이긴다.
-  const advance = capLockSyncAdvance(capLocklessSyncAdvance(requestedAdvance, existing, now), existing, now);
+  // K5 #2926 PR-A — lockless sync는 0. 예외: 열차 확정(trainCode+boardingLine)을 실은 sync = 수동 목록 탭(사용자 행동 3경로),
+  // 또는 kill switch `lockless_advance_legacy` 롤백. KV read는 lockless ∧ 관측만 ∧ 전진 요청이 있을 때만(핫패스 비용 0).
+  const explicitTap = payload.trainCode !== undefined && payload.boardingLine !== undefined;
+  const locklessAdvanceLegacy =
+    !explicitTap && requestedAdvance.shiftedCount > 0 && isLocklessForSync(existing, now)
+      ? await getKillSwitch(c.env.TRIPS, 'lockless_advance_legacy').then((v) => v === 'true', () => false)
+      : false;
+  const advance = capLockSyncAdvance(
+    capLocklessSyncAdvance(requestedAdvance, existing, now, explicitTap || locklessAdvanceLegacy),
+    existing,
+    now,
+  );
   if (advance.shiftedCount < requestedAdvance.shiftedCount) {
     createJsonLogger()('boarding-lock/sync: advance held', {
       token: existing.token.slice(0, 8),
@@ -5218,7 +5230,11 @@ export const handler = {
     const killSwitchLocklessIntermediate = await getKillSwitch(env.TRIPS, 'lockless_intermediate')
       .then((value) => value === 'true')
       .catch(() => KILL_SWITCH_DEFAULT === 'true');
-    const log = createJsonLogger({ archFlag, killSwitchLocklessIntermediate });
+    // K5 #2926 PR-A — lockless 전진 구 동작 복구 스위치. 미설정/read 실패는 default(false = hold).
+    const killSwitchLocklessAdvanceLegacy = await getKillSwitch(env.TRIPS, 'lockless_advance_legacy')
+      .then((value) => value === 'true')
+      .catch(() => KILL_SWITCH_DEFAULT === 'true');
+    const log = createJsonLogger({ archFlag, killSwitchLocklessIntermediate, killSwitchLocklessAdvanceLegacy });
 
     let scheduledStats: Awaited<ReturnType<typeof runScheduled>>;
     try {
@@ -5234,6 +5250,7 @@ export const handler = {
         log,
         archFlag,
         killSwitchLocklessIntermediate,
+        killSwitchLocklessAdvanceLegacy,
         db: env.DB,
       });
     } catch (err) {

@@ -229,6 +229,7 @@ describe('#2734 재생 — LA "탑승했어요" 탭이 17:40:32에 도달했다�
     await putTrip(kv as unknown as Env['TRIPS'], tripAfterConfirm);
 
     const result = await runCaptureReplay({
+      locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
       fixture,
       seedTrips: [tripAfterConfirm],
       apns: 'capture',

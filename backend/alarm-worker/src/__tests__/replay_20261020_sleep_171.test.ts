@@ -82,6 +82,7 @@ async function replay171(opts: { withoutPromotedLock?: boolean } = {}) {
 
   const tickStates: TickState[] = [];
   const result = await runCaptureReplay({
+    locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
     fixture,
     seedTrips: [seedTrip],
     apns: 'capture',

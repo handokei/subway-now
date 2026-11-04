@@ -197,12 +197,13 @@ describe('POST /boarding-lock/sync — lock 활성 transfer/destination visible 
     expect(attempts[0].meta).toMatchObject({ outcome: 'skipped-reason', reason: 'sync-station-passed-dedup' });
   });
 
-  it('거부(lockless): lock 없는 트립의 sync가 transfer를 소비해도 visible push 0(lock 없음=알림 없음)', async () => {
+  it('거부(lockless): lock 없는 트립의 sync는 transfer를 소비하지 않고 visible push 0(lock 없음=알림 없음)', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
 
     const { body } = await sync(TRANSFER);
 
-    expect(body.advanced).toBe(true);
+    // K5 #2926 PR-A — 기존 기대 advanced=true(lockless sync가 transfer까지 소비) -> 새 기대 false(소비 0). 알림 0은 그대로.
+    expect(body.advanced).toBe(false);
     expect(alerts()).toEqual([]);
     expect(fireAttempts(TRANSFER)).toEqual([]);
   });

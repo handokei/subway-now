@@ -51,6 +51,7 @@ describe('#2801 — leg-2 boarding-prompt walk-gate가 사용자 실열차(7256)
   it('사용자 실열차(7256)가 아직 후보에 남아있는 tick에 leg-2 prompt가 발사된다', async () => {
     const fixture = ENTRY!.loadFixture();
     const result = await runCaptureReplay({
+      locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
       fixture,
       seedTrips: ENTRY!.seedTrips(),
       cronIntervalMs: ENTRY!.cronIntervalMs === 'recorded' ? undefined : ENTRY!.cronIntervalMs,
@@ -74,6 +75,7 @@ describe('#2801 — leg-2 boarding-prompt walk-gate가 사용자 실열차(7256)
   it('7254 도착 확정 프롬프트 직후(5분 이내) 7256 도착 확정 프롬프트가 별도로 발사된다 (단배차 bypass)', async () => {
     const fixture = ENTRY!.loadFixture();
     const result = await runCaptureReplay({
+      locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
       fixture,
       seedTrips: ENTRY!.seedTrips(),
       cronIntervalMs: ENTRY!.cronIntervalMs === 'recorded' ? undefined : ENTRY!.cronIntervalMs,

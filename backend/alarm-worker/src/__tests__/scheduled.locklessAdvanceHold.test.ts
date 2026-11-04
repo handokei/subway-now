@@ -176,3 +176,21 @@ describe('sync capLocklessSyncAdvance — lockless면 0', () => {
     expect(capLocklessSyncAdvance({ shiftedCount: 3 }, locked, NOW)).toEqual({ shiftedCount: 3 });
   });
 });
+
+describe('leg-1이 lock이었던 trip의 leg-2 프롬프트 — hold 중에도 유지 (weakAxis 게이트 무변경)', () => {
+  // leg-1 lock 경로 completeWaypointAdvance가 환승 소비 시 앵커를 이미 찍은 상태(D1 2130/2133). lockless cron C2가 아니라
+  // maybeFireLegBoardingPrompt가 프롬프트를 담당하므로 hold(기본)에서도 발사돼야 한다.
+  it.each([
+    ['hold(기본)', {}],
+    ['legacy=on', { killSwitchLocklessAdvanceLegacy: true }],
+  ])('%s: 앵커 존재 + 후보 도착 신호 -> leg-2 프롬프트 발사', async (_name, deps) => {
+    const trip = makeTrip([wp('어린이대공원', 'intermediate'), wp('군자', 'intermediate'), wp('용마산', 'destination')], {
+      route: { type: 'transfer', transferName: '건대입구', fromLine: '2', toLine: '7', stopsToTransfer: 1, stopsFromTransfer: 3 } as unknown as Trip['route'],
+      originStationName: '뚝섬',
+      currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+      legBoardingEligibleAt: NOW - 60_000,
+    });
+    const { stats } = await tick(trip, deps);
+    expect(stats.legBoardingPromptFired).toBe(1);
+  });
+});

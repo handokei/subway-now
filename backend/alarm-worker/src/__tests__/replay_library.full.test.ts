@@ -127,6 +127,7 @@ for (const entry of REPLAY_LIBRARY) {
       it(`위상 offset=${phaseOffsetMs}ms — 기대 발사/차단/완결 충족`, async () => {
         const fixture = entry.loadFixture();
         const result = await runCaptureReplay({
+          locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
           fixture,
           seedTrips: entry.seedTrips(),
           cronIntervalMs: resolveCronIntervalMs(entry.cronIntervalMs),
