@@ -8,7 +8,8 @@ import {
 import { listPending, pendingKey } from './pendingPushes';
 import { hashTripToken } from './sentry';
 import { recordTripEvent } from './tripEventLog';
-import type { Trip } from './types';
+import { overlayTripCells, readCellStage } from './tripDoCells';
+import type { Env, Trip } from './types';
 
 /**
  * KV CRUD for active trips.
@@ -141,7 +142,18 @@ export async function putTrip(kv: KVNamespace, trip: Trip): Promise<void> {
     trip.boardingLock !== undefined && trip.lockEverAttached !== true
       ? { ...trip, lockEverAttached: true }
       : trip;
-  await kv.put(tripKey(trip.token), JSON.stringify(toWrite), { expirationTtl: ttlSec });
+  await kv.put(tripKey(trip.token), JSON.stringify(withoutLockRev(toWrite)), { expirationTtl: ttlSec });
+}
+
+/**
+ * #3300 PR-3a — `__lockRev`(비영속, 같은 요청 안의 op 전제조건 전달용)는 **직렬화 사본에서만** 제거한다.
+ * 호출자의 trip 객체는 그대로 둬야 putTrip 직후 같은 객체로 다음 op(`expectedRev`)가 성공한다.
+ */
+function withoutLockRev(trip: Trip): Trip {
+  if (trip.__lockRev === undefined) return trip;
+  const copy = { ...trip };
+  delete copy.__lockRev;
+  return copy;
 }
 
 /**
@@ -160,7 +172,25 @@ export async function getTrip(
   kv: KVNamespace,
   token: string,
   options?: { cacheTtl?: number },
+): Promise<Trip | null>;
+/**
+ * #3300 PR-3a — env를 받으면 flag가 `lock@N` 이상일 때 DO 셀(lock + LA)을 덮어 반환하고 `__lockRev`를 설정한다.
+ * flag `off` / `TRIP_DO` 미바인딩이면 KV 단독 읽기와 완전히 같다(DO 호출 0).
+ * `lockView:'skip'`(`/position` 전용)은 flag 판정·overlay를 생략한다 — 권위 없는 lock을 쓰는 것이 무해한
+ * 호출자(plan §4 PR-3a)만 쓴다.
+ */
+export async function getTrip(
+  env: Pick<Env, 'TRIPS' | 'TRIP_DO'>,
+  token: string,
+  options?: { cacheTtl?: number; lockView?: 'skip' },
+): Promise<Trip | null>;
+export async function getTrip(
+  kvOrEnv: KVNamespace | Pick<Env, 'TRIPS' | 'TRIP_DO'>,
+  token: string,
+  options?: { cacheTtl?: number; lockView?: 'skip' },
 ): Promise<Trip | null> {
+  const env = 'TRIPS' in kvOrEnv ? kvOrEnv : undefined;
+  const kv = env ? env.TRIPS : (kvOrEnv as KVNamespace);
   // #1423 — caller가 cacheTtl 명시했으면 floor 검증. undefined는 KV 기본(60s) 사용 → 통과.
   assertKvCacheTtl(options?.cacheTtl);
   const raw =
@@ -168,14 +198,18 @@ export async function getTrip(
       ? await kv.get(tripKey(token), { cacheTtl: options.cacheTtl })
       : await kv.get(tripKey(token));
   if (!raw) return null;
+  let trip: Trip;
   try {
     // 주의: stale lock auto-clear는 `listTrips` (cron) 경로에만 적용한다.
-    // sync handler는 payload trainCode로 lock을 swap해 line mismatch를 해소하므로
-    // 여기서 미리 제거하면 swap 기회가 사라진다.
-    return JSON.parse(raw) as Trip;
+    // (이전 주석의 "sync가 payload trainCode로 lock을 swap한다"는 전제는 낡았다 — 지금 sync의 lock 쓰기는
+    // 승격(lock 부재 시)과 TTL 갱신뿐이다, plan-2026-11-03 §0.5. getTrip은 계속 clear하지 않는다.)
+    trip = JSON.parse(raw) as Trip;
   } catch {
     return null;
   }
+  if (!env || options?.lockView === 'skip') return trip;
+  const flag = await readCellStage(env);
+  return flag ? overlayTripCells(env, trip, flag) : trip;
 }
 
 export async function deleteTrip(kv: KVNamespace, token: string): Promise<void> {

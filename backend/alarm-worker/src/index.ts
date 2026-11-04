@@ -84,6 +84,17 @@ import {
   setKillSwitch,
 } from './killSwitch';
 import { getTripDoFlag, TRIP_DO_FLAG_DEFAULT } from './tripDoFlag';
+import {
+  applyLockResult,
+  CellUnavailableError,
+  fetchCells,
+  readCellStage,
+  runLaOp,
+  runLockOp,
+  seedCells,
+} from './tripDoCells';
+import { applyLaCell } from './laCellOps';
+import { lockLegKey, type LockOpResult } from './lockOps';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
@@ -348,6 +359,11 @@ function registerKvUnavailableResponse(
 
 app.onError((err, c) => {
   void captureBackendException(c.env, err, { path: c.req.path });
+  // #3300 PR-3a — lock/LA 셀(DO) 호출 실패는 재시도하면 복구되는 실패다. 500(영구 실패로 취급)이 아니라
+  // 503 + Retry-After. 낡은 시야로 lock을 쓰는 우회(fail-open)는 하지 않는다.
+  if (err instanceof CellUnavailableError) {
+    return c.json({ error: 'lock_cell_unavailable' }, 503, { 'Retry-After': String(REGISTER_RETRY_AFTER_SEC) });
+  }
   return c.json({ error: 'internal_error' }, 500);
 });
 
@@ -447,10 +463,10 @@ async function resolveBoardingAnchorAtRegister(env: Env, trip: Trip): Promise<vo
     });
     if (!anchorLock) return;
 
-    const latest = await getTrip(env.TRIPS, trip.token);
+    const latest = await getTrip(env, trip.token);
     if (!latest || latest.boardingLock !== undefined) return;
 
-    const resolvedTrip: Trip = {
+    let resolvedTrip: Trip = {
       ...latest,
       boardingLock: anchorLock,
       consecutiveEtaMissing: 0,
@@ -458,6 +474,24 @@ async function resolveBoardingAnchorAtRegister(env: Env, trip: Trip): Promise<vo
       lastLaPushEpoch: undefined,
       lastLaPushAt: undefined,
     };
+    // #3300 PR-3a (§3 #3) — 셀 권위: register 결과 rev를 전제로 한 attachIfNone. 그 사이 cron/사용자가 lock을
+    // 바꿨으면 conflict/noop이라 부착하지 않는다(낡은 `latest` 재읽기로 덮지 않음).
+    if (await readCellStage(env)) {
+      const attached = await runLockOp(
+        env,
+        trip.token,
+        {
+          type: 'attachIfNone',
+          source: 'register-resolver',
+          lock: anchorLock,
+          authority: 'auto',
+          expectedRev: trip.__lockRev ?? -1,
+        },
+        Date.now(),
+      );
+      if (attached.outcome !== 'applied') return;
+      resolvedTrip = applyLockResult(resolvedTrip, attached);
+    }
     await putTrip(env.TRIPS, resolvedTrip);
     await recordLockAttached(env.DB, {
       token: trip.token,
@@ -893,6 +927,45 @@ function parseQueryNumber(raw: string | undefined): number | undefined {
 }
 
 /**
+ * #3300 PR-3a — register(같은 세션 재등록 포함)의 lock/LA 필드를 셀 값으로 확정한다.
+ *
+ * `registerSession` op가 **셀의 최신 lock**으로 같은 세션 여부를 다시 평가해 carry/drop/교체를 결정하고(index.ts의
+ * `carryBoardingLock` 식과 동일), 결합 필드(consecutiveEtaMissing·lockCodeHistory·renumberSuccessor·lockEverAttached)와
+ * LA 토큰은 셀 값을 그대로 쓴다 — 60s 캐시의 낡은 `existing` carry가 셀 값을 덮지 못한다(11/03 · 11/04 root).
+ * 신규 trip이면 셀에 세션 신원을 먼저 시드(seededEpoch)해 다음 overlay가 낡은 KV로 재시드하지 않게 한다.
+ */
+async function applyRegisterCells(
+  env: Env,
+  trip: Trip,
+  ctx: { existing: Trip | null; incoming: Trip; routeReset: boolean },
+): Promise<Trip> {
+  const { existing, incoming, routeReset } = ctx;
+  const flag = await readCellStage(env);
+  if (!flag) return trip;
+  const now = Date.now();
+  if (existing === null) await seedCells(env, { token: incoming.token, createdAt: incoming.createdAt }, flag, now);
+  const result = await runLockOp(
+    env,
+    incoming.token,
+    {
+      type: 'registerSession',
+      source: 'register',
+      incomingLock: incoming.boardingLock ?? null,
+      existing: existing ? { createdAt: existing.createdAt, waypointLines: existing.waypoints.map((w) => w.line) } : null,
+      incomingCreatedAt: incoming.createdAt,
+      routeReset,
+    },
+    now,
+  );
+  const { la } = await fetchCells(env, incoming.token);
+  const locked = applyLockResult(trip, result);
+  // lock 번호가 셀 결정으로 바뀌었으면(swap/drop) 추적 baseline도 리셋 — 새 head waypoint의 첫 push 보장.
+  const lockChanged = locked.boardingLock?.trainCode !== trip.boardingLock?.trainCode;
+  const withBaseline = lockChanged ? { ...locked, lastTrackedArrivalEpoch: undefined } : locked;
+  return la ? applyLaCell(withBaseline, la) : withBaseline;
+}
+
+/**
  * `POST /trips` dual-write — TripDO shadow seed (#2264, Epic #2260, ADR-031 Phase 1).
  *
  * flag off(default) 또는 `env.TRIP_DO` 미바인딩(개발/테스트 환경)이면 완전 no-op —
@@ -1305,7 +1378,7 @@ app.post('/trips', async (c) => {
     lockResult = await withTripRegisterLock(
     registerLockToken,
     async () => {
-      const directExisting = await getTrip(c.env.TRIPS, incoming.token);
+      const directExisting = await getTrip(c.env, incoming.token);
 
       // #2196 (ADR-025 cleanup) — deviceToken 역인덱스 register-time fallback을 제거했다.
       // ADR-025(#2194) 하에서 `incoming.deviceToken`은 항상 `incoming.token`과 같은 값으로
@@ -1522,7 +1595,11 @@ app.post('/trips', async (c) => {
     };
     // #3023 — 재등록도 활동성 핸들러. same-session 재등록이 짧은 잔여 TTL로 들어와도
     // 여기서 sliding 연장을 적용한다(대부분은 incoming.expiresAt이 이미 새 값이라 no-op).
-    const trip = extendTripExpiryOnActivity(mergedTrip, Date.now());
+    const extendedTrip = extendTripExpiryOnActivity(mergedTrip, Date.now());
+    // #3300 PR-3a (§3 #2, §9) — flag on이면 lock 관련 필드(+LA 토큰)는 DO 셀이 권위다. 낡은 existing carry 금지.
+    const trip = (await readCellStage(c.env))
+      ? await applyRegisterCells(c.env, extendedTrip, { existing, incoming, routeReset: routeReset.reset })
+      : extendedTrip;
 
       // #3006 D — KV 쓰기 실패 시 **503 + Retry-After**. 500이 아닌 이유: 등록이 실제로
       // 실패했으므로 200은 거짓말이지만, 500은 device 재시도 로직(#1960 `scheduleRegisterRetry`)이
@@ -2265,7 +2342,7 @@ app.post('/position', async (c) => {
   // 모두 건너뛴다 — W1(pos 시리즈)은 trip과 무관하게 위에서 이미 썼다.
   let trip: Trip | null | 'unknown' = 'unknown';
   try {
-    trip = await getTrip(kv, payload.token, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
+    trip = await getTrip(c.env, payload.token, { cacheTtl: CRON_READ_CACHE_TTL_SEC, lockView: 'skip' });
   } catch (err) {
     degraded = true;
     void captureBackendException(c.env, err, { path: 'position', stage: 'getTrip' });
@@ -2566,7 +2643,7 @@ app.post('/trips/:token/end-prompt-response', async (c) => {
   const action = body && typeof body === 'object' ? (body as Record<string, unknown>).action : undefined;
   if (!END_PROMPT_RESPONSE_ACTIONS.some((a) => a === action)) return c.json({ error: 'invalid_payload' }, 400);
 
-  const existing = await getTrip(c.env.TRIPS, token);
+  const existing = await getTrip(c.env, token);
   if (!existing) return c.json({ error: 'trip_not_found' }, 404);
 
   const now = Date.now();
@@ -2602,7 +2679,7 @@ app.post('/boarding-prompt/dismiss', async (c) => {
   const payload = validateDismissPayload(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
-  const existing = await getTrip(c.env.TRIPS, payload.token);
+  const existing = await getTrip(c.env, payload.token);
   if (!existing) return c.json({ ok: true, applied: false });
 
   // #3023 — 사용자 응답(dismiss)도 활동성 핸들러. sliding TTL 연장 적용.
@@ -2693,7 +2770,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   const payload = validateBoardingConfirmPayload(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
-  const existing = await getTrip(c.env.TRIPS, token);
+  const existing = await getTrip(c.env, token);
   if (!existing) return c.json({ error: 'trip_not_found' }, 404);
 
   const now = Date.now();
@@ -2723,6 +2800,10 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   let laCandidateDecision: LaCandidateDecision | undefined;
   let laCandidateAgrees: boolean | undefined;
   let working: Trip = existing;
+  // #3300 PR-3a — 셀 권위 단계(lock@N 이상)면 아래 lock 변경은 메모리 판정 후 **op 한 번**으로 영속한다.
+  const lockStage = await readCellStage(c.env);
+  // #2957 W2 — boarded 탭이 leg 전환으로 기존 lock을 release했는지(op `userBoarded.releaseFirst`의 입력).
+  let releasedForLegSwitch = false;
   // #2920 — destinationConfirmPendingSince 유예 trip의 즉시 종료 분기(아래 'disembarked')가
   // completeWaypointAdvance로 trip을 이미 KV에서 삭제했을 때 true. 공통 경로의 putTrip이
   // 삭제된 trip을 재생성하지 않도록 가드한다.
@@ -2737,7 +2818,6 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     // 아래 `#1729` 가드(`working.boardingLock === undefined`)는 삭제하지 않고 그대로 둔 채, 그
     // 가드를 자연히 통과시켜 기존 생성 경로를 재사용한다(사전조사 선례 4개와 동일 release→
     // 재생성 패턴, 신규 "직접 attach" 경로 없음).
-    let releasedForLegSwitch = false;
     if (working.boardingLock !== undefined) {
       const releaseDecision = decideLegLockReleaseForBoardedTap(working, now);
       // V/X — wrangler tail에서 release 판정 사유를 바로 확인(Wire-completion #2 요구사항).
@@ -2978,7 +3058,8 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     } else {
       if (existing.boardingLock !== undefined) {
         working = { ...existing, boardingLock: undefined, consecutiveEtaMissing: 0 };
-        await deleteProgress(c.env.TRIPS, token);
+        // flag on이면 deleteProgress는 `userDisembarked`가 applied일 때만(아래) — 해제에 딸린 부수효과 규칙.
+        if (!lockStage) await deleteProgress(c.env.TRIPS, token);
       }
       lockState = 'released';
     }
@@ -3000,6 +3081,19 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   // completeWaypointAdvance가 이미 trip을 KV에서 삭제했다. 여기서 putTrip을 또 호출하면
   // 삭제된 trip을 그대로 재생성하는 회귀가 되므로 이 경로에서만 stamp write를 skip한다.
   if (!tripFinalized) {
+    // #3300 PR-3a (§3 #4~#6) — lock 변경을 셀 op로 확정한다. 사용자 의향(탭)은 낡은 시야의 통째 쓰기로 사라지지 않고,
+    // 낡은 시야로 기존 lock을 지우지도 않는다(conflict-kept: 셀 lock 유지, 응답 lockState도 셀 기준).
+    let lockCommit: LockOpResult | undefined;
+    if (lockStage) {
+      lockCommit = await commitConfirmLockOp(c.env, token, payload.action, existing, working, releasedForLegSwitch, now);
+      if (lockCommit) {
+        working = applyLockResult(working, lockCommit);
+        if (lockCommit.outcome === 'conflict-kept' || lockCommit.outcome === 'conflict') lockState = isLegTwoActive(working, now) ? 'leg2' : 'leg1';
+        if (lockCommit.outcome === 'applied' && payload.action === 'disembarked') {
+          await deleteProgress(c.env.TRIPS, token);
+        }
+      }
+    }
     // #3023 — 탑승 응답(탭)도 활동성 핸들러. sliding TTL 연장 적용.
     await putTrip(
       c.env.TRIPS,
@@ -3007,7 +3101,13 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     );
     // #3144 — 이 요청이 새 lock 객체를 붙였을 때(기존 lock 유지·release-only 제외) 부착 출처를 D1에 남긴다.
     const { boardingLock: attachedLock } = working;
-    if (payload.action === 'boarded' && attachedLock !== undefined && attachedLock !== existing.boardingLock) {
+    const lockAttachedHere = lockCommit === undefined || lockCommit.outcome === 'applied';
+    if (
+      payload.action === 'boarded' &&
+      lockAttachedHere &&
+      attachedLock !== undefined &&
+      attachedLock !== existing.boardingLock
+    ) {
       await recordLockAttached(c.env.DB, {
         token,
         lock: attachedLock,
@@ -3068,6 +3168,45 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
     ),
   });
 });
+
+/**
+ * #3300 PR-3a — boarding-confirm의 메모리 판정 결과(existing -> working)를 lock 셀 op 하나로 번역한다.
+ *  - boarded: 새 lock을 붙였거나(attach) leg 전환 release가 있었으면 `userBoarded`. 변화가 없으면 op 없음.
+ *  - disembarked: lock이 있었는데 해제됐으면 `userDisembarked`(expectedLegKey = 기존 lock의 leg).
+ * op가 없는 경우 undefined.
+ */
+async function commitConfirmLockOp(
+  env: Env,
+  token: string,
+  action: 'boarded' | 'disembarked' | 'not-boarded',
+  existing: Trip,
+  working: Trip,
+  releasedForLegSwitch: boolean,
+  now: number,
+): Promise<LockOpResult | undefined> {
+  const { boardingLock: before } = existing;
+  const { boardingLock: after } = working;
+  if (action === 'boarded') {
+    const attachedNew = after !== undefined && after !== before;
+    if (!attachedNew && !releasedForLegSwitch) return undefined;
+    return runLockOp(
+      env,
+      token,
+      {
+        type: 'userBoarded',
+        source: 'confirm',
+        expectedRev: existing.__lockRev ?? -1,
+        releaseFirst: releasedForLegSwitch,
+        lock: attachedNew ? after : undefined,
+      },
+      now,
+    );
+  }
+  if (action === 'disembarked' && before !== undefined && after === undefined) {
+    return runLockOp(env, token, { type: 'userDisembarked', source: 'confirm', expectedLegKey: lockLegKey(before) }, now);
+  }
+  return undefined;
+}
 
 /**
  * 기존 lock을 release하지 않고 응답하는 경우, 그 lock의 trainCode를 echo해도 되는 사유 전수 매핑.
@@ -3603,7 +3742,7 @@ app.post('/boarding-lock/sync', async (c) => {
   const payload = validateBoardingLockSync(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
-  const existing = await getTrip(c.env.TRIPS, payload.token);
+  const existing = await getTrip(c.env, payload.token);
   if (!existing) return c.json({ error: 'trip_not_found' }, 404);
 
   const now = Date.now();
@@ -3737,6 +3876,10 @@ app.post('/boarding-lock/sync', async (c) => {
   }
 
   let working: Trip = existing;
+  // #3300 PR-3a — 셀 권위 단계(lock@N 이상)면 이 요청의 lock 변경(해제/승격/TTL 갱신)은 op로만 영속한다.
+  // `syncRev`는 op 응답으로 갱신되는 같은 요청 안의 rev(spread/clone으로 trip 객체가 바뀌어도 잃지 않는다).
+  const syncStage = await readCellStage(c.env);
+  let syncRev = existing.__lockRev ?? -1;
   // #2645 PR 코드리뷰 (코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/LOW-5, 2026-09-15) — 실제로 적용된 hop 수.
   // `advance.shiftedCount`(요청/관측값)와 다를 수 있다 — drift 가드, 관측역-intermediate defer,
   // `advanceBoardingLockWaypoint`의 gps-far 유예 등으로 루프가 조기 중단되면 적용치가 더 작다.
@@ -4029,6 +4172,18 @@ app.post('/boarding-lock/sync', async (c) => {
   // #3144 (ADR-043) — 이 승격은 사용자 행위 3경로(LA 버튼 / 알림 프롬프트 탭 = boarding-confirm, 수동 목록
   // 탭 = 이 sync) 중 하나다. 승격 성공 시 boarding-confirm과 같은 응답 마커를 세워 세 경로가 자동 resolver
   // 게이트(D3)에서 동급이 되게 한다. corroboration 규칙 자체는 변경 없음(dev 그대로).
+  // #3300 PR-3a (§3 #18 sync 경유) — 위 advance(환승 소비)가 메모리에서 lock을 풀었으면 셀도 `releaseAuto`로 푼다.
+  // 해제가 아니라 "낡은 시야로 풀었는데 셀은 이미 다른 lock"이면 conflict라 셀 lock이 남는다(applyLockResult).
+  if (syncStage && existing.boardingLock !== undefined && working.boardingLock === undefined) {
+    const released = await runLockOp(
+      c.env,
+      payload.token,
+      { type: 'releaseAuto', source: 'sync-transfer', expectedRev: syncRev, reason: 'transfer' },
+      now,
+    );
+    working = applyLockResult(working, released);
+    syncRev = released.cell.rev;
+  }
   if (
     working.boardingLock === undefined &&
     payload.trainCode !== undefined &&
@@ -4053,7 +4208,20 @@ app.post('/boarding-lock/sync', async (c) => {
           promoted.segmentStations,
           now,
         ));
-      if (corroborated) {
+      // #3300 PR-3a (§3 #7) — 수동 목록 탭 승격은 사용자 의향(`authority:user`, lock 부재만 요구하는 attachIfNone).
+      // applied일 때만 fast-forward slice 등 승격 부수효과를 진행한다(셀이 이미 lock을 가졌으면 그 lock이 이긴다).
+      let promotionAttached: LockOpResult | undefined;
+      if (corroborated && syncStage) {
+        promotionAttached = await runLockOp(
+          c.env,
+          payload.token,
+          { type: 'attachIfNone', source: 'sync-promote', lock: promoted, authority: 'user', expectedRev: syncRev },
+          now,
+        );
+        working = applyLockResult(working, promotionAttached);
+        syncRev = promotionAttached.cell.rev;
+      }
+      if (corroborated && (promotionAttached === undefined || promotionAttached.outcome === 'applied')) {
         // #3155 — 열차가 이미 앵커를 지나 몇 역 앞에 있으면 지난 중간역 waypoint를 건너뛴다(늦은 매역 push
         // 방지). 지난 역에 환승/도착이 있으면 건너뛰지 않고 보고만 한다.
         const { position: trainPosition, passedAnchor } = await loadTrainPosition(
@@ -4125,7 +4293,7 @@ app.post('/boarding-lock/sync', async (c) => {
             hasResponseMarker: hasBoardingResponseForCurrentLeg(working),
           }),
         );
-      } else {
+      } else if (!corroborated) {
         scheduleTripEvent(
           c,
           recordTripEvent(c.env.DB, {
@@ -4141,13 +4309,26 @@ app.post('/boarding-lock/sync', async (c) => {
 
   // lock TTL refresh — 사용자가 지상에서 lock을 활성 유지 중임을 confirm.
   if (working.boardingLock) {
-    working = {
-      ...working,
-      boardingLock: {
-        ...working.boardingLock,
-        expiresAt: Math.max(working.boardingLock.expiresAt, now + LOCK_TTL_REFRESH_MS),
-      },
-    };
+    if (syncStage) {
+      // #3300 PR-3a (§3 #8) — 셀 권위: `refreshExpiry`(expiresAt max, rev 불변). rev가 어긋났거나 이미 충분하면 noop이고
+      // 셀 lock이 그대로 쓰인다(낡은 시야의 TTL로 셀을 덮지 않음).
+      const refreshed = await runLockOp(
+        c.env,
+        payload.token,
+        { type: 'refreshExpiry', source: 'sync-ttl', expectedRev: syncRev, until: now + LOCK_TTL_REFRESH_MS },
+        now,
+      );
+      working = applyLockResult(working, refreshed);
+      syncRev = refreshed.cell.rev;
+    } else {
+      working = {
+        ...working,
+        boardingLock: {
+          ...working.boardingLock,
+          expiresAt: Math.max(working.boardingLock.expiresAt, now + LOCK_TTL_REFRESH_MS),
+        },
+      };
+    }
   }
 
   // #3023 — sync도 활동성 핸들러(spec 예시). sliding TTL 연장 적용. 아래 read-after-write
@@ -4162,10 +4343,11 @@ app.post('/boarding-lock/sync', async (c) => {
   // Cloudflare KV가 `Invalid cache_ttl of 0` 400 throw로 sync handler 전체 실패한다(#1364
   // 회귀, #1383 cron path fix가 본 read-after-write 경로를 cover 못 함). 1회 retry 후에도
   // propagation 확인 실패 시 5xx 반환 — client가 다음 fix에서 재시도해 데이터 정합성 회복 기회를 확보한다.
-  const verifyOk = await verifyBoardingLockPersisted(c.env.TRIPS, working);
+  // #3300 PR-3a (§3 #9) — 셀 권위 단계에서는 lock 비교를 생략한다(op 응답 자체가 lock 영속의 확인이다).
+  const verifyOk = await verifyBoardingLockPersisted(c.env.TRIPS, working, { checkLock: !syncStage });
   if (!verifyOk) {
     await putTrip(c.env.TRIPS, working);
-    const retryOk = await verifyBoardingLockPersisted(c.env.TRIPS, working);
+    const retryOk = await verifyBoardingLockPersisted(c.env.TRIPS, working, { checkLock: !syncStage });
     if (!retryOk) {
       return c.json({ ok: false, reason: 'sync-verification-failed' }, 503);
     }
@@ -4291,10 +4473,13 @@ app.post('/boarding-lock/sync', async (c) => {
 export async function verifyBoardingLockPersisted(
   kv: KVNamespace,
   expected: Trip,
+  options: { checkLock?: boolean } = {},
 ): Promise<boolean> {
   // #1423 — cacheTtl=KV_MIN_CACHE_TTL_SEC (30). 0/<30은 CF KV가 400 throw.
   const verified = await getTrip(kv, expected.token, { cacheTtl: KV_MIN_CACHE_TTL_SEC });
   if (!verified) return false;
+  // #3300 PR-3a — 셀 권위 단계(checkLock:false)에서는 lock 비교를 생략한다. lock의 영속은 DO op 응답이 확인한다.
+  if (options.checkLock === false) return true;
   if (!expected.boardingLock) return true;
   if (!verified.boardingLock) return false;
   return verified.boardingLock.expiresAt >= expected.boardingLock.expiresAt;
@@ -4542,7 +4727,7 @@ app.post('/live-activity/register', async (c) => {
   // "등록 경로가 끊김"과 "등록은 됐는데 push가 안 나감"을 구별 가능하게 만든다. 정책 변경 없음 —
   // 응답 코드/저장 동작은 그대로다. `invalid_payload`는 적재하지 않는다: 해시할 tripToken이
   // 바로 그 무효 입력이라 token_hash를 만들 수 없다.
-  const existing = await getTrip(c.env.TRIPS, payload.tripToken);
+  const existing = await getTrip(c.env, payload.tripToken);
   if (!existing) {
     await recordTripEvent(c.env.DB, {
       tokenHash: hashTripToken(payload.tripToken),
@@ -4552,15 +4737,20 @@ app.post('/live-activity/register', async (c) => {
     return c.json({ error: 'trip_not_found' }, 404);
   }
 
+  // #3300 PR-3a (§10) — 셀 권위 단계면 토큰/상태는 `registerLaToken` op가 확정한다. 낡은 KV 시야의 재등록 통째 쓰기가
+  // 셀 토큰을 지우지 못하고(11/04 root), 이 요청의 토큰은 셀에 먼저 들어간다.
+  let registered: Trip = { ...existing, activityPushToken: payload.activityPushToken, activityState: 'live' };
+  if (await readCellStage(c.env)) {
+    const laResult = await runLaOp(
+      c.env,
+      payload.tripToken,
+      { type: 'registerLaToken', source: 'la-register', token: payload.activityPushToken },
+      Date.now(),
+    );
+    registered = applyLaCell(existing, laResult.cell);
+  }
   // #3023 — LA 토큰 등록도 활동성 핸들러(spec 예시 la-token-register). sliding TTL 연장 적용.
-  const updated: Trip = extendTripExpiryOnActivity(
-    {
-      ...existing,
-      activityPushToken: payload.activityPushToken,
-      activityState: 'live',
-    },
-    Date.now(),
-  );
+  const updated: Trip = extendTripExpiryOnActivity(registered, Date.now());
   await putTrip(c.env.TRIPS, updated);
   await recordTripEvent(c.env.DB, {
     tokenHash: hashTripToken(payload.tripToken),
@@ -4584,14 +4774,24 @@ app.post('/live-activity/register', async (c) => {
 app.delete('/live-activity/:tripToken', async (c) => {
   const tripToken = c.req.param('tripToken');
   if (!tripToken) return c.json({ error: 'missing_token' }, 400);
-  const existing = await getTrip(c.env.TRIPS, tripToken);
+  const existing = await getTrip(c.env, tripToken);
   if (!existing) return c.json({ ok: true, deleted: false });
 
-  const updated: Trip = {
+  let updated: Trip = {
     ...existing,
     activityPushToken: undefined,
     activityState: 'ended',
   };
+  // #3300 PR-3a (§10) — 셀 권위 단계면 `clearLaToken`이 토큰을 지운다(셀 값이 최종).
+  if (await readCellStage(c.env)) {
+    const laResult = await runLaOp(
+      c.env,
+      tripToken,
+      { type: 'clearLaToken', source: 'la-delete', reason: 'device-end' },
+      Date.now(),
+    );
+    updated = applyLaCell(existing, laResult.cell);
+  }
   await putTrip(c.env.TRIPS, updated);
   return c.json({ ok: true, deleted: true });
 });

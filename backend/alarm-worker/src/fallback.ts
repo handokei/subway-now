@@ -274,7 +274,7 @@ async function isStaleIntermediateWhileLocked(
   now: number,
 ): Promise<boolean> {
   if (!entry.tripToken) return true;
-  const trip = await getTrip(env.TRIPS, entry.tripToken);
+  const trip = await getTrip(env, entry.tripToken);
   if (trip === null) return true;
   return isBoardingLockActive(trip, now);
 }
