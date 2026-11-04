@@ -248,6 +248,9 @@ export type TripEventKind =
   // (종료 연결은 PR-3). meta={ shownAt, graceMs, elapsedMs, deviceSyncStale, motionState }. 같은 질문 중복 적재 없음 —
   // `trip.endPromptAutoEndDueLoggedFor === endPromptShownAt` 마커(trip에 이미 실리는 putTrip, 질문당 +1 write).
   | 'end-prompt-auto-end-due'
+  // #3007 PR-2 — 종료 질문의 [계속] 응답 도달 1건(`POST /trips/:token/end-prompt-response`). meta={ shownAt: number|null }.
+  // HTTP 요청 단위라 반복 없음. Device verify: LA [계속] 탭 후 이 kind 1행이 있어야 한다.
+  | 'end-prompt-continue'
   // #3144 (v8 D3, ADR-043) — backend가 trip.boardingLock을 **부착한 모든 지점** 1건. 171 leg-1 backend
   // lock의 출처(sync/boarding-confirm/ register resolver / cron resolver)를 D1만으로 가릴 수 없었던
   // 계측 공백을 메운다. `meta`={ path: LockAttachPath, trainCode, hasResponseMarker }, `station`=

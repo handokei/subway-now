@@ -73,7 +73,7 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
     expiresAt: NOW + 60 * 60_000,
     createdAt: NOW - 60 * 60_000,
     alarmAtEpochMs: NOW - 60_000,
-    laClient: { split: true },
+    laClient: { split: true, boardingStart: 'push-to-start', endPromptAutoEnd: true },
     boardingPushToStartToken: 'p2s-token',
     ...overrides,
   } as Trip;
@@ -200,6 +200,24 @@ describe('#3007 PR-1 — 질문 +5분 평가 (계측만)', () => {
     await putTrip(kv as unknown as KVNamespace, trip);
     await runAt(kv, db, NOW + 1_000);
     expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(2);
+  });
+
+  it('endPromptAutoEnd capability 없는 구버전 앱 trip은 평가하지 않는다 ([계속] 채널 없음)', async () => {
+    const { kv, db, inserts } = await setup(evidence(), {
+      endPromptShownAt: SHOWN_AT,
+      laClient: { split: true, boardingStart: 'push-to-start' },
+    });
+    await runAt(kv, db, NOW);
+    expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(0);
+  });
+
+  it('[계속] 응답(endPromptContinuedAt >= shownAt) 후에는 평가하지 않는다', async () => {
+    const { kv, db, inserts } = await setup(evidence(), {
+      endPromptShownAt: SHOWN_AT,
+      endPromptContinuedAt: SHOWN_AT + 30_000,
+    });
+    await runAt(kv, db, NOW);
+    expect(kind(inserts, 'end-prompt-auto-end-due')).toHaveLength(0);
   });
 
   it('활성 lock trip은 평가하지 않는다', async () => {

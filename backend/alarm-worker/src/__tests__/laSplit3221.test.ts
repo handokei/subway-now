@@ -118,6 +118,18 @@ function baseBody(overrides: Record<string, unknown> = {}): Record<string, unkno
 }
 
 describe('validateTrip — laClient / boardingPushToStartToken 수용', () => {
+  it('#3007 PR-2 endPromptAutoEnd:true capability를 보존한다', () => {
+    const trip = validateTrip(
+      baseBody({ laClient: { split: true, boardingStart: 'push-to-start', endPromptAutoEnd: true } }),
+    );
+    expect(trip?.laClient).toEqual({ split: true, boardingStart: 'push-to-start', endPromptAutoEnd: true });
+  });
+
+  it.each([[false], ['true'], [1], [undefined]])('#3007 PR-2 endPromptAutoEnd=%s 는 필드를 싣지 않는다', (v) => {
+    const trip = validateTrip(baseBody({ laClient: { split: true, boardingStart: 'fg-only', endPromptAutoEnd: v } }));
+    expect(trip?.laClient).toEqual({ split: true, boardingStart: 'fg-only' });
+  });
+
   it.each(['push-to-start', 'fg-only', 'none'] as const)('laClient boardingStart=%s 수용', (boardingStart) => {
     const trip = validateTrip(baseBody({ laClient: { split: true, boardingStart } }));
     expect(trip?.laClient).toEqual({ split: true, boardingStart });

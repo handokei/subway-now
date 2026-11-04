@@ -225,17 +225,17 @@ describe('안내 종료 / 15분 정지', () => {
     expect(buildTripEndedAlertContent('destination-arrived', '뚝섬', lc)).toEqual({ title, body });
   });
 
-  it('15분 정지: ko 제목 유지 + 본문', () => {
+  it('15분 정지 질문: ko = 제목 "안내를 종료할까요?" + 본문 "5분 뒤 자동으로 종료돼요" (사용자 결정 11/04)', () => {
     expect(t('ko').endPromptTitle).toBe('안내를 종료할까요?');
-    expect(t('ko').endPromptBody({ destinationStation: '뚝섬' })).toBe('15분째 움직임이 없어요 · 뚝섬까지 안내 중');
-    expect(t('ko').endPromptBody({})).toBe('15분째 움직임이 없어요');
+    expect(t('ko').endPromptBody).toBe('5분 뒤 자동으로 종료돼요');
   });
 
   it.each([
-    ['en', 'No movement for 15 minutes · Guiding to 뚝섬'],
-    ['ja', '15分間動きがありません · 뚝섬まで案内中'],
-    ['zh', '已 15 分钟未移动 · 导航至 뚝섬'],
-  ] as const)('15분 정지 %s', (lc, expected) => {
-    expect(t(lc).endPromptBody({ destinationStation: '뚝섬' })).toBe(expected);
+    ['en', 'End guidance?', 'Guidance will end automatically in 5 minutes'],
+    ['ja', '案内を終了しますか?', '5分後に自動で終了します'],
+    ['zh', '要结束导航吗?', '5 分钟后将自动结束'],
+  ] as const)('15분 정지 질문 %s', (lc, title, body) => {
+    expect(t(lc).endPromptTitle).toBe(title);
+    expect(t(lc).endPromptBody).toBe(body);
   });
 });

@@ -42,7 +42,12 @@ function makeSsot(evidence: MotionEvidence[], lastDeviceSyncAt = NOW): TripPosit
 }
 
 function makeTrip(overrides: Partial<Trip> = {}): Trip {
-  return { token: 't', endPromptShownAt: SHOWN_AT, ...overrides } as unknown as Trip;
+  return {
+    token: 't',
+    endPromptShownAt: SHOWN_AT,
+    laClient: { split: true, boardingStart: 'push-to-start', endPromptAutoEnd: true },
+    ...overrides,
+  } as unknown as Trip;
 }
 
 describe('evaluateEndPromptAutoEnd', () => {
@@ -51,7 +56,22 @@ describe('evaluateEndPromptAutoEnd', () => {
     expect(evaluateEndPromptAutoEnd(trip, makeSsot(still(SHOWN_AT, NOW)), NOW)).toBe('none');
   });
 
-  it('none: [계속] 응답이 질문 이후다 (필드는 타입만 — 기록 경로는 PR-2)', () => {
+  it('none: endPromptAutoEnd capability가 없다 (구버전 앱 보호 — [계속] 채널이 없는 앱)', () => {
+    const still5 = makeSsot(still(SHOWN_AT - 60_000, NOW));
+    expect(evaluateEndPromptAutoEnd(makeTrip({ laClient: undefined }), still5, NOW)).toBe('none');
+    expect(
+      evaluateEndPromptAutoEnd(
+        makeTrip({ laClient: { split: true, boardingStart: 'push-to-start' } }),
+        still5,
+        NOW,
+      ),
+    ).toBe('none');
+    // 이동했어도(cancel 후보) capability 없으면 none — 구버전 trip의 endPromptShownAt은 손대지 않는다
+    const moved = makeSsot([...still(SHOWN_AT, NOW), ev(NOW - 10_000, 80)]);
+    expect(evaluateEndPromptAutoEnd(makeTrip({ laClient: undefined }), moved, NOW)).toBe('none');
+  });
+
+  it('none: [계속] 응답이 질문 이후다', () => {
     const trip = makeTrip({ endPromptContinuedAt: SHOWN_AT + 1_000 });
     expect(evaluateEndPromptAutoEnd(trip, makeSsot(still(SHOWN_AT, NOW)), NOW)).toBe('none');
   });

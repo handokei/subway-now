@@ -58,6 +58,7 @@ import {
   type BoardingPromptPayload,
   type UseBoardingPromptResponderDeps,
 } from './useBoardingPromptResponder';
+import { postEndPromptContinue } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('liveActivityIntentBridge');
@@ -73,11 +74,23 @@ export interface NativePostResult {
   atMs: number;
 }
 
+/**
+ * #3007 PR-2 — 종료 질문 [계속] 마커 action(native `ACTION_END_PROMPT_CONTINUE`와 문자열 일치 — nativeContract 테스트가 고정).
+ * 탑승/하차 응답이 아니라 lock과 무관하다: native POST가 실패했을 때 FG에서 backend로 재전송하는 용도(`handleEndPromptContinue`).
+ */
+const END_PROMPT_CONTINUE_ACTION = 'END_PROMPT_CONTINUE';
+
+type BoardingResponseAction =
+  | 'BOARDING_BOARDED'
+  | 'DISEMBARK_DISEMBARKED'
+  | 'BOARDING_NOT_BOARDED'
+  | 'DISEMBARK_NOT_YET';
+
 /** App Group pending boarding intent — native AppIntent가 write하는 schema. */
 export interface PendingBoardingIntent {
   id: string;
   tripToken: string;
-  action: 'BOARDING_BOARDED' | 'DISEMBARK_DISEMBARKED' | 'BOARDING_NOT_BOARDED' | 'DISEMBARK_NOT_YET';
+  action: BoardingResponseAction | typeof END_PROMPT_CONTINUE_ACTION;
   originStation: string;
   line: string;
   atMs: number;
@@ -92,6 +105,7 @@ const VALID_ACTIONS: readonly PendingBoardingIntent['action'][] = [
   'DISEMBARK_DISEMBARKED',
   'BOARDING_NOT_BOARDED',
   'DISEMBARK_NOT_YET',
+  END_PROMPT_CONTINUE_ACTION,
 ];
 
 /**
@@ -99,7 +113,7 @@ const VALID_ACTIONS: readonly PendingBoardingIntent['action'][] = [
  * data-driven 매핑(글로벌 규칙 3, 하드코딩 삼항 금지).
  */
 const ACTION_MAP: Record<
-  PendingBoardingIntent['action'],
+  BoardingResponseAction,
   { actionIdentifier: string; hopEnd: boolean; nativeConfirm: boolean }
 > = {
   // nativeConfirm: native intent가 boarding-confirm을 직접 POST하고 결과를 `nativePost`로 남기는 action.
@@ -148,8 +162,10 @@ export function parsePendingBoardingIntent(raw: string): PendingBoardingIntent |
   if (typeof o.id !== 'string' || o.id.length === 0) return null;
   if (typeof o.tripToken !== 'string' || o.tripToken.length === 0) return null;
   if (typeof o.action !== 'string' || !VALID_ACTIONS.includes(o.action as never)) return null;
-  if (typeof o.originStation !== 'string' || o.originStation.length === 0) return null;
-  if (typeof o.line !== 'string' || o.line.length === 0) return null;
+  // 종료 질문 [계속]에는 역·노선이 없다(native가 빈 문자열로 쓴다) — 탑승/하차 응답만 둘 다 필수.
+  const requiresStation = o.action !== END_PROMPT_CONTINUE_ACTION;
+  if (typeof o.originStation !== 'string' || (requiresStation && o.originStation.length === 0)) return null;
+  if (typeof o.line !== 'string' || (requiresStation && o.line.length === 0)) return null;
   if (typeof o.atMs !== 'number') return null;
   const laCandidate = parseLaCandidate(o.laCandidate);
   const nativePost = parseNativePost(o.nativePost);
@@ -279,15 +295,19 @@ function isSuccessStatus(status: number): boolean {
   return status >= 200 && status < 300;
 }
 
-function decideIntentRoute(intent: PendingBoardingIntent, nowMs: number): IntentRoute {
+function decideIntentRoute(
+  intent: PendingBoardingIntent,
+  action: BoardingResponseAction,
+  nowMs: number,
+): IntentRoute {
   const { nativePost } = intent;
-  if (!ACTION_MAP[intent.action].nativeConfirm || nativePost === undefined) return HANDLE_ROUTE;
+  if (!ACTION_MAP[action].nativeConfirm || nativePost === undefined) return HANDLE_ROUTE;
   if (nativePost === 'in-flight') {
     // 대기 예산 내 보류. 예산 경과 후엔 native 결과와 무관하게 fallback(위젯 프로세스가 죽어 in-flight가 남는 경우).
     return nowMs - intent.atMs <= NATIVE_CONFIRM_WAIT_MS ? { kind: 'wait' } : HANDLE_ROUTE;
   }
   if (!isSuccessStatus(nativePost.status)) return HANDLE_ROUTE;
-  if (intent.action === 'DISEMBARK_DISEMBARKED') {
+  if (action === 'DISEMBARK_DISEMBARKED') {
     // native가 backend에 'disembarked'를 이미 반영했다 — 로컬 하차 처리만 하고 forward는 생략.
     return { kind: 'handle', skipBackendForward: true };
   }
@@ -297,8 +317,32 @@ function decideIntentRoute(intent: PendingBoardingIntent, nowMs: number): Intent
 
 const RETRYABLE_APPLY_RESULTS: readonly LaNativeResolutionResult[] = ['failed', 'skipped-no-trip'];
 
+/** 재시도가 의미 없는 응답: 성공(2xx) 또는 클라이언트 오류(4xx — trip 없음/payload 거부). 0·5xx·응답 없음은 재시도 대상. */
+function isTerminalStatus(status: number | undefined): boolean {
+  return status !== undefined && status >= 200 && status < 500;
+}
+
+/**
+ * #3007 PR-2 — 종료 질문 [계속] 마커 처리. native `ContinueGuidanceIntent`가 POST를 시도했고 결과를 `nativePost`에 남겼다.
+ * 성공/4xx면 그대로 clear, native가 실패(0/5xx)했거나 결과를 못 남겼으면(위젯 프로세스 종료) JS가 재전송한다.
+ * 재전송도 실패하면 clear하지 않고 다음 실행에서 재시도한다(5분 stale 게이트가 상한).
+ */
+async function handleEndPromptContinue(intent: PendingBoardingIntent, nowMs: number): Promise<void> {
+  const { nativePost } = intent;
+  if (nativePost === 'in-flight' && nowMs - intent.atMs <= NATIVE_CONFIRM_WAIT_MS) return;
+  const nativeStatus = typeof nativePost === 'object' ? nativePost.status : undefined;
+  if (!isTerminalStatus(nativeStatus)) {
+    const { status } = await postEndPromptContinue(intent.tripToken);
+    if (!isTerminalStatus(status)) return;
+  }
+  clearStalePendingBoardingIntent(intent.id);
+}
+
 async function handleIntent(intent: PendingBoardingIntent, deps: BridgeDeps, nowMs: number): Promise<void> {
-  const route = decideIntentRoute(intent, nowMs);
+  const { action } = intent;
+  if (action === END_PROMPT_CONTINUE_ACTION) return handleEndPromptContinue(intent, nowMs);
+
+  const route = decideIntentRoute(intent, action, nowMs);
   if (route.kind === 'wait') return;
 
   let shouldRetry = false;
@@ -307,10 +351,10 @@ async function handleIntent(intent: PendingBoardingIntent, deps: BridgeDeps, now
     // 'failed'(createLock 예외)와 'skipped-no-trip'(목적지 읽기 실패가 "없음"과 구분 불가 —
     // widgetRefreshContext catch)은 일시적일 수 있어 clear하지 않고 재시도한다(5분 stale 게이트가 상한).
     shouldRetry = RETRYABLE_APPLY_RESULTS.includes(result);
-  } else if (intent.action === 'BOARDING_BOARDED' && isDuplicateBoardingIntent(intent)) {
+  } else if (action === 'BOARDING_BOARDED' && isDuplicateBoardingIntent(intent)) {
     log.info('duplicate boarding intent — active lock already exists, no-op');
   } else {
-    const mapped = ACTION_MAP[intent.action];
+    const mapped = ACTION_MAP[action];
     const payload: BoardingPromptPayload = {
       kind: 'boarding-prompt',
       originStation: intent.originStation,

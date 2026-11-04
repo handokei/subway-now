@@ -99,7 +99,7 @@ interface I18nStrings {
    * 아니라 선택을 묻는 형태여야 한다 — LA 버튼이 그 선택을 받는다.
    */
   endPromptTitle: string;
-  endPromptBody: (args: { destinationStation?: string }) => string;
+  endPromptBody: string;
   boardingPromptTitle: string;
   boardingPromptBody: (args: BoardingPromptArgs) => string;
   /** #2034 — hop-end (환승역 하차) 알림 title. */
@@ -160,8 +160,7 @@ interface I18nStrings {
 const I18N: Record<SupportedLocale, I18nStrings> = {
   ko: {
     endPromptTitle: '안내를 종료할까요?',
-    endPromptBody: ({ destinationStation }) =>
-      destinationStation ? `15분째 움직임이 없어요 · ${destinationStation}까지 안내 중` : '15분째 움직임이 없어요',
+    endPromptBody: '5분 뒤 자동으로 종료돼요',
     boardingPromptTitle: '탑승하셨나요?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
@@ -218,10 +217,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
   },
   en: {
     endPromptTitle: 'End guidance?',
-    endPromptBody: ({ destinationStation }) =>
-      destinationStation
-        ? `No movement for 15 minutes · Guiding to ${destinationStation}`
-        : 'No movement for 15 minutes',
+    endPromptBody: 'Guidance will end automatically in 5 minutes',
     boardingPromptTitle: 'Are you on board?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
@@ -279,10 +275,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
   },
   ja: {
     endPromptTitle: '案内を終了しますか?',
-    endPromptBody: ({ destinationStation }) =>
-      destinationStation
-        ? `15分間動きがありません · ${destinationStation}まで案内中`
-        : '15分間動きがありません',
+    endPromptBody: '5分後に自動で終了します',
     boardingPromptTitle: 'ご乗車されましたか?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;
@@ -336,8 +329,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
   },
   zh: {
     endPromptTitle: '要结束导航吗?',
-    endPromptBody: ({ destinationStation }) =>
-      destinationStation ? `已 15 分钟未移动 · 导航至 ${destinationStation}` : '已 15 分钟未移动',
+    endPromptBody: '5 分钟后将自动结束',
     boardingPromptTitle: '您已乘车了吗?',
     boardingPromptBody: ({ originStation, line, nextStation, etaTimeStr, destinationStation }) => {
       if (!nextStation) return `${line} · ${originStation}`;

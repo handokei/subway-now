@@ -39,7 +39,7 @@ const log = createLogger('boardingActivityChannel');
 export type BoardingStartMode = 'push-to-start' | 'fg-only' | 'none';
 
 export interface BoardingRegisterFields {
-  laClient?: { split: true; boardingStart: BoardingStartMode };
+  laClient?: { split: true; boardingStart: BoardingStartMode; endPromptAutoEnd: true };
   boardingPushToStartToken?: string;
 }
 
@@ -94,7 +94,8 @@ export async function readBoardingPushToStartToken(): Promise<string | null> {
 export async function buildBoardingRegisterFields(): Promise<BoardingRegisterFields> {
   const boardingStart = resolveBoardingStartMode();
   if (boardingStart === null) return {};
-  const laClient = { split: true as const, boardingStart };
+  // endPromptAutoEnd: 이 빌드는 종료 질문 [계속]을 backend에 알린다(native ContinueGuidanceIntent POST + 브릿지 재전송, #3007 PR-2).
+  const laClient = { split: true as const, boardingStart, endPromptAutoEnd: true as const };
   if (boardingStart !== 'push-to-start') return { laClient };
   const token = await readBoardingPushToStartToken();
   return token ? { laClient, boardingPushToStartToken: token } : { laClient };

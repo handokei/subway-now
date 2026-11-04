@@ -118,15 +118,44 @@ describe('탑승 LA 타입 격리 (#3221 PR-1)', () => {
     }
   });
 
-  it('(d) ContinueGuidanceIntent는 네트워크 호출이 0이고 탑승 LA만 닫는다', () => {
+  it('(d) ContinueGuidanceIntent는 backend에 [계속]을 POST하고 pending 마커를 남기며 배너를 닫는다 (#3007 PR-2)', () => {
     const body = stripComments(extractBlock(intents, 'struct ContinueGuidanceIntent:'));
     expect(body).toContain('LiveActivityIntent');
-    expect(body).toContain('Activity<BoardingActivityAttributes>.activities');
-    expect(body).not.toContain('URLSession');
-    expect(body).not.toContain('URLRequest');
-    expect(body).not.toContain('postBoardingConfirm');
+    // 배너 닫기 = 다른 응답 intent와 같은 markCurrentActivity (탑승 LA end(.immediate) + legacy 통합 LA의 end-prompt 행 제거)
+    expect(body).toContain('markCurrentActivity(boardingPhase: nil)');
+    // 네트워크: 전용 post 함수 호출 + 실패 대비 App Group 마커(nativePost in-flight 추적)
+    expect(body).toContain('postEndPromptContinue(');
+    expect(body).toContain('writePendingBoardingIntent(');
+    expect(body).toContain('action: ACTION_END_PROMPT_CONTINUE');
+    expect(body).toContain('trackNativePost: true');
+    // 마커는 POST **전에** 써야 한다 (위젯 프로세스가 POST 중 죽어도 FG 재전송 근거가 남는다)
+    expect(body.indexOf('writePendingBoardingIntent(')).toBeLessThan(body.indexOf('postEndPromptContinue('));
     expect(body).not.toContain('postTripEnd');
-    expect(body).not.toContain('SubwayActivityAttributes');
+    expect(body).not.toContain('postBoardingConfirm');
+  });
+
+  it('(d2) postEndPromptContinue는 deadline POST로 /end-prompt-response {action: continue}를 보내고 결과를 마커에 기록한다', () => {
+    const post = stripComments(extractBlock(intents, 'private func postEndPromptContinue('));
+    expect(post).toContain('/end-prompt-response');
+    expect(post).toContain('"action": "continue"');
+    expect(post).toContain('performWithDeadline(');
+    expect(post).toContain('recordNativePost(');
+    expect(post).toContain('httpMethod = "POST"');
+  });
+
+  it('(d3) 마커 action 문자열이 JS 브릿지 계약(END_PROMPT_CONTINUE)과 같다', () => {
+    expect(intents).toContain('private let ACTION_END_PROMPT_CONTINUE = "END_PROMPT_CONTINUE"');
+    const bridge = readFileSync(
+      join(__dirname, '..', '..', '..', 'src', 'features', 'alarm', 'hooks', 'useLiveActivityIntentBridge.ts'),
+      'utf8',
+    );
+    expect(bridge).toContain("'END_PROMPT_CONTINUE'");
+  });
+
+  it('(d4) legacy 통합 LA(SubwayLiveActivityWidget)의 종료 질문에도 [계속] 버튼이 ContinueGuidanceIntent로 연결된다', () => {
+    const legacy = readFileSync(join(WIDGET_DIR, 'SubwayLiveActivityWidget.swift'), 'utf8');
+    expect(legacy).toContain('ContinueGuidanceIntent(');
+    expect(legacy).toContain('EndTripIntent(');
   });
 
   it('(e) BoardingActivityAttributes 사본 2벌이 코드 기준 동일하다(MIRROR)', () => {

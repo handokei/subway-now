@@ -110,14 +110,14 @@ describe('buildBoardingRegisterFields — trip register body 조각', () => {
   it('push-to-start 기기: laClient + 캐시된 token을 싣는다', async () => {
     mockStore.set(BOARDING_PUSH_TO_START_TOKEN_KEY, 'abc123');
     expect(await buildBoardingRegisterFields()).toEqual({
-      laClient: { split: true, boardingStart: 'push-to-start' },
+      laClient: { split: true, boardingStart: 'push-to-start', endPromptAutoEnd: true },
       boardingPushToStartToken: 'abc123',
     });
   });
 
   it('push-to-start 기기라도 token 미발급이면 token 필드는 생략', async () => {
     expect(await buildBoardingRegisterFields()).toEqual({
-      laClient: { split: true, boardingStart: 'push-to-start' },
+      laClient: { split: true, boardingStart: 'push-to-start', endPromptAutoEnd: true },
     });
   });
 
@@ -125,14 +125,14 @@ describe('buildBoardingRegisterFields — trip register body 조각', () => {
     setPlatform('ios', '17.1');
     mockStore.set(BOARDING_PUSH_TO_START_TOKEN_KEY, 'abc123');
     expect(await buildBoardingRegisterFields()).toEqual({
-      laClient: { split: true, boardingStart: 'fg-only' },
+      laClient: { split: true, boardingStart: 'fg-only', endPromptAutoEnd: true },
     });
   });
 
   it('16.x: none, token 없음', async () => {
     setPlatform('ios', '16.4');
     expect(await buildBoardingRegisterFields()).toEqual({
-      laClient: { split: true, boardingStart: 'none' },
+      laClient: { split: true, boardingStart: 'none', endPromptAutoEnd: true },
     });
   });
 

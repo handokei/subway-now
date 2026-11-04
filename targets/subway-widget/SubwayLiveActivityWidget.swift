@@ -666,14 +666,22 @@ private struct BoardingPromptButton: View {
 
     var body: some View {
         if phase == "end-prompt" {
-            // #3007 S4-c — 종료는 사용자 결정이므로 버튼 하나만 둔다. "계속"은 **버튼이 아니라
-            // 무응답**이다(아무것도 누르지 않으면 트립이 그대로 유지된다) — 선택을 강요하지 않는다.
-            Button(intent: EndTripIntent(tripToken: state.boardingPromptTripToken ?? "")) {
-                Text(NSLocalizedString("widget.endPrompt.end.button", comment: "End guidance button label"))
-                    .font(.subheadline)
-                    .fontWeight(.bold)
+            // #3007 S4-c/PR-2 — [종료] + [계속]. 질문 5분 무응답이면 자동 종료(PR-3)되므로 "계속"은 무응답이 아니라
+            // **명시 버튼**이다(backend가 [계속]을 알아야 자동 종료를 취소한다). 탑승 LA(`BoardingLiveActivityWidget`)와 같은 쌍.
+            VStack(spacing: 6) {
+                Button(intent: EndTripIntent(tripToken: state.boardingPromptTripToken ?? "")) {
+                    Text(NSLocalizedString("widget.endPrompt.end.button", comment: "End guidance button label"))
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                }
+                .tint(palette.inkStrong.color)
+
+                Button(intent: ContinueGuidanceIntent(tripToken: state.boardingPromptTripToken ?? "")) {
+                    Text(NSLocalizedString("widget.boardingLA.continue.button", comment: "Continue guidance button label"))
+                        .font(.subheadline)
+                }
+                .tint(palette.muted.color)
             }
-            .tint(palette.inkStrong.color)
         } else if autoLockedTracking {
             Button(intent: NotBoardedIntent(
                 tripToken: state.boardingPromptTripToken ?? "",
