@@ -6,7 +6,6 @@ import { lightColors, darkColors } from '../../../../shared/theme';
 import { getLineLabel } from '../../../../shared/ui/LineBadge';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
-import type { LineNumber } from '../../../../shared/types/station';
 import type { ExitInfoProvider } from '../../../exit-info/providers/types';
 import type { ExitInfo } from '../../../../shared/types/exitInfo';
 
@@ -50,13 +49,11 @@ function renderAlarm(
   type: AlarmEvent['type'],
   stationName: string,
   phaseId: AlarmEvent['phaseId'] = 'early',
-  line?: LineNumber | null,
+  stationId = '2-022',
   sleepMode = true,
 ) {
-  const event: AlarmEvent = { phaseId, type, stationName, stationId: '2-022' };
-  return render(
-    <SleepAlarmOverlay sleepMode={sleepMode} event={event} onDismiss={mockDismiss} line={line} />,
-  );
+  const event: AlarmEvent = { phaseId, type, stationName, stationId };
+  return render(<SleepAlarmOverlay sleepMode={sleepMode} event={event} onDismiss={mockDismiss} />);
 }
 
 async function triggerModalClose(rendered: ReturnType<typeof renderAlarm>) {
@@ -74,12 +71,12 @@ describe('SleepAlarmOverlay', () => {
   // 별개로 컴포넌트 자체에도 방어선을 둔다(defense-in-depth). 이 게이트가 없다면 store 게이트를
   // 우회하는 향후 호출부에서 비취침 상태에도 오버레이가 노출되는 #2258이 재발한다.
   it('#2258 sleepMode=false면 아무것도 렌더하지 않는다 (defense-in-depth)', () => {
-    const { queryByTestId } = renderAlarm('destination', '강남', 'early', undefined, false);
+    const { queryByTestId } = renderAlarm('destination', '강남', 'early', '2-022', false);
     expect(queryByTestId('alarm-overlay')).toBeNull();
   });
 
   it('sleepMode=true + 환승이면 렌더한다', () => {
-    const { queryByTestId } = renderAlarm('transfer', '시청', 'early', undefined, true);
+    const { queryByTestId } = renderAlarm('transfer', '시청', 'early', '2-022', true);
     expect(queryByTestId('alarm-overlay')).toBeTruthy();
   });
 
@@ -186,22 +183,9 @@ describe('SleepAlarmOverlay', () => {
   });
 
   describe('#1289 출구 안내 (StationExitCard) 마운트', () => {
-    it('line 미전달 시 출구 안내 섹션이 렌더되지 않는다', () => {
-      const { queryByTestId } = renderAlarm('destination', '강남', 'early');
-      expect(queryByTestId('alarm-overlay-exit-section')).toBeNull();
-    });
-
-    it('line=null 시 출구 안내 섹션이 렌더되지 않는다', () => {
-      const { queryByTestId } = renderAlarm('destination', '강남', 'early', null);
-      expect(queryByTestId('alarm-overlay-exit-section')).toBeNull();
-    });
-
-    it('line 전달 시 출구 안내 섹션이 렌더되고 출구 카드가 나타난다', async () => {
-      const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' };
-      const { getByTestId, findByTestId } = render(
-        <SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} line="2" />,
-      );
-      // exit section은 즉시 렌더됨 (line이 있으면)
+    it('event.stationId만으로 출구 안내 섹션이 렌더되고 출구 카드가 나타난다 (#3177 line prop 없음)', async () => {
+      const { getByTestId, findByTestId } = renderAlarm('destination', '강남', 'early', '2-022');
+      // exit section은 즉시 렌더됨 (stationId → 노선 해석)
       expect(getByTestId('alarm-overlay-exit-section')).toBeTruthy();
       // StationExitCard는 MockExitInfoProvider 기본값(강남 2호선 샘플)으로 로드 후 나타남
       await findByTestId('station-exit-card');
@@ -242,27 +226,29 @@ describe('SleepAlarmOverlay', () => {
   describe('#3174 Line Glass 테마', () => {
     const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' };
 
-    it('line 전달 시 노선 칩이 렌더되고 노선 라벨을 포함한다', () => {
-      const { getByTestId, getByText } = renderAlarm('destination', '강남', 'early', '2');
+    it('event.stationId만 전달해도 노선 칩이 렌더되고 해당 노선 라벨을 포함한다 (#3177)', () => {
+      const { getByTestId, getByText } = renderAlarm('destination', '사당', 'early', '4-025');
       expect(getByTestId('alarm-overlay-line-chip')).toBeTruthy();
-      expect(getByText(getLineLabel('2'))).toBeTruthy();
+      expect(getByText(getLineLabel('4'))).toBeTruthy();
     });
 
-    it('line 미전달/null이면 칩도 exit-section도 렌더되지 않는다', () => {
-      const a = renderAlarm('destination', '강남');
+    it('event.stationId만 전달해도 LineGlowBackground가 해당 노선으로 렌더된다 (#3177)', () => {
+      renderAlarm('destination', '사당', 'early', '4-025');
+      expect(mockGlow).toHaveBeenCalledWith({ line: '4' });
+    });
+
+    it('event.stationId만 전달해도 exit-section이 렌더된다 (#3177)', () => {
+      expect(renderAlarm('destination', '사당', 'early', '4-025').getByTestId('alarm-overlay-exit-section')).toBeTruthy();
+    });
+
+    it('stations.json에 없는 stationId면 칩·exit-section을 숨긴다 (거부 케이스)', () => {
+      const a = renderAlarm('destination', '강남', 'early', '9-999');
       expect(a.queryByTestId('alarm-overlay-line-chip')).toBeNull();
       expect(a.queryByTestId('alarm-overlay-exit-section')).toBeNull();
-      const b = renderAlarm('destination', '강남', 'early', null);
-      expect(b.queryByTestId('alarm-overlay-line-chip')).toBeNull();
-    });
-
-    it('LineGlowBackground가 line prop을 받아 렌더된다', () => {
-      renderAlarm('destination', '강남', 'early', '2');
-      expect(mockGlow).toHaveBeenCalledWith({ line: '2' });
     });
 
     it('sleepMode=false면 글로우도 렌더하지 않는다 (거부 케이스)', () => {
-      renderAlarm('destination', '강남', 'early', '2', false);
+      renderAlarm('destination', '강남', 'early', '2-022', false);
       expect(mockGlow).not.toHaveBeenCalled();
     });
 

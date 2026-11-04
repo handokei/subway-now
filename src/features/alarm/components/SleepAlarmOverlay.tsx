@@ -12,9 +12,10 @@ import type { AlarmEvent } from '../../../shared/types/alarm';
 import { clearAlarmNotification } from '../utils/stationNotification';
 import { getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import stationsData from '../../../data/stations.json';
-import type { LineNumber, Station } from '../../../shared/types/station';
+import type { Station } from '../../../shared/types/station';
 import { useTheme, typography, spacing, radiusGlass, lineTint } from '../../../shared/theme';
 import { LineGlowBackground } from '../../../shared/ui/LineGlowBackground';
+import { findStationById } from '../../../shared/utils/stationLookup';
 import { getLineLabel } from '../../../shared/ui/LineBadge';
 import { StationExitCard } from '../../exit-info/components/StationExitCard';
 
@@ -34,14 +35,9 @@ interface SleepAlarmOverlayProps {
   sleepMode: boolean;
   event: AlarmEvent;
   onDismiss: () => void;
-  /**
-   * 알람 대상역 노선 — StationExitCard 출구 안내 + Line Glass 칩/글로우에 사용 (#1289).
-   * 미전달 시 출구 안내·노선 칩을 표시하지 않고, 글로우는 현재 틴트 노선(store)을 따른다.
-   */
-  line?: LineNumber | null;
 }
 
-export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAlarmOverlayProps) {
+export function SleepAlarmOverlay({ sleepMode, event, onDismiss }: SleepAlarmOverlayProps) {
   // Rules of Hooks — sleepMode 분기와 무관하게 항상 동일한 순서로 호출해야 하므로
   // early return보다 먼저 hook을 모두 호출한다. 아래 #2258 방어선은 hook 호출 이후에 온다.
   const { t } = useTranslation();
@@ -64,6 +60,9 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
     band === undefined
       ? t(isTransfer ? 'alarmOverlay.transferMessage' : 'alarmOverlay.arrivalMessage', { station })
       : t('alarmOverlay.bandMessage', { station, stops: band });
+  // #3177 — 노선은 prop이 아니라 event.stationId에서 파생한다(optional prop 누락으로 칩·글로우·출구 카드가
+  // HomeScreen에 연결되지 않은 채 머지된 #3175 재발 방지). 미등록 id면 line=undefined → 칩·출구 카드 숨김.
+  const line = findStationById(event.stationId)?.line;
   const tint = line != null ? lineTint(line, isDark) : null;
 
   // #806: dismiss는 알람 UI/진동만 끄고 trip(BoardingLock)은 절대 release하지 않는다.
@@ -85,7 +84,7 @@ export function SleepAlarmOverlay({ sleepMode, event, onDismiss, line }: SleepAl
   return (
     <Modal visible animationType="fade" testID="alarm-overlay" onRequestClose={handleDismiss}>
       <View style={[styles.root, { backgroundColor: colors.bg }]}>
-        {/* Line Glass — 대상역 노선색 글로우. line 미전달 시 현재 틴트 노선(store). */}
+        {/* Line Glass — 대상역 노선색 글로우. stationId 미해석 시 현재 틴트 노선(store). */}
         <LineGlowBackground line={line} />
         <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
           <ScrollView
