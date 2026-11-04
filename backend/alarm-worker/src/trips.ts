@@ -118,12 +118,14 @@ export function currentBoardingLegKey(trip: Trip): string {
 
 /**
  * #3144 (v8 D3-A, ADR-043) — 자동 resolver가 lock을 붙여도 되는지의 단일 술어. 현재 leg에 대한
- * boarding-prompt 응답 마커가 있거나, 응답 유래 PENDING 커밋(`boardingCommitted`)이면 true.
+ * boarding-prompt 응답 마커가 있거나, leg-1에서 응답 유래 PENDING 커밋(`boardingCommitted`)이면 true.
+ * `boardingCommitted`는 trip 단위라 leg 경계를 넘어 오염되므로(#3045) leg-1(`currentLegAnchor` 없음)
+ * 에서만 증거로 인정하고, leg-2 이후는 leg 단위 마커만 인정한다.
  * infoModeEnabled(목록 탭 의향)는 여기에 포함되지 않는다.
  */
 export function hasBoardingResponseForCurrentLeg(trip: Trip): boolean {
-  const { boardingResponse, boardingCommitted } = trip;
-  if (boardingCommitted === true) return true;
+  const { boardingResponse, boardingCommitted, currentLegAnchor } = trip;
+  if (boardingCommitted === true && currentLegAnchor === undefined) return true;
   return boardingResponse !== undefined && boardingResponse.legKey === currentBoardingLegKey(trip);
 }
 

@@ -16757,7 +16757,7 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       });
     });
 
-    it('red②: 같은 trainCode가 ARRIVED → DEPARTED로 전이 + 탑승 증거(boardingCommitted=true) → 즉시 승격(사용자가 탄 열차의 실제 모양)', async () => {
+    it('red②: 같은 trainCode가 ARRIVED → DEPARTED로 전이 + 탑승 증거(leg-2 응답 마커) → 즉시 승격(사용자가 탄 열차의 실제 모양)', async () => {
       const kv = new InMemoryKV();
       const nowAfterWalk = NOW + WALK_SECONDS * 1000;
       await putTrip(
@@ -16768,10 +16768,9 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
           legBoardingEligibleAt: nowAfterWalk,
           infoModeEnabled: true,
           // #2780 (옵션 ⓑ) — DEPARTED 전이만으로는 confirm되지 않는다. 이 trip은 사용자가
-          // leg-2 boarding-prompt에 [탑승] 응답했지만 device가 trainCode를 자체 확정하지
-          // 못해 PENDING fallback으로 흐른 상태(`useBoardingPromptResponder.ts:827`)를
-          // 나타낸다 — 그래서 boardingCommitted=true가 있어야 아래 승격이 일어난다.
-          boardingCommitted: true,
+          // leg-2 boarding-prompt에 [탑승] 응답한 상태다. #3045 — leg-2 증거는 trip 단위
+          // boardingCommitted가 아니라 leg 단위 응답 마커(boarding-confirm 'boarded' stamp)다.
+          boardingResponse: { legKey: 'leg2:7|건대입구', at: NOW },
         }),
       );
       // 1st tick — trainCode '7911' ARRIVED(1).
