@@ -636,6 +636,102 @@ describe('runLaunchTripReconciliation', () => {
       expect(mockFetchTripStatus).toHaveBeenCalledTimes(1);
     });
 
+    // #3005 Q1(c) — Signal 4 판정 전에 GET status를 먼저 조회한다.
+    // 11/03 덤프: backend는 19:06:53 destination-arrived로 이미 종료, 기기는 20:08:20 launch에서
+    // lastSilentPush 19:06:48 → 61분 무음으로 Signal 4가 "backend-silent"(틀린 사유) 알림을 냈다.
+    describe('#3005 Q1(c) — Signal 4 전 status 선조회', () => {
+      const DUMP_LAST_SILENT = new Date('2026-11-03T19:06:48+09:00').getTime();
+      const DUMP_NOW = new Date('2026-11-03T20:08:20+09:00').getTime();
+      const DUMP_ENDED_AT = new Date('2026-11-03T19:06:53+09:00').getTime();
+
+      beforeEach(() => {
+        jest.setSystemTime(DUMP_NOW);
+        mockGetLastSilentPushReceivedAt.mockResolvedValue(DUMP_LAST_SILENT);
+        mockGetTripStartedAt.mockResolvedValue(DUMP_NOW - 2 * 60 * 60_000);
+      });
+
+      it('11/03 덤프 — backend ended(destination-arrived, corrId 없음) → backend-silent 알림 0 + 정본 정리 1회', async () => {
+        mockFetchTripStatus.mockResolvedValue({
+          status: 'ended',
+          endedAt: DUMP_ENDED_AT,
+          endReason: 'destination-arrived',
+        });
+        await runLaunchTripReconciliation();
+        expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', 'https://api.test.dev');
+        expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+        expect(mockRunTripBoundCleanups).not.toHaveBeenCalledWith('launch-backend-silent-timeout');
+        expect(mockSetSentinel).toHaveBeenCalledTimes(1);
+        expect(mockSetSentinel.mock.calls[0][0]).toBe(DUMP_ENDED_AT);
+        expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+      });
+
+      it('ended + corrId가 현재 trip과 같다 → 알림 0 + 정본 정리', async () => {
+        mockGetCurrentTripCorrIdSync.mockReturnValue('corr-A');
+        mockFetchTripStatus.mockResolvedValue({
+          status: 'ended',
+          endedAt: DUMP_ENDED_AT,
+          endReason: 'destination-arrived',
+          corrId: 'corr-A',
+        });
+        await runLaunchTripReconciliation();
+        expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+      });
+
+      it('거부 — ended지만 다른 trip의 corrId → 기존 Signal 4(backend-silent) 판정', async () => {
+        mockGetCurrentTripCorrIdSync.mockReturnValue('corr-A');
+        mockFetchTripStatus.mockResolvedValue({
+          status: 'ended',
+          endedAt: DUMP_ENDED_AT,
+          endReason: 'destination-arrived',
+          corrId: 'corr-OLD',
+        });
+        await runLaunchTripReconciliation();
+        expect(mockNotifyTripEnded).toHaveBeenCalledTimes(1);
+        expect(mockNotifyTripEnded).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'backend-silent' }),
+        );
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
+        expect(mockRunTripBoundCleanups).not.toHaveBeenCalledWith('backend-confirmed');
+      });
+
+      it('거부 — status alive(active)여도 30분+ 무음이면 기존 Signal 4 동작', async () => {
+        mockFetchTripStatus.mockResolvedValue({ status: 'active', endedAt: null, endReason: null });
+        await runLaunchTripReconciliation();
+        expect(mockNotifyTripEnded).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'backend-silent' }),
+        );
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
+      });
+
+      it('거부 — status gone(404/410)이어도 기존 Signal 4 동작 (handleTripGone 미호출)', async () => {
+        mockFetchTripStatus.mockResolvedValue({ status: 'gone' });
+        await runLaunchTripReconciliation();
+        expect(mockHandleTripGone).not.toHaveBeenCalled();
+        expect(mockNotifyTripEnded).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'backend-silent' }),
+        );
+      });
+
+      it('거부 — 네트워크 실패(throw)여도 기존 Signal 4 동작', async () => {
+        mockFetchTripStatus.mockRejectedValue(new Error('offline'));
+        await runLaunchTripReconciliation();
+        expect(mockNotifyTripEnded).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'backend-silent' }),
+        );
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('launch-backend-silent-timeout');
+      });
+
+      it('Signal 4 조건 미충족이면 status는 1회만 조회된다 (선조회가 일반 경로와 중복되지 않음)', async () => {
+        mockGetLastSilentPushReceivedAt.mockResolvedValue(DUMP_NOW - 60_000);
+        mockFetchTripStatus.mockResolvedValue({ status: 'active', endedAt: null, endReason: null });
+        await runLaunchTripReconciliation();
+        expect(mockFetchTripStatus).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('내부 예외 (recall reject) → silent fail (outer try/catch가 흡수)', async () => {
       mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
       mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
