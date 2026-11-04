@@ -164,3 +164,57 @@ describe('boarding-confirm 배선 (#3319 PR-b)', () => {
     expect(s?.currentStationLine).toBe('7');
   });
 });
+
+describe('/boarding-lock/sync 승격 배선 (#3319 PR-b)', () => {
+  it('수동 목록 탭 sync로 lock이 승격되면 SSoT가 lock 탑승역/노선으로 재앵커된다', async () => {
+    const env = makeEnv();
+    const now = Date.now();
+    await env.TRIPS.put(
+      'trip:sync-tok',
+      JSON.stringify({
+        token: 'sync-tok',
+        route: { type: 'direct', line: '7', stops: 3 },
+        destination: '군자',
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+        expiresAt: now + 3_600_000,
+        createdAt: now - 600_000,
+        alarmAtEpochMs: now,
+        infoModeEnabled: true,
+      }),
+    );
+    await seedSsot(env.TRIPS, 'sync-tok', '성수', { line: '2' });
+    const res = await app.fetch(
+      new Request('http://example.com/boarding-lock/sync', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          token: 'sync-tok',
+          observedStationName: '용마산',
+          observedAtMs: now,
+          accuracy: 20,
+          trainCode: '7039',
+          boardingLine: '7',
+        }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const stored = JSON.parse((await env.TRIPS.get('trip:sync-tok')) as string) as { boardingLock: BoardingLockMeta };
+    const { segmentStations, line } = stored.boardingLock;
+    const ssot = await readSsot(env.TRIPS, 'sync-tok');
+    expect(ssot?.currentStationId).toBe(segmentStations[0]);
+    expect(ssot?.currentStationLine).toBe(line);
+  });
+});
+
+describe('reanchorSsotToLock KV 오류 (#3319 PR-b)', () => {
+  it('KV 쓰기가 실패해도 throw하지 않는다(lock 부착 응답·cron tick 보호)', async () => {
+    const kv = new InMemoryKV();
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '성수', { line: '2' });
+    vi.spyOn(kv, 'put').mockRejectedValue(new Error('kv quota'));
+    expect(await reanchorSsotToLock(kv as unknown as KVNamespace, TOKEN, lock())).toBe('error');
+  });
+});

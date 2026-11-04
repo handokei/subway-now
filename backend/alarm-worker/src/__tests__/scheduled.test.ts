@@ -16857,6 +16857,88 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
       });
     });
 
+    // #3319 PR-b — 11/04 실측(SSoT 성수/2 고착 + leg-2 lock 건대입구/7): cron leg-2 승격이 SSoT를 lock 탑승역으로 재앵커한다.
+    it('#3319 PR-b: cron leg-2 승격 시 SSoT가 이전 노선 역(성수/2)에서 lock 탑승역(건대입구/7)으로 재앵커된다', async () => {
+      const kv = new InMemoryKV();
+      const nowAfterWalk = NOW + WALK_SECONDS * 1000;
+      const base = makeTransferTrip(TOKEN_STREAK, {
+        waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+        currentLegAnchor: { boardingStation: '건대입구', line: '7' },
+        legBoardingEligibleAt: nowAfterWalk,
+        infoModeEnabled: true,
+      });
+      await putTrip(kv as unknown as KVNamespace, {
+        ...base,
+        boardingResponse: { legKey: currentBoardingLegKey(base), at: nowAfterWalk - 1_000 },
+      });
+      await seedSsot(kv as unknown as KVNamespace, TOKEN_STREAK, '성수', { line: '2' });
+      const run = (positions: Parameters<typeof makeSeoulFull>[1], arrivals: Parameters<typeof makeSeoulFull>[0], id: string) =>
+        runScheduled(makeEnv(kv), {
+          seoul: makeSeoulFull(arrivals, positions, nowAfterWalk),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+          now: () => nowAfterWalk,
+          generatePushId: () => id,
+        });
+      await run(
+        [{ trainCode: '7911', stationName: '건대입구', trainSttus: 1, isUp: true, recptnMs: nowAfterWalk }],
+        { 건대입구: [arrivalOnLine('7', '건대입구', 60, null, '7911')] },
+        'p-3319-a',
+      );
+      const second = await run(
+        [{ trainCode: '7911', stationName: '건대입구', trainSttus: 2, isUp: true, recptnMs: nowAfterWalk }],
+        {},
+        'p-3319-b',
+      );
+      expect(second.boardingAnchorResolved).toBe(1);
+      const ssot = await readSsot(kv as unknown as KVNamespace, TOKEN_STREAK);
+      expect(ssot?.currentStationId).toBe('건대입구');
+      expect(ssot?.currentStationLine).toBe('7');
+    });
+
+    // #3319 PR-b — lock-reanchor(lock epoch 시작, D1 2176) 직후 SSoT도 같은 탑승역으로 맞춘다.
+    it('#3319 PR-b: lock-reanchor 직후 SSoT가 이전 노선 역(성수/2)에서 lock 탑승역(건대입구/7)으로 재앵커된다', async () => {
+      const kv = new InMemoryKV();
+      const wp = (stationName: string, line: string, kind: Waypoint['kind'], hopIndex: number): Waypoint => ({ stationName, line, kind, hopIndex });
+      const route = [
+        wp('성수', '2', 'intermediate', 0),
+        wp('건대입구', '2', 'transfer', 1),
+        wp('어린이대공원(세종대)', '7', 'intermediate', 2),
+        wp('군자(능동)', '7', 'intermediate', 3),
+        wp('중곡', '7', 'intermediate', 4),
+        wp('용마산', '7', 'destination', 5),
+      ];
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTransferTrip(TOKEN_STREAK, {
+          waypoints: [route[4], route[5]], // lockless 전진으로 어대·군자가 지워진 상태
+          routeWaypoints: route,
+          boardingLock: makeBoardingLock({
+            trainCode: '7320',
+            line: '7',
+            subwayId: '1007',
+            segmentStations: ['건대입구', '중곡', '용마산'],
+          }),
+        }),
+      );
+      await seedSsot(kv as unknown as KVNamespace, TOKEN_STREAK, '성수', { line: '2' });
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulFull({}, [], NOW),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p-3319-reanchor',
+      });
+      const stored = JSON.parse((await kv.get(`trip:${TOKEN_STREAK}`)) as string);
+      expect(stored.boardingLock.segmentStations[0]).toBe('건대입구');
+      expect(stored.waypoints[0].stationName).toBe('어린이대공원(세종대)'); // 전제: lock-reanchor가 실제로 일어났다
+      const ssot = await readSsot(kv as unknown as KVNamespace, TOKEN_STREAK);
+      expect(ssot?.currentStationId).toBe('건대입구');
+      expect(ssot?.currentStationLine).toBe('7');
+    });
+
     // #2780 red①(통합) — 9/21 실측(건대입구 2호선, 3056) 재현. DEPARTED 전이는 관측되지만
     // 사용자는 leg-2 boarding-prompt에 응답하지 않았다(`boardingCommitted` 미설정 —
     // `trip_metrics.boarding_prompt_responded=0`과 동일 조건). 전이 단독으로는 더 이상
