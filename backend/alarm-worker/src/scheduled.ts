@@ -2824,7 +2824,7 @@ async function reconcileLockTripProgress(
           meta: { fromKey: reanchor.fromKey, toKey: reanchor.toKey, trainCode: lock.trainCode },
         }, now);
         // #3319 PR-b — lock epoch 시작 재앵커 직후 SSoT도 같은 탑승역으로 맞춘다(되감기 거부는 helper 소유).
-        await reanchorSsotToLock(env.TRIPS, trip.token, trip.boardingLock, { expiresAt: trip.expiresAt });
+        await reanchorSsotToLock(env.TRIPS, trip.token, trip.boardingLock ?? lock, { expiresAt: trip.expiresAt });
       }
     }
     const decision = reconcileTripWithProgress(trip, progress);

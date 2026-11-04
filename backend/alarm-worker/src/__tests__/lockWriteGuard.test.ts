@@ -24,6 +24,8 @@ const ALLOWED_WRITES: Record<string, Record<string, number>> = {
   'trips.ts': {
     // lockEverAttached 자동 stamp(#2628) — 직렬화 직전 사본.
     putTrip: 1,
+    // #3332 파생 stamp(lockEverAttached / locklessSince) — 직렬화 직전 사본.
+    stampLockLifecycle: 1,
     // 메모리 정리(read-only 의미) — cell 모드에서는 listTrips가 이 함수를 우회하고 releaseAuto로 영속한다.
     clearStaleBoardingLock: 1,
   },

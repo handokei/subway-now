@@ -19,6 +19,7 @@ import {
 } from '../cronLockCell';
 import { fetchCells, resetCellStageCache, runLaOp, runLockOp } from '../tripDoCells';
 import { setTripDoFlag } from '../tripDoFlag';
+import { putTrip } from '../trips';
 import type { BoardingLockMeta, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 import { makeFakeTripDoNamespace } from './helpers/fakeTripDoNamespace';
@@ -134,6 +135,20 @@ describe('overlayCronTrips / commitCronLockOp', () => {
     expect(released).toHaveLength(1);
     expect(released[0].meta).toMatchObject({ reason: 'demote', source: 'cron' });
     expect(typeof released[0].meta.rev).toBe('number');
+  });
+
+  it('#3332 갭: cron releaseAuto applied 뒤 putTrip하면 locklessSince가 stamp된다(lockless 시한 종료가 발동할 수 있다)', async () => {
+    const { env, kv } = await makeCtx();
+    const tick = await beginCronCellTick(env);
+    const [trip] = await overlayCronTrips(tick!, [tripOf('t-ls')], NOW);
+    expect(trip.boardingLock).toBeDefined();
+    await commitCronLockOp(trip, { type: 'releaseAuto', source: 'cron', reason: 'vanish' }, NOW);
+    expect(trip.boardingLock).toBeUndefined();
+    await putTrip(env.TRIPS, trip);
+    const stored = JSON.parse((await kv.get('trip:t-ls')) as string) as Trip;
+    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.lockEverAttached).toBe(true);
+    expect(typeof stored.locklessSince).toBe('number');
   });
 
   it('swap/setEtaMissing 같은 비해제 applied는 이벤트를 남기지 않는다(D1 쿼터)', async () => {
