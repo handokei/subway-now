@@ -165,8 +165,19 @@ describe('v8 D3 — 응답 마커 헬퍼', () => {
     expect(hasBoardingResponseForCurrentLeg(leg2)).toBe(false);
   });
 
-  it('boardingCommitted(PENDING 응답 유래)도 응답으로 인정', () => {
-    expect(hasBoardingResponseForCurrentLeg(trip({ boardingCommitted: true }))).toBe(true);
+  it('leg-1: boardingCommitted(PENDING 응답 유래)도 응답으로 인정', () => {
+    const t = trip({ boardingCommitted: true });
+    expect(t.currentLegAnchor).toBeUndefined();
+    expect(hasBoardingResponseForCurrentLeg(t)).toBe(true);
+  });
+
+  it('#3045 leg-2: boardingCommitted만으로는 응답 아님(leg-1 오염 차단) — leg-2 마커가 있어야 인정', () => {
+    const leg2 = trip({ boardingCommitted: true, currentLegAnchor: { boardingStation: '건대입구', line: '2' } });
+    expect(hasBoardingResponseForCurrentLeg(leg2)).toBe(false);
+    const leg1Marker: Trip = { ...leg2, boardingResponse: { legKey: 'leg1', at: NOW } };
+    expect(hasBoardingResponseForCurrentLeg(leg1Marker)).toBe(false);
+    const leg2Marker: Trip = { ...leg2, boardingResponse: { legKey: currentBoardingLegKey(leg2), at: NOW } };
+    expect(hasBoardingResponseForCurrentLeg(leg2Marker)).toBe(true);
   });
 });
 
