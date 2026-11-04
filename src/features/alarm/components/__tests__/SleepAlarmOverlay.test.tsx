@@ -184,7 +184,7 @@ describe('SleepAlarmOverlay', () => {
 
   describe('#1289 출구 안내 (StationExitCard) 마운트', () => {
     it('event.stationId만으로 출구 안내 섹션이 렌더되고 출구 카드가 나타난다 (#3177 line prop 없음)', async () => {
-      const { getByTestId, findByTestId } = renderAlarm('destination', '사당', 'early', '4-025');
+      const { getByTestId, findByTestId } = renderAlarm('destination', '강남', 'early', '2-022');
       // exit section은 즉시 렌더됨 (stationId → 노선 해석)
       expect(getByTestId('alarm-overlay-exit-section')).toBeTruthy();
       // StationExitCard는 MockExitInfoProvider 기본값(강남 2호선 샘플)으로 로드 후 나타남
