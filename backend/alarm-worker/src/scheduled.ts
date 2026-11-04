@@ -2052,6 +2052,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           ? { trainCode: trip.legResolveStreak.trainCode, firstObservedAt: trip.legResolveStreak.firstObservedAt ?? now }
           : undefined;
         // #2780 (옵션 ⓑ, 2026-10-18 결정) — DEPARTED 전이 confirm에 탑승 증거 AND 조건.
+        // (#3045: leg-2는 이 값이 아니라 현재 leg 응답 마커만 증거로 인정한다.)
         // `trip.boardingCommitted===true`는 사용자가 leg boarding-prompt에 [탑승] 응답했지만
         // device가 trainCode를 자체 확정하지 못해 PENDING fallback lock으로 흐른 상태만
         // 가리킨다(`useBoardingPromptResponder.ts:827`) — 응답 자체가 없는 trip(9/21 실측

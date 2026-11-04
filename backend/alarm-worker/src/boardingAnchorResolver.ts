@@ -407,8 +407,8 @@ export type LegBoardingConfirmation =
  * 규칙만으로는 "walk-gate 개방 후 가장 먼저 전이를 완성하는 열차"(통상 사용자가 놓친 열차)가
  * 잡힌다.
  *
- * `hasUserBoardingResponse`(caller 전달, `scheduled.ts`가 `trip.boardingCommitted===true`로
- * 채운다)를 DEPARTED 전이 confirm 조건에 AND로 추가한다. `trip.boardingCommitted`는
+ * `hasUserBoardingResponse`(caller 전달, `scheduled.ts`가 `hasBoardingResponseForCurrentLeg(trip)` —
+ * leg-1 boardingCommitted 또는 현재 leg 응답 마커, #3045 — 로 채운다)를 DEPARTED 전이 confirm 조건에 AND로 추가한다. `trip.boardingCommitted`는
  * `useBoardingPromptResponder.ts:827`(`createPendingFallbackLock`)이 **사용자가 leg
  * boarding-prompt에 [탑승] 응답했지만 device가 trainCode를 자체 확정하지 못해 PENDING
  * sentinel lock으로 fallback한 시점에만** true로 stamp한다 — device가 trainCode를 스스로
@@ -449,8 +449,8 @@ export function evaluateLegBoardingTransition(
     if (departed) {
       // #2780 (옵션 ⓑ, 2026-10-18 결정) — DEPARTED 전이 자체는 "그 역을 지나는 모든 열차"가
       // 만족하는 약한 신호다(9/21 실측 3056 — 사용자보다 1분 앞서 떠난 열차가 이 전이만으로
-      // confirmed됐다). `hasUserBoardingResponse`(caller가 `trip.boardingCommitted===true`로
-      // 전달 — leg-boarding-prompt에 사용자가 [탑승] 응답했지만 device가 trainCode를 자체
+      // confirmed됐다). `hasUserBoardingResponse`(caller가 `hasBoardingResponseForCurrentLeg(trip)`로
+      // 전달(leg-2는 현재 leg 응답 마커만, #3045) — leg-boarding-prompt에 사용자가 [탑승] 응답했지만 device가 trainCode를 자체
       // 확정 못 해 PENDING fallback lock을 만든 상태, `useBoardingPromptResponder.ts:827`)가
       // 없으면 confirm을 보류한다 — pending을 리셋(rejected)하지 않고 그대로 유지해 다음
       // cycle에도 계속 관찰한다(요구사항 3, "폐지가 아니라 confirm만 보류" — 사용자가 늦게
@@ -574,7 +574,7 @@ export interface LegOriginResolutionOptions {
    *
    * `hasUserBoardingResponse`(#2780, 요구사항 — 필수 필드, 옵션 ⓑ "증거 AND") — DEPARTED
    * 전이가 confirm으로 승격되려면 이 값이 true여야 한다(`evaluateLegBoardingTransition` 참고).
-   * caller(`scheduled.ts`)는 `trip.boardingCommitted===true`를 그대로 전달한다 — 사용자가
+   * caller(`scheduled.ts`)는 `hasBoardingResponseForCurrentLeg(trip)`(leg-2는 현재 leg 응답 마커만, #3045) 결과를 전달한다 — 사용자가
    * leg boarding-prompt에 [탑승] 응답했지만 device가 trainCode를 자체 확정하지 못해 PENDING
    * sentinel lock으로 fallback한 상태(`useBoardingPromptResponder.ts:827`)만을 가리킨다.
    */
