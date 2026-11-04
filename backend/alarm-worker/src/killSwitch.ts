@@ -20,11 +20,13 @@
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
 
 /** 유효한 kill switch key — 새 게이트 추가 시 이 union + 아래 map에 한 줄 추가. */
-export type KillSwitchKey = 'lockless_intermediate';
+export type KillSwitchKey = 'lockless_intermediate' | 'lockless_advance_legacy';
 
 /** key → KV 키 매핑. 데이터 주도 — key 추가 시 read/write 로직 변경 불필요. */
 const KILL_SWITCH_KV_KEYS: Record<KillSwitchKey, string> = {
   lockless_intermediate: 'kill-switch:lockless-intermediate',
+  // K5 #2926 PR-A — true면 lockless cron 전진(C1/C2/C3) 구 동작 복구. 기본 false = hold.
+  lockless_advance_legacy: 'kill-switch:lockless-advance-legacy',
 };
 
 /** 유효한 key 판정 — admin endpoint 입력 검증에 사용. */

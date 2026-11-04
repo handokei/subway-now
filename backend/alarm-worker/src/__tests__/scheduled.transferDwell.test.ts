@@ -311,19 +311,17 @@ describe('POST /boarding-lock/sync — 체류 hold (엔드포인트)', () => {
     expect(isTransferDwell(makeTrip({ currentLegAnchor: undefined, legBoardingEligibleAt: undefined }), NOW)).toBe(false);
   });
 
-  it('셀 9: 환승 waypoint가 남은 상태에서 leg-2 역 관측 → 환승까지만 소비(cap=t+1)', async () => {
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeTrip({ waypoints: [{ stationName: '건대입구', line: '7', kind: 'transfer' }, ...LEG2_WAYPOINTS] }),
-    );
+  // K5 #2926 PR-A — 기존 기대 "환승까지만 소비(cap=t+1, advanced true, head 어린이대공원)" -> 새 기대 "lockless sync 0"
+  // (사유: 10/21 결정 + capLocklessSyncAdvance가 체류 cap을 흡수). 환승 소비 없이 head는 환승 waypoint 그대로.
+  it('셀 9: 환승 waypoint가 남은 상태에서 leg-2 역 관측 -> lockless sync는 환승도 소비하지 않는다(K5)', async () => {
+    const seeded = [{ stationName: '건대입구', line: '7', kind: 'transfer' as const }, ...LEG2_WAYPOINTS];
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ waypoints: seeded }));
     const { body } = await sync('군자');
-    expect(body.advanced).toBe(true);
-    const after = await heads();
-    expect(after?.[0]).toBe('어린이대공원');
-    expect(after).toEqual(LEG2_WAYPOINTS.map((w) => w.stationName));
+    expect(body.advanced).toBe(false);
+    expect(await heads()).toEqual(seeded.map((w) => w.stationName));
     const held = events.filter((e) => e.kind === 'advance-held');
     expect(held).toHaveLength(1);
-    expect(held[0].meta).toMatchObject({ requested: 3, cappedTo: 1 });
+    expect(held[0].meta).toMatchObject({ requested: 3, cappedTo: 0 });
   });
 
   it('같은 (관측역, requested)의 반복 sync는 advance-held 행을 한 번만 남긴다 (isolate 메모리 dedup, KV 쓰기 0)', async () => {

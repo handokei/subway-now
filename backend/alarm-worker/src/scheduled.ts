@@ -1411,22 +1411,29 @@ export function capLockSyncAdvance(
 }
 
 /**
- * #3083 PR-2 — lockless(활성·비PENDING lock 0개) `/boarding-lock/sync`의 소비 상한. lock 없는 trip의 sync 관측은
- * 틀린 역일 수 있고(10/28 179: 06:26:56 중곡 -> 실열차는 용마산), 그 순수 intermediate 소비가 lock 후 그 역의 매역
- * 알림을 지운다. 그래서 요청 구간에 transfer/destination이 없으면 0(hold), 있으면 **첫** transfer/destination까지만
- * 소비한다(168의 환승 anchor 체인 유지: 환승역 관측은 anchor를 stamp해야 leg-2 프롬프트가 선다). payload 내용
- * (trainCode 동봉 등)으로 면제하지 않는다 — cap은 승격 판정보다 먼저 계산되므로 면제하면 승격이 거부된 sync까지
- * 통과한다(승격 성공 시 진행은 fast-forward가 담당). lock 활성 sync는 무변경(#2645 소관). cron `runLocklessIntermediate`는
- * 건드리지 않는다(K5 #2926, 10/25 결정) — sync 채널만 다룬다. #2646(CLOSED)의 "장거리 catch-up 영구 정체" 우려는
- * lock 활성 경로가 무제한 catch-up을 유지하는 것으로 비켜간다(축이 다름).
+ * #3083 PR-2 → K5 #2926 PR-A — lockless(활성·비PENDING lock 0개) `/boarding-lock/sync`의 소비 상한은 **0**이다. lock 없는 trip의
+ * sync 관측은 틀린 역일 수 있고(10/28 179: 06:26:56 중곡 -> 실열차는 용마산), 소비가 lock 후 그 역의 매역 알림을 지운다.
+ * 10/21 사용자 결정("lock 없는 여정은 backend가 위치 추적·역 전진·알림을 하지 않는다")에 따라 환승/목적지도 소비하지 않는다.
+ *
+ * **예외 `allowToFirstGate`**: (1) sync가 열차 확정(`trainCode`+`boardingLine`)을 싣고 온 요청은 사용자 행동 3경로 중 "수동 목록 탭"이다.
+ * 이 요청의 lock 승격은 `isBoardingLockConsistentWithWaypoints`가 head(환승 waypoint)와 승격 lock의 line 정합을 요구하므로, cap 0이면
+ * leg-2 탭이 lock으로 이어지지 못한다(명시 의향의 보장 의무 위반 — CLAUDE.md "사용자 명시 의향 trip -> lock"). (2) kill switch
+ * `lockless_advance_legacy`(구 동작 롤백)가 켜진 경우. 둘 다 이전 상한(첫 transfer/destination까지)을 유지한다. 관측만 실은 sync는 0이다.
+ * lock 활성 sync는 무변경(#2645 소관). cron 쪽 hold는 `runScheduled`가 같은 kill switch로 담당한다.
  */
+export function isLocklessForSync(trip: Trip, now: number): boolean {
+  return !(isBoardingLockActive(trip, now) && trip.boardingLock?.trainCode !== PENDING_TRAIN_CODE_SENTINEL);
+}
+
 export function capLocklessSyncAdvance(
   advance: { shiftedCount: number },
   trip: Trip,
   now: number,
+  allowToFirstGate = false,
 ): { shiftedCount: number } {
-  const { boardingLock, waypoints } = trip;
-  if (isBoardingLockActive(trip, now) && boardingLock?.trainCode !== PENDING_TRAIN_CODE_SENTINEL) return advance;
+  const { waypoints } = trip;
+  if (!isLocklessForSync(trip, now)) return advance;
+  if (!allowToFirstGate) return { shiftedCount: 0 };
   const firstGatedIdx = waypoints.slice(0, advance.shiftedCount).findIndex(isTransferOrDestination);
   return { shiftedCount: firstGatedIdx < 0 ? 0 : firstGatedIdx + 1 };
 }
@@ -1501,6 +1508,14 @@ export interface ScheduledDeps {
    * falsy → 기존 동작 100% 유지(dormant).
    */
   killSwitchLocklessIntermediate?: boolean;
+  /**
+   * K5 #2926 PR-A — admin kill switch `lockless_advance_legacy` 활성 여부. **기본 off = hold**: lock 없는 trip은
+   * cron C1(`runLocklessIntermediate`)·C2(`runLocklessTransfer`)·C3(`runLocklessDestination`)로 waypoint를 전진·소비하거나
+   * leg 앵커/hop-end 프롬프트를 기록하거나 lockless 종료하지 않는다(10/21 사용자 결정: lock 없는 여정은 backend가 위치 추적·
+   * 역 전진·알림을 하지 않는다). true면 구 동작(롤백 수단, PR-C에서 제거 예정). index.ts scheduled handler가 매 cycle
+   * `getKillSwitch(env.TRIPS, 'lockless_advance_legacy')`로 read해 forward. 미전달(테스트) 시 undefined -> hold.
+   */
+  killSwitchLocklessAdvanceLegacy?: boolean;
   /** #2747 PR-2 — `la-push` 관측용 D1. index.ts가 `env.DB`를 forward. 미전달(테스트) 시 기록 없음. */
   db?: D1Database;
 }
@@ -1798,6 +1813,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
 
   // #2073 (Issue B) — 병합된 trips 배열 순회(3번째이자 마지막 listTrips 소비). 로직은 기존과
   // 동일 — dedup/advance/fire semantics 변경 없음.
+  // K5 #2926 PR-A — lockless 전진 구 동작 복구 스위치(기본 false = hold). 아래 C1/C2/C3 호출부가 읽는다.
+  const locklessAdvanceLegacy = deps.killSwitchLocklessAdvanceLegacy === true;
   for (const trip of trips) {
     stats.scanned += 1;
 
@@ -2271,7 +2288,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           trip,
           waypoint,
           stationarySsot,
-          trip.infoModeEnabled ? 'lockless' : 'no-intent',
+          trip.infoModeEnabled ? (locklessAdvanceLegacy ? 'lockless' : 'lockless-hold') : 'no-intent',
           now,
         );
       }
@@ -2282,6 +2299,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // #1967 (Ff-1) — admin kill switch는 `runLocklessIntermediate` 내부에서 매역 push
       // 발사만 게이트한다 (2026-07-31 리뷰: 함수 호출 자체를 skip하면 취침 알람 +
       // waypoint 진행까지 죽는 회귀). 여기서는 항상 호출.
+      // K5 #2926 PR-A — lockless 전진 hold(기본). lock 없는 trip은 head를 전진시키지 않는다: 11/04 대기 중 다른 열차 신호로
+      // 어린이대공원 -> 군자 -> 중곡이 소비돼 lock 7252 부착 후 군자 알림이 누락됐다. 아래 C1/C2/C3는 kill switch
+      // `lockless_advance_legacy`(구 동작 롤백)일 때만 실행한다. hold 중에도 위 leg-boarding 프롬프트 평가는 그대로 실행된다.
+      if (trip.infoModeEnabled && waypoint.kind === 'intermediate' && !locklessAdvanceLegacy) {
+        continue;
+      }
       if (trip.infoModeEnabled && waypoint.kind === 'intermediate') {
         // #2524 — 탑승 커밋(PENDING lock, boardingCommitted===true) trip은 아직 안내 시작
         // info-mode가 아니라 "탑승했지만 열차 미확정" 상태다. resolver가 실 lock으로 승격할
@@ -2327,7 +2350,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // `completeWaypointAdvance`가 이미 trip을 persist/cleanup했으므로 continue로 이 cycle의
       // 나머지(lockMissing 카운트/LA heartbeat)를 skip — stale trip 참조로 재-putTrip하는
       // 회귀를 방지한다. 미확보/미도착이면 기존 lockMissing 경로로 정상 fallthrough.
-      if (waypoint.kind === 'transfer') {
+      if (waypoint.kind === 'transfer' && locklessAdvanceLegacy) {
         let advanced = false;
         try {
           advanced = await runLocklessTransfer(
@@ -2352,7 +2375,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // waypoint 통과는 lock 유무와 무관하게 판정한다. advance 성공 시 `completeWaypointAdvance`가
       // 이미 trip을 persist/cleanup(waypoints 소진 → `destination-arrived`)했으므로 continue로
       // 이 cycle의 나머지를 skip한다(transfer 분기와 동일 이유).
-      if (waypoint.kind === 'destination') {
+      if (waypoint.kind === 'destination' && locklessAdvanceLegacy) {
         let advanced = false;
         try {
           advanced = await runLocklessDestination(

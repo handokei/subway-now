@@ -319,7 +319,7 @@ export type TripRegisterOutcome =
  * 이미 적재된 `meta.branch:'consensus'` 행은 히스토리로 그대로 남겨두고 마이그레이션하지
  * 않는다(append-only 로그 원칙, #2283).
  */
-export type IntermediateRouteBranch = 'lockless' | 'no-intent';
+export type IntermediateRouteBranch = 'lockless' | 'lockless-hold' | 'no-intent';
 
 /**
  * ADR-037 D2b (#2535) — 환승 waypoint advance 진단 표식(데이터 주도). `no-arvlcd` = 해당 역

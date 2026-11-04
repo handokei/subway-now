@@ -108,6 +108,7 @@ describe('#2981 탭 → lock 생성 → 매역 발사 (9/18 캡처, position ser
     let confirmStatus: number | null = null;
 
     const result = await runCaptureReplay({
+      locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
       fixture,
       seedTrips: [makeRide20260918LocklessTrip(TRIP_TOKEN)],
       apns: 'capture',

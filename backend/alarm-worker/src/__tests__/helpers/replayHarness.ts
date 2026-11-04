@@ -313,6 +313,11 @@ export async function runCaptureReplay(opts: {
   freshMs?: number;
   apns?: 'capture';
   /**
+   * K5 #2926 PR-A — true면 `killSwitchLocklessAdvanceLegacy`를 runScheduled에 전달해 lockless cron 전진(C1/C2/C3) 구 동작으로
+   * 재생한다. 기본(미지정)은 hold(새 계약). lockless 전진을 전제로 쓰인 구 replay를 PR-C(물리 삭제)까지 구 경로 보호용으로 고정한다.
+   */
+  locklessAdvanceLegacy?: boolean;
+  /**
    * #2615 — 각 1차(정각) tick 뒤 `MID_CYCLE_OFFSET_MS`(30s)에 경량 2차(midCycle) pass를
    * 추가로 재생한다. production `index.ts:scheduleMidCyclePass`와 동일 게이트(1차
    * `stats.scanned > 0`일 때만) + 동일 스코프(`runScheduled({ midCycle: true })`)를
@@ -406,6 +411,8 @@ export async function runCaptureReplay(opts: {
   for (const trip of opts.seedTrips) {
     await putTrip(kv as unknown as KVNamespace, trip);
   }
+  // sync(HTTP) 경로도 같은 구 동작으로 재생되도록 KV에 스위치를 심는다(index.ts `/boarding-lock/sync`가 이 키를 읽는다).
+  if (opts.locklessAdvanceLegacy) await kv.put('kill-switch:lockless-advance-legacy', 'true');
 
   const apnsConfig = await getTestApnsConfig();
   const env = makeEnv(kv, apnsConfig);
@@ -478,6 +485,7 @@ export async function runCaptureReplay(opts: {
       apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetchImpl,
       now: () => tick,
+      ...(opts.locklessAdvanceLegacy ? { killSwitchLocklessAdvanceLegacy: true } : {}),
       // #2581 리뷰 P6 — 같은 tick 안에서 여러 push가 발사될 수 있어 tick만으로는 충돌한다.
       generatePushId: () => `replay-${tick}-${pushSeq++}`,
     });

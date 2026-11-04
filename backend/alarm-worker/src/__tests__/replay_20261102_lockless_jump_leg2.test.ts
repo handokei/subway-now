@@ -139,6 +139,7 @@ async function replayLeg2(opts: { registers: boolean; sleep?: boolean }) {
   const progressAfterTick: Array<TripProgress | null> = [];
   let kvRef: KVNamespace | undefined;
   const result = await runCaptureReplay({
+    locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
     fixture: { ...fixture, cycleStartsMs: fixture.cycleStartsMs.filter((c) => c + 1000 >= REPLAY_FROM_MS) },
     seedTrips: [{ ...trip, ...(opts.sleep ? { sleepModeEnabled: true } : {}) }],
     seedPositionSeries: { [TOKEN]: motionSeries() },
