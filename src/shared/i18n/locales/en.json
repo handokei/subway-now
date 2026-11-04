@@ -163,6 +163,8 @@
   "map": {
     "originBadge": "Origin",
     "destinationBadge": "Destination",
+    "transferBadge": "Transfer",
+    "routeHeader": "Route",
     "setAsOrigin": "Set as origin",
     "setAsDestination": "Set as destination",
     "assignAsSlot": "Save as {{label}}",

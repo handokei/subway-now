@@ -163,6 +163,8 @@
   "map": {
     "originBadge": "出発",
     "destinationBadge": "目的地",
+    "transferBadge": "乗換",
+    "routeHeader": "経路",
     "setAsOrigin": "出発駅に設定",
     "setAsDestination": "目的地に設定",
     "assignAsSlot": "{{label}}として保存",
