@@ -25,6 +25,7 @@ import {
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import { ARRIVAL_CODE } from '../alarm';
+import { readSsot, seedSsot, writeSsot } from '../tripPositionSsot';
 import { putTrip } from '../trips';
 import type { BoardingLockMeta, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -413,5 +414,75 @@ describe('#2615 — runMidCycleFireOnly (allowlist fire-only 진입점)', () => 
     const fireRow = rows.find((r) => r.kind === 'cron-fire-attempt');
     expect(fireRow?.meta?.outcome).toBe('failed');
     expect(fireRow?.meta?.midCycle).toBe(true);
+  });
+});
+
+// #3319 PR-c — mid-cycle 매역 push가 ssot:null로 나가 기기 미러가 갱신되지 않았다(11/04 D1 2180·2195·2209 전부 mid-cycle).
+describe('#3319 PR-c — mid-cycle 매역 push는 현재 SSoT를 동봉한다', () => {
+  async function fireAndCapture(kv: InMemoryKV): Promise<{ stats: Awaited<ReturnType<typeof runMidCycleFireOnly>>; data: Record<string, unknown>[] }> {
+    const calls: RequestInit[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      calls.push(init);
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+    const trip = makeTrip();
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl },
+      NOW,
+      () => undefined,
+      () => 'push-3319',
+    );
+    const data = calls
+      .filter((init) => ((init.headers ?? {}) as Record<string, string>)['apns-collapse-id']?.startsWith('station-'))
+      .map((init) => (JSON.parse(init.body as string) as { data: Record<string, unknown> }).data);
+    return { stats, data };
+  }
+
+  it('SSoT가 있으면 payload.ssot에 현재 역/노선/마지막 passedStations가 실린다', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const seeded = await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { line: '7' });
+    await writeSsot(kv as unknown as KVNamespace, {
+      ...seeded,
+      passedStations: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+      lastAdvanceAt: NOW - 5_000,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    });
+    const { stats, data } = await fireAndCapture(kv);
+    expect(stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(data).toHaveLength(1);
+    expect(data[0].ssot).toMatchObject({
+      currentStationId: '용마산',
+      currentStationLine: '7',
+      lastAdvanceAt: NOW - 5_000,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      passedStations: ['c', 'd', 'e', 'f', 'g'],
+    });
+  });
+
+  it('SSoT가 없으면 ssot 없이 그대로 발사한다(키를 만들지 않는다)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const { stats, data } = await fireAndCapture(kv);
+    expect(stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(data).toHaveLength(1);
+    expect('ssot' in data[0]).toBe(false);
+    expect(await readSsot(kv as unknown as KVNamespace, makeTrip().token)).toBeNull();
+  });
+
+  it('SSoT 읽기가 실패해도 push는 발사된다(fail-open)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { line: '7' });
+    const realGet = kv.get.bind(kv) as (key: string, ...rest: unknown[]) => Promise<unknown>;
+    vi.spyOn(kv, 'get').mockImplementation(((key: string, ...rest: unknown[]) => {
+      if (key.startsWith('ssot:')) return Promise.reject(new Error('kv down'));
+      return realGet(key, ...rest);
+    }) as unknown as typeof kv.get);
+    const { stats, data } = await fireAndCapture(kv);
+    expect(stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(data).toHaveLength(1);
+    expect('ssot' in data[0]).toBe(false);
   });
 });

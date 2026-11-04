@@ -219,8 +219,12 @@ describe('#3221 PR-3 — 비split trip은 현행 byte 동일', () => {
    * 2026-11-03 #3221 PR-3a로 이 해시를 다시 갱신했다(이전 값 e3d34f43…). 질문 LA update 3건의 content-state에 발사 시각
    * `trainCodeIssuedAtMs`(=알림 sentAt)가 추가됐을 뿐이다 — 갱신 후 push 전수 JSON에서 이 키 3건(`,"trainCodeIssuedAtMs":N`)만
    * 제거해 다시 해시하면 이전 값 e3d34f43…과 정확히 일치함을 확인했다(다른 body/header/simNowMs 변경 0).
+   *
+   * 2026-11-04 #3319 PR-c로 이 해시를 다시 갱신했다(이전 값 b8999e3f…). mid-cycle 매역 push 4건(중곡 2·어린이대공원 등, 30건 중)의
+   * `data`에 `ssot` 객체(현재 역/노선/passedStations/alarmEvents)가 추가됐을 뿐이다 — 변경 전/후 push 전수 JSON을 덤프해 diff한 결과
+   * 차이는 이 4건의 `data.ssot` 추가뿐이고 simNowMs·url·headers·그 외 body 키 변경은 0이다.
    */
-  const BASELINE_PUSHES_SHA256 = 'b8999e3fc765a33c167af4c2659c57e04156a584ed8cf8e2892037ec2796ea42';
+  const BASELINE_PUSHES_SHA256 = 'c74d6345a24bc689e22d0598d256d36598aba94d6369ff4225a5f0a8c74e4820';
 
   it('start 0건, 질문 LA alert는 여정 update에 실리고, push 전수 해시가 변경 전과 같다', async () => {
     const result = await replay(false);

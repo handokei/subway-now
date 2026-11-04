@@ -4545,6 +4545,15 @@ async function sendStationPassedAlertPush(inputs: {
   // #3221 PR-3 — split trip의 intermediate는 여정 LA 무음 update(성공 시 일반 alert 생략).
   const asLaUpdate = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log });
   if (asLaUpdate !== null) return asLaUpdate;
+  // #3319 PR-c — 현재 SSoT 동봉(기기 backend-ssot 미러 갱신). 종전 `ssot: null`이라 mid-cycle 매역 push(11/04 D1 2180·2195·2209
+  // 전부 이 경로)가 미러를 한 번도 갱신하지 못했다. cacheTtl 없는 fresh read(방금 advance가 쓴 값을 실어야 하므로)이며, push 1건당 읽기 1회뿐
+  // 쓰기는 없다. 읽기 실패·SSoT 부재는 ssot 없이 발사(부가 정보 때문에 알림이 막히지 않게 fail-open).
+  let ssot: TripPositionSSoT | null = null;
+  try {
+    ssot = await readSsot(env.TRIPS, trip.token);
+  } catch (e) {
+    log('station-passed push: ssot read failed (sent without ssot)', { error: String(e), token: trip.token.slice(0, 8) });
+  }
   const payload = buildStationPassedImminentPayload({
     trip,
     waypoint,
@@ -4552,7 +4561,7 @@ async function sendStationPassedAlertPush(inputs: {
     pushId,
     now,
     origin,
-    ssot: null,
+    ssot,
     archFlag: deps.archFlag,
   });
   const content = buildStationNotifContent(trip, waypoint, trip.locale);
