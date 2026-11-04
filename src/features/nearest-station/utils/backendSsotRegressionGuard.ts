@@ -132,3 +132,22 @@ export function isBackendSsotRouteRegression(inputs: BackendSsotRegressionInputs
     deviceEstimateArcIndex > mirrorArcIndex;
   return gpsAhead || deviceAhead;
 }
+
+export interface BgMirrorAdoptionInputs {
+  /** mirror station의 경로(arc) 인덱스. -1이면 anchor 판정하지 않는다. */
+  mirrorArcIndex: number;
+  /** 현재 leg 탑승 anchor(lock 탑승역)의 경로(arc) 인덱스. -1이면 anchor 판정하지 않는다. */
+  anchorArcIndex: number;
+}
+
+/**
+ * #3319 PR-d — BG(silent push) LA 갱신 전용. `isBackendSsotRouteRegression`은 BG에서 GPS가 60s+ stale이면
+ * 꺼진 채 남아(11/04: 2호선 '성수' 미러가 7호선 구간 LA에 표시) 못 막는 경우를 GPS와 무관하게 거른다:
+ * 미러 역이 현재 leg 탑승 anchor(lock 탑승역)보다 route 순서상 앞(이미 지난 역)이면 거부.
+ * `lastAdvanceAt` 묵음은 판정하지 않는다 — 긴 구간·정차에서 맞는 미러를 거부해 #2261 deadlock을 다시 연다.
+ * @returns true면 이 mirror를 BG 경로에서 채택하지 않는다.
+ */
+export function isBgMirrorUnadoptable(inputs: BgMirrorAdoptionInputs): boolean {
+  const { mirrorArcIndex, anchorArcIndex } = inputs;
+  return mirrorArcIndex >= 0 && anchorArcIndex >= 0 && mirrorArcIndex < anchorArcIndex;
+}
