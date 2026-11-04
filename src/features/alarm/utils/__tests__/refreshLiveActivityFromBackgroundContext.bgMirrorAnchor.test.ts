@@ -1,5 +1,5 @@
 /**
- * #3319 PR-d — BG 미러 채택 시 묵은 미러 / 탑승 anchor보다 앞선(이미 지난) 역 미러 거부.
+ * #3319 PR-d — BG 미러 채택 시 탑승 anchor보다 앞선(이미 지난) 역 미러 거부.
  *
  * 실측(2026-11-04 17:30~17:32, 덤프 la-write-D2 src=backend-ssot;st=성수): 7호선 구간인데 LA가
  * 2호선 성수를 표시. 기존 isBackendSsotRouteRegression은 BG에서 GPS 60s+ stale이면
@@ -51,7 +51,6 @@ import {
   ROUTE_KEY,
   TRIP_ORIGIN_KEY,
 } from '../../../../shared/constants/storageKeys';
-import { BG_MIRROR_MAX_ADVANCE_AGE_MS } from '../../../../shared/constants/bgMirrorAdoption';
 import { findStationByNameAndLine } from '../../../../shared/utils/stationLookup';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 
@@ -101,7 +100,7 @@ function mirrorAt(station: { name: string; line: string }, lastAdvanceAgoMs: num
   };
 }
 
-describe('#3319 PR-d — BG 미러 묵음/anchor-behind 거부', () => {
+describe('#3319 PR-d — BG 미러 anchor-behind 거부', () => {
   const originalOs = Platform.OS;
   beforeEach(() => {
     jest.clearAllMocks();
@@ -125,13 +124,12 @@ describe('#3319 PR-d — BG 미러 묵음/anchor-behind 거부', () => {
     expect(mockUpdateFromMirror).not.toHaveBeenCalled();
   });
 
-  it('(a) 미러가 anchor 이후 역(중곡)이어도 lastAdvanceAt이 상한 초과로 묵었으면 거부', async () => {
-    mockReadBackendSsotMirror.mockResolvedValue(
-      mirrorAt(junggok, BG_MIRROR_MAX_ADVANCE_AGE_MS + 1_000),
-    );
+  it('[채택 유지] anchor 이후 역(중곡) + lastAdvanceAt 22분 전(긴 구간·정차) → 채택 (lastAdvanceAt은 신선도가 아니다, #2261 deadlock 방지)', async () => {
+    mockReadBackendSsotMirror.mockResolvedValue(mirrorAt(junggok, 22 * 60_000));
     setup(boardingLock(konkuk7.id));
     await refreshLiveActivityFromBackgroundContext();
-    expect(mockUpdateFromMirror).not.toHaveBeenCalled();
+    expect(mockUpdateFromMirror).toHaveBeenCalledTimes(1);
+    expect(mockUpdateFromMirror.mock.calls[0][0]).toMatchObject({ id: junggok.id });
   });
 
   it('[채택 유지] 신선한 미러(<180s) + anchor 이후 역(중곡) → 채택', async () => {

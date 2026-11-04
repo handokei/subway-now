@@ -392,7 +392,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       currentStationLine: '2',
       motionState: 'moving' as const,
       lastAdvanceEvidence: 'seed',
-      lastAdvanceAt: Date.now(), // #3319 PR-d: fresh 미러 = 현재 시각(BG 채택은 180s 묵음 판정)
+      lastAdvanceAt: 1_700_000_000_000,
       passedStations: [],
       receivedAt: Date.now(),
     };
@@ -787,7 +787,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
       currentStationLine: '2',
       motionState: 'moving' as const,
       lastAdvanceEvidence: 'cron',
-      lastAdvanceAt: Date.now(), // #3319 PR-d: fresh 미러 = 현재 시각(BG 채택은 180s 묵음 판정)
+      lastAdvanceAt: 1_700_000_000_000,
       passedStations: [],
       receivedAt: Date.now(),
     });
