@@ -120,6 +120,7 @@ import {
   deleteSsot,
   DEVICE_SYNC_STALE_THRESHOLD_MS,
   isDeviceSyncStale,
+  patchSsotFresh,
   readSsot,
   seedSsot,
   SSOT_CRON_READ_CACHE_TTL_SEC,
@@ -2781,7 +2782,8 @@ async function catchUpToLockTrain(
   await fireSyncConsumedPrecedingAlarms(env, trip, consumedCount, deps, now, log, generatePushId, { source: 'cron-catchup' });
 
   for (const { stationName } of skipped) appendPassedStation(trip, stationName);
-  const ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+  // #3319 — stamp 후 통째로 되쓰므로 cacheTtl 없이 현재 값을 읽는다(같은 tick advance의 currentStationId 보존).
+  const ssot = await readSsot(env.TRIPS, trip.token);
   if (ssot !== null) {
     for (const { stationName } of skipped) {
       await stampPassedStationAlarmEvent(ssot, trip.token, stationName, 'station-passed', now);
@@ -3717,11 +3719,7 @@ async function recordIntermediateRouteTransition(
   now: number,
 ): Promise<void> {
   if (ssot === null || ssot.intermediateRouteBranch === branch) return;
-  await writeSsot(
-    env.TRIPS,
-    { ...ssot, intermediateRouteBranch: branch },
-    { expiresAt: trip.expiresAt },
-  );
+  await patchSsotFresh(env.TRIPS, trip.token, { intermediateRouteBranch: branch }, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
     {
@@ -3752,7 +3750,7 @@ async function recordTransferAdvanceTransition(
   now: number,
 ): Promise<void> {
   if (ssot === null || ssot.transferAdvanceState === outcome) return;
-  await writeSsot(env.TRIPS, { ...ssot, transferAdvanceState: outcome }, { expiresAt: trip.expiresAt });
+  await patchSsotFresh(env.TRIPS, trip.token, { transferAdvanceState: outcome }, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
     {
@@ -3782,7 +3780,7 @@ async function recordLeg2EstimateTransition(
   now: number,
 ): Promise<void> {
   if (ssot === null || ssot.leg2EstimateMatched === matched) return;
-  await writeSsot(env.TRIPS, { ...ssot, leg2EstimateMatched: matched }, { expiresAt: trip.expiresAt });
+  await patchSsotFresh(env.TRIPS, trip.token, { leg2EstimateMatched: matched }, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
     {
@@ -3816,8 +3814,8 @@ async function recordVanishEstimateTransition(
   now: number,
 ): Promise<TripPositionSSoT | null> {
   if (ssot === null || ssot.vanishEstimateNullState === isNull) return ssot;
-  const next: TripPositionSSoT = { ...ssot, vanishEstimateNullState: isNull };
-  await writeSsot(env.TRIPS, next, { expiresAt: trip.expiresAt });
+  const marker = { vanishEstimateNullState: isNull };
+  await patchSsotFresh(env.TRIPS, trip.token, marker, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
     {
@@ -3829,7 +3827,7 @@ async function recordVanishEstimateTransition(
     },
     now,
   );
-  return next;
+  return { ...ssot, ...marker };
 }
 
 /**
@@ -3848,8 +3846,8 @@ async function recordVanishSwapAttemptTransition(
   now: number,
 ): Promise<TripPositionSSoT | null> {
   if (ssot === null || ssot.vanishSwapFailState === failed) return ssot;
-  const next: TripPositionSSoT = { ...ssot, vanishSwapFailState: failed };
-  await writeSsot(env.TRIPS, next, { expiresAt: trip.expiresAt });
+  const marker = { vanishSwapFailState: failed };
+  await patchSsotFresh(env.TRIPS, trip.token, marker, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
     {
@@ -3861,7 +3859,7 @@ async function recordVanishSwapAttemptTransition(
     },
     now,
   );
-  return next;
+  return { ...ssot, ...marker };
 }
 
 /**
@@ -3893,11 +3891,7 @@ async function recordLegBoardingPromptTransition(
   candidateEtaSeconds?: readonly (number | null)[],
 ): Promise<void> {
   if (ssot === null || ssot.legBoardingPromptOutcome === outcome) return;
-  await writeSsot(
-    env.TRIPS,
-    { ...ssot, legBoardingPromptOutcome: outcome },
-    { expiresAt: trip.expiresAt },
-  );
+  await patchSsotFresh(env.TRIPS, trip.token, { legBoardingPromptOutcome: outcome }, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
     {
@@ -3984,11 +3978,7 @@ async function recordHopEndPromptTransition(
   now: number,
 ): Promise<void> {
   if (ssot === null || ssot.hopEndPromptOutcome === outcome) return;
-  await writeSsot(
-    env.TRIPS,
-    { ...ssot, hopEndPromptOutcome: outcome },
-    { expiresAt: trip.expiresAt },
-  );
+  await patchSsotFresh(env.TRIPS, trip.token, { hopEndPromptOutcome: outcome }, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
     {
@@ -4081,11 +4071,7 @@ async function recordFireBlockReasonTransition(
   // 각자 독립적으로 전이-기록하게 한다(한 경로의 기록이 다른 경로의 전이 감지를 가리지 않도록).
   const marker = `${path ?? 'arvlcd'}:${reason}@${waypoint.stationName}`;
   if (ssot.lastFireBlockReason === marker) return;
-  await writeSsot(
-    env.TRIPS,
-    { ...ssot, lastFireBlockReason: marker },
-    { expiresAt: trip.expiresAt },
-  );
+  await patchSsotFresh(env.TRIPS, trip.token, { lastFireBlockReason: marker }, { expiresAt: trip.expiresAt });
   await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, reason, undefined, path);
 }
 
@@ -6940,9 +6926,8 @@ export async function completeWaypointAdvance(
   // completeWaypointAdvance는 'destination' kind를 받지 않는다(caller가 그 경우 직접
   // cleanupTripWithLa+deleteSsot로 처리하고 이 함수를 호출하지 않음) — 'transfer'만 구분.
   const alarmEventType: AlarmEventType = waypoint.kind === 'transfer' ? 'transfer' : 'station-passed';
-  const ssotForAlarmEvent = await readSsot(env.TRIPS, trip.token, {
-    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-  });
+  // #3319 — stamp 후 통째로 되쓰므로 cacheTtl 없이 현재 값을 읽는다(같은 tick advance의 currentStationId 보존).
+  const ssotForAlarmEvent = await readSsot(env.TRIPS, trip.token);
   if (ssotForAlarmEvent !== null) {
     await stampPassedStationAlarmEvent(
       ssotForAlarmEvent,

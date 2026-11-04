@@ -236,24 +236,26 @@ describe('#3089 10/19 오후 정상 완주 — whole-trip replay (회귀 가드)
     expect(d1Meta(d1Advance as D1TripEventRow)).toEqual({ path: 'lock-active', outcome: 'advanced' });
   });
 
-  it('leg-2 프롬프트: 미도착(ETA>0)에서 suppressed-not-imminent 2회 -> 도착 확정(arvlCd=1)에서 position-confirmed 발사, D1 라벨열과 동일', async () => {
+  it('leg-2 프롬프트: 미도착(ETA>0)에서 suppressed-not-imminent -> 도착 확정(arvlCd=1)에서 position-confirmed 발사, D1 라벨열(연속 중복 제거)과 동일', async () => {
     const r = await replayAfternoon();
     const labels = legPromptLabels(r.events);
     expect(labels).toEqual([
       { outcome: 'suppressed-not-imminent', gateDecision: 'suppressed-not-imminent' },
-      { outcome: 'suppressed-not-imminent', gateDecision: 'suppressed-not-imminent' },
       { outcome: 'fired', gateDecision: 'position-confirmed' },
     ]);
-    // D1 원본 라벨열(실측)과 1:1 동일 — 재생이 실제 backend 판단을 재현했다는 증거.
-    expect(labels).toEqual(legPromptLabels(r.d1.map((e) => ({ kind: e.kind, meta: d1Meta(e) }))));
+    // D1 원본 라벨열(실측: 1068 suppressed, 1070 suppressed, 1071 fired)과 같은 판단 순서다. 다만 D1 1070은
+    // 직전 tick(1068)과 같은 outcome인데도 다시 append된 행이다 — 전이 기록 recorder들이 낡은 SSoT 스냅샷을 통째로
+    // 되써서 서로의 dedup 마커(legBoardingPromptOutcome)를 지웠기 때문이다(#3319). 마커가 보존되면 연속 중복은
+    // 전이가 아니므로 append되지 않는다. 그래서 D1 열은 연속 중복을 접어 비교한다(fixture는 불변, 단언만 정정).
+    const collapseConsecutive = <T>(rows: readonly T[]): T[] =>
+      rows.filter((row, i) => i === 0 || JSON.stringify(row) !== JSON.stringify(rows[i - 1]));
+    expect(labels).toEqual(collapseConsecutive(legPromptLabels(r.d1.map((e) => ({ kind: e.kind, meta: d1Meta(e) })))));
 
     const leg = r.events.filter(isLeg2Prompt);
-    const [first, second, fired] = leg.map((e) => e.meta as { candidateArvlCds: (number | null)[]; candidateEtaSeconds: number[] });
-    // 억제된 두 tick은 어떤 후보도 도착 확정(arvlCd 1/2)이 아니고 ETA가 남아 있다.
-    for (const suppressed of [first, second]) {
-      expect(suppressed.candidateArvlCds.some((cd) => cd === ARRIVAL_CODE.ARRIVED || cd === ARRIVAL_CODE.DEPARTED)).toBe(false);
-      expect(Math.min(...suppressed.candidateEtaSeconds)).toBeGreaterThan(0);
-    }
+    const [suppressed, fired] = leg.map((e) => e.meta as { candidateArvlCds: (number | null)[]; candidateEtaSeconds: number[] });
+    // 억제된 tick은 어떤 후보도 도착 확정(arvlCd 1/2)이 아니고 ETA가 남아 있다.
+    expect(suppressed.candidateArvlCds.some((cd) => cd === ARRIVAL_CODE.ARRIVED || cd === ARRIVAL_CODE.DEPARTED)).toBe(false);
+    expect(Math.min(...suppressed.candidateEtaSeconds)).toBeGreaterThan(0);
     // 발사 tick은 후보 중 도착(1)이 있고 ETA 0.
     expect(fired.candidateArvlCds).toContain(ARRIVAL_CODE.ARRIVED);
     expect(Math.min(...fired.candidateEtaSeconds)).toBe(0);

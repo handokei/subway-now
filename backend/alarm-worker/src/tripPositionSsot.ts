@@ -478,6 +478,26 @@ export async function writeSsot(
   await kv.put(ssotKey(ssot.tripToken), JSON.stringify(ssot));
 }
 
+/**
+ * #3319 — 진단 마커(dedup 필드) 전용 SSOT 부분 갱신: **현재 KV의 SSOT를 cacheTtl 없이 새로 읽어** `patch`만
+ * 덮어쓴다. cron tick 시작에 cacheTtl(30s)로 읽어 둔 스냅샷을 통째로 되쓰면, 같은 tick에서 advance가 쓴
+ * `currentStationId`/`currentStationLine`/`passedStations`가 낡은 값으로 되돌려진다(2026-11-04 성수 고착).
+ * 마커 필드는 발사/advance 판정에 쓰이지 않으므로(전이 기록 dedup 전용) 마커 외 필드는 절대 건드리지 않는다.
+ *
+ * SSOT가 이미 없으면(trip 종료로 delete됨) 쓰지 않는다 — 낡은 스냅샷으로 키를 되살리지 않는다.
+ * 전이 시에만 호출되므로 KV 쓰기 횟수는 기존(전이당 1회)과 동일하고, 추가 읽기는 전이당 1회뿐이다.
+ */
+export async function patchSsotFresh(
+  kv: KVNamespace,
+  token: string,
+  patch: Partial<TripPositionSSoT>,
+  options?: { expiresAt?: number },
+): Promise<void> {
+  const fresh = await readSsot(kv, token);
+  if (fresh === null) return;
+  await writeSsot(kv, { ...fresh, ...patch }, options);
+}
+
 /** SSOT delete (trip 종료 시 호출). */
 export async function deleteSsot(kv: KVNamespace, token: string): Promise<void> {
   await kv.delete(ssotKey(token));

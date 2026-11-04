@@ -8,6 +8,7 @@ import {
   deleteSsot,
   isSameLockSuggestion,
   migrateTripPassedStationsToSsot,
+  patchSsotFresh,
   pushMotionEvidence,
   readSsot,
   seedSsot,
@@ -434,5 +435,34 @@ describe('alarmEvents helpers (#1572 T9)', () => {
     expect(got?.alarmEvents).toEqual([
       { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 1 },
     ]);
+  });
+});
+
+describe('patchSsotFresh (#3319) — 마커만 현재 KV 값 위에 덮어쓴다', () => {
+  it('KV의 최신 SSoT에 patch만 병합한다(낡은 스냅샷 필드는 쓰지 않는다)', async () => {
+    const kv = new InMemoryKV();
+    const stale = makeSsot({ currentStationId: '성수', currentStationLine: '2' });
+    await writeSsot(kv as unknown as KVNamespace, stale);
+    // 다른 writer(advance)가 스냅샷 이후 갱신.
+    await writeSsot(kv as unknown as KVNamespace, { ...stale, currentStationId: '건대입구', currentStationLine: '7' });
+    await patchSsotFresh(kv as unknown as KVNamespace, stale.tripToken, { transferAdvanceState: 'advanced' });
+    const stored = await readSsot(kv as unknown as KVNamespace, stale.tripToken);
+    expect(stored?.currentStationId).toBe('건대입구');
+    expect(stored?.currentStationLine).toBe('7');
+    expect(stored?.transferAdvanceState).toBe('advanced');
+  });
+
+  it('SSoT가 이미 없으면(trip 종료 delete) 키를 되살리지 않는다', async () => {
+    const kv = new InMemoryKV();
+    await patchSsotFresh(kv as unknown as KVNamespace, 'gone-tok', { transferAdvanceState: 'advanced' });
+    expect(await readSsot(kv as unknown as KVNamespace, 'gone-tok')).toBeNull();
+  });
+
+  it('expiresAt을 넘기면 TTL과 함께 쓴다', async () => {
+    const kv = new InMemoryKV();
+    const base = makeSsot();
+    await writeSsot(kv as unknown as KVNamespace, base);
+    await patchSsotFresh(kv as unknown as KVNamespace, base.tripToken, { hopEndPromptOutcome: 'fired' }, { expiresAt: Date.now() + 3_600_000 });
+    expect((await readSsot(kv as unknown as KVNamespace, base.tripToken))?.hopEndPromptOutcome).toBe('fired');
   });
 });
