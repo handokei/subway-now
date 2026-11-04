@@ -234,6 +234,15 @@ import {
   type TransferAdvancePath,
 } from './tripEventLog';
 import { hashTripToken } from './sentry';
+import {
+  beginCronCellTick,
+  commitCronLockOp,
+  freshLockActive,
+  isCronCellTracked,
+  overlayCronTrips,
+  withoutCellOwnedBaseline,
+  type CronCellTick,
+} from './cronLockCell';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -981,6 +990,12 @@ export interface ScheduledStats extends LiveActivityStats {
    * 도착 확정 열차 없음). Seoul arrival 호출 절감량의 직접 지표 — D1 `lookup-deferred`는 전이 시 1행이라 cycle 수는 이 카운터로 본다.
    */
   originGpsFreeArrivalLookupDeferred: number;
+  /** #3055 PR-3b — 셀 권위(`lock@N`) tick에서 Worker -> DO로 나간 요청 수(예산 `CRON_DO_CALL_BUDGET` 대비). flag off tick은 undefined. */
+  lockCellDoCalls?: number;
+  /** #3055 PR-3b — 발사 직전 fresh lock 확인이 질문 발사를 막은 누적 횟수(사용자가 tick 시작 후 lock을 붙인 경우 / DO 오류 fail-closed). */
+  promptFreshLockBlocked?: number;
+  /** #3055 PR-3b — 예산 초과/오류로 건너뛴 DO 호출 수. 0이 정상 — 지속적으로 >0이면 그 trip들의 lock 변경이 skip되고 있다. */
+  lockCellDoSkipped?: number;
   /**
    * #2997 (S3 v2) — `trackingOptIn` 단독(명시 의향 promptOptIn/infoModeEnabled 둘 다 없음) trip이
    * 근접 실측(hasProximityReading) 부재로 GPS-free origin 프롬프트를 fail-closed skip한 누적
@@ -1744,8 +1759,11 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // listTrips를 강행(activeTripsGate.ts 헤더 참조) — 실 라이더 miss는 불허.
   const { mayHaveActiveTrips, storedExpiresAt } = await readActiveTripsMarker(env.TRIPS);
   const scannedTrips: Trip[] = [];
+  // #3055 PR-3b — 셀 권위(`lock@N`)면 이 tick의 lock 변경은 DO op로 간다. flag 읽기는 활성 trip이 있을 수 있는 tick에서만(idle KV read 0).
+  let cellTick: CronCellTick | null = null;
   if (mayHaveActiveTrips) {
-    for await (const trip of listTrips(env.TRIPS)) {
+    cellTick = await beginCronCellTick(env);
+    for await (const trip of listTrips(env.TRIPS, { rawLock: cellTick !== null })) {
       scannedTrips.push(trip);
     }
   }
@@ -1754,7 +1772,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   // 존재해도, cron이 orphan에 대해서도 실 deviceToken으로 push를 발사(#2184 resolveTripDeviceToken)
   // 하는 중복 발송을 막기 위해 매 tick 최신(createdAt) trip만 처리 대상으로 남긴다. deviceToken이
   // 없는(legacy) trip은 그대로 통과.
-  const trips: Trip[] = dedupeTripsByDeviceToken(scannedTrips);
+  const dedupedTrips: Trip[] = dedupeTripsByDeviceToken(scannedTrips);
+  // #3055 PR-3b — 셀 모드: 각 trip에 셀 lock/LA를 덮고 `__lockRev`를 단다(stale-line lock은 releaseAuto로 영속). off면 그대로.
+  const trips: Trip[] = cellTick ? await overlayCronTrips(cellTick, dedupedTrips, now) : dedupedTrips;
   // #2452 — listTrips를 실제로 실행한 tick에서만 마커를 실 결과로 조정한다(mayHaveActiveTrips가
   // false였던 tick은 scannedTrips가 항상 []이므로, 여기서 delete를 또 부르면 부재 마커에 대한
   // 낭비 write가 매 idle tick 반복된다 — 그 write는 스킵한다).
@@ -2107,9 +2127,19 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         if (anchorLock && isLeg2Candidate) {
           // legTransition.status==='confirmed'일 때만 anchorLock이 non-null이다(위 resolver
           // 계약) — ARRIVED/APPROACHING→DEPARTED 전이가 실제로 관측됐다는 뜻.
-          trip.boardingLock = anchorLock;
-          trip.lockCodeHistory = undefined; // #3141 — 새 leg 승격: 이전 leg 이력 소거
-          trip.consecutiveEtaMissing = 0;
+          // #3055 PR-3b (§3 #10) — 셀 모드는 attachIfNone(auto, rev 일치)로 부착한다. 사용자가 그 사이 lock을 붙였거나(noop/conflict)
+          // DO 오류(skipped)면 이번 tick은 부착하지 않는다. legacy(flag off)만 현행 직접 대입.
+          const leg2Attach = await commitCronLockOp(
+            trip,
+            { type: 'attachIfNone', source: 'cron-leg2', authority: 'auto', lock: anchorLock },
+            now,
+          );
+          if (leg2Attach.mode === 'cell' && leg2Attach.outcome !== 'applied') continue;
+          if (leg2Attach.mode === 'legacy') {
+            trip.boardingLock = anchorLock;
+            trip.lockCodeHistory = undefined; // #3141 — 새 leg 승격: 이전 leg 이력 소거
+            trip.consecutiveEtaMissing = 0;
+          }
           trip.lastTrackedArrivalEpoch = undefined;
           trip.lastLaPushEpoch = undefined;
           trip.lastLaPushAt = undefined;
@@ -2139,9 +2169,18 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           continue;
         } else if (anchorLock) {
           // leg 1(promptDisplay) — 기존과 동일하게 1회 resolved로 즉시 승격.
-          trip.boardingLock = anchorLock;
-          trip.lockCodeHistory = undefined; // #3141 — 새 lock 부착: 이력 소거
-          trip.consecutiveEtaMissing = 0;
+          // #3055 PR-3b (§3 #11) — leg-2와 같다.
+          const leg1Attach = await commitCronLockOp(
+            trip,
+            { type: 'attachIfNone', source: 'cron-leg1', authority: 'auto', lock: anchorLock },
+            now,
+          );
+          if (leg1Attach.mode === 'cell' && leg1Attach.outcome !== 'applied') continue;
+          if (leg1Attach.mode === 'legacy') {
+            trip.boardingLock = anchorLock;
+            trip.lockCodeHistory = undefined; // #3141 — 새 lock 부착: 이력 소거
+            trip.consecutiveEtaMissing = 0;
+          }
           trip.lastTrackedArrivalEpoch = undefined;
           trip.lastLaPushEpoch = undefined;
           trip.lastLaPushAt = undefined;
@@ -2502,6 +2541,12 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     if (tickProgressRead.delete(trip)) stats.progressEntryReadUnused += 1;
   }
 
+  // #3055 PR-3b — tick 안 DO 호출 수/건너뜀(예산·오류) 계측. flag off면 필드 없음.
+  if (cellTick) {
+    stats.lockCellDoCalls = cellTick.calls;
+    stats.lockCellDoSkipped = cellTick.skipped;
+  }
+
   // #2054 — idle skip + heartbeat. scanned=0 (활성 trip 없음) 시 매 cycle 로그를 억제하고,
   // 시간당 1회 `scheduled heartbeat` 로 halt 감지 능력만 유지. 활성 trip 있을 땐 기존대로 상세 log.
   if (stats.scanned > 0) {
@@ -2760,25 +2805,35 @@ async function reconcileLockTripProgress(
     let dirty = false;
     const reanchor = planLockReanchor(trip, progress);
     if (reanchor !== null && lock !== undefined) {
-      trip.waypoints = reanchor.waypoints;
-      trip.boardingLock = { ...lock, segmentStations: reanchor.segmentStations };
-      dirty = true;
-      await recordTripEvent(env.DB, {
-        tokenHash,
-        kind: 'lock-reanchor',
-        station: reanchor.waypoints[0]?.stationName,
-        line: lock.line,
-        meta: { fromKey: reanchor.fromKey, toKey: reanchor.toKey, trainCode: lock.trainCode },
-      }, now);
-      // #3319 PR-b — lock epoch 시작 재앵커 직후 SSoT도 같은 탑승역으로 맞춘다(되감기 거부는 helper 소유).
-      await reanchorSsotToLock(env.TRIPS, trip.token, trip.boardingLock, { expiresAt: trip.expiresAt });
+      // #3055 PR-3b (§3 #12) — 셀 모드는 segment를 setSegment op로 바꾼다(waypoints는 PR-4 전까지 KV). 사용자가 그 사이 lock을 바꿨거나
+      // DO 오류면 재고정 전체를 이번 tick 건너뛴다(waypoints만 되감지 않는다). legacy(flag off)만 직접 대입.
+      const segment = await commitCronLockOp(
+        trip,
+        { type: 'setSegment', source: 'cron-reanchor', segmentStations: reanchor.segmentStations },
+        now,
+      );
+      if (segment.mode === 'legacy' || segment.outcome === 'applied') {
+        trip.waypoints = reanchor.waypoints;
+        if (segment.mode === 'legacy') trip.boardingLock = { ...lock, segmentStations: reanchor.segmentStations };
+        dirty = true;
+        await recordTripEvent(env.DB, {
+          tokenHash,
+          kind: 'lock-reanchor',
+          station: reanchor.waypoints[0]?.stationName,
+          line: lock.line,
+          meta: { fromKey: reanchor.fromKey, toKey: reanchor.toKey, trainCode: lock.trainCode },
+        }, now);
+        // #3319 PR-b — lock epoch 시작 재앵커 직후 SSoT도 같은 탑승역으로 맞춘다(되감기 거부는 helper 소유).
+        await reanchorSsotToLock(env.TRIPS, trip.token, trip.boardingLock ?? lock, { expiresAt: trip.expiresAt });
+      }
     }
     const decision = reconcileTripWithProgress(trip, progress);
     if (decision === null) {
       if (dirty) await putTrip(env.TRIPS, trip);
       return;
     }
-    Object.assign(trip, decision.baseline);
+    // #3055 PR-3b (§3 #21) — 셀 모드에서는 consecutiveEtaMissing의 권위가 lock 셀이라 progress 사본으로 덮지 않는다(mirrorProgress는 그대로).
+    Object.assign(trip, isCronCellTracked(trip) ? withoutCellOwnedBaseline(decision.baseline) : decision.baseline);
     if (decision.advancedBy > 0) {
       trip.waypoints = decision.waypoints;
       dirty = true;
@@ -5684,27 +5739,47 @@ async function attemptVanishSwap(
     trainCode: swapped.trainCode,
     expiresAt: Math.max(activeLock.expiresAt, swapped.expiresAt),
   };
-  trip.boardingLock = newLock;
-  trip.lockCodeHistory = appendLockCodeHistory(trip.lockCodeHistory, activeLock.trainCode);
-  trip.consecutiveEtaMissing = 0;
   // #3158 — 번호 변경 열차(2호선 성수)였다면 시간표 후속이 나중에 관측될 때 정정할 수 있게 표식을 남긴다.
-  // 호출자가 swap 직후 putTrip하므로 추가 KV write 0.
-  trip.renumberSuccessor = checkRenumberLeg(trip, activeLock, now).ok
+  // 호출자가 swap 직후 putTrip하므로 추가 KV write 0. 판정은 swap 이력이 반영된 시야(`checkRenumberLeg`가 lockCodeHistory를 읽는다)로 한다.
+  const swappedHistory = appendLockCodeHistory(trip.lockCodeHistory, activeLock.trainCode);
+  const renumberSuccessor = checkRenumberLeg({ ...trip, lockCodeHistory: swappedHistory }, activeLock, now).ok
     ? nextRenumberArm(activeLock.line, trip.renumberSuccessor, activeLock.trainCode, swapped.trainCode, now)
     : undefined;
+  // #3055 PR-3b (§3 #13) — 셀 모드는 swapAuto(rev 일치)로 교체한다. 사용자가 그 사이 lock을 바꿨거나(conflict) DO 오류(skipped)면
+  // 교체하지 않는다(null). legacy(flag off)만 직접 대입.
+  const swap = await commitCronLockOp(
+    trip,
+    {
+      type: 'swapAuto',
+      source: 'cron-vanish-swap',
+      trainCode: swapped.trainCode,
+      expiresAt: swapped.expiresAt,
+      appendHistory: true,
+      renumberSuccessor,
+    },
+    now,
+  );
+  if (swap.mode === 'cell' && swap.outcome !== 'applied') return null;
+  if (swap.mode === 'legacy') {
+    trip.boardingLock = newLock;
+    trip.lockCodeHistory = swappedHistory;
+    trip.consecutiveEtaMissing = 0;
+    trip.renumberSuccessor = renumberSuccessor;
+  }
   await recordLockReattach(env, trip, waypoint, now, {
     source: 'vanish-swap',
     from: activeLock.trainCode,
     to: swapped.trainCode,
   });
   // #3144 — 열차 번호 변경 교체도 lock 부착 지점. 응답 유래 lock의 파생이라 마커 대신 교체 사실로 라벨.
+  const adoptedLock = trip.boardingLock ?? newLock;
   await recordLockAttached(env.DB, {
     token: trip.token,
-    lock: newLock,
+    lock: adoptedLock,
     path: 'vanish-swap',
     hasResponseMarker: hasBoardingResponseForCurrentLeg(trip),
   });
-  return newLock;
+  return adoptedLock;
 }
 
 /**
@@ -5768,17 +5843,33 @@ export async function attemptTimetableSuccessorReattach(
     trainCode: decision.successorCode,
     expiresAt: Math.max(activeLock.expiresAt, now + SWAP_LOCK_TTL_MS),
   };
-  trip.boardingLock = newLock;
-  trip.lockCodeHistory = appendLockCodeHistory(trip.lockCodeHistory, activeLock.trainCode);
-  trip.consecutiveEtaMissing = 0;
-  trip.renumberSuccessor = undefined;
+  // #3055 PR-3b (§3 #14) — vanish swap과 같다: 셀 모드는 swapAuto, 거절(conflict/skipped)이면 null.
+  const swap = await commitCronLockOp(
+    trip,
+    {
+      type: 'swapAuto',
+      source: 'cron-timetable-successor',
+      trainCode: decision.successorCode,
+      expiresAt: newLock.expiresAt,
+      appendHistory: true,
+      renumberSuccessor: undefined,
+    },
+    now,
+  );
+  if (swap.mode === 'cell' && swap.outcome !== 'applied') return null;
+  if (swap.mode === 'legacy') {
+    trip.boardingLock = newLock;
+    trip.lockCodeHistory = appendLockCodeHistory(trip.lockCodeHistory, activeLock.trainCode);
+    trip.consecutiveEtaMissing = 0;
+    trip.renumberSuccessor = undefined;
+  }
   await recordLockReattach(env, trip, waypoint, now, {
     source: 'timetable-successor',
     from: activeLock.trainCode,
     to: decision.successorCode,
     timetableFrom: decision.fromCode,
   });
-  return newLock;
+  return trip.boardingLock ?? newLock;
 }
 
 /**
@@ -5885,6 +5976,15 @@ async function fireTrainReconfirmPush(
 }
 
 /**
+ * #3055 PR-3b (§3 #17) — `consecutiveEtaMissing` 설정. 셀 모드는 setEtaMissing op(rev 일치), legacy(flag off)만 직접 대입.
+ * 카운터는 판정 보조값이라 op가 거절/skip돼도(사용자 lock 변경·DO 오류) 호출자 흐름은 그대로 진행한다.
+ */
+async function setEtaMissingCount(trip: Trip, value: number, now: number): Promise<void> {
+  const commit = await commitCronLockOp(trip, { type: 'setEtaMissing', source: 'cron', value }, now);
+  if (commit.mode === 'legacy') trip.consecutiveEtaMissing = value;
+}
+
+/**
  * estimate가 null로 끝난 cycle 처리 — etaMissing 카운터 누적 + 임계 초과 시 trip 자동 종료.
  * runTrainCodeTracking의 cognitive complexity 분담용 추출 (Sonar S3776).
  *
@@ -5947,7 +6047,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
           lastTrackedArrivalEpoch: lastEpoch,
           motion: fallbackMotion,
         });
-        trip.consecutiveEtaMissing = nextMissCount;
+        await setEtaMissingCount(trip, nextMissCount, now);
         await putTrip(env.TRIPS, trip);
         return;
       }
@@ -5961,7 +6061,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         lastTrackedArrivalEpoch: lastEpoch,
         motion: fallbackMotion,
       });
-      trip.consecutiveEtaMissing = 0;
+      await setEtaMissingCount(trip, 0, now);
       // #1370 L2 — fallback advance 전에 station-passed silent push를 발사한다.
       // advanceBoardingLockWaypoint는 LA update + (destination 시) trip-ended push만 발사하므로
       // intermediate/transfer waypoint를 "지났다"는 신호가 사용자에게 도달하지 않는 회귀가 있었다
@@ -6027,6 +6127,10 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     // acceptance를 충족(2026-06-17 군자/용마산 회귀). 발사 자체가 false positive를 만들 수
     // 있어 ADR-010 "false positive / miss 동급" 원칙에 따라 lock-active fallback과 같은
     // motion gate(`isFallbackAdvanceBlockedByMotion`)를 통과한 경우에만 fire.
+    // #3055 PR-3b (§3 #15) — 셀 모드는 해제를 **먼저** op로 확정한다. 사용자가 그 사이 lock을 바꿨거나(conflict) DO 오류(skipped)면
+    // 해제도, 그에 딸린 floor push·deleteProgress·infoMode 강제도 하지 않는다(applied일 때만 부수효과). legacy는 기존 순서 그대로.
+    const vanishRelease = await commitCronLockOp(trip, { type: 'releaseAuto', source: 'cron', reason: 'vanish' }, now);
+    if (vanishRelease.mode === 'cell' && vanishRelease.outcome !== 'applied') return;
     const releaseMotionSeries = await readSeries(env.TRIPS, trip.token);
     const releaseMotion = evaluateWindow(releaseMotionSeries, now).motion;
     if (!isFallbackAdvanceBlockedByMotion(releaseMotion)) {
@@ -6060,8 +6164,10 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
       lastTrackedArrivalEpoch: lastEpoch,
       locklessTakeoverEnabled: trip.infoModeEnabled !== true,
     });
-    trip.boardingLock = undefined;
-    trip.consecutiveEtaMissing = 0;
+    if (vanishRelease.mode === 'legacy') {
+      trip.boardingLock = undefined;
+      trip.consecutiveEtaMissing = 0;
+    }
     trip.infoModeEnabled = true;
     stats.vanishLocklessTakeover += 1;
     await deleteProgress(env.TRIPS, trip.token);
@@ -6110,8 +6216,13 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
       threshold,
       subsurface: trip.subsurface === true,
     });
-    trip.boardingLock = undefined;
-    trip.consecutiveEtaMissing = 0;
+    // #3055 PR-3b (§3 #16) — 강등도 해제 op가 applied일 때만 부수효과(infoMode 강제 / 재확인 push / deleteProgress)를 실행한다.
+    const demote = await commitCronLockOp(trip, { type: 'releaseAuto', source: 'cron', reason: 'demote' }, now);
+    if (demote.mode === 'cell' && demote.outcome !== 'applied') return;
+    if (demote.mode === 'legacy') {
+      trip.boardingLock = undefined;
+      trip.consecutiveEtaMissing = 0;
+    }
     // #1370 L3 vanishLocklessTakeover 선례와 동일 패턴 — 시스템 fallback이 lockless 인계 경로를
     // 강제 활성화한다. 사용자가 opt-in 토글을 OFF로 둔 trip이어도 register 시 device가 보낸
     // 실제 값으로 다음 세션에 자연 정합화되므로, 이 강제 활성화가 사용자 설정을 영구 덮어쓰지
@@ -6126,7 +6237,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     await fireTrainReconfirmPush(trip, env, deps, stats, now, log, generatePushId);
     return;
   }
-  trip.consecutiveEtaMissing = nextMissCount;
+  await setEtaMissingCount(trip, nextMissCount, now);
   await putTrip(env.TRIPS, trip);
   await mirrorProgress(env.TRIPS, trip, 0);
 }
@@ -6239,7 +6350,7 @@ export async function runTrainCodeTracking(
   // 성공 사이클 — 카운터가 누적된 상태였다면 reset하고 persist. 0이면 dirty write 회피.
   const hadMissCount = (trip.consecutiveEtaMissing ?? 0) > 0;
   if (hadMissCount) {
-    trip.consecutiveEtaMissing = 0;
+    await setEtaMissingCount(trip, 0, now);
   }
 
   if (estimate.arrived) {
@@ -7035,15 +7146,21 @@ export async function completeWaypointAdvance(
   // release되면 다음 cycle에 isBoardingLockActive=false로 오판해 이미 탑승 중인 사용자에게
   // "탑승했어요?" 프롬프트가 재발사된다(#864 원 목적인 진짜 환승 release는 그대로 유지).
   const isRealLineChange = nextLegWaypoint?.line !== trip.boardingLock?.line;
-  const lockReleasedOnTransfer =
+  let lockReleasedOnTransfer =
     waypoint.kind === 'transfer' && trip.boardingLock !== undefined && isRealLineChange;
   // #1438 (E5) — release 직전 lock 스냅샷. 직후 fire에서 buildStationPassedImminentPayload가
   // line/trainCode self-describing 필드(boardingLine/trainCode)를 채우는 데 사용한다.
   const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;
   if (lockReleasedOnTransfer) {
-    trip.boardingLock = undefined;
-    trip.consecutiveEtaMissing = 0;
-    await deleteProgress(env.TRIPS, trip.token);
+    // #3055 PR-3b (§3 #18) — cron(셀 추적 trip)은 releaseAuto op로 해제하고 applied일 때만 해제 부수효과(deleteProgress / lock-release sync push)를
+    // 실행한다. HTTP 호출자(sync-mixed / confirm)의 trip은 추적되지 않아 legacy(메모리 해제) — 그 영속은 index.ts가 op로 한다.
+    const transferRelease = await commitCronLockOp(trip, { type: 'releaseAuto', source: 'cron', reason: 'transfer' }, now);
+    if (transferRelease.mode === 'legacy') {
+      trip.boardingLock = undefined;
+      trip.consecutiveEtaMissing = 0;
+    }
+    lockReleasedOnTransfer = transferRelease.mode === 'legacy' || transferRelease.outcome === 'applied';
+    if (lockReleasedOnTransfer) await deleteProgress(env.TRIPS, trip.token);
   }
   // #1438 (E5) — backend → device lock release sync. 환승 waypoint 통과로 backend가 lock을
   // release한 즉시 device에 silent push로 통보해 로컬 useBoardingLockStore와 sync한다. 종전에는
@@ -8778,6 +8895,20 @@ async function fireBoardingPromptForAnchor(inputs: {
       line,
     });
     onFireOnceSuppressed(gate.decision);
+    return;
+  }
+
+  // #3055 PR-3b — 발사 직전 fresh lock 확인(origin/leg-2 공용). tick 시작 스냅샷(overlay) 이후 사용자가 lock을 붙였으면(confirm/sync/LA 탭)
+  // lock 보유자에게 "탑승했나요?"를 묻지 않는다. GET /lock 1회 — 셀 모드 trip에만(flag off는 DO 호출 0). DO 오류는 fail-closed(보류).
+  if (await freshLockActive(trip, now)) {
+    stats.promptFreshLockBlocked = (stats.promptFreshLockBlocked ?? 0) + 1;
+    log(`${logPrefix}: gate blocked`, {
+      token: trip.token.slice(0, 8),
+      reason: 'fresh-lock-active',
+      gateDecision: gate.decision,
+      station,
+      line,
+    });
     return;
   }
 

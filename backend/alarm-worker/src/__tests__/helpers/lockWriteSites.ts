@@ -17,7 +17,7 @@ export const GUARDED_FIELDS = [
 const FIELD_ALT = GUARDED_FIELDS.join('|');
 // 객체 리터럴 키 `field:`(삼항 `? a : b`의 콜론과 구분하려고 앞이 식별자 경계) 또는 대입 `.field =`(비교 `===`/`==` 제외).
 const WRITE_PATTERN = new RegExp(`(?:[{,(]\\s*|^\\s*)(?:${FIELD_ALT})\\s*:(?!:)|\\.(?:${FIELD_ALT})\\s*=(?!=)`);
-const DECL_PATTERN = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)|^app\.(get|post|put|delete)\(\s*'([^']+)'/;
+const DECL_PATTERN = /^(?:export\s+)?(?:async\s+)?function\*?\s+(\w+)|^app\.(get|post|put|delete)\(\s*'([^']+)'/;
 
 // 쓰기가 아닌 매칭: 구조 분해 `const { boardingLock: x } = ...`, 타입 멤버 `activityPushToken: string;`.
 const NOT_A_WRITE = [/^(?:const|let)\s*\{/, /:\s*(?:string|number|boolean)\s*;$/];

@@ -84,6 +84,12 @@ export async function fetchCells(env: CellEnv, token: string): Promise<Cells> {
   return callJson<Cells>(stubFor(env, token, 'cells'), 'cells', '/cells');
 }
 
+/** lock 셀 1개만 읽는다(`GET /lock`) — cron의 발사 직전 fresh 확인용. 셀이 아직 없으면 null. */
+export async function fetchLockCell(env: CellEnv, token: string): Promise<LockCell | null> {
+  const { cell } = await callJson<{ cell: LockCell | null }>(stubFor(env, token, 'lock'), 'lock', '/lock');
+  return cell;
+}
+
 /** lock 셀 op. 실패는 `CellUnavailableError`. */
 export async function runLockOp(env: CellEnv, token: string, op: LockOp, now: number): Promise<LockOpResult> {
   return callJson<LockOpResult>(stubFor(env, token, `lock:${op.type}`), `lock:${op.type}`, '/lock/op', { op, now });

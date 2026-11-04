@@ -300,7 +300,13 @@ export async function deleteDeviceTripIndexIfCurrent(
   }
 }
 
-export async function* listTrips(kv: KVNamespace): AsyncGenerator<Trip> {
+/**
+ * cron 열거. `options.rawLock`(#3055 PR-3b)이 true면 stale-line lock 메모리 정리를 건너뛴다 — 셀 모드(`lock@N`)에서는 셀이
+ * lock의 권위라 KV 사본을 몰래 지우면 셀 시드/overlay와 어긋난다. 그 정리는 `cronLockCell.overlayCronTrips`가
+ * `releaseAuto{reason:'stale-line'}` op로 셀에 영속한다(plan §3 #19).
+ */
+export async function* listTrips(kv: KVNamespace, options?: { rawLock?: boolean }): AsyncGenerator<Trip> {
+  const rawLock = options?.rawLock === true;
   let cursor: string | undefined;
   do {
     const result = await kv.list({ prefix: TRIP_PREFIX, cursor });
@@ -314,7 +320,7 @@ export async function* listTrips(kv: KVNamespace): AsyncGenerator<Trip> {
       if (!raw) continue;
       try {
         const parsed = JSON.parse(raw) as Trip;
-        yield clearStaleBoardingLock(parsed);
+        yield rawLock ? parsed : clearStaleBoardingLock(parsed);
       } catch {
         // 손상된 엔트리는 스킵 (TTL로 자동 정리됨)
       }
@@ -335,11 +341,15 @@ export async function* listTrips(kv: KVNamespace): AsyncGenerator<Trip> {
  * boarding-prompt evaluation)로 복귀시킨다.
  */
 export function clearStaleBoardingLock(trip: Trip): Trip {
-  if (!trip.boardingLock) return trip;
+  return isStaleBoardingLock(trip) ? { ...trip, boardingLock: undefined } : trip;
+}
+
+/** `boardingLock.line`이 현재 첫 waypoint의 line과 다른 lock인지(#1364 Layer 4 판정 술어). */
+export function isStaleBoardingLock(trip: Trip): boolean {
+  const { boardingLock } = trip;
+  if (!boardingLock) return false;
   const head = trip.waypoints[0];
-  if (!head) return trip;
-  if (trip.boardingLock.line === head.line) return trip;
-  return { ...trip, boardingLock: undefined };
+  return head !== undefined && boardingLock.line !== head.line;
 }
 
 /**
