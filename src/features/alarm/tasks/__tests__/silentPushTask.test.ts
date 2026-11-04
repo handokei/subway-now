@@ -3747,7 +3747,7 @@ describe('silentPushTask', () => {
           expect(mockSendPushAck).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'fired' }));
         });
 
-        it('route 조회가 실패해도 오버레이는 뜬다 (stationId 없이)', async () => {
+        it('route 조회가 실패해도 오버레이는 뜬다 (역명+nextLine으로 찾은 stationId, direction 없음)', async () => {
           (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
             if (key === ROUTE_KEY) throw new Error('storage-fail');
             if (key === DESTINATION_KEY) return JSON.stringify(destStation);
@@ -3756,7 +3756,15 @@ describe('silentPushTask', () => {
           });
           await handleSilentPush(companion({ remainingStops: 2 }));
           expect(lastEvent()).toMatchObject({ type: 'transfer', stationName: '뚝섬', band: 2 });
-          expect(lastEvent().stationId).toBeUndefined();
+          expect(lastEvent().stationId).toMatch(/^2-/);
+          expect(lastEvent().direction).toBeUndefined();
+          expect(mockSendPushAck).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'fired' }));
+        });
+
+        it('stationId를 못 구하면(stations.json에 없는 역) 오버레이만 생략하고 안전망 취소·로그·ack는 계속된다', async () => {
+          await handleSilentPush(companion({ nextStation: '없는역', remainingStops: 2 }));
+          expect(mockSetAlarmEvent).not.toHaveBeenCalled();
+          expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
           expect(mockSendPushAck).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'fired' }));
         });
       });

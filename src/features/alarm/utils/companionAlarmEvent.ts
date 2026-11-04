@@ -8,6 +8,8 @@
 import type { AlarmEvent } from '../../../shared/types/alarm';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { isSameStationName } from '../../../shared/utils/stationRoute';
+import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { isValidLineNumber } from '../../../shared/constants/lineApiNames';
 import { resolveAllTargets } from './stationAlarm';
 import { resolveAlarmDirection } from './alarmDirection';
 
@@ -24,6 +26,19 @@ export interface CompanionAlarmEventInput {
   band?: number;
 }
 
+/**
+ * 도착 노선(payload.nextLine)의 승강장 id — route 조회가 실패했을 때의 대체 출처. nextLine은 backend가
+ * 타깃역에 진입한다고 알려 준 노선이라 이름 첫 매칭(#3177 결함)과 달리 노선을 구분한다.
+ */
+function lookupStationIdByLine(stationName: string, line: string): string | undefined {
+  if (!isValidLineNumber(line)) return undefined;
+  return findStationByNameAndLine(stationName, line)?.id;
+}
+
+/**
+ * 오버레이용 AlarmEvent. `AlarmEvent.stationId`는 필수라 route 조회와 (역명, nextLine) 조회가 모두 실패하면
+ * null — 호출자는 오버레이를 생략한다(payload 역이 stations.json에 없는 경우뿐).
+ */
 export function buildCompanionAlarmEvent({
   route,
   destinationName,
@@ -32,25 +47,25 @@ export function buildCompanionAlarmEvent({
   targetKind,
   originStation,
   band,
-}: CompanionAlarmEventInput): AlarmEvent {
-  const event: AlarmEvent = {
-    phaseId: 'early',
+}: CompanionAlarmEventInput): AlarmEvent | null {
+  const base = {
+    phaseId: 'early' as const,
     type: targetKind,
     stationName: nextStation,
     ...(band !== undefined && { band }),
   };
-  if (!route || !destinationName) return event;
+  const lineStationId = lookupStationIdByLine(nextStation, nextLine);
+  if (!route || !destinationName) return lineStationId ? { ...base, stationId: lineStationId } : null;
 
   const candidates = resolveAllTargets(route, destinationName).filter(
     (target) => isSameStationName(target.name, nextStation) && target.alarmType === targetKind,
   );
   const target = candidates.find(({ approachLine }) => String(approachLine) === nextLine) ?? candidates[0];
+  const stationId = target?.stationId ?? lineStationId;
+  if (!stationId) return null;
+  const event: AlarmEvent = { ...base, stationId };
   if (!target) return event;
 
   const direction = resolveAlarmDirection(event, { route, destinationName, sourceStationName: originStation });
-  return {
-    ...event,
-    ...(target.stationId && { stationId: target.stationId }),
-    ...(direction && { direction }),
-  };
+  return { ...event, ...(direction && { direction }) };
 }

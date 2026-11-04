@@ -228,7 +228,7 @@ async function scheduleOne(params: {
   identifier: string;
   tripToken: string;
   stationName: string;
-  stationId?: string;
+  stationId: string;
   kind: AlarmLocalKind;
   occurrenceIdx: number;
   fireMs: number;

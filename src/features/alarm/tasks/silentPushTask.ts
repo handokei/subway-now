@@ -1691,7 +1691,7 @@ function parseDestinationName(raw: string | null): string | null {
  * #3100 D1 — 취침 오버레이(SleepAlarmOverlay)의 **단일 소스**. companion이 칸마다 1회 도착하고, 원장(`-s{N}`)을
  * 통과한 수신만(`fired:true`) 여기까지 온다 → 재수신·재시도는 오버레이를 다시 띄우지 않는다. 호출자가 FG일 때만 부른다
  * (BG/잠금에서 store를 쓰면 늦은 단일 슬롯 재생이 된다; 잠금에서는 백엔드 alarm.wav 배너 + 진동·TTS로 이미 받는다).
- * route/destination 조회 실패는 `stationId`·`direction`만 생략하고 오버레이는 그대로 띄운다.
+ * route/destination 조회 실패는 `direction`만 생략하고 (역명, nextLine)으로 찾은 stationId로 오버레이를 띄운다.
  */
 async function showCompanionOverlay(
   payload: SleepAlarmCompanionSilentPushPayload,
@@ -1709,6 +1709,10 @@ async function showCompanionOverlay(
   const { nextStation, nextLine, targetKind, originStation } = payload;
   try {
     const event = buildCompanionAlarmEvent({ route, destinationName, nextStation, nextLine, targetKind, originStation, band });
+    if (!event) {
+      logger.warn('companion overlay: stationId 조회 실패 — 오버레이 생략', nextStation);
+      return;
+    }
     useAlarmEventStore.getState().setAlarmEvent(event);
   } catch (e) {
     // 오버레이 실패가 소리·안전망 취소·ack를 막으면 안 된다.

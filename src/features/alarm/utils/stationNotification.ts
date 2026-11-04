@@ -13,6 +13,7 @@ import { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute, isSameStationName } from '../../../shared/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
+import type { AlarmEventInput } from '../../../shared/types/alarm';
 import * as LiveActivity from 'live-activity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_TRIP_KEY, APNS_TOKEN_KEY } from '../../../shared/constants/storageKeys';
@@ -451,7 +452,7 @@ function appendExitSide(body: string, side?: PlatformExitSide | null): string {
 // 다른 노선 값을 집었다. stationId가 없거나 stations.json에 없으면 이름으로 대체 조회하지 않고
 // 안내를 생략한다(오안내 제거 우선, ADR-010) + alarmLog `exit-side-unknown-station-id`.
 // 일반 notification(buildAlarmContent)·취침 알람·LA 본문(buildLiveActivityData)이 모두 이 함수를 탄다.
-function resolveExitSide(event: AlarmEvent): PlatformExitSide | null {
+function resolveExitSide(event: AlarmEventInput): PlatformExitSide | null {
   const { stationId, direction, stationName } = event;
   const resolution = stationId
     ? resolveExitSideForStation({ stationId, direction, terminus: resolveTerminusRelation(event) })
@@ -463,7 +464,7 @@ function resolveExitSide(event: AlarmEvent): PlatformExitSide | null {
   return resolution.side;
 }
 
-function resolveTerminusRelation({ trainTerminal, stationName }: AlarmEvent): TerminusRelation {
+function resolveTerminusRelation({ trainTerminal, stationName }: AlarmEventInput): TerminusRelation {
   if (!trainTerminal) return 'unknown';
   return isSameStationName(trainTerminal, stationName) ? 'here' : 'elsewhere';
 }
@@ -472,7 +473,7 @@ function resolveTerminusRelation({ trainTerminal, stationName }: AlarmEvent): Te
 // 알람 타입에 따라 transfer/arrival 두 가지 카피로 분기.
 // #3177: event.stationId로만 조회한다 — 이름 첫 매칭은 환승역에서 다른 노선 데이터를 집었다.
 // stationId가 없으면 이름으로 대체 조회하지 않고 힌트를 생략한다.
-function resolveQuickHint({ stationId, type }: AlarmEvent): string | null {
+function resolveQuickHint({ stationId, type }: AlarmEventInput): string | null {
   if (!stationId || !hasQuickExitData(stationId)) return null;
   return type === 'transfer'
     ? i18next.t('alarms.quickHintTransfer')
@@ -905,7 +906,7 @@ const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTrans
 };
 
 export function buildAlarmContent(
-  event: AlarmEvent,
+  event: AlarmEventInput,
   source?: NotificationSource,
 ): { title: string; body: string } {
   const { title, body } = ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer', event.band);
