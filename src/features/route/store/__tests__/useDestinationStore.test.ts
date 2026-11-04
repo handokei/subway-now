@@ -1313,6 +1313,35 @@ describe('setDestination(#2302): 전환/해제가 서로 다른 end_reason으로
     expect(spy).toHaveBeenCalledWith('backend-tok-2302', 'user-clear');
     spy.mockRestore();
   });
+
+  // #3005 — 등록 시점 ACTIVE_TRIP 캡처 read가 실패해도 정리 체인이 중단되지 않는다(캡처 token=null로 진행).
+  it('#3005: ACTIVE_TRIP 캡처 read가 reject돼도 정리 체인은 진행된다', async () => {
+    useDestinationStore.setState({ destination: mockStation });
+    // 다른 테스트가 남긴 mockReturnValue('cid-prev-trip')이 캡처/현재 corrId를 어긋나게 하지 않도록 고정.
+    (jest.requireMock('../../../observability/utils/tripCorrId') as {
+      getCurrentTripCorrIdSync: jest.Mock;
+    }).getCurrentTripCorrIdSync.mockReturnValue(null);
+    const getItem = AsyncStorage.getItem as jest.Mock;
+    const realGetItem = getItem.getMockImplementation() as (key: string) => Promise<string | null>;
+    let rejected = false;
+    getItem.mockImplementation((key: string) => {
+      if (key === ACTIVE_TRIP_KEY && !rejected) {
+        rejected = true;
+        return Promise.reject(new Error('storage down'));
+      }
+      return realGetItem(key);
+    });
+    const spy = jest.spyOn(alarmBackend, 'clearActiveTrip').mockResolvedValue({ ok: true });
+
+    useDestinationStore.getState().setDestination(null);
+    await flush();
+    getItem.mockImplementation(realGetItem); // jest.fn 목은 mockRestore가 구현을 지우므로 원본 구현으로 복원
+
+    expect(rejected).toBe(true);
+    // 정리 체인이 reject 때문에 중단됐다면 backend DELETE도 발행되지 않는다.
+    expect(spy).toHaveBeenCalledWith('backend-tok-2302', 'user-clear');
+    spy.mockRestore();
+  });
 });
 
 // #3109 — 자동 종료 호출부별 종료 사유. 모두 'user-clear' 단일 라벨이라 173의 종료 주체를

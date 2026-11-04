@@ -34,6 +34,8 @@ import {
 } from '../../../../shared/constants/storageKeys';
 import { SIGNAL_4_SILENT_PUSH_TIMEOUT_MS } from '../../../../shared/constants/realtime';
 import { useUserIntentStore } from '../../../alarm/store/useUserIntentStore';
+import { useBoardingLockStore } from '../../../alarm/store/useBoardingLockStore';
+import { BOARDING_LOCK_KEY } from '../../../../shared/constants/storageKeys';
 import { __resetDefensiveCancelForTest } from '../../../alarm/store/tripBoundCleanups';
 import { runLaunchTripReconciliation } from '../../../alarm/hooks/useLaunchTripReconciliation';
 import { setLastSilentPushReceivedAt } from '../../../alarm/utils/lastSilentPushReceivedAt';
@@ -207,24 +209,20 @@ async function runS1(): Promise<TripSurvival> {
 }
 
 describe('#3005 S1 [10-18 실측] 대기 상태에서 새 목적지 선택 -> 새 트립이 정리 체인에 지워지지 않는다', () => {
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('ACTIVE_TRIP(백엔드 트립 토큰)이 유지된다', async () => {
+  it('ACTIVE_TRIP(백엔드 트립 토큰)이 유지된다', async () => {
     expect((await runS1()).activeTripAfter).toBe(TOKEN_X);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('새 트립의 corrId가 유지된다', async () => {
+  it('새 트립의 corrId가 유지된다', async () => {
     const { corrIdOfX, corrIdAfter } = await runS1();
     expect(corrIdAfter).toBe(corrIdOfX);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('trackingOptIn이 유지된다', async () => {
+  it('trackingOptIn이 유지된다', async () => {
     expect((await runS1()).trackingOptInAfter).toBe(true);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X를 대상으로 한 백엔드 DELETE(10-18의 destination-switch http-delete)가 0회다', async () => {
+  it('X를 대상으로 한 백엔드 DELETE(10-18의 destination-switch http-delete)가 0회다', async () => {
     await runS1();
     expect(deletesFor(TOKEN_X)).toHaveLength(0);
   });
@@ -261,24 +259,20 @@ async function runS2(): Promise<TripSurvival> {
 }
 
 describe('#3005 S2 [경합] 종료 직후 정리 체인이 끝나기 전에 새 목적지 선택', () => {
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X의 ACTIVE_TRIP이 유지된다', async () => {
+  it('X의 ACTIVE_TRIP이 유지된다', async () => {
     expect((await runS2()).activeTripAfter).toBe(TOKEN_X);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X의 corrId가 유지된다', async () => {
+  it('X의 corrId가 유지된다', async () => {
     const { corrIdOfX, corrIdAfter } = await runS2();
     expect(corrIdAfter).toBe(corrIdOfX);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X의 trackingOptIn이 유지된다', async () => {
+  it('X의 trackingOptIn이 유지된다', async () => {
     expect((await runS2()).trackingOptInAfter).toBe(true);
   });
 
-  // #3005 acceptance — fix PR이 .failing을 제거한다
-  it.failing('X를 대상으로 한 백엔드 DELETE가 어느 체인에서도 0회다', async () => {
+  it('X를 대상으로 한 백엔드 DELETE가 어느 체인에서도 0회다', async () => {
     await runS2();
     expect(deletesFor(TOKEN_X)).toHaveLength(0);
   });
@@ -309,6 +303,54 @@ describe('#3005 S2 [경합] 종료 직후 정리 체인이 끝나기 전에 새 
     expect(clearActiveTrip).toHaveBeenCalledWith(TOKEN_TRIP1, 'destination-switch');
     expect(deletesFor(TOKEN_X)).toHaveLength(0);
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe(TOKEN_X);
+  });
+});
+
+/**
+ * S4 (리뷰 보강): 옛 trip의 늦은 정리가 새 trip의 BoardingLock을 지우면 "탭했는데 lock 없음"(miss)이 된다.
+ * lock은 trip 신원(corrId)을 담지 않고 `boardedAt`만 갖는다 -> 정리 등록 시각 이후에 탑승한 lock은 새 trip 것이다.
+ */
+const lockInput = (boardedAt: number) => ({
+  destinationId: stationX.id,
+  trainCode: 'T-3005',
+  boardingStationId: '2-209',
+  boardingLine: '2' as const,
+  boardedAt,
+  expectedDurationMs: 30 * 60_000,
+});
+
+describe('#3005 S4 옛 trip의 늦은 정리가 새 trip의 BoardingLock을 지우지 않는다', () => {
+  beforeEach(() => {
+    useBoardingLockStore.setState({ lock: null });
+  });
+
+  it('종료(null) 직후 X 선택 + 탑승 탭(lock 생성) -> 늦게 도는 옛 정리 뒤에도 lock이 메모리·storage에 남는다', async () => {
+    useDestinationStore.setState({ destination: stationTrip1 });
+    const recall = holdRecall();
+
+    useDestinationStore.getState().setDestination(null); // 체인1: recall pending (등록 시각 T0)
+    useDestinationStore.getState().setDestination(stationX);
+    await useBoardingLockStore.getState().createLock(lockInput(Date.now() + 1), false); // 사용자 탭
+    await drain();
+
+    recall.release();
+    await drain();
+    recall.release();
+    await drain();
+
+    expect(useBoardingLockStore.getState().lock?.trainCode).toBe('T-3005');
+    expect(await AsyncStorage.getItem(BOARDING_LOCK_KEY)).not.toBeNull();
+  });
+
+  it('거부 케이스 — 정리 등록 전부터 있던 옛 trip lock은 목적지 전환 때 여전히 해제된다', async () => {
+    useDestinationStore.setState({ destination: stationTrip1 });
+    await useBoardingLockStore.getState().createLock(lockInput(Date.now() - 60_000), false);
+
+    useDestinationStore.getState().setDestination(stationX);
+    await drain();
+
+    expect(useBoardingLockStore.getState().lock).toBeNull();
+    expect(await AsyncStorage.getItem(BOARDING_LOCK_KEY)).toBeNull();
   });
 });
 

@@ -16,6 +16,7 @@ import {
   ROUTE_PREFERENCE_KEY,
   RECENT_DESTINATIONS_KEY,
   ROUTE_KEY,
+  ACTIVE_TRIP_KEY,
 } from '../../../shared/constants/storageKeys';
 import { RECENT_ROUTES_LIMIT } from '../../../shared/constants/recentDestinations';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
@@ -232,6 +233,11 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       // 캡처해 trip-end prompt가 올바른 (종료된) trip의 corrId로 enqueue되게 한다. prev === null
       // (첫 trip 시작) 경로에서는 snapshot도 null → prompt graceful skip.
       const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
+      // #3005 — 정리 체인은 recall await 뒤에 돈다. 그 사이 새 trip이 등록되면 늦게 온 정리가 새 trip을 지우므로,
+      // **등록 시점**의 trip 신원(corrId + backend token)을 캡처해 runTripBoundCleanups가 같은 trip일 때만
+      // 신원 묶인 항목을 정리하게 한다. getItem은 여기서 동기로 발행해 이후 쓰기(새 등록 ack)와 섞이지 않는다.
+      const capturedAt = Date.now();
+      const expectedTokenRead = AsyncStorage.getItem(ACTIVE_TRIP_KEY).catch(() => null);
       // #1321 — delete→recreate race 차단: tripTransitionQueue에 chain해 직렬화한다.
       // 직전 transition(예: delete)의 cleanup이 완전히 끝난 뒤에야 이번 transition(예: recreate)의
       // cleanup + setTripStartedAt이 시작된다.
@@ -244,11 +250,16 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         // #2302 — 같은 cleanup이 두 의미를 갖는다: station != null이면 "이전 trip을 끝내고
         // 다른 목적지로 전환", null이면 "사용자가 안내를 끝냈다". backend end_reason에서 두
         // 경우를 구분해야 "사용자가 직접 끝냈다"의 분모가 정확해진다.
-        .then(() =>
-          station
-            ? runTripBoundCleanups('destination-switch', { preserveCustomOrigin: true })
-            : runTripBoundCleanups(endReason),
-        )
+        .then(async () => {
+          const expected = {
+            corrId: endedCorrIdSnapshot,
+            activeTripToken: await expectedTokenRead,
+            capturedAt,
+          };
+          return station
+            ? runTripBoundCleanups('destination-switch', { preserveCustomOrigin: true, expected })
+            : runTripBoundCleanups(endReason, { expected });
+        })
         .catch(noop)
         // #1597 — cleanup 후, 새 trip의 storage write 전에 ground-truth prompt enqueue.
         // prev trip이 실제로 종료된 경우(prev !== null)에만 fire. 첫 trip 시작(prev === null)

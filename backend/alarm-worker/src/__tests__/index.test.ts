@@ -1652,6 +1652,52 @@ describe('DELETE /trips/:token — LA dismissal (#586 D)', () => {
   });
 });
 
+// #3005 PR-A-be — 운영 trip 토큰은 기기 APNs 토큰이라 trip마다 같다. 종료 정리가 "시작 시점에 캡처한
+// trip"만 지우려면 backend도 corrId 비교로 새 trip(같은 token, 다른 corrId)을 보호해야 한다.
+describe('DELETE /trips/:token — ?corrId= compare-and-delete (#3005)', () => {
+  const CREATED = 1_700_000_000_000;
+
+  it('같은 token·다른 corrId DELETE는 trip을 삭제하지 않고 deleted:false를 돌려준다', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...base(), token: 'tok-same', corrId: 'corr-new', createdAt: CREATED }, env);
+
+    const res = await del('/trips/tok-same?corrId=corr-old', env);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false });
+    expect(await env.TRIPS.get('trip:tok-same')).not.toBeNull();
+  });
+
+  it('같은 corrId DELETE는 삭제한다', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...base(), token: 'tok-same2', corrId: 'corr-1', createdAt: CREATED }, env);
+
+    const res = await del('/trips/tok-same2?corrId=corr-1', env);
+
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    expect(await env.TRIPS.get('trip:tok-same2')).toBeNull();
+  });
+
+  it('corrId 파라미터가 없는 구버전 요청은 기존 동작(무조건 삭제)이다', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...base(), token: 'tok-legacy', corrId: 'corr-1', createdAt: CREATED }, env);
+
+    const res = await del('/trips/tok-legacy', env);
+
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    expect(await env.TRIPS.get('trip:tok-legacy')).toBeNull();
+  });
+
+  it('corrId 파라미터는 있으나 저장된 trip에 corrId가 없으면(구버전 등록) 삭제한다', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...base(), token: 'tok-nocorr', createdAt: CREATED }, env);
+
+    const res = await del('/trips/tok-nocorr?corrId=corr-x', env);
+
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+  });
+});
+
 // #2268 — DELETE /trips/:token이 device가 아는 실제 종료 사유를 ?reason= 쿼리로 받아 D1
 // trip_metrics.end_reason에 적재한다(기존엔 항상 'user-delete'로 뭉개짐). alert push 게이팅과는
 // 무관 — reason 미지정 시 기존 동작(push 없음) 그대로.
