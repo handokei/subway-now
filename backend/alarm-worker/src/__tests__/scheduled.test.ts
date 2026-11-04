@@ -1,5 +1,6 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CacheLagKV } from './helpers/cacheLagKv';
 import { DISEMBARK_PROMPT_CATEGORY, resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { computeNextRetryAt, isRetryableApnsError } from '../apnsHost';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
@@ -17047,6 +17048,79 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
     function findInserts(inserts: unknown[][], kind: string): unknown[][] {
       return inserts.filter((args) => args[2] === kind);
     }
+
+    // #3319 PR-a — 전이 기록 recorder가 SSoT 전체를 낡은 캐시 스냅샷으로 되쓰면 같은 tick에서 advance가 쓴
+    // currentStationId/line이 되돌려진다. 2026-11-04 17:11:45 성수 -> 건대입구 환승 advance(D1 2130 transfer-advance
+    // lock-active advanced / 2131 cron-fire-attempt / 2133 hop-end-prompt, 한 tick 3 recorder) 직후 backend SSoT가
+    // 건대입구/7로 안 가고 성수에 고착 -> 기기 LA가 7호선 구간 내내 "성수". 실측: tasks/evidence-2026-11-04-ride-d1.json.
+    // KV 읽기 캐시(cacheTtl 30s)는 CacheLagKV로 재현: 스냅샷은 30s 전 시점(성수), advance 쓰기는 10s 전(건대입구/7).
+    describe('#3319 — 전이 기록 recorder는 advance가 쓴 SSoT를 되돌리지 않는다', () => {
+      async function seedLaggedAdvancedSsot(kv: CacheLagKV, trip: Trip) {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(NOW - 60_000);
+          const seeded = await seedSsot(kv as unknown as KVNamespace, trip.token, '성수', {
+            expiresAt: trip.expiresAt,
+            line: '2',
+          });
+          // 같은 tick 직전 advance가 쓴 값(성수 -> 건대입구/7). 이 값이 최종 SSoT로 남아야 한다.
+          vi.setSystemTime(NOW - 10_000);
+          await writeSsot(
+            kv as unknown as KVNamespace,
+            {
+              ...seeded,
+              currentStationId: '건대입구',
+              currentStationLine: '7',
+              passedStations: ['성수'],
+              lastAdvanceAt: NOW - 10_000,
+              lastAdvanceEvidence: 'arvlcd-confirmed-train',
+            },
+            { expiresAt: trip.expiresAt },
+          );
+          vi.setSystemTime(NOW);
+        } catch (e) {
+          vi.useRealTimers();
+          throw e;
+        }
+      }
+
+      it.each([
+        ['no-arvlcd', {} as Record<string, never>],
+        ['not-fires', { 건대입구: [arrivalOnLine('2', '건대입구', 300, 3, '9001')] }],
+      ])('lockless transfer-advance(%s) 전이 기록 후에도 SSoT.currentStationId/line은 advance 값', async (outcome, arrivals) => {
+        const kv = new CacheLagKV(0, {
+          byCacheTtl: { defaultTtlSec: 0, laggedPrefixes: ['ssot:'] },
+        });
+        const trip = makeTransferTrip(TOKEN_A2);
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLaggedAdvancedSsot(kv, trip);
+        const { db, inserts } = makeFireLogDb();
+        let stored: TripPositionSSoT | null;
+        try {
+          await runScheduled(makeEnv(kv, undefined, db), {
+            seoul: makeSeoulFull(arrivals),
+            apnsConfig,
+            apnsHosts: APNS_HOSTS,
+            fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+            now: () => NOW,
+            generatePushId: () => 'p-3319-a',
+          });
+          // fake 시계 안에서 읽는다(CacheLagKV TTL 만료 판정이 Date.now 기준).
+          stored = await readSsot(kv as unknown as KVNamespace, trip.token);
+        } finally {
+          vi.useRealTimers();
+        }
+        // 전이 기록 자체는 그대로 나간다(마커 dedup + D1 append).
+        const events = findInserts(inserts, 'transfer-advance');
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0][5] as string)).toEqual({ path: 'lockless', outcome });
+        expect(stored?.transferAdvanceState).toBe(outcome);
+        // 핵심: advance 값이 낡은 스냅샷(성수/2)으로 되돌려지지 않는다.
+        expect(stored?.currentStationId).toBe('건대입구');
+        expect(stored?.currentStationLine).toBe('7');
+        expect(stored?.passedStations).toEqual(['성수']);
+      });
+    });
 
     it('transfer-advance(lockless) — arvlCd 미확보 → no-arvlcd, SSoT 부재면 append 없음', async () => {
       const kv = new InMemoryKV();
