@@ -136,7 +136,7 @@ function seedTrip(): Trip {
     waypoints: LEG2.map((w) => ({ ...w })),
     routeWaypoints: FULL_ROUTE.map((w, hopIndex) => ({ ...w, hopIndex })),
     originStationName: '뚝섬',
-    createdAt: START_MS - 20 * 60_000,
+    createdAt: START_MS - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료(예상 소요 x1.5 + 15분) 창 안에 두려 최근 등록으로 둔다 - 이 테스트의 관심사는 시한이 아니다.
     alarmAtEpochMs: START_MS,
     expiresAt: START_MS + 3 * HOUR_MS,
     infoModeEnabled: true,

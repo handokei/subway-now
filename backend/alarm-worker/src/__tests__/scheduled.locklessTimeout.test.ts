@@ -192,7 +192,9 @@ describe('K5 PR-B — lockless 시한 종료', () => {
   });
 
   it('lock 해제 시각을 모르는 구 레코드(lockEverAttached만)는 종료하지 않는다', async () => {
-    const { kv, db, token } = await setup({ lockEverAttached: true });
+    const { kv, db, token, trip } = await setup();
+    // putTrip을 거치면 locklessSince가 stamp되므로 필드 도입 전 레코드를 KV에 직접 심는다.
+    await (kv as unknown as KVNamespace).put(`trip:${token}`, JSON.stringify({ ...trip, lockEverAttached: true }));
     await runAt(kv, db, NOW);
     expect(await readTrip(kv, token)).not.toBeNull();
   });

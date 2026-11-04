@@ -106,7 +106,7 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
     infoModeEnabled: false,
     subsurface: true,
     expiresAt: T0 + 60 * 60_000,
-    createdAt: T0 - 30 * 60_000,
+    createdAt: T0 - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료(예상 소요 x1.5 + 15분) 창 안에 두려 최근 등록으로 둔다 - 이 테스트의 관심사는 시한이 아니다.
     alarmAtEpochMs: T0 - 60_000,
     ...overrides,
   };

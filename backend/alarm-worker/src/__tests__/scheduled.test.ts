@@ -6417,7 +6417,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
       kv as unknown as KVNamespace,
       makeTrip({
         token: 'la-stale-6m',
-        createdAt: NOW - 30 * 60_000,
+        createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
         lastLaPushAt: NOW - 6 * 60_000,
@@ -6452,7 +6452,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
       kv as unknown as KVNamespace,
       makeTrip({
         token: 'la-fresh-4m',
-        createdAt: NOW - 30 * 60_000,
+        createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
         lastLaPushAt: NOW - 4 * 60_000,
@@ -6486,7 +6486,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
       kv as unknown as KVNamespace,
       makeTrip({
         token: 'la-never',
-        createdAt: NOW - 30 * 60_000,
+        createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
         // lastLaPushAt 미지정 — undefined.
@@ -6516,6 +6516,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
       kv as unknown as KVNamespace,
       makeTrip({
         token: 'la-reset',
+        waypoints: [{ stationName: '강남', line: '2', kind: 'destination', remainingSecToDest: 3 * 3600 }], // K5 #2926 PR-B: 장거리 예상 소요(lockless 시한 종료 창 확대)
         createdAt: NOW - 2 * 60 * 60_000, // 환승 도중인 장거리 trip
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
@@ -6545,7 +6546,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
       kv as unknown as KVNamespace,
       makeTrip({
         token: 'la-stale-lockless',
-        createdAt: NOW - 30 * 60_000,
+        createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
         infoModeEnabled: true,
@@ -6583,7 +6584,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
     const kv = new InMemoryKV();
     const trip = makeTrip({
       token: 'la-stale-silent',
-      createdAt: NOW - 30 * 60_000,
+      createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
       expiresAt: NOW + 60 * 60_000,
       alarmAtEpochMs: NOW + 60_000,
       lastLaPushAt: NOW - 6 * 60_000,
@@ -6620,7 +6621,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
     const kv = new InMemoryKV();
     const trip = makeTrip({
       token: 'la-stale-outage',
-      createdAt: NOW - 30 * 60_000,
+      createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
       expiresAt: NOW + 60 * 60_000,
       alarmAtEpochMs: NOW + 60_000,
       lastLaPushAt: NOW - 6 * 60_000,
@@ -6661,7 +6662,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
     const kv = new InMemoryKV();
     const trip = makeTrip({
       token: 'la-stale-recovered',
-      createdAt: NOW - 30 * 60_000,
+      createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
       expiresAt: NOW + 60 * 60_000,
       alarmAtEpochMs: NOW + 60_000,
       lastLaPushAt: NOW - 6 * 60_000,
@@ -6697,7 +6698,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
       kv as unknown as KVNamespace,
       makeTrip({
         token: 'la-stale-a',
-        createdAt: NOW - 30 * 60_000,
+        createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
         lastLaPushAt: NOW - 6 * 60_000,
@@ -6708,7 +6709,7 @@ describe('runScheduled — #1933 LA stale auto-end backstop', () => {
       kv as unknown as KVNamespace,
       makeTrip({
         token: 'la-stale-b',
-        createdAt: NOW - 30 * 60_000,
+        createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료 창 안(관심사 아님)
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
         lastLaPushAt: NOW - 6 * 60_000,
@@ -15944,7 +15945,11 @@ describe('runScheduled — #3167 활성 트립 마커는 만료 증가 시에만
     try {
       vi.setSystemTime(NOW);
       const kv = new InMemoryKV();
-      const original = makeTrip({ expiresAt: NOW + MARKER_TTL_MS });
+      const original = makeTrip({
+        expiresAt: NOW + MARKER_TTL_MS,
+        // K5 #2926 PR-B: 만료 이후 tick까지 서비스돼야 하므로 장거리 예상 소요(lockless 시한 종료 창 확대).
+        waypoints: [{ stationName: '강남', line: '2', kind: 'destination', remainingSecToDest: 3 * 3600 }],
+      });
       await putTrip(kv as unknown as KVNamespace, original);
       await markTripRegistered(kv as unknown as KVNamespace, original.expiresAt, NOW);
       const putSpy = vi.spyOn(kv, 'put');

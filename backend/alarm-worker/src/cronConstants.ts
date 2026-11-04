@@ -40,3 +40,9 @@ export const MID_CYCLE_MIN_REMAINING_MS = 10_000;
  * pass 자체를 skip한다 — "겹침" 리스크 관리(#2615 이슈 본문 항목 3).
  */
 export const MID_CYCLE_START_GUARD_MS = CRON_INTERVAL_MS - MID_CYCLE_MIN_REMAINING_MS;
+
+/**
+ * boardingLock fallback에서 hop당 기본 소요(90s). 환승역 등 실제 hop은 후속 데이터로 정밀화.
+ * `scheduled.ts`가 re-export한다(K5 #2926 PR-B: `locklessTimeout.ts`가 순환 import 없이 쓰도록 이쪽으로 이동).
+ */
+export const FALLBACK_HOP_SEC = 90;

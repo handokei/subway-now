@@ -136,12 +136,26 @@ export function hasBoardingResponseForCurrentLeg(trip: Trip): boolean {
  * re-register돼도 히스토리가 유지된다(putTrip은 "이번 쓰기 시점"만 보고 stamp하므로 그 보존은
  * caller 책임).
  */
+/**
+ * #2628 lockEverAttached + K5 #2926 PR-B locklessSince 파생 stamp(순수). 원본 trip은 mutate하지 않는다.
+ * - lock 부착 상태: lockEverAttached=true, locklessSince 제거(다시 풀릴 때 새로 센다).
+ * - lock 없음 + 이력 있음 + locklessSince 부재: 이번 쓰기 시각이 해제 시각(이미 있으면 고정).
+ */
+function stampLockLifecycle(trip: Trip): Trip {
+  if (trip.boardingLock !== undefined) {
+    if (trip.lockEverAttached === true && trip.locklessSince === undefined) return trip;
+    const { locklessSince: _released, ...rest } = trip;
+    return { ...rest, lockEverAttached: true };
+  }
+  if (trip.lockEverAttached === true && trip.locklessSince === undefined) {
+    return { ...trip, locklessSince: Date.now() };
+  }
+  return trip;
+}
+
 export async function putTrip(kv: KVNamespace, trip: Trip): Promise<void> {
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
-  const toWrite: Trip =
-    trip.boardingLock !== undefined && trip.lockEverAttached !== true
-      ? { ...trip, lockEverAttached: true }
-      : trip;
+  const toWrite = stampLockLifecycle(trip);
   await kv.put(tripKey(trip.token), JSON.stringify(withoutLockRev(toWrite)), { expirationTtl: ttlSec });
 }
 

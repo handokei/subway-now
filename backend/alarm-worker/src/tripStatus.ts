@@ -85,9 +85,14 @@ export function toTripStatusEndReason(reason: TripEndedReason): TripStatusEndRea
 /**
  * backend 내부 전용 종료 사유 → 클라이언트가 아는 `TripEndedReason`. 내부 식별자는 D1/log에만 남기고
  * 외부 표면(alert push payload `reason`, trip status 마커)에는 기존 `'expired'`로 노출한다(client enum 불변).
- * - `la-stale-backstop` (#1933), `end-prompt-timeout` (#3007 PR-3).
+ * - `la-stale-backstop` (#1933), `end-prompt-timeout` (#3007 PR-3),
+ *   `lockless-timeout` (K5 #2926 PR-B).
  */
-const INTERNAL_ONLY_END_REASONS: ReadonlySet<TripEndedReason> = new Set(['la-stale-backstop', 'end-prompt-timeout']);
+const INTERNAL_ONLY_END_REASONS: ReadonlySet<TripEndedReason> = new Set([
+  'la-stale-backstop',
+  'end-prompt-timeout',
+  'lockless-timeout',
+]);
 export function toExternalTripEndedReason(reason: TripEndedReason): TripEndedReason {
   return INTERNAL_ONLY_END_REASONS.has(reason) ? 'expired' : reason;
 }

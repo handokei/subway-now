@@ -375,6 +375,13 @@ export interface Trip {
    */
   __lockRev?: number;
   /**
+   * K5 #2926 PR-B — lock이 마지막으로 풀린 시각(epoch ms) = lockless 시한 종료(`locklessTimeout.ts`)의 기준 시각.
+   * `putTrip`이 "lock 이력(lockEverAttached)이 있는데 현재 boardingLock이 없는" 첫 쓰기에서 stamp하고(해제 경로가
+   * 흩어져 있어 단일 쓰기 지점에서 잡는다 — 해제 직후 같은 tick의 putTrip이므로 오차 < 1 cron), lock이 다시 부착되면 지운다.
+   * 추가 KV write 0(기존 put에 실림). same-session 재등록은 `index.ts` baseTrip이 보존, new-session은 자연 소거.
+   */
+  locklessSince?: number;
+  /**
    * #2628 — boarding-prompt(탑승/하차/미탑승) 응답을 사용자가 1회라도 보냈는지. 응답 채널은
    * 두 곳 — `POST /trips/:token/boarding-confirm`(action 값 boarded/disembarked/not-boarded
    * 무관) + `POST /boarding-prompt/dismiss`(구/병행 클라가 쓰는 'not-boarded'의 동의어 경로).
@@ -853,7 +860,8 @@ export type TripEndedReason =
   | 'expired'
   | 'push-unrecoverable'
   | 'la-stale-backstop'
-  | 'end-prompt-timeout';
+  | 'end-prompt-timeout'
+  | 'lockless-timeout';
 
 /**
  * #2893 (진단 계측 only) — `cleanupTripWithLa`(liveActivity.ts) 호출처 식별자. 여러 호출처가
@@ -881,6 +889,7 @@ export type TripEndedReason =
  * - `'lockless-shift-empty'` — lockless intermediate shift 후 waypoints 소진(10/7 조기종료
  *   재현 불가의 두 후보 중 하나).
  * - `'end-prompt-auto-end'` — #3007 PR-3: 정지 질문(`endPromptShownAt`) +5분 무응답·무이동 자동 종료.
+ * - `'lockless-timeout'` — K5 #2926 PR-B: lock 없는 trip이 `예상 소요 x1.5 + 15분`을 넘겨 시한 종료.
  * - `'http-delete'` — `DELETE /trips/:token`(사용자 명시 종료 또는 device 자체 cleanup).
  * - `'http-destination-disembark-confirmed'` — `POST /trips/:token/boarding-confirm`
  *   (action='disembarked')가 `destinationConfirmPendingSince` 유예 중인 trip을 즉시 완결(#2920/
@@ -903,7 +912,8 @@ export type TripEndPath =
   | 'lockless-shift-empty'
   | 'http-delete'
   | 'http-destination-disembark-confirmed'
-  | 'end-prompt-auto-end';
+  | 'end-prompt-auto-end'
+  | 'lockless-timeout';
 
 /**
  * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의
