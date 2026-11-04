@@ -907,7 +907,8 @@ function parseQueryNumber(raw: string | undefined): number | undefined {
  */
 export async function dualWriteTripDo(env: Env, trip: Trip): Promise<void> {
   const flag = await getTripDoFlag(env.TRIPS).catch(() => TRIP_DO_FLAG_DEFAULT);
-  if (flag !== 'on' || !env.TRIP_DO) return;
+  // #3300 PR-2: legacy `on`은 off로 정규화됐다. 단계(lock/progress/full)가 켜진 경우에만 shadow seed를 유지한다.
+  if (flag.stage === 'off' || !env.TRIP_DO) return;
 
   try {
     const id = env.TRIP_DO.idFromName(trip.token);

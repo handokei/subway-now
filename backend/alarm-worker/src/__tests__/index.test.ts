@@ -9528,7 +9528,7 @@ describe('dualWriteTripDo (#2264, ADR-031 Phase 1)', () => {
 
   it('env.TRIP_DO 미바인딩: flag on이어도 no-op', async () => {
     const env = makeKvEnv();
-    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'lock@1');
     const trip = validateTrip({ ...base(), token: 'tok-do-2' })!;
     // TRIP_DO undefined — 예외 없이 그냥 반환되는지만 확인.
     await expect(dualWriteTripDo(env, trip)).resolves.toBeUndefined();
@@ -9536,7 +9536,7 @@ describe('dualWriteTripDo (#2264, ADR-031 Phase 1)', () => {
 
   it('flag on: DO에 trip이 seed되고 GET /trip으로 조회 가능', async () => {
     const env = makeKvEnv();
-    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'lock@1');
     const { ns, instances } = makeFakeTripDoNamespace();
     const trip = validateTrip({ ...base(), token: 'tok-do-3' })!;
     await dualWriteTripDo({ ...env, TRIP_DO: ns }, trip);
@@ -9549,7 +9549,7 @@ describe('dualWriteTripDo (#2264, ADR-031 Phase 1)', () => {
 
   it('flag on: 기존 DO row와 신규 trip이 다르면 divergence 로그를 남긴다', async () => {
     const env = makeKvEnv();
-    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'lock@1');
     const { ns } = makeFakeTripDoNamespace();
     const tripV1 = validateTrip({ ...base(), token: 'tok-do-4', destination: 'dst-v1' })!;
     await dualWriteTripDo({ ...env, TRIP_DO: ns }, tripV1);
@@ -9566,7 +9566,7 @@ describe('dualWriteTripDo (#2264, ADR-031 Phase 1)', () => {
 
   it('flag on: 첫 seed(기존 row 없음)는 divergence 로그를 남기지 않는다', async () => {
     const env = makeKvEnv();
-    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'lock@1');
     const { ns } = makeFakeTripDoNamespace();
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const trip = validateTrip({ ...base(), token: 'tok-do-5' })!;
@@ -9580,7 +9580,7 @@ describe('dualWriteTripDo (#2264, ADR-031 Phase 1)', () => {
 
   it('DO stub이 throw해도 dualWriteTripDo는 삼키고 로그만 남긴다 (graceful)', async () => {
     const env = makeKvEnv();
-    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'lock@1');
     const throwingNs = {
       idFromName: (name: string) => ({ toString: () => name }) as unknown as DurableObjectId,
       get: () =>
@@ -9610,7 +9610,7 @@ describe('dualWriteTripDo (#2264, ADR-031 Phase 1)', () => {
 
   it('POST /trips 통합: flag on이면 응답 성공 + DO에 trip이 shadow-seed된다', async () => {
     const env = makeKvEnv();
-    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'on');
+    await env.TRIPS.put(TRIP_DO_FLAG_KV_KEY, 'lock@1');
     const { ns, instances } = makeFakeTripDoNamespace();
     const res = await post('/trips', { ...base(), token: 'tok-do-8' }, { ...env, TRIP_DO: ns });
     expect(res.status).toBe(200);
