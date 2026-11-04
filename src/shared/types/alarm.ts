@@ -20,8 +20,8 @@ export interface AlarmEvent {
   type: AlarmType;
   stationName: string;
   // 실제로 내리는 승강장의 역 id (경로 계산 함수가 채운 값). 환승역=목적지여도 fromLine 쪽 id다.
-  // 경로에 id가 없으면 undefined — 이름으로 대체 조회하지 않는다(#3177 PR-4, 필수화는 PR-6z).
-  stationId?: string;
+  // 이벤트를 만드는 쪽이 id를 반드시 채운다(#3177 PR-6z). id를 못 구하는 문구 빌드 경로는 `AlarmEventInput`을 쓴다.
+  stationId: string;
   // 알람 대상역에 진입하는 진행방향(상행/하행). 좌/우 하차 방향을 결정하는 데 쓰인다.
   // 노선/탑승역/목적역 중 하나라도 불명이면 undefined — 알람 본문에서 좌/우 라인을 생략한다.
   direction?: TravelDirection;
@@ -32,6 +32,12 @@ export interface AlarmEvent {
   // 문구(안전망 알림·오버레이·Live Activity)만 읽는다 — dedup 키·phase 판정은 이 필드를 보지 않는다.
   band?: number;
 }
+
+/**
+ * 문구(알림 본문) 조립 전용 입력 — `AlarmEvent`와 같되 stationId가 없을 수 있다(구 backend payload·id 검증 실패).
+ * id가 없으면 하차문·빠른하차 줄만 생략한다(#3177). 저장·오버레이용은 `AlarmEvent`(필수)를 쓴다.
+ */
+export type AlarmEventInput = Omit<AlarmEvent, 'stationId'> & { stationId?: string };
 
 /**
  * backend trip register payload에 포함되는 단일 waypoint.

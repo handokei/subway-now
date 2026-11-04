@@ -6,6 +6,7 @@
 import { buildCompanionAlarmEvent } from '../companionAlarmEvent';
 import { resolveAlarmDirection } from '../alarmDirection';
 import { makeDirectRoute, makeTransferRoute, makeMultiTransferRoute } from '../../../../testUtils/routeFixtures';
+import { findStationByNameAndLine } from '../../../../shared/utils/stationLookup';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 
 const 교대 = canonicalStationName('교대', '2');
@@ -41,7 +42,7 @@ describe('buildCompanionAlarmEvent', () => {
       ),
       band: 3,
     });
-    expect(event.direction).toBeDefined();
+    expect(event?.direction).toBeDefined();
   });
 
   it('도착 타깃(환승 후 구간): 도착역 stationId', () => {
@@ -53,8 +54,8 @@ describe('buildCompanionAlarmEvent', () => {
       targetKind: 'destination',
       originStation: 교대,
     });
-    expect(event.stationId).toBe('3-목적');
-    expect(event.type).toBe('destination');
+    expect(event?.stationId).toBe('3-목적');
+    expect(event?.type).toBe('destination');
   });
 
   it('band 미지정(기본 1역 전 칸)이면 band 키가 없다', () => {
@@ -69,20 +70,27 @@ describe('buildCompanionAlarmEvent', () => {
     expect(Object.prototype.hasOwnProperty.call(event, 'band')).toBe(false);
   });
 
-  it('route가 없으면 stationId·direction 없이 기본 필드만 (오버레이는 뜬다)', () => {
+  it('route가 없으면 direction 없이, (역명, nextLine)으로 찾은 id로 오버레이 이벤트를 만든다', () => {
     const event = buildCompanionAlarmEvent({
       route: null,
       destinationName: null,
       nextStation: 교대,
-      nextLine: '2',
+      nextLine: '3',
       targetKind: 'transfer',
       originStation: 역삼,
       band: 2,
     });
-    expect(event).toEqual({ phaseId: 'early', type: 'transfer', stationName: 교대, band: 2 });
+    expect(event).toEqual({
+      phaseId: 'early',
+      type: 'transfer',
+      stationName: 교대,
+      band: 2,
+      stationId: findStationByNameAndLine(교대, '3')?.id,
+    });
+    expect(event?.stationId).toMatch(/^3-/);
   });
 
-  it('route에 없는 역이 오면(경로 변경 직후 등) 조회 실패 → 기본 필드만', () => {
+  it('route에 없는 역이 오면(경로 변경 직후 등) route 조회 실패 → (역명, nextLine) id, direction 없음', () => {
     const event = buildCompanionAlarmEvent({
       route: makeDirectRoute(5, '2'),
       destinationName: 강남,
@@ -91,7 +99,21 @@ describe('buildCompanionAlarmEvent', () => {
       targetKind: 'transfer',
       originStation: 역삼,
     });
-    expect(event).toEqual({ phaseId: 'early', type: 'transfer', stationName: 서울역 });
+    expect(event).toEqual({
+      phaseId: 'early',
+      type: 'transfer',
+      stationName: 서울역,
+      stationId: findStationByNameAndLine(서울역, '1')?.id,
+    });
+  });
+
+  it('route·(역명, nextLine) 조회가 모두 실패하면 null — 호출자가 오버레이를 생략한다', () => {
+    const base = { destinationName: null, nextStation: '없는역', targetKind: 'transfer' as const, originStation: 역삼 };
+    expect(buildCompanionAlarmEvent({ ...base, route: null, nextLine: '1' })).toBeNull();
+    expect(buildCompanionAlarmEvent({ ...base, route: null, nextLine: 'not-a-line' })).toBeNull();
+    expect(
+      buildCompanionAlarmEvent({ ...base, route: makeDirectRoute(5, '2'), destinationName: 강남, nextLine: '1' }),
+    ).toBeNull();
   });
 
   it('같은 역이 환승·도착으로 두 번 나오면 targetKind가 같은 타깃을, 그 안에서 nextLine(진입 노선) 일치를 우선한다', () => {
@@ -120,6 +142,6 @@ describe('buildCompanionAlarmEvent', () => {
       targetKind: 'transfer',
       originStation: 역삼,
     });
-    expect(event.stationId).toBe('3-교대-둘째');
+    expect(event?.stationId).toBe('3-교대-둘째');
   });
 });
