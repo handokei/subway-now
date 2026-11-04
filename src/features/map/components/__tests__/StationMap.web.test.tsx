@@ -72,4 +72,50 @@ describe('StationMap.web', () => {
     );
     expect(getByText('강남')).toBeTruthy();
   });
+  describe('routeCoords (경로 표시)', () => {
+    const routeCoords = {
+      path: [
+        { latitude: gangnam.lat, longitude: gangnam.lng },
+        { latitude: sinnonhyeon.lat, longitude: sinnonhyeon.lng },
+      ],
+      keyStations: [
+        { station: gangnam, role: 'origin' as const },
+        { station: sinnonhyeon, role: 'transfer' as const },
+        { station: gangnam, role: 'destination' as const },
+      ],
+    };
+
+    it('routeCoords가 있으면 경로 섹션과 역할별 키 역을 순서대로 렌더링한다', () => {
+      const { getByTestId, getByText } = renderWithTheme(
+        <StationMap {...defaultProps} nearbyStations={[gangnam]} routeCoords={routeCoords} />,
+      );
+      expect(getByTestId('route-section')).toBeTruthy();
+      expect(getByText(i18next.t('map.routeHeader'))).toBeTruthy();
+      expect(getByText(i18next.t('map.originBadge'))).toBeTruthy();
+      expect(getByText(i18next.t('map.transferBadge'))).toBeTruthy();
+      expect(getByText(i18next.t('map.destinationBadge'))).toBeTruthy();
+      expect(getByTestId('route-station-0-origin')).toBeTruthy();
+      expect(getByTestId('route-station-1-transfer')).toBeTruthy();
+      expect(getByTestId('route-station-2-destination')).toBeTruthy();
+    });
+
+    it('주변 역이 없어도 routeCoords가 있으면 경로 섹션을 렌더링한다', () => {
+      const { getByTestId, getByText } = renderWithTheme(
+        <StationMap {...defaultProps} routeCoords={routeCoords} />,
+      );
+      expect(getByTestId('route-section')).toBeTruthy();
+      expect(getByText(i18next.t('map.noNearbyStations'))).toBeTruthy();
+    });
+
+    it.each([
+      ['undefined', undefined],
+      ['null', null],
+      ['빈 path', { path: [], keyStations: [] }],
+    ])('routeCoords가 %s이면 경로 섹션을 렌더링하지 않는다', (_n, value) => {
+      const { queryByTestId } = renderWithTheme(
+        <StationMap {...defaultProps} nearbyStations={[gangnam]} routeCoords={value} />,
+      );
+      expect(queryByTestId('route-section')).toBeNull();
+    });
+  });
 });
