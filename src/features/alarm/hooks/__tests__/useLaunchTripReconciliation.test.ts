@@ -681,6 +681,34 @@ describe('runLaunchTripReconciliation', () => {
         expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
       });
 
+      it('ended + 미래 도착 알람 있음 → 정리 유예 (알람 유지, 알림 0, 정리·sentinel·키 제거 없음)', async () => {
+        mockHasFutureTripArrivalAlarm.mockResolvedValue(true);
+        mockFetchTripStatus.mockResolvedValue({
+          status: 'ended',
+          endedAt: DUMP_ENDED_AT,
+          endReason: 'destination-arrived',
+        });
+        await runLaunchTripReconciliation();
+        expect(mockHasFutureTripArrivalAlarm).toHaveBeenCalledWith('tk');
+        expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+        expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+        expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+        expect(mockSetSentinel).not.toHaveBeenCalled();
+        expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
+      });
+
+      it('ended + 미래 도착 알람 없음 → 기존대로 정본 정리', async () => {
+        mockHasFutureTripArrivalAlarm.mockResolvedValue(false);
+        mockFetchTripStatus.mockResolvedValue({
+          status: 'ended',
+          endedAt: DUMP_ENDED_AT,
+          endReason: 'destination-arrived',
+        });
+        await runLaunchTripReconciliation();
+        expect(mockHasFutureTripArrivalAlarm).toHaveBeenCalledWith('tk');
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+      });
+
       it('ended지만 endedAt 누락 → 현재 시각으로 정본 정리 (알림 0)', async () => {
         mockFetchTripStatus.mockResolvedValue({ status: 'ended', endedAt: null, endReason: null });
         await runLaunchTripReconciliation();
