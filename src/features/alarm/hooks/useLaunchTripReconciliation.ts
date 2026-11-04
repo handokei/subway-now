@@ -161,12 +161,32 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       getLastSilentPushReceivedAt(),
       getTripStartedAt(),
     ]);
-    if (
+    const signal4Met =
       lastReceivedAt !== null &&
       startedAt !== null &&
       now - lastReceivedAt > SIGNAL_4_SILENT_PUSH_TIMEOUT_MS &&
-      now - startedAt < SIGNAL_4_KTX_ETA_UPPER_BOUND_MS
-    ) {
+      now - startedAt < SIGNAL_4_KTX_ETA_UPPER_BOUND_MS;
+    // #3005 Q1(c) — Signal 4 판정 전에 backend status를 먼저 조회한다. backend가 이미 이 trip의 종료를
+    // 확정했다면(예: destination-arrived) "서버와 연결이 끊겼다"는 backend-silent 알림은 틀린 사유다.
+    // ended(현재 trip의 것)면 정본 cleanup(로컬 알림 없음 — backend alert가 담당)으로 끝낸다.
+    // alive/gone/네트워크 실패/다른 trip의 ended marker는 기존 Signal 4 판정 그대로.
+    let prefetched: Awaited<ReturnType<typeof fetchTripStatus>> | null = null;
+    if (signal4Met) {
+      try {
+        prefetched = await fetchTripStatus(tripToken, baseUrl);
+      } catch (e) {
+        logger.warn('Signal 4 status 선조회 실패 — 기존 Signal 4 판정 유지', e);
+      }
+      if (
+        prefetched?.status === 'ended' &&
+        !isEndedMarkerOfOtherTrip(prefetched.corrId, getCurrentTripCorrIdSync())
+      ) {
+        logger.info(
+          'Signal 4 조건 충족이나 backend가 이미 종료 확정 — 정본 cleanup (backend-silent 알림 없음)',
+        );
+        await cleanupBackendConfirmedEndedTrip(prefetched.endedAt ?? Date.now());
+        return;
+      }
       logger.info(
         `Signal 4 backend-timeout self-end: silentPushGap=${now - lastReceivedAt}ms tripAge=${now - startedAt}ms`,
       );

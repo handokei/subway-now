@@ -114,6 +114,7 @@ jest.mock('../../../../shared/utils/logger', () => ({
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockFetchTripStatus.mockReset();
   await AsyncStorage.clear();
   mockGetSentinel.mockResolvedValue(null);
   mockSetSentinel.mockResolvedValue(undefined);
@@ -490,11 +491,11 @@ describe('runLaunchTripReconciliation', () => {
     });
 
     it('silent push 30분+ 무음 + trip 10h 미만 → self-end (recall + cleanup + sentinel + active clear)', async () => {
-      // fetchTripStatus는 호출되면 안 됨 — Signal 4가 fetch 이전에 판정 & 종결.
+      // #3005 Q1(c) — Signal 4 판정 전 status를 1회 선조회한다 (결과 없음 = 기존 Signal 4 유지).
       mockGetLastSilentPushReceivedAt.mockResolvedValue(now - OVER_TIMEOUT);
       mockGetTripStartedAt.mockResolvedValue(now - UNDER_KTX);
       await runLaunchTripReconciliation();
-      expect(mockFetchTripStatus).not.toHaveBeenCalled();
+      expect(mockFetchTripStatus).toHaveBeenCalledTimes(1);
       expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
       expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
       // #2302 — 이 경로는 alarmLog에 흔적을 남기지 않으므로(logger.info만) backend end_reason이
@@ -678,6 +679,13 @@ describe('runLaunchTripReconciliation', () => {
         await runLaunchTripReconciliation();
         expect(mockNotifyTripEnded).not.toHaveBeenCalled();
         expect(mockRunTripBoundCleanups).toHaveBeenCalledWith('backend-confirmed');
+      });
+
+      it('ended지만 endedAt 누락 → 현재 시각으로 정본 정리 (알림 0)', async () => {
+        mockFetchTripStatus.mockResolvedValue({ status: 'ended', endedAt: null, endReason: null });
+        await runLaunchTripReconciliation();
+        expect(mockNotifyTripEnded).not.toHaveBeenCalled();
+        expect(mockSetSentinel.mock.calls[0][0]).toBe(DUMP_NOW);
       });
 
       it('거부 — ended지만 다른 trip의 corrId → 기존 Signal 4(backend-silent) 판정', async () => {
