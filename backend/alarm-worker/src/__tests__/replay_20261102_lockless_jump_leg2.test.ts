@@ -22,157 +22,23 @@
  * assert는 실제로 나간 APNs 요청(종류·tick·횟수) 기준이다.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Env, PositionPoint, Trip, Waypoint } from '../types';
-import { runCaptureReplay } from './helpers/replayHarness';
-import {
-  createDeviceReplayer,
-  loadCapsFixture,
-  loadD1Events,
-  makeTripEventSink,
-  parseRouteSig,
-  routeSigOf,
-  stubReplayFetch,
-} from './helpers/replay20261019';
-import type { TripProgress } from '../progress';
-import { attachDb, latestProgress, latestTrip } from './helpers/progressAuthorityReplay';
+import { latestTrip } from './helpers/progressAuthorityReplay';
 import { firedStationOccurrences } from './helpers/pushAssertions';
 import { useApnsHarness } from './helpers/sleepAlarmHarness';
+import {
+  alertTicks,
+  FIRST_TICK_WITH_ARRIVAL,
+  type Leg2,
+  HEAD_AFTER_LOCKLESS,
+  kst,
+  LEG2_SEGMENT,
+  replayLeg2,
+  tickIndexOf,
+  TOKEN,
+} from './helpers/jumpReplay20261102';
 
 useApnsHarness();
 afterEach(() => vi.unstubAllGlobals());
-
-const DIR = 'replay_20261102_lockless_jump_leg2';
-const TOKEN = 'replay-2308-1102';
-/** D1 1982(19:49:28) 이후 행부터 주입한다(재생 시작 = 19:49:45 tick 직전). 1983 register(19:49:29)가 첫 주입. */
-const REPLAY_FROM_MS = 1793616568000;
-const KST_OFFSET_MS = 9 * 3600_000;
-
-const rows = loadD1Events(DIR, 'events.json');
-const rowOf = (id: number) => {
-  const row = rows.find((r) => r.id === id);
-  if (!row) throw new Error(`D1 행 ${id}이 fixture에 없다`);
-  return row;
-};
-const kst = (ms: number) => new Date(ms + KST_OFFSET_MS).toISOString().slice(11, 19);
-
-/** 세션 노선 원본 = D1 1956 existingSig(전체) — hopIndex는 backend가 원본 순서로 stamp한 값. */
-const ROUTE = parseRouteSig(routeSigOf(rowOf(1956), 'existingSig')).map((w, hopIndex) => ({ ...w, hopIndex }));
-/** 재생 시작 시점 backend 진행분 = D1 1982(19:49:28) existingSig. hopIndex는 원본 위치. */
-const progressNow: Waypoint[] = parseRouteSig(routeSigOf(rowOf(1982), 'existingSig')).map((w) => ({
-  ...w,
-  hopIndex: ROUTE.findIndex((r) => r.stationName === w.stationName),
-}));
-/** lockless cron이 19:49:45에 어린이대공원을 소비한 뒤의 head (D1 1984 -> 1985 existing head 군자). */
-const HEAD_AFTER_LOCKLESS = progressNow[1].stationName;
-const TRANSFER = ROUTE.find((w) => w.kind === 'transfer') as Waypoint;
-/** 탑승역(건대입구) 다음부터 도착까지 7호선 전 구간 = lock 7320이 가져야 할 segment. */
-const LEG2_SEGMENT = [TRANSFER.stationName, ...ROUTE.filter((w) => w.line === '7').map((w) => w.stationName)];
-
-const fixture = loadCapsFixture(DIR);
-
-function motionSeries(): PositionPoint[] {
-  const point = (ts: number, motion: PositionPoint['motion']): PositionPoint => ({
-    ts,
-    motion,
-    lat: 37.540373,
-    lng: 127.069191,
-    accuracy: 20,
-  });
-  const walking = Array.from({ length: 7 }, (_, i) => point(1793616400000 + i * 30_000, 'walking'));
-  const waiting = Array.from({ length: 11 }, (_, i) => point(1793616610000 + i * 30_000, 'stationary'));
-  return [...walking, ...waiting];
-}
-
-function seedTrip(): Trip {
-  const eligibleAt = rowOf(1993).ts - 1263; // leg-resolve-attempt 19:53:45 elapsedSinceAnchorMs=1263 -> 도보 게이트 해제 시각
-  const transferIndex = ROUTE.findIndex((w) => w.kind === 'transfer');
-  const destination = ROUTE[ROUTE.length - 1];
-  return {
-    token: TOKEN,
-    route: {
-      type: 'transfer',
-      transferName: TRANSFER.stationName,
-      fromLine: TRANSFER.line,
-      toLine: ROUTE[transferIndex + 1].line,
-      stopsToTransfer: transferIndex + 1,
-      stopsFromTransfer: ROUTE.length - transferIndex - 1,
-    },
-    destination: destination.stationName,
-    waypoints: progressNow,
-    routeWaypoints: ROUTE,
-    originStationName: '뚝섬',
-    createdAt: REPLAY_FROM_MS - 10 * 60_000,
-    alarmAtEpochMs: REPLAY_FROM_MS,
-    expiresAt: REPLAY_FROM_MS + 3 * 60 * 60_000,
-    infoModeEnabled: true,
-    consecutiveEtaMissing: 0,
-    currentLegAnchor: { boardingStation: TRANSFER.stationName, line: '7' },
-    legBoardingEligibleAt: eligibleAt,
-  } as Trip;
-}
-
-async function replayLeg2(opts: { registers: boolean; sleep?: boolean }) {
-  const trip = seedTrip();
-  const { db, events } = makeTripEventSink();
-  const stub = stubReplayFetch(fixture);
-  const replayer = createDeviceReplayer({
-    rows: opts.registers
-      ? rows.filter((r) => r.ts >= REPLAY_FROM_MS)
-      : rows.filter((r) => r.ts >= REPLAY_FROM_MS && r.kind !== 'trip-register'),
-    token: TOKEN,
-    stub,
-    // 탑승 탭은 LA 버튼 모양(trainCode 미동봉) — D1 1997 anchorSource=currentLegAnchor outcome=resolved.
-    tapBody: () => ({ station: TRANSFER.stationName, line: '7' }),
-    mergeSyncByTs: true,
-    register: {
-      fromMs: REPLAY_FROM_MS,
-      body: {
-        destination: trip.destination,
-        route: trip.route,
-        createdAt: trip.createdAt,
-        infoModeEnabled: true,
-        sleepModeEnabled: opts.sleep === true,
-      },
-    },
-  });
-  const headsAfterTick: Array<string | undefined> = [];
-  const progressAfterTick: Array<TripProgress | null> = [];
-  let kvRef: KVNamespace | undefined;
-  const result = await runCaptureReplay({
-    locklessAdvanceLegacy: true, // K5 #2926 PR-A: lockless 전진을 전제로 쓰인 구 replay - 구 경로(kill switch legacy) 보호용 고정
-    fixture: { ...fixture, cycleStartsMs: fixture.cycleStartsMs.filter((c) => c + 1000 >= REPLAY_FROM_MS) },
-    seedTrips: [{ ...trip, ...(opts.sleep ? { sleepModeEnabled: true } : {}) }],
-    seedPositionSeries: { [TOKEN]: motionSeries() },
-    apns: 'capture',
-    beforeTick: async ({ tick, tickIndex, env, kv, pushes }) => {
-      kvRef = kv;
-      if (tickIndex > 0) {
-        headsAfterTick.push(latestTrip(kv, TOKEN)?.waypoints[0]?.stationName);
-        progressAfterTick.push(latestProgress(kv, TOKEN));
-      }
-      attachDb(env as Env, db);
-      stub.setNow(tick);
-      await replayer.beforeTick({ tick, env: env as Env, pushes });
-    },
-  });
-  if (kvRef) {
-    headsAfterTick.push(latestTrip(kvRef, TOKEN)?.waypoints[0]?.stationName);
-    progressAfterTick.push(latestProgress(kvRef, TOKEN));
-  }
-  return { result, events, headsAfterTick, progressAfterTick, taps: replayer.taps, registers: replayer.registers, kv: kvRef as KVNamespace };
-}
-
-type Leg2 = Awaited<ReturnType<typeof replayLeg2>>;
-const tickIndexOf = (r: Leg2, hhmmss: string) => r.result.cycles.findIndex((c) => kst(c.simNowMs).startsWith(hhmmss.slice(0, 7)));
-const alertTicks = (r: Leg2, station: string): string[] =>
-  r.result.cycles.flatMap((cycle) =>
-    firedStationOccurrences(cycle.pushes)
-      .filter((name) => name === station)
-      .map(() => kst(cycle.simNowMs)),
-  );
-
-/** 열차 7320이 해당 역에 도착한 시각(R2 캡처 recptnDt)을 처음 볼 수 있는 cron tick (캡처 19:55:53 / 19:57:54 -> 다음 정각 tick). */
-const FIRST_TICK_WITH_ARRIVAL: Record<string, string> = { '어린이대공원(세종대)': '19:56:4', '군자(능동)': '19:58:4' };
 
 describe('#2308 11/02 lockless 점프 + lock 전 전진이 lock 트립 역을 지움 — leg-2 lock 7320', () => {
   it.each([
