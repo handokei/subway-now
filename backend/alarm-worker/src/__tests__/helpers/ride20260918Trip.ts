@@ -80,8 +80,6 @@ export function makeRide20260918LocklessTrip(token: string): Trip {
     },
     destination: '용마산',
     waypoints: RIDE_20260918_WAYPOINTS,
-    // K5 #2926 PR-B — 세션 원본. lockless 전진으로 `waypoints`가 잘려도 시한 종료의 예상 소요가 줄지 않게 한다(등록 시 항상 채워짐).
-    routeWaypoints: RIDE_20260918_WAYPOINTS,
     expiresAt: RIDE_20260918_CREATED_AT_MS + 60 * 60_000,
     createdAt: RIDE_20260918_CREATED_AT_MS,
     alarmAtEpochMs: RIDE_20260918_CREATED_AT_MS,

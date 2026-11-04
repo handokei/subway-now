@@ -21,11 +21,13 @@ const wp = (stationName: string, kind: Waypoint['kind'], line = '7', extra: Part
 });
 
 function makeTrip(overrides: Partial<Trip> = {}): Trip {
+  const waypoints = [wp('a', 'intermediate'), wp('b', 'intermediate'), wp('c', 'intermediate'), wp('d', 'destination')];
   return {
     token: 't',
     route: { type: 'direct', line: '7', stops: 3 },
     destination: '용마산',
-    waypoints: [wp('a', 'intermediate'), wp('b', 'intermediate'), wp('c', 'intermediate'), wp('d', 'destination')],
+    waypoints,
+    routeWaypoints: waypoints,
     expiresAt: T0 + 9 * 60 * MIN,
     createdAt: T0,
     alarmAtEpochMs: T0,
@@ -74,9 +76,14 @@ describe('estimateTripDurationSec', () => {
     );
   });
 
-  it('routeWaypoints가 없으면 waypoints를 쓴다 / 비어 있으면 0', () => {
-    expect(estimateTripDurationSec(makeTrip({ routeWaypoints: undefined }))).toBe(3 * 90);
+  it('routeWaypoints가 비어 있으면 0', () => {
     expect(estimateTripDurationSec(makeTrip({ routeWaypoints: [], waypoints: [] }))).toBe(0);
+  });
+
+  it('routeWaypoints가 없으면 추정 불가(undefined) — 진행분 waypoints로 대신하지 않는다(전진할수록 시한이 줄어 정상 trip 오종료)', () => {
+    expect(estimateTripDurationSec(makeTrip({ routeWaypoints: undefined }))).toBeUndefined();
+    expect(locklessTimeoutDeadline(makeTrip({ routeWaypoints: undefined }))).toBeUndefined();
+    expect(evaluateLocklessTimeout(makeTrip({ routeWaypoints: undefined }), T0 + 999 * 60 * MIN)).toBe('none');
   });
 
   it('remainingSecToDest가 유한 비음수가 아니면(음수) 무시하고 fallback', () => {

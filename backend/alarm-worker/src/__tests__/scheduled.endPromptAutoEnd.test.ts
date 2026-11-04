@@ -71,7 +71,7 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
     destination: '용마산',
     waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
     expiresAt: NOW + 60 * 60_000,
-    createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료(예상 소요 x1.5 + 15분) 창 안에 두려 최근 등록으로 둔다 - 이 테스트의 관심사는 시한이 아니다.
+    createdAt: NOW - 60 * 60_000,
     alarmAtEpochMs: NOW - 60_000,
     laClient: { split: true, boardingStart: 'push-to-start', endPromptAutoEnd: true },
     boardingPushToStartToken: 'p2s-token',

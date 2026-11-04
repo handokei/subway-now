@@ -136,7 +136,10 @@ function seedTrip(): Trip {
     waypoints: LEG2.map((w) => ({ ...w })),
     routeWaypoints: FULL_ROUTE.map((w, hopIndex) => ({ ...w, hopIndex })),
     originStationName: '뚝섬',
-    createdAt: START_MS - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료(예상 소요 x1.5 + 15분) 창 안에 두려 최근 등록으로 둔다 - 이 테스트의 관심사는 시한이 아니다.
+    createdAt: START_MS - 20 * 60_000,
+    // 실측: leg-1은 lock 상태였고 D1 2134 하차 응답으로 풀렸다(lock 이력 + 해제 시각). K5 #2926 PR-B 시한 종료의 기준 시각이 된다.
+    lockEverAttached: true,
+    locklessSince: rowOf(2134).ts,
     alarmAtEpochMs: START_MS,
     expiresAt: START_MS + 3 * HOUR_MS,
     infoModeEnabled: true,

@@ -23,12 +23,16 @@ function transferSecondsAt(waypoints: readonly Waypoint[], index: number): numbe
 }
 
 /**
- * trip 예상 소요(초). 세션 원본(`routeWaypoints ?? waypoints`) 첫 waypoint의 `remainingSecToDest`(유한 비음수)가 있으면 우선,
- * 없으면 hop 수 x `FALLBACK_HOP_SEC` + 환승 waypoint별 도보 시간 합. 원본을 쓰는 이유: `waypoints`는 진행분으로 잘려 있어
- * 길이가 짧아지면 시한이 줄어 정상 trip을 일찍 끊는다(늦게 끊는 쪽이 안전).
+ * trip 예상 소요(초). 세션 원본 `routeWaypoints` 첫 waypoint의 `remainingSecToDest`(유한 비음수)가 있으면 우선,
+ * 없으면 hop 수 x `FALLBACK_HOP_SEC` + 환승 waypoint별 도보 시간 합.
+ *
+ * `routeWaypoints`가 없으면 `undefined`(추정 불가 -> 종료 안 함). `waypoints`로 대신하지 않는 이유: cron·sync가 앞으로
+ * 잘라 쓰는 진행분이라 전진할수록 추정이 줄어 정상 trip을 도중에 끊는다(실측 2026-09-18 replay에서 재현). `routeWaypoints`는
+ * #2308 이후 등록 trip에 항상 채워지므로 이 제외는 구 레코드(9h 강제 종료가 상한)에만 해당한다.
  */
-export function estimateTripDurationSec(trip: Trip): number {
-  const route = trip.routeWaypoints ?? trip.waypoints;
+export function estimateTripDurationSec(trip: Trip): number | undefined {
+  const { routeWaypoints: route } = trip;
+  if (route === undefined) return undefined;
   const [first] = route;
   if (first === undefined) return 0;
   const { remainingSecToDest } = first;
@@ -50,12 +54,13 @@ function locklessStartMs(trip: Trip): number | undefined {
   return Math.max(createdAt, releasedAt ?? 0, boardingResponse?.at ?? 0);
 }
 
-/** 종료 기한(epoch ms). 판정 불가면 `undefined`. */
+/** 종료 기한(epoch ms). 판정 불가(기준 시각 미상 또는 `routeWaypoints` 부재)면 `undefined`. */
 export function locklessTimeoutDeadline(trip: Trip): number | undefined {
   const start = locklessStartMs(trip);
   if (start === undefined) return undefined;
-  const durationMs = estimateTripDurationSec(trip) * 1000;
-  return start + durationMs * LOCKLESS_TIMEOUT_MULTIPLIER + LOCKLESS_TIMEOUT_EXTRA_MS;
+  const durationSec = estimateTripDurationSec(trip);
+  if (durationSec === undefined) return undefined;
+  return start + durationSec * 1000 * LOCKLESS_TIMEOUT_MULTIPLIER + LOCKLESS_TIMEOUT_EXTRA_MS;
 }
 
 /** lock이 활성이면 항상 `'none'`. lockless이고 기한을 넘겼을 때만 `'end'`. */

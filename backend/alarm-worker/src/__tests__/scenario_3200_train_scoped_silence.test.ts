@@ -145,7 +145,7 @@ const PATHS: Path[] = [
         ],
         apnsEnv: 'production',
         registeredAt: NOW - 20 * MIN,
-        createdAt: NOW - 5 * MIN, // K5 #2926 PR-B: lockless 시한 종료(예상 소요 x1.5 + 15분) 창 안에 두려 최근 등록으로 둔다 - 이 테스트의 관심사는 시한이 아니다.
+        createdAt: NOW - 20 * MIN,
         expiresAt: NOW + 60 * MIN,
         alarmAtEpochMs: NOW - MIN,
         currentLegAnchor: { boardingStation: '강남', line: '2' },

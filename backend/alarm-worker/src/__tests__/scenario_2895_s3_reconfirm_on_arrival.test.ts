@@ -80,7 +80,7 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
     ],
     apnsEnv: 'production',
     registeredAt: NOW - 20 * 60_000,
-    createdAt: NOW - 5 * 60_000, // K5 #2926 PR-B: lockless 시한 종료(예상 소요 x1.5 + 15분) 창 안에 두려 최근 등록으로 둔다 - 이 테스트의 관심사는 시한이 아니다.
+    createdAt: NOW - 20 * 60_000,
     expiresAt: NOW + 60 * 60_000,
     // #2794 폴링윈도우 게이트 — 즉시 평가 대상이 되도록 윈도우 안에 둔다(evidence_20260812
     // replay test와 동일 패턴).
