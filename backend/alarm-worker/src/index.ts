@@ -190,7 +190,7 @@ import {
   writeRegressionDataPoints,
 } from './regressionTelemetry';
 import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
-import { deleteSsot, readSsot, writeSsot } from './tripPositionSsot';
+import { deleteSsot, readSsot, reanchorSsotToLock, writeSsot } from './tripPositionSsot';
 import { appendUnique } from './advanceTripPosition';
 import {
   computeObservabilityMetrics,
@@ -3114,6 +3114,8 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         path: 'confirm',
         hasResponseMarker: hasBoardingResponseForCurrentLeg(working),
       });
+      // #3319 PR-b — lock 탑승역으로 SSoT 재앵커(환승 직후 이전 노선 역 고착 해소). attachBoardedLock 3경로 공통 지점.
+      await reanchorSsotToLock(c.env.TRIPS, token, attachedLock, { expiresAt: working.expiresAt });
     }
   }
 
@@ -4184,6 +4186,7 @@ app.post('/boarding-lock/sync', async (c) => {
     working = applyLockResult(working, released);
     syncRev = released.cell.rev;
   }
+  let promotedLockForSsot: BoardingLockMeta | undefined;
   if (
     working.boardingLock === undefined &&
     payload.trainCode !== undefined &&
@@ -4247,6 +4250,7 @@ app.post('/boarding-lock/sync', async (c) => {
           lastLaPushAt: undefined,
           consecutiveEtaMissing: 0,
         };
+        promotedLockForSsot = promoted;
         working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
         if (fastForward.skip > 0 || fastForward.blockedAt !== undefined) {
           scheduleTripEvent(
@@ -4436,6 +4440,12 @@ app.post('/boarding-lock/sync', async (c) => {
         );
       }
     }
+  }
+
+  // #3319 PR-b — sync 승격(수동 목록 탭)으로 붙은 lock의 탑승역으로 SSoT 재앵커. 위 advance 쓰기 뒤에 둔다(fresh read라 그 결과 위에서
+  // 판정 — 구간 뒤쪽으로 이미 전진했으면 되감지 않는다).
+  if (promotedLockForSsot !== undefined) {
+    await reanchorSsotToLock(c.env.TRIPS, payload.token, promotedLockForSsot, { expiresAt: working.expiresAt });
   }
 
   const head = working.waypoints[0];

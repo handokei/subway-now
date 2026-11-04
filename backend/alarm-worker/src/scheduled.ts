@@ -121,6 +121,7 @@ import {
   DEVICE_SYNC_STALE_THRESHOLD_MS,
   isDeviceSyncStale,
   patchSsotFresh,
+  reanchorSsotToLock,
   readSsot,
   seedSsot,
   SSOT_CRON_READ_CACHE_TTL_SEC,
@@ -2100,6 +2101,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             path: 'cron-leg2',
             hasResponseMarker: hasUserBoardingResponse,
           });
+          // #3319 PR-b — leg-2 lock 승격 시 SSoT를 새 탑승역/노선으로 재앵커(환승 후 이전 노선 역 고착 해소).
+          await reanchorSsotToLock(env.TRIPS, trip.token, anchorLock, { expiresAt: trip.expiresAt });
           stats.boardingAnchorResolved += 1;
           log('boarding-anchor: leg-2 trainCode departure-confirmed, lock promoted', {
             token: trip.token.slice(0, 8),
@@ -2747,6 +2750,8 @@ async function reconcileLockTripProgress(
         line: lock.line,
         meta: { fromKey: reanchor.fromKey, toKey: reanchor.toKey, trainCode: lock.trainCode },
       }, now);
+      // #3319 PR-b — lock epoch 시작 재앵커 직후 SSoT도 같은 탑승역으로 맞춘다(되감기 거부는 helper 소유).
+      await reanchorSsotToLock(env.TRIPS, trip.token, trip.boardingLock, { expiresAt: trip.expiresAt });
     }
     const decision = reconcileTripWithProgress(trip, progress);
     if (decision === null) {

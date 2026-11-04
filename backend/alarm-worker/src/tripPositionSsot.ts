@@ -33,6 +33,7 @@
  * 초기 값 1. 향후 SSOT 구조 변경 시 readSsot에서 마이그레이션 분기. 본 PR은 v1만 정의.
  */
 
+import { normalizeStationName } from '../../../src/shared/utils/normalizeStationName';
 import { assertKvCacheTtl, CRON_READ_CACHE_TTL_SEC } from './kvConsistency';
 import type { LegConsensusRecord } from './transferLegConsensus';
 import type {
@@ -41,7 +42,7 @@ import type {
   LegBoardingPromptOutcome,
   TransferAdvanceOutcome,
 } from './tripEventLog';
-import type { Trip } from './types';
+import type { BoardingLockMeta, Trip } from './types';
 
 /**
  * Motion evidence ring buffer cap. KV row 크기 폭주 방지 (단일 row ≤25MB CF KV 한도 대비
@@ -496,6 +497,55 @@ export async function patchSsotFresh(
   const fresh = await readSsot(kv, token);
   if (fresh === null) return;
   await writeSsot(kv, { ...fresh, ...patch }, options);
+}
+
+export type SsotReanchorOutcome = 'reanchored' | 'unchanged' | 'skipped-ahead' | 'no-ssot' | 'no-anchor' | 'error';
+
+/**
+ * #3319 PR-b — lock 부착·lock-reanchor 직후 SSoT.currentStationId/line을 lock 탑승역(segmentStations[0])/lock.line으로 재앵커.
+ *
+ * SSoT.currentStationId writer는 cron advance·sync·seed뿐이라 lock 부착(탑승 응답·cron leg-2 승격·sync 승격)과
+ * lock-reanchor는 SSoT를 건드리지 않았다. 2026-11-04 환승 후 SSoT가 2호선 '성수'에 고착, 기기 LA가 7호선 내내 '성수'를 미러했다.
+ * lock 탑승역은 사용자 행동(탑승 응답·목록 탭)으로 확정된 위치라 SSoT보다 권위가 높다.
+ *
+ * 되감기 거부: 같은 노선에서 SSoT가 이미 lock 구간의 탑승역 **뒤** 역(segmentStations idx>0)이면 cron/sync가 먼저 전진시킨 값이므로
+ * 건드리지 않는다. 노선이 다르거나(환승 직후 고착) 구간에 없는 역이면 재앵커한다. 이미 같은 역/노선이면 쓰지 않는다(KV 쓰기 0).
+ * 쓰기는 `patchSsotFresh`와 같이 cacheTtl 없는 fresh read 위에 두 필드만 덮는다. lock 부착 1건당 읽기 1 + (재앵커 시) 쓰기 1.
+ */
+export async function reanchorSsotToLock(
+  kv: KVNamespace,
+  token: string,
+  lock: Pick<BoardingLockMeta, 'segmentStations' | 'line'>,
+  options?: { expiresAt?: number },
+): Promise<SsotReanchorOutcome> {
+  const [boardingStation] = lock.segmentStations;
+  if (boardingStation === undefined) return 'no-anchor';
+  try {
+    return await reanchorFresh(kv, token, lock, boardingStation, options);
+  } catch {
+    // 재앵커는 보조 정정이다 — KV 일시 오류(quota 등)가 lock 부착 응답/cron tick을 깨뜨리지 않게 흡수한다.
+    return 'error';
+  }
+}
+
+async function reanchorFresh(
+  kv: KVNamespace,
+  token: string,
+  lock: Pick<BoardingLockMeta, 'segmentStations' | 'line'>,
+  boardingStation: string,
+  options?: { expiresAt?: number },
+): Promise<SsotReanchorOutcome> {
+  const { segmentStations, line } = lock;
+  const fresh = await readSsot(kv, token);
+  if (fresh === null) return 'no-ssot';
+  const { currentStationId, currentStationLine } = fresh;
+  const current = normalizeStationName(currentStationId);
+  const sameLine = currentStationLine === line;
+  if (sameLine && current === normalizeStationName(boardingStation)) return 'unchanged';
+  const segmentIndex = segmentStations.map(normalizeStationName).indexOf(current);
+  if (sameLine && segmentIndex > 0) return 'skipped-ahead';
+  await writeSsot(kv, { ...fresh, currentStationId: boardingStation, currentStationLine: line }, options);
+  return 'reanchored';
 }
 
 /** SSOT delete (trip 종료 시 호출). */
