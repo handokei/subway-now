@@ -828,6 +828,18 @@ describe('POST /trips — lastAutoPromptedAt 보존 (#916 follow-up B)', () => {
     });
   });
 
+  it('K5 PR-B same session 재등록 — locklessSince 보존(시한 기준 시각 유지) / new session은 소거', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, { lockEverAttached: true, locklessSince: 777 });
+    await post('/trips', tripBody(), env);
+    expect(JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string).locklessSince).toBe(777);
+
+    const env2 = makeKvEnv();
+    await seedExisting(env2, { lockEverAttached: true, locklessSince: 777 });
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env2);
+    expect(JSON.parse((await env2.TRIPS.get(`trip:${TOKEN}`)) as string).locklessSince).toBeUndefined();
+  });
+
   it('#3007 PR-3 new session — endPrompt* 소거', async () => {
     const env = makeKvEnv();
     await seedExisting(env, { endPromptShownAt: 111, endPromptContinuedAt: 222 });

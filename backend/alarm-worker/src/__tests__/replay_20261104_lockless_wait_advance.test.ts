@@ -137,6 +137,9 @@ function seedTrip(): Trip {
     routeWaypoints: FULL_ROUTE.map((w, hopIndex) => ({ ...w, hopIndex })),
     originStationName: '뚝섬',
     createdAt: START_MS - 20 * 60_000,
+    // 실측: leg-1은 lock 상태였고 D1 2134 하차 응답으로 풀렸다(lock 이력 + 해제 시각). K5 #2926 PR-B 시한 종료의 기준 시각이 된다.
+    lockEverAttached: true,
+    locklessSince: rowOf(2134).ts,
     alarmAtEpochMs: START_MS,
     expiresAt: START_MS + 3 * HOUR_MS,
     infoModeEnabled: true,

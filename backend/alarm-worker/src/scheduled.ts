@@ -31,7 +31,7 @@ import {
 } from './apns';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
-import { CRON_INTERVAL_MS } from './cronConstants';
+import { CRON_INTERVAL_MS, FALLBACK_HOP_SEC } from './cronConstants';
 import {
   type BoardingFireDecision,
   boardingPromptDedupKey,
@@ -159,6 +159,7 @@ import {
   readSelfPollPosition,
   SELF_POLL_POSITION_MAX_AGE_SEC,
 } from './selfPollPosition';
+import { evaluateLocklessTimeout } from './locklessTimeout';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import {
   dedupeTripsByDeviceToken,
@@ -249,7 +250,7 @@ const POLLING_WINDOW_MS = 5 * 60 * 1000;
 export const RESCHEDULE_THRESHOLD_MS = 15_000;
 
 /** boardingLock fallback에서 hop당 기본 소요(90s). 환승역 등 실제 hop은 후속 데이터로 정밀화. */
-export const FALLBACK_HOP_SEC = 90;
+export { FALLBACK_HOP_SEC };
 
 /**
  * LA update push 발사 임계치 (#586 D). reschedule push의 15s 임계와는 별개 — LA는 화면 표시용이라
@@ -1859,6 +1860,24 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         elapsedMs: now - trip.createdAt,
         // #2032 (Issue D) — monitoring dimension. ADR-023: 발사 결정 X.
         sleepMode: trip.sleepModeEnabled,
+      });
+      continue;
+    }
+
+    // K5 #2926 PR-B — lockless 시한 종료(10/21 결정: 예상 소요 x1.5 + 15분, 종료 안내 1회). lock 활성 trip은 판정에서 제외.
+    // 폴링윈도우 게이트 앞에 둔다: 의향 없는 lockless trip도 대상이다. 추가 KV read 0(trip 필드만), 종료 시에만 재조회 1회.
+    if (evaluateLocklessTimeout(trip, now) === 'end') {
+      // 종료 직전 재조회(#3323과 동일 원칙): 그 사이 DELETE(null)·lock 부착·[재등록]으로 판정이 뒤집혔으면 종료하지 않는다.
+      const fresh = await getTrip(env.TRIPS, trip.token);
+      if (fresh === null || evaluateLocklessTimeout(fresh, now) !== 'end') continue;
+      log('cron: lockless timeout end', {
+        token: trip.token.slice(0, 8),
+        elapsedMs: now - fresh.createdAt,
+        sinceLockReleaseMs: fresh.locklessSince === undefined ? undefined : now - fresh.locklessSince,
+      });
+      await cleanupTripWithLa(fresh, env, deps, stats, now, log, {
+        reason: 'lockless-timeout',
+        endPath: 'lockless-timeout',
       });
       continue;
     }

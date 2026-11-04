@@ -1555,6 +1555,8 @@ app.post('/trips', async (c) => {
           // 해제돼 있어도(예: disembark 후 GPS update 재등록) putTrip의 자동 stamp(현재 boardingLock
           // 유무만 봄)가 커버 못하는 "과거에 부착됐었다"는 사실이 소실된다. 명시 보존으로 방지.
           lockEverAttached: existing.lockEverAttached,
+          // K5 #2926 PR-B — lock 해제 시각(lockless 시한 종료 기준). backend-only라 incoming이 항상 덮는다.
+          locklessSince: existing.locklessSince,
           boardingPromptResponded: existing.boardingPromptResponded,
           // #3144 (v8 D3) — boardingResponse: 현재 leg 응답 마커. backend-only state라 device가 보내지 않아
           // `...incoming`이 항상 undefined로 덮는다(위 lockEverAttached/legResolveStreak 계열과 같은 클래스).
