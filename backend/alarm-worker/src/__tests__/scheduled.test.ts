@@ -17120,6 +17120,35 @@ describe('runScheduled — #2323 환승 lockless leg-1 transfer 넘김 + answer-
         expect(stored?.currentStationLine).toBe('7');
         expect(stored?.passedStations).toEqual(['성수']);
       });
+
+      // 같은 11/04 tick의 completeWaypointAdvance(transfer 통과 stamp) — 캐시 스냅샷(성수)에 alarmEvent만 얹어 통째로
+      // 되쓰면 currentStationId가 되돌려진다. stamp는 현재 KV 값 위에 얹혀야 하고, stamp한 이벤트 자체는 남아야 한다.
+      it('lockless transfer advanced(completeWaypointAdvance stamp) 후에도 currentStationId/line은 advance 값, transfer alarmEvent는 stamp됨', async () => {
+        const kv = new CacheLagKV(0, {
+          byCacheTtl: { defaultTtlSec: 0, laggedPrefixes: ['ssot:'] },
+        });
+        const trip = makeTransferTrip(TOKEN_A2);
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLaggedAdvancedSsot(kv, trip);
+        const { db } = makeFireLogDb();
+        let stored: TripPositionSSoT | null;
+        try {
+          await runScheduled(makeEnv(kv, undefined, db), {
+            seoul: makeSeoulFull({ 건대입구: [arrivalOnLine('2', '건대입구', 0, 1, '9001')] }),
+            apnsConfig,
+            apnsHosts: APNS_HOSTS,
+            fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+            now: () => NOW,
+            generatePushId: () => 'p-3319-b',
+          });
+          stored = await readSsot(kv as unknown as KVNamespace, trip.token);
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(stored?.currentStationId).toBe('건대입구');
+        expect(stored?.currentStationLine).toBe('7');
+        expect(stored?.alarmEvents?.some((e) => e.type === 'transfer')).toBe(true);
+      });
     });
 
     it('transfer-advance(lockless) — arvlCd 미확보 → no-arvlcd, SSoT 부재면 append 없음', async () => {
