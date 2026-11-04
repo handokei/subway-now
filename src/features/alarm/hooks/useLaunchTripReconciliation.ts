@@ -79,6 +79,47 @@ function getBackendUrl(): string | null {
   return url;
 }
 
+type EndedTripStatus = Exclude<Awaited<ReturnType<typeof fetchTripStatus>>, { status: 'gone' }>;
+
+/**
+ * backend가 `ended`를 보고한 trip의 정리. 일반 경로와 Signal 4 선조회 경로(#3005 Q1c)가 공유한다.
+ *   other-trip -> 이전 trip의 marker(corrId 불일치): 현재 trip 유지
+ *   deferred   -> 미발사 도착 알람 존재: 키·store 보존(알람을 취소하지 않음)
+ *   cleaned    -> 정본 시퀀스로 정리 완료
+ */
+async function reconcileBackendEndedTrip(
+  result: EndedTripStatus,
+  tripToken: string,
+): Promise<'other-trip' | 'deferred' | 'cleaned'> {
+  // #3005 PR-D-b — 이전 trip의 marker(corrId 불일치)면 현재 trip을 정리하지 않는다.
+  if (isEndedMarkerOfOtherTrip(result.corrId, getCurrentTripCorrIdSync())) {
+    logger.info('trip ended marker는 이전 trip(corrId 불일치) — 현재 trip 유지');
+    return 'other-trip';
+  }
+  // #3143 — 미발사 도착 알람이 남아 있으면 유예: 키·store를 보존해 다음 launch/FG pull이 재시도한다
+  // (gone 분기의 deferred(alarm)와 동일 가드, 최후 보루는 9h backstop).
+  if (await hasFutureTripArrivalAlarm(tripToken)) {
+    logger.info('trip ended on backend — 대기 중 도착 알람, cleanup 유예');
+    return 'deferred';
+  }
+  const endedAt = result.endedAt ?? Date.now();
+  const reason = result.endReason ?? 'unknown';
+  logger.info(`trip ended on backend — reconcile state reason=${reason} endedAt=${endedAt}`);
+  // #2069 (Phase 3) — D11(`sendTripEndedNotification`) 제거. B12가 원격 alert push 단일
+  // 채널이라 로컬 알림 재생성은 하지 않는다. state cleanup(recall/cleanups/sentinel)만 유지.
+  // (PR-3b 판정: **유지** — 이 분기는 backend가 종료를 확정한 경우라 backend alert push가 알린다(추정 U10).
+  // device가 스스로 종료하는 Signal 4 분기만 위에서 notifyTripEnded를 부른다. 중복 방지: 이 분기에서
+  // 알리면 B12와 이중 알림이 된다.)
+  // #1351 R1 — silent push handler와 동일한 cleanup 시퀀스. alert payload trip-ended가
+  // BG handler를 호출하지 않아 cleanup이 누락된 경우 launch backstop으로 복구.
+  // recall은 cleanup이 storage를 비우기 전에 호출되어야 입력을 읽을 수 있다.
+  // 두 호출 모두 멱등 — silent push handler와 중복 호출 안전.
+  // #2178 — 5단 시퀀스(recall → cleanup → prompt → sentinel → active clear)를
+  // tripEndedCleanupSequence로 추출해 pull death backstop과 공유(중복 구현 금지).
+  await cleanupBackendConfirmedEndedTrip(endedAt);
+  return 'cleaned';
+}
+
 /**
  * 한 번의 reconciliation 사이클. 마운트 시 1회 호출.
  *
@@ -177,15 +218,10 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       } catch (e) {
         logger.warn('Signal 4 status 선조회 실패 — 기존 Signal 4 판정 유지', e);
       }
-      if (
-        prefetched?.status === 'ended' &&
-        !isEndedMarkerOfOtherTrip(prefetched.corrId, getCurrentTripCorrIdSync())
-      ) {
-        logger.info(
-          'Signal 4 조건 충족이나 backend가 이미 종료 확정 — 정본 cleanup (backend-silent 알림 없음)',
-        );
-        await cleanupBackendConfirmedEndedTrip(prefetched.endedAt ?? Date.now());
-        return;
+      if (prefetched?.status === 'ended') {
+        const outcome = await reconcileBackendEndedTrip(prefetched, tripToken);
+        // 'other-trip'(이전 trip의 marker)만 기존 Signal 4 판정으로 내려간다.
+        if (outcome !== 'other-trip') return;
       }
       logger.info(
         `Signal 4 backend-timeout self-end: silentPushGap=${now - lastReceivedAt}ms tripAge=${now - startedAt}ms`,
@@ -248,32 +284,7 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     }
 
     // status === 'ended'. silent push miss를 backstop으로 복구.
-    // #3005 PR-D-b — 이전 trip의 marker(corrId 불일치)면 현재 trip을 정리하지 않는다.
-    if (isEndedMarkerOfOtherTrip(result.corrId, getCurrentTripCorrIdSync())) {
-      logger.info('trip ended marker는 이전 trip(corrId 불일치) — 현재 trip 유지');
-      return;
-    }
-    // #3143 — 미발사 도착 알람이 남아 있으면 유예: 키·store를 보존해 다음 launch/FG pull이 재시도한다
-    // (gone 분기의 deferred(alarm)와 동일 가드, 최후 보루는 9h backstop).
-    if (await hasFutureTripArrivalAlarm(tripToken)) {
-      logger.info('trip ended on backend — 대기 중 도착 알람, cleanup 유예');
-      return;
-    }
-    const endedAt = result.endedAt ?? Date.now();
-    const reason = result.endReason ?? 'unknown';
-    logger.info(`trip ended on backend — reconcile state reason=${reason} endedAt=${endedAt}`);
-    // #2069 (Phase 3) — D11(`sendTripEndedNotification`) 제거. B12가 원격 alert push 단일
-    // 채널이라 로컬 알림 재생성은 하지 않는다. state cleanup(recall/cleanups/sentinel)만 유지.
-    // (PR-3b 판정: **유지** — 이 분기는 backend가 종료를 확정한 경우라 backend alert push가 알린다(추정 U10).
-    // device가 스스로 종료하는 Signal 4 분기만 위에서 notifyTripEnded를 부른다. 중복 방지: 이 분기에서
-    // 알리면 B12와 이중 알림이 된다.)
-    // #1351 R1 — silent push handler와 동일한 cleanup 시퀀스. alert payload trip-ended가
-    // BG handler를 호출하지 않아 cleanup이 누락된 경우 launch backstop으로 복구.
-    // recall은 cleanup이 storage를 비우기 전에 호출되어야 입력을 읽을 수 있다.
-    // 두 호출 모두 멱등 — silent push handler와 중복 호출 안전.
-    // #2178 — 5단 시퀀스(recall → cleanup → prompt → sentinel → active clear)를
-    // tripEndedCleanupSequence로 추출해 pull death backstop과 공유(중복 구현 금지).
-    await cleanupBackendConfirmedEndedTrip(endedAt);
+    await reconcileBackendEndedTrip(result, tripToken);
   } catch (e) {
     logger.warn('reconciliation 실패 (graceful)', e);
   }
