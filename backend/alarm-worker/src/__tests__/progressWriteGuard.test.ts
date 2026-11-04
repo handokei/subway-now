@@ -19,22 +19,59 @@ const GUARDED_SOURCES = new Set(['scheduled.ts', 'index.ts']);
 
 /** 파일 -> 선언 -> 허용되는 직접 쓰기 최대 개수. */
 const ALLOWED_WRITES: Record<string, Record<string, number>> = {
-  'scheduled.ts': {},
-  'index.ts': {},
+  'scheduled.ts': {
+    // reconcile: reanchor op 입력 리터럴 1 + legacy(flag off / lock@N) 직접 대입 2(reanchor / 맞춤 slice).
+    reconcileLockTripProgress: 3,
+    // 위치 따라잡기: legacy 메모리 구성(셀 단계는 claim 결과 applyProgressResult가 대체).
+    catchUpToLockTrain: 4,
+    // 쓰기가 아닌 매칭: progress KV 사본 객체 리터럴(trip을 읽기만 한다) — progress@N에서는 mirrorProgress가 early return.
+    mirrorProgress: 3,
+    // 쓰기가 아닌 매칭: 읽기 전용 파생(`computeMultiHopContext({ ...trip, waypoints: remaining })`).
+    deriveStationNotifCounts: 1,
+    // 쓰기가 아닌 매칭: 로그 객체 리터럴(`lastTrackedArrivalEpoch: lastEpoch`).
+    handleEtaMissing: 3,
+    // setLegAnchor op의 legacy 직접 대입.
+    stampCurrentLegAnchor: 4,
+    // advanceHead claim의 legacy 직접 대입(waypoints slice + 기준값 리셋).
+    completeWaypointAdvance: 4,
+    // lockless intermediate claim의 legacy `waypoints.shift()`.
+    runLocklessIntermediate: 1,
+    // 쓰기가 아닌 매칭: `stampProgressFields({ set: { legBoardingPromptState: markPromptFired(...) } })` 입력 줄.
+    maybeFireLegBoardingPrompt: 1,
+  },
+  'index.ts': {
+    // register 후속 resolver — legacy 메모리 구성(셀 단계는 persistProgressStamps가 덮는다).
+    resolveBoardingAnchorAtRegister: 3,
+    // legacy 기준값 리셋 1 + registerProgress op 입력 2.
+    applyRegisterCells: 3,
+    // 같은 세션 재등록 carry(`existing.*`) — existing은 overlay된 셀 값이고, 셀 단계는 registerProgress가 권위.
+    'post /trips': 8,
+    // tapAdvance legacy 메모리 구성(셀 단계는 commitConfirmProgress의 userTapAdvance가 확정).
+    'post /trips/:token/boarding-confirm': 5,
+    // attachBoardedLock 메모리 구성(셀 단계는 반환 progressStamps를 op로 영속).
+    attachBoardedLock: 3,
+    // sync legacy: transferObservedAt / 건너뛴 구간 slice / 순수 전진 slice / 승격 fast-forward(+ cursor·mixedTrip 파생 리터럴).
+    'post /boarding-lock/sync': 13,
+    // 입력 검증 파싱.
+    validateTrip: 2,
+  },
 };
 
 /** 선언 -> 본문에 반드시 있어야 하는 셀 op 호출 표식(파일별). */
 const REQUIRED_OPS: Record<string, Record<string, string[]>> = {
   'scheduled.ts': {
-    completeWaypointAdvance: ["'advanceHead'", "'setLegAnchor'"],
+    completeWaypointAdvance: ["'advanceHead'"],
     stampCurrentLegAnchor: ["'setLegAnchor'"],
     catchUpToLockTrain: ["'advanceHead'"],
     reconcileLockTripProgress: ["'reanchor'"],
     advanceBoardingLockWaypoint: ["'advanceHead'"],
     runScheduled: ['flushProgressStamps('],
+    runLocklessIntermediate: ["'advanceHead'"],
   },
   'index.ts': {
     applyRegisterCells: ["'registerProgress'"],
+    commitConfirmProgress: ["'userTapAdvance'"],
+    'post /boarding-lock/sync': ["'advanceHead'", "'attachWithFastForward'"],
   },
 };
 

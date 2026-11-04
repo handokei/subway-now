@@ -17,7 +17,7 @@ import {
 } from './replay20261019';
 import type { TripProgress } from '../../progress';
 import { attachDb, latestProgress, latestTrip } from './progressAuthorityReplay';
-import { makeLockCellReplayEnv, type LockCellFlag } from './lockCellReplayEnv';
+import { interceptTripDo, makeLockCellReplayEnv, type LockCellFlag } from './lockCellReplayEnv';
 import { firedStationOccurrences } from './pushAssertions';
 
 export const DIR = 'replay_20261102_lockless_jump_leg2';
@@ -37,7 +37,7 @@ export const kst = (ms: number) => new Date(ms + KST_OFFSET_MS).toISOString().sl
 /** 세션 노선 원본 = D1 1956 existingSig(전체) — hopIndex는 backend가 원본 순서로 stamp한 값. */
 export const ROUTE = parseRouteSig(routeSigOf(rowOf(1956), 'existingSig')).map((w, hopIndex) => ({ ...w, hopIndex }));
 /** 재생 시작 시점 backend 진행분 = D1 1982(19:49:28) existingSig. hopIndex는 원본 위치. */
-const progressNow: Waypoint[] = parseRouteSig(routeSigOf(rowOf(1982), 'existingSig')).map((w) => ({
+export const progressNow: Waypoint[] = parseRouteSig(routeSigOf(rowOf(1982), 'existingSig')).map((w) => ({
   ...w,
   hopIndex: ROUTE.findIndex((r) => r.stationName === w.stationName),
 }));
@@ -90,7 +90,10 @@ function seedTrip(): Trip {
   } as Trip;
 }
 
-export async function replayLeg2(opts: { registers: boolean; sleep?: boolean; cells?: LockCellFlag | `progress@${number}` }) {
+export async function replayLeg2(opts: { registers: boolean; sleep?: boolean; cells?: LockCellFlag | `progress@${number}`;
+  /** DO 요청 전/후에 끼어드는 훅(읽기-쓰기 사이 다른 경로의 소비를 주입). 훅 안의 DO 호출은 `cells.doNs.ns`(원본)로 해야 재귀하지 않는다. */
+  doHooks?: (cells: NonNullable<ReturnType<typeof makeLockCellReplayEnv>>) => Parameters<typeof interceptTripDo>[1];
+}) {
   const trip = seedTrip();
   const { db, events } = makeTripEventSink();
   const stub = stubReplayFetch(fixture);
@@ -130,7 +133,7 @@ export async function replayLeg2(opts: { registers: boolean; sleep?: boolean; ce
         headsAfterTick.push(latestTrip(kv, TOKEN)?.waypoints[0]?.stationName);
         progressAfterTick.push(latestProgress(kv, TOKEN));
       }
-      if (cells && tickIndex === 0) await cells.install(env as Env, kv);
+      if (cells && tickIndex === 0) await cells.install(env as Env, kv, opts.doHooks ? interceptTripDo(cells.doNs.ns, opts.doHooks(cells)) : undefined);
       attachDb(env as Env, db);
       stub.setNow(tick);
       await replayer.beforeTick({ tick, env: env as Env, pushes });
@@ -140,7 +143,7 @@ export async function replayLeg2(opts: { registers: boolean; sleep?: boolean; ce
     headsAfterTick.push(latestTrip(kvRef, TOKEN)?.waypoints[0]?.stationName);
     progressAfterTick.push(latestProgress(kvRef, TOKEN));
   }
-  return { result, events, headsAfterTick, progressAfterTick, taps: replayer.taps, registers: replayer.registers, kv: kvRef as KVNamespace };
+  return { result, events, headsAfterTick, progressAfterTick, taps: replayer.taps, registers: replayer.registers, kv: kvRef as KVNamespace, cells };
 }
 
 export type Leg2 = Awaited<ReturnType<typeof replayLeg2>>;

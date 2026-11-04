@@ -7,13 +7,17 @@
  *  - progress@1은 진행 위치를 DO가 갖는다 -> progress KV(`progress:<token>`)는 더 이상 쓰이지 않는다(퇴역). lock@1은 계속 쓴다(롤백 경로).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fetchCells, runProgressOp } from '../tripDoCells';
+import { waypointSignatureKey } from '../trips';
 import { latestTrip } from './helpers/progressAuthorityReplay';
 import { firedStationOccurrences } from './helpers/pushAssertions';
 import { useApnsHarness } from './helpers/sleepAlarmHarness';
 import {
   alertTicks,
   FIRST_TICK_WITH_ARRIVAL,
+  HEAD_AFTER_LOCKLESS,
   kst,
+  progressNow,
   LEG2_SEGMENT,
   replayLeg2,
   tickIndexOf,
@@ -74,5 +78,40 @@ describe('#3055 PR-4b 11/02 leg-2 — progress KV 퇴역', () => {
   it('lock@1(롤백 경로): lock 부착 뒤 progress KV가 계속 mirror된다', async () => {
     const r = await replayLeg2({ registers: true, cells: 'lock@1' });
     expect(r.progressAfterTick.some((p) => p !== null)).toBe(true);
+  });
+});
+
+const PROGRESS_NOW_HEAD = progressNow[0].stationName;
+
+describe('#3055 PR-4b 11/02 leg-2 — lockless intermediate도 claim-then-fire', () => {
+  it('lockless 전진이 DO에 닿기 직전 다른 경로가 같은 head(어린이대공원)를 소비하면 cron의 claim은 noop — 한 칸만 소비된다', async () => {
+    let injected = false;
+    let claimOutcomeHead: string | undefined;
+    const r = await replayLeg2({
+      registers: false,
+      cells: 'progress@1',
+      doHooks: (cells) => {
+        const raw = { TRIPS: undefined as unknown as KVNamespace, TRIP_DO: cells.doNs.ns };
+        return {
+          before: async ({ path, body }) => {
+            if (injected || path !== '/progress/op' || body?.op?.type !== 'advanceHead') return;
+            injected = true;
+            const { progress } = await fetchCells(raw, TOKEN);
+            const [head] = progress?.waypoints ?? [];
+            await runProgressOp(raw, TOKEN, { type: 'advanceHead', source: 'other-path', expectedHeadKey: waypointSignatureKey(head), count: 1 }, Date.now());
+          },
+          // cron의 claim 응답 직후 셀 head — noop이면 다른 경로의 한 칸(군자)이 그대로다(두 칸 전진 아님).
+          after: async ({ path, body }) => {
+            if (injected && claimOutcomeHead === undefined && path === '/progress/op' && body?.op?.type === 'advanceHead') {
+              claimOutcomeHead = (await fetchCells(raw, TOKEN)).progress?.waypoints[0].stationName;
+            }
+          },
+        };
+      },
+    });
+    expect(injected).toBe(true);
+    expect(claimOutcomeHead).toBe(HEAD_AFTER_LOCKLESS);
+    // claim을 잃은 cron은 아무것도 쓰지 않는다 — tick 0 직후 KV blob은 시드(head 어린이대공원) 그대로다(전진·passedStations stamp·putTrip 없음).
+    expect(r.headsAfterTick[0]).toBe(PROGRESS_NOW_HEAD);
   });
 });

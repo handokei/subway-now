@@ -10,7 +10,7 @@
  */
 import { applyLaCell, type LaCell, type LaOp, type LaOpResult } from './laCellOps';
 import { applyLockCell, type LockCell, type LockOp, type LockOpResult } from './lockOps';
-import { applyProgressCell, type ProgressCell, type ProgressOp, type ProgressOpResult } from './progressOps';
+import { applyProgressCell, lockEpochKey, type ProgressCell, type ProgressOp, type ProgressOpResult } from './progressOps';
 import { getTripDoFlag, TRIP_DO_FLAG_DEFAULT, type TripDoFlag } from './tripDoFlag';
 import type { Env, Trip } from './types';
 
@@ -242,6 +242,8 @@ export async function seedCells(
             lastTrackedArrivalEpoch: snapshot.lastTrackedArrivalEpoch,
             lastLaPushEpoch: snapshot.lastLaPushEpoch,
             lastLaPushAt: snapshot.lastLaPushAt,
+            // 시드 시점에 lock이 이미 있으면 진행 중인 epoch — 재고정(되감기) 판정 대상이 아니다(활성화 직후 안전).
+            lockEpochKey: snapshot.boardingLock ? lockEpochKey(snapshot.boardingLock) : undefined,
           },
         },
         now,

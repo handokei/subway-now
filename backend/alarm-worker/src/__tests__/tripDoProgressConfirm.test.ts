@@ -111,6 +111,8 @@ describe('#3055 PR-4b — boarding-confirm tapAdvance(9/18 건대입구 탭)', (
     expect(names(progress?.waypoints)[0]).toBe('어린이대공원(세종대)');
     expect(progress?.currentLegAnchor).toEqual({ boardingStation: '건대입구', line: '7' });
     expect(progress?.legBoardingEligibleAt).toBe(TAP_MS);
+    // 부착이 leg-2 프롬프트 발사 기록(markPromptFired)을 남긴다 — 같은 op 묶음으로 셀에 영속된다.
+    expect(progress?.legBoardingPromptState).toBeDefined();
   });
 
   it('progress@1: 탭 시야가 낡아(그 사이 셀이 두 칸 더 전진) 되감길 상황이면 셀을 되감지 않는다', async () => {

@@ -227,3 +227,110 @@ describe('#3055 PR-4b — register: 같은 세션 재등록은 진행 셀을 덮
   });
 });
 
+describe('#3055 PR-4b — register: lock 번호 변경이 추적 기준값 리셋을 셀에 영속한다', () => {
+  it('progress@1: incoming이 다른 lock 번호를 실어 셀이 swap되면 lastTrackedArrivalEpoch가 진행 셀에서도 지워진다', async () => {
+    const ctx = await withTrip('progress@1', seedTrip());
+    await getTrip(ctx.env, TOKEN); // 셀 시드
+    await runProgressOp(
+      ctx.env,
+      TOKEN,
+      { type: 'stampProgress', source: 'test', expectedHeadKey: waypointSignatureKey(WAYPOINTS[0]), set: { lastTrackedArrivalEpoch: 5 } },
+      Date.now(),
+    );
+    expect((await fetchCells(ctx.env, TOKEN)).progress?.lastTrackedArrivalEpoch).toBe(5);
+    const res = await post(
+      '/trips',
+      {
+        token: TOKEN,
+        deviceToken: TOKEN,
+        destination: '군자',
+        route: { type: 'direct', line: '2', stops: 2 },
+        waypoints: WAYPOINTS,
+        expiresAt: CREATED + 3 * HOUR_MS,
+        createdAt: CREATED,
+        alarmAtEpochMs: CREATED,
+        infoModeEnabled: true,
+        boardingLock: lock('3335'),
+      },
+      ctx.env,
+    );
+    expect(res.status).toBe(200);
+    const { lock: lockCell, progress } = await fetchCells(ctx.env, TOKEN);
+    expect(lockCell?.lock?.trainCode).toBe('3335');
+    expect(progress?.lastTrackedArrivalEpoch).toBeUndefined();
+  });
+});
+
+describe('#3055 PR-4b — sync(순수 intermediate 전진 / 승격 fast-forward / 도착 관측)', () => {
+  const LINE2_ROUTE: Trip['waypoints'] = [
+    { stationName: '성수', line: '2', kind: 'intermediate' },
+    { stationName: '건대입구', line: '2', kind: 'transfer' },
+    { stationName: '구의', line: '2', kind: 'intermediate' },
+    { stationName: '강변', line: '2', kind: 'destination' },
+  ];
+
+  it('progress@1: 순수 intermediate 전진(관측역 = head 직후)은 셀 head를 한 칸 전진하고 KV blob도 같은 진행', async () => {
+    const ctx = await withTrip('progress@1', seedTrip({ waypoints: LINE2_ROUTE, routeWaypoints: LINE2_ROUTE, destination: '강변' }));
+    const res = await syncAt(ctx.env, '건대입구');
+    expect(res.status).toBe(200);
+    const { progress } = await fetchCells(ctx.env, TOKEN);
+    expect(names(progress?.waypoints)[0]).not.toBe('성수');
+    expect(names(latestKv(ctx.kv)?.waypoints)).toEqual(names(progress?.waypoints));
+  });
+
+  it('progress@1: 전진 선점이 낡았으면(그 사이 다른 경로가 소비) 발사·전진 없이 advanced:false, 셀은 그 경로의 값 그대로', async () => {
+    const ctx = await withTrip('progress@1', seedTrip({ waypoints: LINE2_ROUTE, routeWaypoints: LINE2_ROUTE, destination: '강변' }));
+    await getTrip(ctx.env, TOKEN); // 셀 시드
+    const inner = ctx.env.TRIP_DO as DurableObjectNamespace;
+    let injected = false;
+    const hooked = {
+      idFromName: (name: string) => inner.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const stub = inner.get(id);
+        return {
+          fetch: async (request: Request): Promise<Response> => {
+            if (!injected && request.method === 'POST' && new URL(request.url).pathname === '/progress/op') {
+              const { op } = (await request.clone().json()) as { op: { type: string } };
+              if (op.type === 'advanceHead') {
+                injected = true;
+                // 다른 경로(cron)가 먼저 head 성수를 소비.
+                await runProgressOp({ TRIPS: ctx.env.TRIPS, TRIP_DO: inner }, TOKEN, { type: 'advanceHead', source: 'other', expectedHeadKey: waypointSignatureKey(LINE2_ROUTE[0]), count: 1 }, Date.now());
+              }
+            }
+            return stub.fetch(request);
+          },
+        } as unknown as DurableObjectStub;
+      },
+    } as unknown as DurableObjectNamespace;
+    const res = await syncAt({ ...ctx.env, TRIP_DO: hooked } as Env, '성수');
+    expect(res.status).toBe(200);
+    expect(injected).toBe(true);
+    const body = (await res.json()) as { advanced?: boolean };
+    expect(body.advanced).toBe(false);
+    expect(names((await fetchCells(ctx.env, TOKEN)).progress?.waypoints)).toEqual(['건대입구', '구의', '강변']);
+  });
+
+  it('progress@1: 수동 목록 탭 승격은 lock 부착과 전진을 한 op(attachWithFastForward)로 확정한다', async () => {
+    const ctx = await withTrip('progress@1', seedTrip({ boardingLock: undefined, waypoints: LINE2_ROUTE, routeWaypoints: LINE2_ROUTE, destination: '강변' }));
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: TOKEN, observedStationName: '뚝섬', observedAtMs: Date.now(), accuracy: 20, trainCode: '3334', boardingLine: '2' },
+      ctx.env,
+    );
+    expect(res.status).toBe(200);
+    const { lock: lockCell, progress } = await fetchCells(ctx.env, TOKEN);
+    expect(lockCell?.lock?.trainCode).toBe('3334');
+    expect(ctx.paths).toContain('/progress/op');
+    // KV blob과 셀의 진행이 같다(승격이 낡은 waypoints로 되감지 않음).
+    vi.setSystemTime(kstMs('2026-11-03T18:14:00'));
+    expect(names((await getTrip(ctx.env, TOKEN))?.waypoints)).toEqual(names(progress?.waypoints));
+  });
+
+  it('progress@1: 환승역 도착 관측(transferObservedAt)이 진행 셀에 영속된다', async () => {
+    const ctx = await withTrip('progress@1', seedTrip({ waypoints: LINE2_ROUTE, routeWaypoints: LINE2_ROUTE, destination: '강변' }));
+    await syncAt(ctx.env, '건대입구');
+    const { progress } = await fetchCells(ctx.env, TOKEN);
+    expect(progress?.transferObservedAt).toMatchObject({ stationName: '건대입구', line: '2' });
+  });
+});
+
