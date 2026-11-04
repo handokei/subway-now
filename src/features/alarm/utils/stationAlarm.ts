@@ -59,8 +59,8 @@ export function parseAlarmKey(
 
 export interface CurrentTarget {
   name: string;
-  // 실제 하차 승강장 id. 경로에 id가 없으면 undefined (#3177 PR-4, 필수화는 PR-3z 이후).
-  stationId?: string;
+  // 실제 하차 승강장 id. 경로 id가 필수(#3177 PR-3z)라 항상 채워진다 (#3177 PR-6y).
+  stationId: string;
   stops: number;
   alarmType: AlarmType;
   // 이 웨이포인트를 향해 사용자가 타고 가는 구간의 노선(approach line).

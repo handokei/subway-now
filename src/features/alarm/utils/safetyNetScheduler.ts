@@ -108,8 +108,8 @@ export const SAFETY_NET_BUFFER_MS = 180_000;
 
 export interface SafetyNetWaypoint {
   stationName: string;
-  /** 실제 하차 승강장 id. 경로에 id가 없으면 undefined (#3177 PR-4). */
-  stationId?: string;
+  /** 실제 하차 승강장 id (경로 id 필수, #3177 PR-6y). */
+  stationId: string;
   kind: AlarmLocalKind;
   /** 이 waypoint까지 남은 정거장 수. */
   stops: number;
