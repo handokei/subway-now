@@ -380,6 +380,8 @@ export interface Trip {
    * `putTrip`은 `__lockRev`와 같이 직렬화 사본에서만 제거한다.
    */
   __progressRev?: number;
+  /** **비영속** — 진행 셀의 `lockEpochKey`(overlay가 설정). cron이 lock epoch 재고정 판정을 이미 했는지 보는 용도. */
+  __progressLockEpoch?: string;
   /**
    * K5 #2926 PR-B — lock이 마지막으로 풀린 시각(epoch ms) = lockless 시한 종료(`locklessTimeout.ts`)의 기준 시각.
    * `putTrip`이 "lock 이력(lockEverAttached)이 있는데 현재 boardingLock이 없는" 첫 쓰기에서 stamp하고(해제 경로가

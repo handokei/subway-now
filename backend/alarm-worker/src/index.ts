@@ -86,13 +86,18 @@ import {
 import { getTripDoFlag, TRIP_DO_FLAG_DEFAULT } from './tripDoFlag';
 import {
   applyLockResult,
+  applyProgressResult,
   CellUnavailableError,
   fetchCells,
+  isProgressStage,
   readCellStage,
   runLaOp,
   runLockOp,
+  runProgressOp,
   seedCells,
 } from './tripDoCells';
+import { persistProgressStamps } from './cronProgressCell';
+import type { StampChange } from './cronLockCell';
 import { applyLaCell } from './laCellOps';
 import { lockLegKey, type LockOpResult } from './lockOps';
 import { appendPositionPoint } from './positionSeries';
@@ -491,6 +496,14 @@ async function resolveBoardingAnchorAtRegister(env: Env, trip: Trip): Promise<vo
       );
       if (attached.outcome !== 'applied') return;
       resolvedTrip = applyLockResult(resolvedTrip, attached);
+      // #3055 PR-4b — progress@N 이상은 부착에 딸린 추적 기준값 리셋도 진행 셀 op로 영속한다(위 메모리 구성은 legacy 값).
+      resolvedTrip = await persistProgressStamps(
+        env,
+        resolvedTrip,
+        'register-resolver',
+        { clear: ['lastTrackedArrivalEpoch', 'lastLaPushEpoch', 'lastLaPushAt'] },
+        Date.now(),
+      );
     }
     await putTrip(env.TRIPS, resolvedTrip);
     await recordLockAttached(env.DB, {
@@ -937,9 +950,9 @@ function parseQueryNumber(raw: string | undefined): number | undefined {
 async function applyRegisterCells(
   env: Env,
   trip: Trip,
-  ctx: { existing: Trip | null; incoming: Trip; routeReset: boolean },
+  ctx: { existing: Trip | null; incoming: Trip; routeReset: boolean; isSameSession: boolean },
 ): Promise<Trip> {
-  const { existing, incoming, routeReset } = ctx;
+  const { existing, incoming, routeReset, isSameSession } = ctx;
   const flag = await readCellStage(env);
   if (!flag) return trip;
   const now = Date.now();
@@ -962,7 +975,31 @@ async function applyRegisterCells(
   // lock 번호가 셀 결정으로 바뀌었으면(swap/drop) 추적 baseline도 리셋 — 새 head waypoint의 첫 push 보장.
   const lockChanged = locked.boardingLock?.trainCode !== trip.boardingLock?.trainCode;
   const withBaseline = lockChanged ? { ...locked, lastTrackedArrivalEpoch: undefined } : locked;
-  return la ? applyLaCell(withBaseline, la) : withBaseline;
+  const withLa = la ? applyLaCell(withBaseline, la) : withBaseline;
+  if (!isProgressStage(flag)) return withLa;
+  // #3055 PR-4b — 진행 셀: 새 세션(신규 trip / route reset / 다른 세션)만 incoming으로 초기화하고, 같은 세션 재등록은 진행(waypoints·leg 상태·스탬프)을
+  // 쓰지 않는다(ADR-052 "register는 진행을 쓰지 않는다" 유지). 낡은 existing carry가 셀을 되감지 못한다.
+  const progress = await runProgressOp(
+    env,
+    incoming.token,
+    {
+      type: 'registerProgress',
+      source: 'register',
+      newSession: routeReset || existing === null || !isSameSession,
+      incoming: {
+        createdAt: incoming.createdAt,
+        waypoints: incoming.waypoints,
+        routeWaypoints: trip.routeWaypoints ?? incoming.waypoints,
+        promptDisplay: incoming.promptDisplay,
+      },
+    },
+    now,
+  );
+  const withProgress = applyProgressResult(withLa, progress);
+  // lock 번호가 바뀌어 추적 기준값이 리셋된 경우(위 메모리 구성)도 셀에 영속한다.
+  return lockChanged
+    ? persistProgressStamps(env, withProgress, 'register', { clear: ['lastTrackedArrivalEpoch'] }, now)
+    : withProgress;
 }
 
 /**
@@ -1600,7 +1637,7 @@ app.post('/trips', async (c) => {
     const extendedTrip = extendTripExpiryOnActivity(mergedTrip, Date.now());
     // #3300 PR-3a (§3 #2, §9) — flag on이면 lock 관련 필드(+LA 토큰)는 DO 셀이 권위다. 낡은 existing carry 금지.
     const trip = (await readCellStage(c.env))
-      ? await applyRegisterCells(c.env, extendedTrip, { existing, incoming, routeReset: routeReset.reset })
+      ? await applyRegisterCells(c.env, extendedTrip, { existing, incoming, routeReset: routeReset.reset, isSameSession })
       : extendedTrip;
 
       // #3006 D — KV 쓰기 실패 시 **503 + Retry-After**. 500이 아닌 이유: 등록이 실제로
@@ -2802,6 +2839,9 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
   let laCandidateDecision: LaCandidateDecision | undefined;
   let laCandidateAgrees: boolean | undefined;
   let working: Trip = existing;
+  // #3055 PR-4b — 탭 전진(waypoints/anchor)과 부착 스탬프는 메모리로 판정한 뒤 progress@N 이상에서 진행 셀 op로 확정한다(`commitConfirmProgress`).
+  let tapAdvanceApplied: { waypoints: Trip['waypoints']; boardingStation: string; line: string } | undefined;
+  let attachProgressStamps: ConfirmProgressStamps | undefined;
   // #3300 PR-3a — 셀 권위 단계(lock@N 이상)면 아래 lock 변경은 메모리 판정 후 **op 한 번**으로 영속한다.
   const lockStage = await readCellStage(c.env);
   // #2957 W2 — boarded 탭이 leg 전환으로 기존 lock을 release했는지(op `userBoarded.releaseFirst`의 입력).
@@ -2920,6 +2960,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         const attached = attachBoardedLock(working, stampedLock, now, releasedForLegSwitch);
         working = attached.working;
         lockState = attached.lockState;
+        attachProgressStamps = attached.progressStamps;
       } else {
       try {
         const seoul = new SeoulArrivalClient({
@@ -2985,6 +3026,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
               legBoardingPromptState: undefined,
               legResolveStreak: undefined,
             };
+            tapAdvanceApplied = tapAdvance;
           }
           // #2957 — `isLegTwoActive`(walk-gate 포함 판정)를 그대로 쓰면 W-1(walk-gate 미개방 +
           // 유효한 stamp로 release된 경우) 새로 부착한 leg-2 lock이 'leg1'로 오표기된다 —
@@ -3001,6 +3043,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           const attached = attachBoardedLock(working, anchorLock, now, skipLaPushReset);
           working = attached.working;
           lockState = attached.lockState;
+          attachProgressStamps = attached.progressStamps;
         }
       } catch {
         // SonarCloud S5145 — tokenPrefix(token)도 token(URL param)이 user-controlled라
@@ -3016,6 +3059,7 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
           const attached = attachBoardedLock(working, laVerdict.lock, now, releasedForLegSwitch);
           working = attached.working;
           lockState = attached.lockState;
+          attachProgressStamps = attached.progressStamps;
           laCandidateDecision = 'window-expired-candidate';
         } else {
           laCandidateDecision = 'window-expired-live';
@@ -3096,6 +3140,16 @@ app.post('/trips/:token/boarding-confirm', async (c) => {
         }
       }
     }
+    working = await commitConfirmProgress(
+      c.env,
+      working,
+      {
+        tap: tapAdvanceApplied,
+        stamps: attachProgressStamps,
+        attachApplied: lockCommit === undefined || lockCommit.outcome === 'applied',
+      },
+      now,
+    );
     // #3023 — 탑승 응답(탭)도 활동성 핸들러. sliding TTL 연장 적용.
     await putTrip(
       c.env.TRIPS,
@@ -3639,7 +3693,7 @@ function attachBoardedLock(
   lock: BoardingLockMeta,
   now: number,
   skipLaPushReset: boolean,
-): { working: Trip; lockState: 'leg1' | 'leg2' } {
+): { working: Trip; lockState: 'leg1' | 'leg2'; progressStamps: ConfirmProgressStamps } {
   const isLeg2 = working.currentLegAnchor !== undefined;
   const nextWorking: Trip = {
     ...working,
@@ -3651,7 +3705,66 @@ function attachBoardedLock(
       ? { legBoardingPromptState: markPromptFired(now, working.legBoardingPromptState, lock.trainCode) }
       : { boardingPromptState: markPromptFired(now, working.boardingPromptState, lock.trainCode) }),
   };
-  return { working: nextWorking, lockState: isLeg2 ? 'leg2' : 'leg1' };
+  // 위 메모리 구성 중 진행 필드 몫 — progress@N 이상은 이 값을 진행 셀 `stampProgress` op로 영속한다(`commitConfirmProgress`).
+  const progressStamps: ConfirmProgressStamps = {
+    clear: ['lastTrackedArrivalEpoch', ...(skipLaPushReset ? [] : (['lastLaPushEpoch', 'lastLaPushAt'] as const))],
+    ...(isLeg2 ? { set: { legBoardingPromptState: nextWorking.legBoardingPromptState } } : {}),
+  };
+  return { working: nextWorking, lockState: isLeg2 ? 'leg2' : 'leg1', progressStamps };
+}
+
+/**
+ * #3155 — sync 수동 목록 탭 승격의 fast-forward 계획(열차 위치 읽기 + `planPromotionFastForward`). 진행 셀 단계는 lock 부착 **전에** 호출해
+ * `attachWithFastForward`의 `skip`으로 쓴다. `preSliceWaypoints`는 계획 시점(전진 전)의 노선 — 알람 catch-up(#3100)이 slice 이전 노선을 요구한다.
+ */
+async function planSyncPromotionFastForward(
+  env: Env,
+  waypoints: Trip['waypoints'],
+  trainCode: string,
+  boardingLine: string,
+  promoted: BoardingLockMeta,
+  now: number,
+): Promise<ReturnType<typeof planPromotionFastForward> & { preSliceWaypoints: Trip['waypoints'] }> {
+  const { position: trainPosition, passedAnchor } = await loadTrainPosition(env.TRIPS, trainCode, boardingLine, promoted.segmentStations, now);
+  return {
+    ...planPromotionFastForward(waypoints, promoted.segmentStations, trainPosition, passedAnchor),
+    preSliceWaypoints: waypoints,
+  };
+}
+
+/** boarding-confirm의 부착이 진행 필드에 남기는 스탬프 변경(`attachBoardedLock` 결과) — 진행 셀 단계에서 op로 영속한다. */
+type ConfirmProgressStamps = Omit<StampChange, 'expectedHeadKey'>;
+
+/**
+ * #3055 PR-4b — boarding-confirm의 진행 변경(탭 전진 + 부착 스탬프)을 진행 셀 op로 확정한다. 탭 전진은 **앞으로만**(`userTapAdvance`) — 낡은 base로 셀을 되감지
+ * 않는다(셀이 이미 앞이면 noop이고 그 값이 trip에 반영된다). 부착 스탬프는 lock 부착이 실제 적용됐을 때만(`attachApplied`) 영속한다.
+ * progress@N 미만이면 trip을 그대로 돌려준다(위 메모리 구성이 legacy 값).
+ */
+async function commitConfirmProgress(
+  env: Env,
+  trip: Trip,
+  ctx: { tap: { waypoints: Trip['waypoints']; boardingStation: string; line: string } | undefined; stamps: ConfirmProgressStamps | undefined; attachApplied: boolean },
+  now: number,
+): Promise<Trip> {
+  if (!isProgressStage(await readCellStage(env))) return trip;
+  let next = trip;
+  const [tapHead] = ctx.tap?.waypoints ?? [];
+  if (ctx.tap !== undefined && tapHead !== undefined) {
+    const { boardingStation, line } = ctx.tap;
+    next = applyProgressResult(
+      next,
+      await runProgressOp(
+        env,
+        trip.token,
+        { type: 'userTapAdvance', source: 'confirm', toHeadKey: waypointSignatureKey(tapHead), anchor: { boardingStation, line } },
+        now,
+      ),
+    );
+  }
+  if (ctx.stamps !== undefined && ctx.attachApplied) {
+    next = await persistProgressStamps(env, next, 'confirm', ctx.stamps, now);
+  }
+  return next;
 }
 
 /** #3221 PR-3b — 검증 결과의 1차 D1 라벨. fallback(3분 초과)은 live 결과에 따라 호출부가 최종 라벨을 확정한다. */
@@ -3833,6 +3946,12 @@ app.post('/boarding-lock/sync', async (c) => {
       line: upcomingTransfer.line,
       atMs: now,
     };
+    // #3055 PR-4b — progress@N 이상은 도착 관측을 진행 셀에 영속한다(forward-only stamp: 더 오래된 관측으로 덮지 않음). 최신 셀 값을 `existing`에 반영해
+    // 이후 도보 게이트 판정이 같은 시야를 본다.
+    Object.assign(
+      existing,
+      await persistProgressStamps(c.env, existing, 'sync-observed', { set: { transferObservedAt: existing.transferObservedAt } }, now),
+    );
     // #2672 — "하차하셨나요?" 프롬프트도 이 관측 시점에 발사한다.
     //
     // 기존에는 `advanceBoardingLockWaypoint`(= backend가 환승 waypoint를 실제로 소비하는 순간)
@@ -3963,7 +4082,19 @@ app.post('/boarding-lock/sync', async (c) => {
           }
           if (!isTransferOrDestination(wp)) {
             if (isObserved) break; // 관측역 자신이 intermediate — 기존 정책대로 cron에 위임.
-            cursor = { ...cursor, waypoints: cursor.waypoints.slice(1) };
+            if (isProgressStage(syncStage)) {
+              // #3055 PR-4b — 진행 셀: 건너뛴 intermediate도 head 키 선점으로만 소비한다. 이미 소비됐거나 시야가 어긋나면(noop/conflict) 멈춘다.
+              const step = await runProgressOp(
+                c.env,
+                payload.token,
+                { type: 'advanceHead', source: 'sync-mixed', expectedHeadKey: waypointSignatureKey(wp), count: 1 },
+                now,
+              );
+              cursor = applyProgressResult(cursor, step);
+              if (step.outcome !== 'applied') break;
+            } else {
+              cursor = { ...cursor, waypoints: cursor.waypoints.slice(1) };
+            }
             appliedShiftedCount += 1;
             continue;
           }
@@ -4047,6 +4178,8 @@ app.post('/boarding-lock/sync', async (c) => {
         });
       }
       working = cursor;
+      // progress@N 이상: 전진 op가 lock 해제를 함께 적용했으면 그 최신 rev를 이어받는다(이후 승격·TTL op의 전제).
+      if (isProgressStage(syncStage)) syncRev = cursor.__lockRev ?? syncRev;
       // #3100 — 환승 뒤 leg에서 슬라이스된 intermediate의 칸은 cron이 다시 볼 수 없다(관측역만 cron 위임).
       // 순수 분기와 같은 catch-up을 루프 뒤 한 번 호출한다. lock 게이트는 환승 처리 후의 cursor lock(환승으로
       // 해제됐으면 0, 같은 호선 오라벨로 유지됐으면 발사). `requestedCount`는 중단 경로(drift/유예/throw)에서
@@ -4064,7 +4197,25 @@ app.post('/boarding-lock/sync', async (c) => {
       // 기존 경로 — 순수 intermediate 소비(transfer/destination 없음). #2308: progress mirror는 제거(b2) — sync는 trip.waypoints만
       // 전진시키고 progress는 cron 경로만 쓴다(그 외 동작 변경 없음). 이 분기는
       // 드리프트/유예 없이 위 cap(`advance`, #3083 lockless hold·체류 hold)이 허용한 만큼을 적용한다.
-      appliedShiftedCount = advance.shiftedCount;
+      // #3055 PR-4b — 진행 셀: claim-then-fire. 이 구간을 셀에서 먼저 선점(`advanceHead{count}`)하고 applied일 때만 아래 건너뛴 역 알림·취침 알람을 낸다.
+      // 이미 소비됐거나(noop) 시야가 어긋나면(conflict) 전진도 발사도 하지 않는다. legacy(flag off / lock@N)는 현행 그대로.
+      let pureClaimed = true;
+      if (isProgressStage(syncStage)) {
+        const claim = await runProgressOp(
+          c.env,
+          payload.token,
+          {
+            type: 'advanceHead',
+            source: 'sync-advance',
+            expectedHeadKey: waypointSignatureKey(existing.waypoints[0]),
+            count: advance.shiftedCount,
+          },
+          now,
+        );
+        pureClaimed = claim.outcome === 'applied';
+        working = applyProgressResult(working, claim);
+      }
+      appliedShiftedCount = pureClaimed ? advance.shiftedCount : 0;
       //
       // #2625 코드리뷰 P1-1 — sync 관측역 자신(`existing.waypoints[advance.shiftedCount - 1]`)은
       // 제외하고, 그 *이전에* 건너뛴 station-passed waypoint만 보존한다. `/boarding-lock/sync`는
@@ -4078,22 +4229,24 @@ app.post('/boarding-lock/sync', async (c) => {
       const skippedStationPassed =
         advance.shiftedCount > 1 ? existing.waypoints.slice(0, advance.shiftedCount - 1) : [];
       const remaining = working.waypoints.slice(advance.shiftedCount);
-      working = {
-        ...working,
-        waypoints: remaining,
-        // 새 waypoint의 첫 push를 보장하기 위해 baseline reset (advanceBoardingLockWaypoint와 동형).
-        lastTrackedArrivalEpoch: undefined,
-        lastLaPushEpoch: undefined,
-        // #900 Seam D — heartbeat 기준점도 함께 reset (baseline 동형).
-        lastLaPushAt: undefined,
-      };
+      if (!isProgressStage(syncStage)) {
+        working = {
+          ...working,
+          waypoints: remaining,
+          // 새 waypoint의 첫 push를 보장하기 위해 baseline reset (advanceBoardingLockWaypoint와 동형).
+          lastTrackedArrivalEpoch: undefined,
+          lastLaPushEpoch: undefined,
+          // #900 Seam D — heartbeat 기준점도 함께 reset (baseline 동형).
+          lastLaPushAt: undefined,
+        };
+      }
       // #2625 — 관측역 이전에 건너뛴 station-passed waypoint를 발사+계측. 코드리뷰 P1-4 —
       // `existing.boardingLock` 존재만으로 판단하지 않고 다른 모든 발사 경로와 동일하게
       // `isBoardingLockActive`(만료 검사 포함)를 강제한다 — 만료된 lock의 stale trainCode로
       // 발사되는 것을 막는다. lock 비활성(lockless 포함)이면 매역 알림 발사 자체가 이 backend
       // 아키텍처 밖(#2506 이후 committed architecture, lock 기반)이라 대상이 없다 —
       // 전제는 lock 기반 발사 하나다.
-      if (skippedStationPassed.length > 0 && isBoardingLockActive(existing, now)) {
+      if (pureClaimed && skippedStationPassed.length > 0 && isBoardingLockActive(existing, now)) {
         const lock = existing.boardingLock;
         const apnsConfig = {
           keyId: c.env.APNS_KEY_ID,
@@ -4135,7 +4288,7 @@ app.post('/boarding-lock/sync', async (c) => {
       // 잘라낸다. lockless = 알림 없음(#3140)은 maybeFire*의 isBoardingLockActive 게이트가 소유한다
       // (cron 경로와 동일 단일 게이트). dedup은 기존 (token, target) 키.
       // 혼합 분기(transfer/destination 소비)의 같은 catch-up은 그 분기 루프 뒤에서 한 번 호출한다(#3100).
-      if (selectConsumedPrecedingAlarmPairs(existing, advance.shiftedCount).length > 0) {
+      if (pureClaimed && selectConsumedPrecedingAlarmPairs(existing, advance.shiftedCount).length > 0) {
         scheduleSyncConsumedPrecedingAlarms(c, existing, advance.shiftedCount, now, { source: 'sync-advance' });
       }
     }
@@ -4178,7 +4331,8 @@ app.post('/boarding-lock/sync', async (c) => {
   // 게이트(D3)에서 동급이 되게 한다. corroboration 규칙 자체는 변경 없음(dev 그대로).
   // #3300 PR-3a (§3 #18 sync 경유) — 위 advance(환승 소비)가 메모리에서 lock을 풀었으면 셀도 `releaseAuto`로 푼다.
   // 해제가 아니라 "낡은 시야로 풀었는데 셀은 이미 다른 lock"이면 conflict라 셀 lock이 남는다(applyLockResult).
-  if (syncStage && existing.boardingLock !== undefined && working.boardingLock === undefined) {
+  // progress@N 이상이면 환승 전진 op(`advanceHead.releaseLock`)가 이미 lock 셀을 풀었다 — 같은 해제를 낡은 rev로 다시 보내지 않는다.
+  if (syncStage && !isProgressStage(syncStage) && existing.boardingLock !== undefined && working.boardingLock === undefined) {
     const released = await runLockOp(
       c.env,
       payload.token,
@@ -4216,7 +4370,30 @@ app.post('/boarding-lock/sync', async (c) => {
       // #3300 PR-3a (§3 #7) — 수동 목록 탭 승격은 사용자 의향(`authority:user`, lock 부재만 요구하는 attachIfNone).
       // applied일 때만 fast-forward slice 등 승격 부수효과를 진행한다(셀이 이미 lock을 가졌으면 그 lock이 이긴다).
       let promotionAttached: LockOpResult | undefined;
-      if (corroborated && syncStage) {
+      // #3055 PR-4b — 진행 셀: fast-forward 계획(열차 위치 읽기)을 lock 부착보다 **먼저** 세우고, 부착과 전진을 `attachWithFastForward` 한 op로 확정한다
+      // (lock 부착이 applied일 때만 건너뛴 구간을 전진 — 셀이 이미 가진 lock이 이긴다). legacy(flag off / lock@N)는 현행 순서(부착 -> 계획 -> 메모리 slice).
+      const progressPromotion = corroborated && isProgressStage(syncStage);
+      const plannedFastForward = progressPromotion
+        ? await planSyncPromotionFastForward(c.env, working.waypoints, payload.trainCode, payload.boardingLine, promoted, now)
+        : undefined;
+      if (progressPromotion && plannedFastForward !== undefined) {
+        const promotion = await runProgressOp(
+          c.env,
+          payload.token,
+          {
+            type: 'attachWithFastForward',
+            source: 'sync-promote',
+            lock: promoted,
+            expectedLockRev: syncRev,
+            expectedHeadKey: waypointSignatureKey(working.waypoints[0]),
+            skip: plannedFastForward.skip,
+          },
+          now,
+        );
+        promotionAttached = promotion.lock;
+        working = applyProgressResult(working, promotion);
+        syncRev = working.__lockRev ?? syncRev;
+      } else if (corroborated && syncStage) {
         promotionAttached = await runLockOp(
           c.env,
           payload.token,
@@ -4229,29 +4406,22 @@ app.post('/boarding-lock/sync', async (c) => {
       if (corroborated && (promotionAttached === undefined || promotionAttached.outcome === 'applied')) {
         // #3155 — 열차가 이미 앵커를 지나 몇 역 앞에 있으면 지난 중간역 waypoint를 건너뛴다(늦은 매역 push
         // 방지). 지난 역에 환승/도착이 있으면 건너뛰지 않고 보고만 한다.
-        const { position: trainPosition, passedAnchor } = await loadTrainPosition(
-          c.env.TRIPS,
-          payload.trainCode,
-          payload.boardingLine,
-          promoted.segmentStations,
-          now,
-        );
-        const fastForward = planPromotionFastForward(
-          working.waypoints,
-          promoted.segmentStations,
-          trainPosition,
-          passedAnchor,
-        );
-        const preSliceWaypoints = working.waypoints;
-        working = {
-          ...working,
-          waypoints: working.waypoints.slice(fastForward.skip),
-          boardingLock: promoted,
-          lastTrackedArrivalEpoch: undefined,
-          lastLaPushEpoch: undefined,
-          lastLaPushAt: undefined,
-          consecutiveEtaMissing: 0,
-        };
+        const fastForward =
+          plannedFastForward ??
+          (await planSyncPromotionFastForward(c.env, working.waypoints, payload.trainCode, payload.boardingLine, promoted, now));
+        // progress@N 이상이면 셀 op가 이미 전진했다 — 계획 시점의 slice 이전 waypoints를 알람 catch-up에 쓴다.
+        const preSliceWaypoints = plannedFastForward === undefined ? working.waypoints : plannedFastForward.preSliceWaypoints;
+        if (plannedFastForward === undefined) {
+          working = {
+            ...working,
+            waypoints: working.waypoints.slice(fastForward.skip),
+            boardingLock: promoted,
+            lastTrackedArrivalEpoch: undefined,
+            lastLaPushEpoch: undefined,
+            lastLaPushAt: undefined,
+            consecutiveEtaMissing: 0,
+          };
+        }
         promotedLockForSsot = promoted;
         working = { ...working, boardingResponse: { legKey: currentBoardingLegKey(working), at: now } };
         if (fastForward.skip > 0 || fastForward.blockedAt !== undefined) {

@@ -17,6 +17,7 @@
  */
 import { applyLaCell, type LaOpResult } from './laCellOps';
 import type { ProgressBaseline } from './progress';
+import type { StampProgressOp } from './progressOps';
 import { applyLockCell, type LockOp, type LockOpOutcome } from './lockOps';
 import {
   applyLockResult,
@@ -47,7 +48,12 @@ export interface CronCellTick {
   calls: number;
   /** 예산 초과/오류로 건너뛴 호출 수. */
   skipped: number;
+  /** tick 안에서 쌓인 진행 스탬프(`stampProgressFields`) — tick 끝에 trip당 한 번 flush한다(`cronProgressCell.flushProgressStamps`). */
+  stamps: Map<Trip, StampChange[]>;
 }
+
+/** 진행 스탬프 변경 1건 — `StampProgressOp`에서 식별자(type/source)를 뺀 것. */
+export type StampChange = Omit<StampProgressOp, 'type' | 'source'>;
 
 const trackedTrips = new WeakMap<Trip, CronCellTick>();
 
@@ -94,10 +100,14 @@ export async function beginCronCellTick(env: Env, options?: { budget?: number })
     budget: options?.budget ?? CRON_DO_CALL_BUDGET,
     calls: 0,
     skipped: 0,
+    stamps: new Map(),
   };
   tick.env = budgetedEnv(env, tick);
   return tick;
 }
+
+/** trip이 속한 cron tick(없으면 undefined — HTTP 사본 / flag off). 진행 셀 클라이언트(`cronProgressCell.ts`)가 같은 예산·flag를 공유한다. */
+export const cronTickOf = (trip: Trip): CronCellTick | undefined => trackedTrips.get(trip);
 
 /** trip이 이 tick에서 셀 모드로 추적되는지(= scheduled.ts가 직접 대입 대신 op를 써야 하는지). */
 export const isCronCellTracked = (trip: Trip): boolean => trackedTrips.has(trip);

@@ -6,111 +6,19 @@
  * 입력은 #3282가 만든 불변 fixture(`replay_20261031_reregister_storm/caps`)를 그대로 쓴다 — 통과시키려 조정 금지.
  * assert는 실제로 나간 APNs 요청(종류·tick·횟수) 기준이다.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Env, Trip, Waypoint } from '../types';
 import { sleepAlarmCollapseId } from '../collapseId';
-import { stationPassedFiredKey } from '../scheduled';
-import { waypointSignatureKey } from '../trips';
-import { buildReplayFixture, parseSeoulCaptureCycle } from '../replayFixture';
-import { runCaptureReplay } from './helpers/replayHarness';
-import { loadD1Events, makeTripEventSink, parseRouteSig, routeSigOf, stubReplayFetch } from './helpers/replay20261019';
-import { attachDb, makeLagKv, primeReplayKv } from './helpers/progressAuthorityReplay';
-import { firedStationOccurrences } from './helpers/pushAssertions';
 import { useApnsHarness } from './helpers/sleepAlarmHarness';
+import {
+  alertStations,
+  catchupRows,
+  replayTick,
+  seedTrip,
+  SEGMENT_STATIONS,
+  TOKEN,
+} from './helpers/catchupReplay20261031';
 
 useApnsHarness();
-
-const DIR = 'replay_20261031_reregister_storm';
-const CAPTURE_FILE = '1793408265543.json';
-const TOKEN = 'replay-2629-1031';
-const HOUR_MS = 60 * 60_000;
-
-const rows = loadD1Events(DIR, 'events.json');
-const rowOf = (id: number) => {
-  const row = rows.find((r) => r.id === id);
-  if (!row) throw new Error(`D1 행 ${id}이 fixture에 없다`);
-  return row;
-};
-/** D1 1877 existingSig(군자 head) 앞에 lock 부착 시점에 소비된 중곡을 더하면 원본 노선(#3282 replay와 동일). */
-const FULL_ROUTE_NAMES = ['중곡', ...parseRouteSig(routeSigOf(rowOf(1877), 'existingSig')).map((w) => w.stationName)];
-/** lock 7077 segment = 탑승역(용마산, D1 1865) + 부착 시점 잔여 노선 전체. */
-const SEGMENT_STATIONS = [rowOf(1865).station as string, ...FULL_ROUTE_NAMES];
-
-const fixture = buildReplayFixture([
-  parseSeoulCaptureCycle(JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', DIR, 'caps', CAPTURE_FILE), 'utf-8'))),
-]);
-
-/** headName부터 끝까지 남긴 waypoints. 마지막은 destination. */
-const waypointsFrom = (headName: string): Waypoint[] => {
-  const from = FULL_ROUTE_NAMES.indexOf(headName);
-  return FULL_ROUTE_NAMES.slice(from).map((stationName, i, rest) => ({
-    stationName,
-    line: '7',
-    kind: i === rest.length - 1 ? 'destination' : 'intermediate',
-    hopIndex: from + i,
-  }));
-};
-
-function seedTrip(headName: string, overrides: { trainCode?: string; segment?: string[]; sleep?: boolean } = {}): Trip {
-  const now = fixture.window.fromMs;
-  return {
-    token: TOKEN,
-    route: { type: 'direct', line: '7', stops: FULL_ROUTE_NAMES.length } as Trip['route'],
-    destination: FULL_ROUTE_NAMES[FULL_ROUTE_NAMES.length - 1],
-    originStationName: SEGMENT_STATIONS[0],
-    waypoints: waypointsFrom(headName),
-    boardingLock: {
-      trainCode: overrides.trainCode ?? '7077',
-      line: '7',
-      subwayId: '1007',
-      selectedDepartureTime: now - 14 * 60_000,
-      segmentStations: overrides.segment ?? SEGMENT_STATIONS,
-      expiresAt: now + HOUR_MS,
-    },
-    expiresAt: now + 3 * HOUR_MS,
-    createdAt: now - 18 * 60_000,
-    alarmAtEpochMs: now,
-    infoModeEnabled: true,
-    consecutiveEtaMissing: 0,
-    ...(overrides.sleep ? { sleepModeEnabled: true } : {}),
-  } as Trip;
-}
-
-async function replayTick(trip: Trip, opts: { dedupStamped?: string[] } = {}) {
-  const { db, events } = makeTripEventSink();
-  const stub = stubReplayFetch(fixture);
-  vi.setSystemTime(fixture.window.fromMs - 10 * 60_000);
-  const result = await runCaptureReplay({
-    fixture,
-    seedTrips: [trip],
-    apns: 'capture',
-    makeKv: makeLagKv,
-    beforeTick: async ({ tick, env, kv }) => {
-      // progress가 이미 head를 가리키는 운영 상태(재등록 없음) — 진입 맞춤(#3282)은 no-op이어야 한다.
-      await primeReplayKv(kv, tick, {
-        token: TOKEN,
-        progress: {
-          trainCode: trip.boardingLock!.trainCode,
-          shiftedCount: FULL_ROUTE_NAMES.indexOf(trip.waypoints[0].stationName),
-          headHopIndex: trip.waypoints[0].hopIndex,
-          headKey: waypointSignatureKey(trip.waypoints[0]),
-          ttlBasisExpiresAt: trip.expiresAt,
-        },
-      });
-      for (const station of opts.dedupStamped ?? []) {
-        await kv.put(stationPassedFiredKey(TOKEN, trip.boardingLock!.trainCode, station), '1', { expirationTtl: 3600 });
-      }
-      attachDb(env as Env, db);
-      stub.setNow(tick);
-      vi.setSystemTime(tick);
-    },
-  });
-  return { result, cycle: result.cycles[0], events };
-}
-
-type Run = Awaited<ReturnType<typeof replayTick>>;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -119,12 +27,6 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
-
-const alertStations = (r: Run) => firedStationOccurrences(r.cycle.pushes);
-const catchupRows = (r: Run) =>
-  r.events
-    .filter((e) => e.kind === 'cron-fire-attempt' && e.meta.path === 'cron-catchup')
-    .map((e) => ({ station: e.station, outcome: e.meta.outcome }));
 
 describe('#2629 10/31 09:57:45 tick 단독 — 학동은 이 tick에 나간다', () => {
   it('head 강남구청(이미 09:55:45에 발사·dedup) + 열차 학동 sttus1: 학동 alert 1건 + 강남구청 중복 push 0', async () => {

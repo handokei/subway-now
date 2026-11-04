@@ -37,6 +37,11 @@ export interface ProgressCell {
   lastTrackedArrivalEpoch?: number;
   lastLaPushEpoch?: number;
   lastLaPushAt?: number;
+  /**
+   * 이 lock epoch의 재고정(`planLockReanchor`) 판정을 이미 마쳤다는 표식(`lockEpochKey(lock)`) — progress KV의 `progress.trainCode===lock.trainCode`
+   * ("진행 중인 lock — epoch 시작 아님")를 대체한다. 시드 시점에 lock이 이미 있으면 그 lock의 키로 채워 활성화 직후 진행 중인 트립이 되감기지 않는다.
+   */
+  lockEpochKey?: string;
   /** seedProgressFromKv가 마지막으로 반영한 flag epoch. */
   seededEpoch: number;
   last: { op: ProgressOp['type'] | 'init'; source: string; at: number };
@@ -59,7 +64,7 @@ interface OpBase {
 /** head 스코프 스탬프 — head가 바뀌면 무의미해지는 값(전진 시 리셋). `expectedHeadKey`가 일치할 때만 쓴다. */
 export const HEAD_SCOPED_STAMPS = ['lastTrackedArrivalEpoch', 'lastLaPushEpoch', 'lastLaPushAt'] as const;
 /** leg 스코프 스탬프 — head와 무관(leg anchor 재stamp 때 리셋). */
-export const LEG_SCOPED_STAMPS = ['legResolveStreak', 'legBoardingPromptState'] as const;
+export const LEG_SCOPED_STAMPS = ['legResolveStreak', 'legBoardingPromptState', 'lockEpochKey'] as const;
 export type ProgressStampKey = (typeof HEAD_SCOPED_STAMPS)[number] | (typeof LEG_SCOPED_STAMPS)[number] | 'transferObservedAt';
 export type ProgressStamps = Pick<ProgressCell, ProgressStampKey>;
 
@@ -70,6 +75,12 @@ export interface ProgressSnapshot extends Partial<ProgressStamps> {
   currentLegAnchor?: LegAnchor;
   legBoardingEligibleAt?: number;
   promptDisplay?: Trip['promptDisplay'];
+}
+
+/** lock epoch 표식 — 붙는 순간의 leg 신원(노선·탑승역)과 선택 시각. 같은 lock의 swap(trainCode 교체)·TTL 갱신으로는 바뀌지 않는다. */
+export function lockEpochKey(lock: NonNullable<Trip['boardingLock']>): string {
+  const [origin] = lock.segmentStations;
+  return `${lock.line}|${origin ?? ''}|${lock.selectedDepartureTime}`;
 }
 
 export interface SeedProgressFromKvOp extends OpBase {
@@ -107,6 +118,8 @@ export interface ReanchorOp extends OpBase {
   waypoints: Waypoint[];
   expectedLockRev: number;
   segmentStations: string[];
+  /** 재고정을 마친 lock epoch 표식(같은 op로 stamp). */
+  lockEpochKey?: string;
 }
 export interface AttachWithFastForwardOp extends OpBase {
   type: 'attachWithFastForward';
@@ -219,6 +232,7 @@ const HANDLERS: Handlers = {
         lastTrackedArrivalEpoch: snapshot.lastTrackedArrivalEpoch,
         lastLaPushEpoch: snapshot.lastLaPushEpoch,
         lastLaPushAt: snapshot.lastLaPushAt,
+        lockEpochKey: snapshot.lockEpochKey,
         seededEpoch: epoch,
       },
       true,
@@ -243,6 +257,7 @@ const HANDLERS: Handlers = {
           legResolveStreak: undefined,
           promptDisplay: incoming.promptDisplay,
           transferObservedAt: undefined,
+          lockEpochKey: undefined,
           ...HEAD_STAMPS_CLEARED,
         },
         true,
@@ -310,7 +325,7 @@ const HANDLERS: Handlers = {
       now,
     );
     if (lockResult.outcome !== 'applied') return conflict(cell);
-    return applied(cell, op, now, { waypoints: op.waypoints }, true, lockResult);
+    return applied(cell, op, now, { waypoints: op.waypoints, lockEpochKey: op.lockEpochKey ?? cell.lockEpochKey }, true, lockResult);
   },
 
   // sync 수동 목록 탭 승격(§3 #7): lock 부착이 applied일 때만 건너뛴 구간을 전진한다(셀이 이미 가진 lock이 이긴다).
@@ -372,9 +387,11 @@ export function applyProgressCell(trip: Trip, cell: ProgressCell): Trip {
     lastTrackedArrivalEpoch,
     lastLaPushEpoch,
     lastLaPushAt,
+    lockEpochKey: epochKey,
   } = cell;
   return {
     ...trip,
+    __progressLockEpoch: epochKey,
     waypoints,
     routeWaypoints,
     currentLegAnchor,
