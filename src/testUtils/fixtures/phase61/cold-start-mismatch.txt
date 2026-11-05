@@ -1,0 +1,84 @@
+[Subway debug] 2026-06-26T09:20:00.000Z
+
+## GPS
+lat=37.58, lng=127.08, speed=1.2 m/s, accuracy=28.0 m
+fused=(no fused signal)
+state=fg, lastFix=09:20:00
+subsurface=false (readings=20)
+
+## Nearest
+사가정 · 90 m
+variants: 사가정(7)
+
+## Fusion
+confidence=gps-only, source=gps
+fused: 사가정(7) · 90m
+gps:   사가정(7) · 90m
+tier=low
+signalMask=UUF
+
+## Trip
+lockless=false
+tripStartedAt=09:05:30
+currentHopIndex=2
+route hop count=4
+displayOnlyEstimate=(none)
+lifecyclePhase=active
+
+## Sleep
+sleepMode=off
+firstHopApproaching=false
+
+## Arrival
+up: 도봉산행 - 면목방면 · 90s (2분 후)
+down: 온수행 - 용마산방면 · 110s (2분 후)
+
+## Silent Push
+permission=granted
+apnsToken=…ab12cd34
+activeTrip=trip-coldstart-001
+apnsEnv=production
+taskRegistration=success
+route=왕십리→건대입구
+destination=건대입구
+currentStation=사가정
+received=2 (last 09:18:00)
+receivedByKind=stn=2 xfer=0 dst=0 unk=0
+fired=0 (last (never))
+lastSkipped=(never)
+lowPowerMode=off
+
+## Backend SSoT
+(no recent SSoT push)
+
+## Scheduled queue (0)
+
+## Gates
+gate-passed-event-on-lock-origin=3
+
+## BoardingLock
+active=yes
+
+## Cold Start
+detected=yes
+candidatesCount=3
+weightedCount=3
+pickerShown=yes
+userSelected=yes
+
+## Estimator State (5)
+09:18:00 | lockless-route-hop | 사가정(7) idx=2
+09:15:00 | lockless-route-hop | 군자(능동)(7) idx=1
+09:10:00 | lockless-route-hop | 왕십리(성동구청)(2) idx=0
+09:06:00 | none | - idx=-
+09:05:30 | none | - idx=-
+
+## Notifications fired (0)
+
+## Alarm log (5)
+sources: cold-start-candidate-select=1, cold-start-mismatch=1, fg=2, silent-push-received=2
+09:05:30 | cold-start-candidate-select | fired | user-selected | 왕십리
+09:15:30 | cold-start-mismatch | suppressed | line-mismatch | 사가정
+09:18:00 | silent-push-received | received | 사가정
+09:16:00 | silent-push-received | received | 군자(능동)
+09:10:05 | fg | suppressed | lockless-no-user-intent | station-passed | 군자(능동)

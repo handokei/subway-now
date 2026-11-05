@@ -1,0 +1,735 @@
+[
+  {
+    "results": [
+      {
+        "id": 1720,
+        "token_hash": "b00dd879",
+        "ts": 1793136401077,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":false}"
+      },
+      {
+        "id": 1721,
+        "token_hash": "b00dd879",
+        "ts": 1793136402049,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":false}"
+      },
+      {
+        "id": 1722,
+        "token_hash": "b00dd879",
+        "ts": 1793136403400,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1723,
+        "token_hash": "b00dd879",
+        "ts": 1793136404060,
+        "kind": "la-token-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"hadToken\":false}"
+      },
+      {
+        "id": 1724,
+        "token_hash": "b00dd879",
+        "ts": 1793136404996,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1725,
+        "token_hash": "b00dd879",
+        "ts": 1793136405700,
+        "kind": "la-token-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"hadToken\":false}"
+      },
+      {
+        "id": 1726,
+        "token_hash": "b00dd879",
+        "ts": 1793136416793,
+        "kind": "sync-received",
+        "station": "중곡",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 1727,
+        "token_hash": "b00dd879",
+        "ts": 1793136416793,
+        "kind": "advance",
+        "station": "군자(능동)",
+        "line": null,
+        "meta": "{\"shiftedCount\":1}"
+      },
+      {
+        "id": 1728,
+        "token_hash": "b00dd879",
+        "ts": 1793136465433,
+        "kind": "prompt-sound-channel",
+        "station": "용마산",
+        "line": "7",
+        "meta": "{\"laOk\":true,\"notificationSilenced\":false,\"guard\":\"stale\",\"laPushAgeMs\":null,\"laBudgetExceeded\":false,\"laMs\":98}"
+      },
+      {
+        "id": 1729,
+        "token_hash": "b00dd879",
+        "ts": 1793136475872,
+        "kind": "lock-attached",
+        "station": "용마산",
+        "line": "7",
+        "meta": "{\"path\":\"confirm\",\"trainCode\":\"7035\",\"hasResponseMarker\":true}"
+      },
+      {
+        "id": 1730,
+        "token_hash": "b00dd879",
+        "ts": 1793136475944,
+        "kind": "boarding-confirm-result",
+        "station": null,
+        "line": null,
+        "meta": "{\"lockState\":\"leg1\",\"outcome\":\"resolved\",\"anchorSource\":\"promptDisplay\"}"
+      },
+      {
+        "id": 1731,
+        "token_hash": "b00dd879",
+        "ts": 1793136478176,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1732,
+        "token_hash": "b00dd879",
+        "ts": 1793136478378,
+        "kind": "boarding-confirm-result",
+        "station": null,
+        "line": null,
+        "meta": "{\"lockState\":\"leg1\"}"
+      },
+      {
+        "id": 1733,
+        "token_hash": "b00dd879",
+        "ts": 1793136480160,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1734,
+        "token_hash": "b00dd879",
+        "ts": 1793136481361,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1735,
+        "token_hash": "b00dd879",
+        "ts": 1793136481998,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1736,
+        "token_hash": "b00dd879",
+        "ts": 1793136483399,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1737,
+        "token_hash": "b00dd879",
+        "ts": 1793136486986,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1738,
+        "token_hash": "b00dd879",
+        "ts": 1793136486994,
+        "kind": "sync-received",
+        "station": "용마산",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 1739,
+        "token_hash": "b00dd879",
+        "ts": 1793136488562,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1740,
+        "token_hash": "b00dd879",
+        "ts": 1793136517119,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1741,
+        "token_hash": "b00dd879",
+        "ts": 1793136518629,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1742,
+        "token_hash": "b00dd879",
+        "ts": 1793136549411,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::중곡|7|intermediate|0/군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1743,
+        "token_hash": "b00dd879",
+        "ts": 1793136551811,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1744,
+        "token_hash": "b00dd879",
+        "ts": 1793136583248,
+        "kind": "sync-received",
+        "station": "중곡",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 1745,
+        "token_hash": "b00dd879",
+        "ts": 1793136587879,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1746,
+        "token_hash": "b00dd879",
+        "ts": 1793136591064,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1747,
+        "token_hash": "b00dd879",
+        "ts": 1793136609045,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1748,
+        "token_hash": "b00dd879",
+        "ts": 1793136612875,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1749,
+        "token_hash": "b00dd879",
+        "ts": 1793136641006,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1750,
+        "token_hash": "b00dd879",
+        "ts": 1793136659035,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1751,
+        "token_hash": "b00dd879",
+        "ts": 1793136675948,
+        "kind": "cron-fire-attempt",
+        "station": "군자(능동)",
+        "line": null,
+        "meta": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"sent\",\"midCycle\":true,\"pushId\":\"3230f15f-51fe-421a-b6c4-1d7d0aede3b9\"}"
+      },
+      {
+        "id": 1752,
+        "token_hash": "b00dd879",
+        "ts": 1793136706091,
+        "kind": "cron-fire-attempt",
+        "station": "군자(능동)",
+        "line": null,
+        "meta": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"skipped-reason\",\"reason\":\"station-passed-dedup\"}"
+      },
+      {
+        "id": 1753,
+        "token_hash": "b00dd879",
+        "ts": 1793136706091,
+        "kind": "prepare-alarm",
+        "station": "군자(능동)",
+        "line": "7",
+        "meta": "{\"outcome\":\"skipped\",\"reason\":\"not-preceding\"}"
+      },
+      {
+        "id": 1754,
+        "token_hash": "b00dd879",
+        "ts": 1793136752470,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1755,
+        "token_hash": "b00dd879",
+        "ts": 1793136754856,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1756,
+        "token_hash": "b00dd879",
+        "ts": 1793136763983,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1757,
+        "token_hash": "b00dd879",
+        "ts": 1793136765352,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1758,
+        "token_hash": "b00dd879",
+        "ts": 1793136766115,
+        "kind": "vanish-swap",
+        "station": "어린이대공원(세종대)",
+        "line": "7",
+        "meta": "{\"phase\":\"estimate-null\",\"isNull\":false}"
+      },
+      {
+        "id": 1759,
+        "token_hash": "b00dd879",
+        "ts": 1793136795916,
+        "kind": "cron-fire-attempt",
+        "station": "어린이대공원(세종대)",
+        "line": null,
+        "meta": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"sent\",\"midCycle\":true,\"pushId\":\"24632120-7683-46ca-8ffb-67b687a765b8\"}"
+      },
+      {
+        "id": 1760,
+        "token_hash": "b00dd879",
+        "ts": 1793136825297,
+        "kind": "cron-fire-attempt",
+        "station": "어린이대공원(세종대)",
+        "line": null,
+        "meta": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"skipped-reason\",\"reason\":\"station-passed-dedup\"}"
+      },
+      {
+        "id": 1761,
+        "token_hash": "b00dd879",
+        "ts": 1793136825297,
+        "kind": "prepare-alarm",
+        "station": "어린이대공원(세종대)",
+        "line": "7",
+        "meta": "{\"outcome\":\"fired\",\"targetStation\":\"건대입구\",\"targetKind\":\"transfer\",\"pushId\":\"392fff33-7068-477a-8a0f-dcab3788f934\"}"
+      },
+      {
+        "id": 1762,
+        "token_hash": "b00dd879",
+        "ts": 1793136868914,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1763,
+        "token_hash": "b00dd879",
+        "ts": 1793136871262,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1764,
+        "token_hash": "b00dd879",
+        "ts": 1793136898458,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::군자(능동)|7|intermediate|0/어린이대공원(세종대)|7|intermediate|0/건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1765,
+        "token_hash": "b00dd879",
+        "ts": 1793136899922,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1766,
+        "token_hash": "b00dd879",
+        "ts": 1793136915234,
+        "kind": "cron-fire-attempt",
+        "station": "건대입구",
+        "line": null,
+        "meta": "{\"waypointKind\":\"transfer\",\"phase\":\"imminent\",\"outcome\":\"sent\",\"midCycle\":true,\"pushId\":\"6858d18a-986c-4815-9af0-fe900de2d847\"}"
+      },
+      {
+        "id": 1767,
+        "token_hash": "b00dd879",
+        "ts": 1793136945710,
+        "kind": "transfer-advance",
+        "station": "건대입구",
+        "line": "7",
+        "meta": "{\"path\":\"lock-active\",\"outcome\":\"advanced\"}"
+      },
+      {
+        "id": 1768,
+        "token_hash": "b00dd879",
+        "ts": 1793136945710,
+        "kind": "cron-fire-attempt",
+        "station": "건대입구",
+        "line": null,
+        "meta": "{\"waypointKind\":\"transfer\",\"phase\":\"imminent\",\"outcome\":\"skipped-reason\",\"reason\":\"ssot-not-at-or-approaching\"}"
+      },
+      {
+        "id": 1769,
+        "token_hash": "b00dd879",
+        "ts": 1793136945710,
+        "kind": "prepare-alarm",
+        "station": "건대입구",
+        "line": "7",
+        "meta": "{\"outcome\":\"skipped\",\"reason\":\"not-preceding\"}"
+      },
+      {
+        "id": 1771,
+        "token_hash": "b00dd879",
+        "ts": 1793136945710,
+        "kind": "hop-end-prompt",
+        "station": "건대입구",
+        "line": "7",
+        "meta": "{\"outcome\":\"fired\"}"
+      },
+      {
+        "id": 1770,
+        "token_hash": "b00dd879",
+        "ts": 1793136949688,
+        "kind": "position-kv-sample",
+        "station": null,
+        "line": null,
+        "meta": "{\"stages\":[],\"attempted\":0,\"lockState\":\"lock\",\"appState\":\"fg\",\"headKind\":\"transfer\",\"etaMissing\":false,\"hasAccel\":false,\"pointLagMs\":91}"
+      },
+      {
+        "id": 1772,
+        "token_hash": "b00dd879",
+        "ts": 1793136951514,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"2-010::성수|2|intermediate|0/뚝섬|2|destination|0\",\"incomingSig\":\"2-010::건대입구|7|transfer|0/성수|2|intermediate|0/뚝섬|2|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 1773,
+        "token_hash": "b00dd879",
+        "ts": 1793136953371,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 1774,
+        "token_hash": "b00dd879",
+        "ts": 1793136955638,
+        "kind": "sync-received",
+        "station": "건대입구",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 1775,
+        "token_hash": "b00dd879",
+        "ts": 1793137005336,
+        "kind": "prompt-sound-channel",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"laOk\":true,\"notificationSilenced\":false,\"guard\":\"stale\",\"laPushAgeMs\":null,\"laBudgetExceeded\":false,\"laMs\":512}"
+      },
+      {
+        "id": 1776,
+        "token_hash": "b00dd879",
+        "ts": 1793137005336,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"outcome\":\"fired\",\"candidateArvlCds\":[99,99,1],\"candidateEtaSeconds\":[223,503,0],\"gateDecision\":\"position-confirmed\"}"
+      },
+      {
+        "id": 1777,
+        "token_hash": "b00dd879",
+        "ts": 1793137005336,
+        "kind": "intermediate-route",
+        "station": "성수",
+        "line": "2",
+        "meta": "{\"branch\":\"lockless\"}"
+      },
+      {
+        "id": 1778,
+        "token_hash": "b00dd879",
+        "ts": 1793137011792,
+        "kind": "boarding-confirm-result",
+        "station": null,
+        "line": null,
+        "meta": "{\"lockState\":\"none\"}"
+      },
+      {
+        "id": 1779,
+        "token_hash": "b00dd879",
+        "ts": 1793137065695,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[99,99],\"candidateEtaSeconds\":[143,443],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "id": 1780,
+        "token_hash": "b00dd879",
+        "ts": 1793137186420,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[5,99],\"candidateEtaSeconds\":[73,343],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "id": 1781,
+        "token_hash": "b00dd879",
+        "ts": 1793137245495,
+        "kind": "leg-resolve-attempt",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"elapsedSinceAnchorMs\":21785,\"candidates\":[{\"trainCode\":\"3013\",\"trainSttus\":0}],\"streakCount\":1,\"outcome\":\"pending\",\"selectedTrainCode\":\"3013\"}"
+      },
+      {
+        "id": 1782,
+        "token_hash": "b00dd879",
+        "ts": 1793137245495,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[3,99],\"candidateEtaSeconds\":[79,349],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "id": 1783,
+        "token_hash": "b00dd879",
+        "ts": 1793137308513,
+        "kind": "leg-resolve-attempt",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"elapsedSinceAnchorMs\":84803,\"candidates\":[{\"trainCode\":\"3013\",\"trainSttus\":1}],\"streakCount\":2,\"outcome\":\"pending\",\"selectedTrainCode\":\"3013\"}"
+      },
+      {
+        "id": 1784,
+        "token_hash": "b00dd879",
+        "ts": 1793137308513,
+        "kind": "prompt-sound-channel",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"laOk\":true,\"notificationSilenced\":false,\"guard\":\"stale\",\"laPushAgeMs\":null,\"laBudgetExceeded\":false,\"laMs\":444}"
+      },
+      {
+        "id": 1785,
+        "token_hash": "b00dd879",
+        "ts": 1793137308513,
+        "kind": "leg-boarding-prompt",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"outcome\":\"fired\",\"candidateArvlCds\":[1],\"candidateEtaSeconds\":[0],\"gateDecision\":\"position-confirmed\"}"
+      },
+      {
+        "id": 1786,
+        "token_hash": "b00dd879",
+        "ts": 1793137341195,
+        "kind": "sync-received",
+        "station": "건대입구",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 1787,
+        "token_hash": "b00dd879",
+        "ts": 1793137341200,
+        "kind": "sync-received",
+        "station": "건대입구",
+        "line": null,
+        "meta": "{\"promotedLock\":true,\"trainCode\":\"3013\",\"line\":\"2\"}"
+      },
+      {
+        "id": 1788,
+        "token_hash": "b00dd879",
+        "ts": 1793137341200,
+        "kind": "lock-attached",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"path\":\"sync\",\"trainCode\":\"3013\",\"hasResponseMarker\":true}"
+      },
+      {
+        "id": 1789,
+        "token_hash": "b00dd879",
+        "ts": 1793137365462,
+        "kind": "leg2-estimate",
+        "station": "성수",
+        "line": "2",
+        "meta": "{\"matched\":true}"
+      },
+      {
+        "id": 1790,
+        "token_hash": "b00dd879",
+        "ts": 1793137395237,
+        "kind": "cron-fire-attempt",
+        "station": "성수",
+        "line": null,
+        "meta": "{\"waypointKind\":\"station-passed\",\"phase\":\"imminent\",\"outcome\":\"sent\",\"midCycle\":true,\"pushId\":\"b1e257ac-da87-4d24-ab3e-69186c5bfdbd\"}"
+      },
+      {
+        "id": 1791,
+        "token_hash": "b00dd879",
+        "ts": 1793137399491,
+        "kind": "sync-received",
+        "station": "성수",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 1793,
+        "token_hash": "b00dd879",
+        "ts": 1793137399491,
+        "kind": "prepare-alarm",
+        "station": "성수",
+        "line": "2",
+        "meta": "{\"outcome\":\"fired\",\"targetStation\":\"뚝섬\",\"targetKind\":\"destination\",\"pushId\":\"8108a803-a9bf-4719-88e2-b92f71ed0009\"}"
+      },
+      {
+        "id": 1792,
+        "token_hash": "b00dd879",
+        "ts": 1793137400166,
+        "kind": "advance",
+        "station": "뚝섬",
+        "line": null,
+        "meta": "{\"shiftedCount\":1}"
+      },
+      {
+        "id": 1794,
+        "token_hash": "b00dd879",
+        "ts": 1793137416536,
+        "kind": "position-kv-sample",
+        "station": null,
+        "line": null,
+        "meta": "{\"stages\":[\"pos\"],\"attempted\":1,\"lockState\":\"lock\",\"appState\":\"fg\",\"headKind\":\"destination\",\"etaMissing\":false,\"hasAccel\":false,\"pointLagMs\":587}"
+      },
+      {
+        "id": 1795,
+        "token_hash": "b00dd879",
+        "ts": 1793137481088,
+        "kind": "sync-received",
+        "station": "건대입구",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 1796,
+        "token_hash": "b00dd879",
+        "ts": 1793137528457,
+        "kind": "boarding-confirm-result",
+        "station": null,
+        "line": null,
+        "meta": "{\"lockState\":\"leg2\"}"
+      },
+      {
+        "id": 1797,
+        "token_hash": "b00dd879",
+        "ts": 1793137530876,
+        "kind": "metrics-window-truncated",
+        "station": null,
+        "line": null,
+        "meta": "{\"startedAt\":1793136396441,\"firstEventTs\":1792912122443,\"lostMs\":224273998,\"firedCountInRow\":4,\"scanFrom\":1792912119527,\"usedPrevRow\":true}"
+      },
+      {
+        "id": 1798,
+        "token_hash": "b00dd879",
+        "ts": 1793137530951,
+        "kind": "trip-end",
+        "station": "2-010",
+        "line": null,
+        "meta": "{\"reason\":\"arrival-auto-clear\",\"endPath\":\"http-delete\"}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "ICN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.7685
+      },
+      "duration": 0.7685,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 208896,
+      "rows_read": 80,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

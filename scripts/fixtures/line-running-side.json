@@ -1,0 +1,26 @@
+{
+  "1": {
+    "side": null,
+    "scope": "서울교통공사 구간(서울~청량리)",
+    "note": "좌측통행 보도(한국경제·머니투데이·브런치)는 다수 확인했으나 신문/블로그뿐이라 권위 있는 1차 출처(운영사·법령)를 못 찾아 null 보류. 근거가 확보되면 side를 left로 바꾸면 1호선 10역이 반전 적용된다.",
+    "evidence": [
+      "https://sgsg.hankyung.com/article/2009030496421",
+      "https://brunch.co.kr/@hasin153/471"
+    ]
+  },
+  "2": { "side": "right", "scope": "서울교통공사", "evidence": ["https://brunch.co.kr/@hasin153/471"] },
+  "3": {
+    "side": "right",
+    "scope": "서울교통공사 + 일산선(코레일 지축~대화) 모두 우측통행",
+    "evidence": ["https://itwiki.kr/w/%EC%88%98%EB%8F%84%EA%B6%8C_%EC%A0%84%EC%B2%A0_3%ED%98%B8%EC%84%A0"]
+  },
+  "4": {
+    "side": "right",
+    "scope": "서울교통공사 당고개~남태령 구간만. 코레일 선바위~오이도는 좌측통행(남태령-선바위 교차 터널)이라 이 값을 적용하면 안 된다. 심도정보 데이터셋은 서울교통공사 역만 담으므로 본 빌드 범위에서는 안전.",
+    "evidence": ["https://ko.wikipedia.org/wiki/%EA%B3%BC%EC%B2%9C%EC%84%A0"]
+  },
+  "5": { "side": "right", "scope": "서울교통공사", "evidence": ["https://sgsg.hankyung.com/article/2009030496421"] },
+  "6": { "side": "right", "scope": "서울교통공사", "evidence": ["https://sgsg.hankyung.com/article/2009030496421"] },
+  "7": { "side": "right", "scope": "서울교통공사", "evidence": ["https://sgsg.hankyung.com/article/2009030496421"] },
+  "8": { "side": "right", "scope": "서울교통공사", "evidence": ["https://sgsg.hankyung.com/article/2009030496421"] }
+}

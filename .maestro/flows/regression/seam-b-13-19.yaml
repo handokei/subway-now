@@ -1,0 +1,73 @@
+appId: com.subwaynow.app
+name: "regression - Seam B (#922) — 성수 정지 중 건대입구 false-positive 차단"
+# 2026-06-05 13:19 실기기 회귀 재현. 사용자가 성수역에서 정지 중일 때
+# 환승 목적지 건대입구에 대한 "곧 도착" 알람이 잘못 발사되었음(Seam B).
+# 본 flow는 GPS를 성수에 고정하고 mock backend가 건대입구 ETA를 5분 후로 응답한 뒤,
+# 일정 시간 동안 client-side 알람 UI가 발사되지 않음을 검증한다.
+#
+# 전제: scripts/maestro-mock-backend.ts가 SCENARIO=seam-b-13-19 PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+---
+- setLocation:
+    latitude: 37.544581
+    longitude: 127.055961
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 성수 확인 (한/영 둘 다 매칭)
+- assertVisible:
+    text: "성수|Seongsu"
+
+# 목적지: 건대입구 (환승 목적지로 transfer leg 형성)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "건대입구"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-2-012"
+- waitForAnimationToEnd
+
+# 트립이 형성된 뒤 BG 폴링 + ArrivalRow refetch가 충분히 돌도록 90초 대기.
+# 13:19 회귀는 트립 형성 후 약 30~60초 사이에 발사되었으므로 90초로 여유 확보.
+- repeat:
+    times: 90
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# Seam B 회귀 검증: "곧 도착", "하차 알림", "건대입구 도착" 등 발사 UI가 노출되면 실패.
+# 회귀가 없으면 위 텍스트는 보이지 않는다.
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# 트립 진행 chip은 여전히 성수로 안정되어 있어야 한다(waypoint advance 회귀 동시 차단).
+- assertVisible:
+    text: "성수|Seongsu"

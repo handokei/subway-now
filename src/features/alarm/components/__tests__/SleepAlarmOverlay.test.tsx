@@ -1,0 +1,272 @@
+import React from 'react';
+import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
+import { SleepAlarmOverlay } from '../SleepAlarmOverlay';
+import { lightColors, darkColors } from '../../../../shared/theme';
+import { getLineLabel } from '../../../../shared/ui/LineBadge';
+import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
+import type { AlarmEvent } from '../../../../shared/types/alarm';
+import type { ExitInfoProvider } from '../../../exit-info/providers/types';
+import type { ExitInfo } from '../../../../shared/types/exitInfo';
+
+const mockKillAllAlarms = jest.fn().mockResolvedValue(undefined);
+const mockClearAlarmNotification = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../../utils/alarmKill', () => ({
+  killAllAlarms: () => mockKillAllAlarms(),
+}));
+jest.mock('../../utils/stationNotification', () => ({
+  clearAlarmNotification: () => mockClearAlarmNotification(),
+}));
+
+// #2520 — dismiss가 BoardingLock(trip)을 절대 건드리지 않는다는 회귀 가드(#673/#806/#741/#746).
+// SleepAlarmOverlay는 이 모듈을 import조차 하지 않지만, 만약 향후 리팩터로 의존이 생기더라도
+// getBoardingLock/setBoardingLock/clearBoardingLock 중 아무것도 호출되지 않아야 함을 직접 assert한다.
+const mockGetBoardingLock = jest.fn();
+const mockSetBoardingLock = jest.fn();
+const mockClearBoardingLock = jest.fn();
+jest.mock('../../utils/boardingLockStorage', () => ({
+  getBoardingLock: () => mockGetBoardingLock(),
+  setBoardingLock: () => mockSetBoardingLock(),
+  clearBoardingLock: () => mockClearBoardingLock(),
+}));
+
+const mockGlow = jest.fn();
+jest.mock('../../../../shared/ui/LineGlowBackground', () => ({
+  LineGlowBackground: (props: { line?: string | null }) => {
+    mockGlow(props);
+    return null;
+  },
+}));
+
+const mockDismiss = jest.fn();
+
+function makeExitProvider(exits: ExitInfo[]): ExitInfoProvider {
+  return { getExits: jest.fn(async () => exits) };
+}
+
+function renderAlarm(
+  type: AlarmEvent['type'],
+  stationName: string,
+  phaseId: AlarmEvent['phaseId'] = 'early',
+  stationId = '2-022',
+  sleepMode = true,
+) {
+  const event: AlarmEvent = { phaseId, type, stationName, stationId };
+  return render(<SleepAlarmOverlay sleepMode={sleepMode} event={event} onDismiss={mockDismiss} />);
+}
+
+async function triggerModalClose(rendered: ReturnType<typeof renderAlarm>) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Modal } = require('react-native');
+  await rendered.UNSAFE_getByType(Modal).props.onRequestClose();
+}
+
+describe('SleepAlarmOverlay', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // #2258 — 취침모드 전용 게이트. store 중앙 게이트(useAlarmEventStore.setAlarmEvent)와
+  // 별개로 컴포넌트 자체에도 방어선을 둔다(defense-in-depth). 이 게이트가 없다면 store 게이트를
+  // 우회하는 향후 호출부에서 비취침 상태에도 오버레이가 노출되는 #2258이 재발한다.
+  it('#2258 sleepMode=false면 아무것도 렌더하지 않는다 (defense-in-depth)', () => {
+    const { queryByTestId } = renderAlarm('destination', '강남', 'early', '2-022', false);
+    expect(queryByTestId('alarm-overlay')).toBeNull();
+  });
+
+  it('sleepMode=true + 환승이면 렌더한다', () => {
+    const { queryByTestId } = renderAlarm('transfer', '시청', 'early', '2-022', true);
+    expect(queryByTestId('alarm-overlay')).toBeTruthy();
+  });
+
+  it('하차 알림을 표시한다', () => {
+    const { getByText, getByTestId } = renderAlarm('destination', '강남');
+    expect(getByText('하차 알림')).toBeTruthy();
+    expect(getByText('강남에서\n내리세요')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-title')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-message')).toBeTruthy();
+  });
+
+  it('환승 알림을 표시한다', () => {
+    const { getByText, getByTestId } = renderAlarm('transfer', '시청');
+    expect(getByText('환승 알림')).toBeTruthy();
+    expect(getByText('시청에서\n환승하세요')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-title')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-message')).toBeTruthy();
+  });
+
+  it('환승 알람 dismiss → trip 유지. clearAlarmNotification만 호출 (#633)', async () => {
+    const { getByTestId } = renderAlarm('transfer', '시청');
+    fireEvent.press(getByTestId('alarm-dismiss-button'));
+    await waitFor(() => {
+      expect(mockClearAlarmNotification).toHaveBeenCalled();
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
+      expect(mockDismiss).toHaveBeenCalled();
+    });
+    // #673/#806/#741/#746 회귀 가드 — dismiss는 BoardingLock storage를 절대 건드리지 않는다.
+    expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    expect(mockClearBoardingLock).not.toHaveBeenCalled();
+  });
+
+  it('#806 도착 알람(early) dismiss → trip 유지. clearAlarmNotification만 호출(#3100: killAllAlarms 아님), release 트리거 없음', async () => {
+    const { getByTestId } = renderAlarm('destination', '강남', 'early');
+    fireEvent.press(getByTestId('alarm-dismiss-button'));
+    await waitFor(() => {
+      // #3100 D2 — 오버레이 소스가 칸마다 도착하는 companion뿐이므로, dismiss가 예약된 tripEndOffer·
+      // lastTrainAlarm·이후 칸 안전망 백업을 죽이면 안 된다(killAllAlarms = 예약 전부 cancel).
+      expect(mockClearAlarmNotification).toHaveBeenCalled();
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
+      expect(mockDismiss).toHaveBeenCalled();
+    });
+    // #673/#806/#741/#746 회귀 가드 — dismiss는 BoardingLock storage를 절대 건드리지 않는다.
+    expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    expect(mockClearBoardingLock).not.toHaveBeenCalled();
+  });
+
+  it('#806 도착 알람(imminent) dismiss → trip 유지. clearAlarmNotification만 호출 (#3100)', async () => {
+    const { getByTestId } = renderAlarm('destination', '강남', 'imminent');
+    fireEvent.press(getByTestId('alarm-dismiss-button'));
+    await waitFor(() => {
+      expect(mockClearAlarmNotification).toHaveBeenCalled();
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
+      expect(mockDismiss).toHaveBeenCalled();
+    });
+  });
+
+  describe('#3100 — N역 전 칸(band) 오버레이', () => {
+    function renderBand(type: AlarmEvent['type'], stationName: string, band?: number) {
+      const event: AlarmEvent = { phaseId: 'early', type, stationName, stationId: '2-022', ...(band === undefined ? {} : { band }) };
+      return render(<SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} />);
+    }
+
+    it('환승 band 3: 제목 "시청 환승까지 3정거장", 본문은 남은 정거장 수를 담는다', () => {
+      const { getByTestId } = renderBand('transfer', '시청', 3);
+      expect(getByTestId('alarm-overlay-title').props.children).toBe('시청 환승까지 3정거장');
+      expect(getByTestId('alarm-overlay-message').props.children).toBe('시청까지\n3정거장');
+    });
+
+    it('도착 band 2: 제목 "강남 도착까지 2정거장"', () => {
+      const { getByTestId } = renderBand('destination', '강남', 2);
+      expect(getByTestId('alarm-overlay-title').props.children).toBe('강남 도착까지 2정거장');
+      expect(getByTestId('alarm-overlay-message').props.children).toBe('강남까지\n2정거장');
+    });
+
+    it('band 없음(1역 전)은 현행 문구 그대로', () => {
+      const { getByText } = renderBand('transfer', '시청');
+      expect(getByText('환승 알림')).toBeTruthy();
+      expect(getByText('시청에서\n환승하세요')).toBeTruthy();
+    });
+
+    it.each([
+      ['transfer', 3],
+      ['destination', 3],
+      ['transfer', undefined],
+      ['destination', undefined],
+    ] as const)('dismiss(%s, band=%s) → 진동·알림만 정리, 예약 전부 cancel(killAllAlarms) 금지', async (type, band) => {
+      const { getByTestId } = renderBand(type, '시청', band);
+      fireEvent.press(getByTestId('alarm-dismiss-button'));
+      await waitFor(() => expect(mockDismiss).toHaveBeenCalled());
+      expect(mockClearAlarmNotification).toHaveBeenCalledTimes(1);
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
+    });
+  });
+
+  it('#741 환승 알람의 메인 버튼은 "알람 끄기" 텍스트', () => {
+    expect(renderAlarm('transfer', '시청').getByText('알람 끄기')).toBeTruthy();
+  });
+
+  it('#741 도착 알람의 메인 버튼도 "알람 끄기" 텍스트 — 라벨 통일', () => {
+    expect(renderAlarm('destination', '강남').getByText('알람 끄기')).toBeTruthy();
+  });
+
+  describe('#1289 출구 안내 (StationExitCard) 마운트', () => {
+    it('event.stationId만으로 출구 안내 섹션이 렌더되고 출구 카드가 나타난다 (#3177 line prop 없음)', async () => {
+      const { getByTestId, findByTestId } = renderAlarm('destination', '강남', 'early', '2-022');
+      // exit section은 즉시 렌더됨 (stationId → 노선 해석)
+      expect(getByTestId('alarm-overlay-exit-section')).toBeTruthy();
+      // StationExitCard는 MockExitInfoProvider 기본값(강남 2호선 샘플)으로 로드 후 나타남
+      await findByTestId('station-exit-card');
+    });
+  });
+
+  describe('#741 보조 버튼 제거 — 단일 액션 UX', () => {
+    it('도착 알람에서 보조 버튼이 노출되지 않는다 (회귀 가드)', () => {
+      expect(renderAlarm('destination', '강남').queryByTestId('alarm-keep-trip-button')).toBeNull();
+    });
+
+    it('환승 알람에서도 보조 버튼이 노출되지 않는다', () => {
+      expect(renderAlarm('transfer', '시청').queryByTestId('alarm-keep-trip-button')).toBeNull();
+    });
+
+    it('#806 도착 알람 onRequestClose(Android 백 버튼/스와이프)도 trip 유지', async () => {
+      const rendered = renderAlarm('destination', '강남', 'early');
+      await triggerModalClose(rendered);
+      await waitFor(() => {
+        // #3100 D2 — 닫기는 모든 알람에서 진동·알림 정리만 (예약 전부 cancel 아님).
+        expect(mockClearAlarmNotification).toHaveBeenCalled();
+        expect(mockKillAllAlarms).not.toHaveBeenCalled();
+        expect(mockDismiss).toHaveBeenCalled();
+      });
+    });
+
+    it('환승 알람 onRequestClose는 기존 동작(clearAlarmNotification, trip 유지)', async () => {
+      const rendered = renderAlarm('transfer', '시청');
+      await triggerModalClose(rendered);
+      await waitFor(() => {
+        expect(mockClearAlarmNotification).toHaveBeenCalled();
+        expect(mockKillAllAlarms).not.toHaveBeenCalled();
+        expect(mockDismiss).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('#3174 Line Glass 테마', () => {
+    const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남', stationId: '2-022' };
+
+    it('event.stationId만 전달해도 노선 칩이 렌더되고 해당 노선 라벨을 포함한다 (#3177)', () => {
+      const { getByTestId, getByText } = renderAlarm('destination', '사당', 'early', '4-025');
+      expect(getByTestId('alarm-overlay-line-chip')).toBeTruthy();
+      expect(getByText(getLineLabel('4'))).toBeTruthy();
+    });
+
+    it('event.stationId만 전달해도 LineGlowBackground가 해당 노선으로 렌더된다 (#3177)', () => {
+      renderAlarm('destination', '사당', 'early', '4-025');
+      expect(mockGlow).toHaveBeenCalledWith({ line: '4' });
+    });
+
+    it('event.stationId만 전달해도 exit-section이 렌더된다 (#3177)', () => {
+      expect(renderAlarm('destination', '사당', 'early', '4-025').getByTestId('alarm-overlay-exit-section')).toBeTruthy();
+    });
+
+    it('stations.json에 없는 stationId면 칩·exit-section을 숨긴다 (거부 케이스)', () => {
+      const a = renderAlarm('destination', '강남', 'early', '9-999');
+      expect(a.queryByTestId('alarm-overlay-line-chip')).toBeNull();
+      expect(a.queryByTestId('alarm-overlay-exit-section')).toBeNull();
+    });
+
+    it('sleepMode=false면 글로우도 렌더하지 않는다 (거부 케이스)', () => {
+      renderAlarm('destination', '강남', 'early', '2-022', false);
+      expect(mockGlow).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['light', lightColors, 'light'],
+      ['dark', darkColors, 'dark'],
+    ] as const)('해제 버튼은 inkStrong 알약 + onInkStrong 텍스트 + 알람 점 (%s)', (_n, c, scheme) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const RN = require('react-native');
+      const spy = jest.spyOn(RN, 'useColorScheme').mockReturnValue(scheme);
+      const { getByTestId, getByText, getByTestId: g } = renderWithTheme(
+        <SleepAlarmOverlay sleepMode event={event} onDismiss={mockDismiss} />,
+      );
+      expect(StyleSheet.flatten(getByTestId('alarm-dismiss-button').props.style).backgroundColor).toBe(c.inkStrong);
+      expect(StyleSheet.flatten(getByText('알람 끄기').props.style).color).toBe(c.onInkStrong);
+      expect(StyleSheet.flatten(g('alarm-dismiss-dot-ring').props.style).backgroundColor).toBe(c.alarmDotRing);
+      expect(StyleSheet.flatten(g('alarm-dismiss-dot').props.style).backgroundColor).toBe(c.alarmDot);
+      spy.mockRestore();
+    });
+  });
+});

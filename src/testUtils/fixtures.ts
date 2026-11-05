@@ -1,7 +1,7 @@
-import type { NearestStationResult } from '../types/station';
-import type { ArrivalInfo } from '../api/arrivalApi';
-import type { JourneyDisplay } from '../utils/stationRoute';
-import type { Stop, ArrivalTrain } from '../utils/journeyAdapter';
+import type { NearestStationResult } from '../shared/types/station';
+import type { ArrivalInfo } from '../shared/types/arrival';
+import type { JourneyDisplay } from '../shared/utils/stationRoute';
+import type { Stop, ArrivalTrain } from '../shared/types/journey';
 
 export const MOCK_STATIONS = {
   hyochang: { id: '0601', name: '효창공원앞', line: '6' as const, lineColor: '#CD7C2F', lat: 37.5, lng: 126.9 },
@@ -15,11 +15,12 @@ export function makeNearestResult(stationKey: keyof typeof MOCK_STATIONS, distan
   return { station: MOCK_STATIONS[stationKey], distanceKm };
 }
 
-export function makeArrivalInfo(overrides: Partial<ArrivalInfo> & { destination: string; arrivalSeconds: number }): ArrivalInfo {
+export function makeArrivalInfo(overrides: Partial<ArrivalInfo> & { destination: string; arrivalSeconds: number | null }): ArrivalInfo {
   return {
-    arrivalMinutes: Math.floor(overrides.arrivalSeconds / 60),
+    stopsAway: null,
     statusMessage: '',
     trainCode: 'T001',
+    line: '2',
     receivedAtMs: 0,
     arrivalCode: -1,
     isLastTrain: false,
@@ -46,13 +47,13 @@ export const MOCK_JOURNEYS = {
 
 export const MOCK_STOPS = {
   twoStops: [
-    { station: '강남', line: '2', mark: 'filled' },
-    { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
+    { station: '강남', line: '2', mark: 'filled', segmentToNext: { line: '2', stops: 1 } },
+    { station: '역삼', line: '2', mark: 'dest', note: '도착' },
   ] satisfies Stop[],
   threeStops: [
-    { station: '효창공원앞', line: '6', mark: 'filled' },
-    { station: '공덕', line: '5', stopsFromPrev: '2정거장', mark: 'transfer', note: '환승' },
-    { station: '여의나루', line: '5', stopsFromPrev: '3정거장', mark: 'dest', note: '도착' },
+    { station: '효창공원앞', line: '6', mark: 'filled', segmentToNext: { line: '6', stops: 2 } },
+    { station: '공덕', line: '5', mark: 'transfer', note: '6호선 → 5호선 환승', segmentToNext: { line: '5', stops: 3 } },
+    { station: '여의나루', line: '5', mark: 'dest', note: '도착' },
   ] satisfies Stop[],
 };
 

@@ -1,0 +1,78 @@
+appId: com.subwaynow.app
+name: "regression - Seam E (#922) — boardingLock sync 정정 (lockMissing 차단)"
+# 2026-06-05 13:39~45 실기기 회귀 재현. 사용자가 7호선 군자역까지 진행했는데 backend
+# lock의 currentWaypoint는 어린이대공원에 stale로 머물러 군자 알람 push 0건이었다.
+# Seam E(#901)는 client → backend POST /boarding-lock/sync로 좋은 GPS fix를 통보해
+# lock을 advance한다.
+#
+# 본 flow는 사용자 GPS를 군자역에 두고 mock backend가 sync 응답으로 advanced=true +
+# currentWaypoint=군자를 돌려주는 상황에서, client UI가 ghost '곧 도착' 알람을 발사하지
+# 않고 trip chip이 정상적으로 군자(또는 다음 hop)로 안정됨을 검증한다.
+#
+# 전제: scripts/maestro-mock-backend.js가 SCENARIO=seam-e-13-39 PORT=8788로 떠 있고
+# 앱은 EXPO_PUBLIC_BFF_URL/EXPO_PUBLIC_ALARM_BACKEND_URL로 mock을 가리키도록 빌드되어야 한다.
+---
+- setLocation:
+    latitude: 37.556897
+    longitude: 127.079338
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# 권한 다이얼로그 자동 닫기 (시뮬레이터 환경에 따라 노출되지 않을 수 있음)
+- tapOn:
+    text: "허용|Allow|Continue"
+    optional: true
+- waitForAnimationToEnd
+
+# 홈 화면 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 현재역 군자 확인 (한/영 둘 다 매칭)
+- assertVisible:
+    text: "군자|Gunja"
+
+# 목적지: 중곡 (7호선 단순 trip — Seam E의 핵심은 lock sync 정정)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(800)
+- setClipboard: "중곡"
+- evalScript: maestro.wait(400)
+- pasteText
+- evalScript: maestro.wait(1500)
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-7-016"
+- waitForAnimationToEnd
+
+# 트립 형성 후 90초 대기 — sync debounce(5s) × 다회 + arrival 폴링 cycle 확보.
+# 13:39~45 회귀는 lockMissing 6분 윈도였으므로 90s 안에 false-positive를 재현할 수 있다.
+- repeat:
+    times: 90
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# Seam E 회귀 검증: ghost 알람 발사 시 실패.
+# 본 시나리오의 핵심은 sync POST가 발사되고 그 응답이 ghost 알람을 유발하지 않는다는 것.
+- assertNotVisible:
+    text: "곧 도착|Arriving soon"
+- assertNotVisible:
+    text: "하차 알림|Get off"
+- assertNotVisible:
+    text: "알람 끄기|Stop alarm"
+
+# 트립 chip은 군자로 안정 — sync 응답이 advanced=true여도 client는 chip을 ghost로
+# 점프시키지 않아야 한다(GPS 기반 currentStation이 SSOT).
+- assertVisible:
+    text: "군자|Gunja"

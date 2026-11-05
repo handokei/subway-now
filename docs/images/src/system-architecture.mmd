@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    actor User as 🧑 사용자
+    participant App as 📱 RN App
+    participant BFF as ☁️ Workers BFF
+    participant KV as 🗄️ Workers KV
+    participant APNs as 🍎 APNs
+    participant Widget as 📊 위젯 / LA
+
+    User->>App: destination 설정
+    App->>BFF: POST /trips (origin, dest)
+    BFF->>KV: trip token 저장
+    BFF-->>App: tripId
+
+    Note over App: 4 신호 수집<br/>(GPS + 가속도 + 기압 + Cell)
+    App->>App: 합의 게이트 (ADR-015)
+    App->>BFF: PATCH /trips/:id (advance)
+    BFF->>KV: position 갱신
+    BFF->>APNs: silent push (corrId)
+    APNs-->>App: silent push 수신
+    App->>Widget: SharedGroup 갱신
+
+    Note over App: 환승역 도달
+    App->>User: 환승 알람 발사
+    App->>BFF: POST /trips/:id/complete
+    BFF->>KV: trip 종료

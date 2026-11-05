@@ -1,0 +1,82 @@
+{
+  "name": "A3 (#918) — 사전 예약 fire delta wire-up + burst 회귀 가드",
+  "seam": "A3",
+  "_doc": [
+    "Epic #912 P1 A3(#918) 회귀 가드. 자동 lock(A1) 직후 useTripBoundAlarmScheduler가",
+    "tripBoundScheduler.prescheduleStationAlerts로 OS local notification에 사전 예약한다.",
+    "fire delta는 prescheduledMetrics ledger(actualFireMs - scheduledFireMs)로 측정되며 단위",
+    "테스트가 ledger RMW 정합성을 가드한다.",
+    "",
+    "Maestro는 ledger를 직접 읽을 수 없으므로 본 fixture는 **client UI burst 회귀**를 가드한다:",
+    "  - 어린이대공원(7-016) → 군자(7-017) 단순 trip + autoLockCandidate 응답",
+    "  - 자동 lock 형성 후 사전 예약은 wall-clock 미래 시각에 등록되어야 함",
+    "  - tripBoundScheduler의 'fireMs <= nowMs' 가드(burst 차단)가 회귀하면 모든 stop의 early/imminent",
+    "    알람이 즉시 발사 → alarm-overlay/곧 도착 UI 폭발",
+    "",
+    "기대 client-observable 동작 (60초 대기):",
+    "  - boarding-lock-hop-card 노출(자동 lock 성공)",
+    "  - alarm-overlay 미노출 (preschedule이 미래 시각에만 등록 — burst 0건)",
+    "  - 트립 chip은 어린이대공원으로 안정"
+  ],
+  "arrivals": {
+    "어린이대공원": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "장암",
+              "arrivalMinutes": 4,
+              "arrivalSeconds": 240,
+              "statusMessage": "4분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "군자": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "장암",
+              "arrivalMinutes": 6,
+              "arrivalSeconds": 360,
+              "statusMessage": "6분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  },
+  "boardingLockSync": {
+    "response": {
+      "ok": true,
+      "advanced": false,
+      "currentWaypoint": "어린이대공원",
+      "nextStation": "어린이대공원",
+      "autoLockCandidate": {
+        "trainCode": "7180",
+        "line": "7",
+        "subwayId": "1077"
+      }
+    }
+  }
+}

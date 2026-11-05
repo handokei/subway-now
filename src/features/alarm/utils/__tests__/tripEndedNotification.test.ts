@@ -1,0 +1,434 @@
+/* eslint-disable import/no-restricted-paths --
+ * notifyTripEnded는 취침모드(settings 슬라이스) 여부를 읽는 cross-feature 모듈이라 테스트도 같은
+ * settings store를 직접 세팅한다(`tripEndOffer.test.ts` 선례).
+ */
+/**
+ * #2675 — 자동 trip 종료 알림.
+ *
+ * 사용자 보고(2026-09-17): "FG 진입하니 알아서 도착 후 종료돼 있음 — 도착 안내도 종료 알림도 없었다."
+ * 종료 판정이 아니라 **알림 부재**가 결함이었다(문구는 i18n에 있었지만 소비처가 없었다).
+ *
+ * PR-3a(plan 2026-10-21 Part 3) — 조용한 종료 경로용 콘텐츠: 무음 배너 / data.kind+reason /
+ * reason→i18n 데이터 맵 / 1 end = 1 notification claim / alarmLog 행.
+ */
+const mockSchedule = jest.fn().mockResolvedValue('id');
+jest.mock('expo-notifications', () => ({
+  scheduleNotificationAsync: (...args: unknown[]) => mockSchedule(...args),
+}));
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addDomainBreadcrumb: jest.fn(),
+  // logger가 같은 모듈의 addLogBreadcrumb를 쓰므로 함께 채운다(부분 mock으로 깨지는 것 방지).
+  addLogBreadcrumb: jest.fn(),
+}));
+const mockGetCorrId = jest.fn<string | null, []>();
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: () => mockGetCorrId(),
+}));
+const mockGetStartedAt = jest.fn<Promise<number | null>, []>();
+jest.mock('../tripStartStorage', () => ({ getTripStartedAt: () => mockGetStartedAt() }));
+const mockGetItem = jest.fn<Promise<string | null>, [string]>();
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: { getItem: (k: string) => mockGetItem(k) },
+}));
+// #3005 PR-C — lock-only-alerts 판정용: 메모리 lock / storage lock을 테스트가 제어한다.
+let mockMemoryLock: unknown = null;
+jest.mock('../../store/useBoardingLockStore', () => ({
+  useBoardingLockStore: { getState: () => ({ lock: mockMemoryLock }) },
+}));
+const mockGetStoredLock = jest.fn<Promise<unknown>, []>();
+jest.mock('../boardingLockStorage', () => ({ getBoardingLock: () => mockGetStoredLock() }));
+const mockAppendAlarmLog = jest.fn();
+jest.mock('../alarmLog', () => ({ appendAlarmLog: (e: unknown) => mockAppendAlarmLog(e) }));
+
+import i18next from 'i18next';
+import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
+import { Platform } from 'react-native';
+import type { Station } from '../../../../shared/types/station';
+import {
+  captureTripEndIdentity,
+  captureTripEndSnapshot,
+  clearAndNotifyTripEnded,
+  hasBoardingLock,
+  notifyTripEnded,
+  TRIP_ENDED_AUTO_KIND,
+  TRIP_ENDED_NOTIFICATION_ID,
+  TRIP_ENDED_TEXT_KEYS,
+  type TripEndedReason,
+} from '../tripEndedNotification';
+import { TRIP_ENDED_CATEGORY } from '../notificationCategory';
+import { __resetTripEndClaimsForTests__ } from '../tripEndClaim';
+import { useSettingsStore } from '../../../settings/store/useSettingsStore';
+import ko from '../../../../shared/i18n/locales/ko.json';
+import en from '../../../../shared/i18n/locales/en.json';
+import ja from '../../../../shared/i18n/locales/ja.json';
+import zh from '../../../../shared/i18n/locales/zh.json';
+
+const ttuksom: Station = {
+  id: '2-010',
+  name: '뚝섬',
+  line: '2',
+  lat: 37.547,
+  lng: 127.047,
+  lineColor: '#00A84D',
+};
+
+type Content = {
+  title: string;
+  body: string;
+  sound: unknown;
+  interruptionLevel?: string;
+  data: { kind: string; reason: string; tripToken?: string };
+};
+const lastContent = (): Content =>
+  mockSchedule.mock.calls[mockSchedule.mock.calls.length - 1][0].content;
+
+const ALL_REASONS: TripEndedReason[] = [
+  'arrived',
+  'backstop',
+  'paused',
+  'lifecycle',
+  'backend-gone',
+  'backend-silent',
+];
+
+function resetAll(): void {
+  jest.clearAllMocks();
+  mockSchedule.mockResolvedValue('id');
+  mockGetCorrId.mockReturnValue('corr-1');
+  mockGetStartedAt.mockResolvedValue(1_700_000_000_000);
+  mockGetItem.mockResolvedValue(null);
+  mockMemoryLock = null;
+  mockGetStoredLock.mockResolvedValue(null);
+  __resetTripEndClaimsForTests__();
+  useSettingsStore.setState({ sleepMode: false });
+}
+
+describe('notifyTripEnded (#2675)', () => {
+  beforeEach(resetAll);
+
+  it('도착 종료 — "{역} 도착 · 안내 종료" 제목 + 도착 본문으로 로컬 알림을 띄운다 (#3223 후속, backend와 동일 문장)', async () => {
+    await notifyTripEnded({ destination: ttuksom, reason: 'arrived' });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+    const arg = mockSchedule.mock.calls[0][0] as {
+      identifier: string;
+      content: { title: string; body: string; categoryIdentifier: string };
+    };
+    expect(arg.identifier).toBe(TRIP_ENDED_NOTIFICATION_ID);
+    expect(arg.content.title).toBe('뚝섬 도착 · 안내 종료');
+    expect(arg.content.body).toBe('목적지에 도착해 경로 안내를 마쳤어요');
+    // [다음 여정 시작] 버튼이 붙도록 기존 category 재사용.
+    expect(arg.content.categoryIdentifier).toBe(TRIP_ENDED_CATEGORY);
+  });
+
+  it('backstop 종료 — 도착이 아니므로 "안내 종료" 제목을 쓴다', async () => {
+    await notifyTripEnded({ destination: ttuksom, reason: 'backstop' });
+    const arg = mockSchedule.mock.calls[0][0] as { content: { title: string } };
+    expect(arg.content.title).toBe(i18next.t('route.tripEndedTitle'));
+  });
+
+  it('destination이 없으면 역명 없이 종료 문구만', async () => {
+    await notifyTripEnded({ destination: null, reason: 'arrived' });
+    const arg = mockSchedule.mock.calls[0][0] as { content: { body: string } };
+    expect(arg.content.body).toBe(i18next.t('route.tripEndedBody'));
+  });
+
+  it('알림 표시 실패는 swallow — 종료 cleanup 흐름을 막지 않는다', async () => {
+    mockSchedule.mockRejectedValue(new Error('notification denied'));
+    await expect(
+      notifyTripEnded({ destination: ttuksom, reason: 'arrived' }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('notifyTripEnded — 조용한 종료 경로 콘텐츠 (PR-3a)', () => {
+  beforeEach(resetAll);
+
+  it.each(ALL_REASONS)('reason=%s — data.kind=trip-ended-auto + reason 값이 실린다', async (reason) => {
+    await notifyTripEnded({ destination: null, reason });
+    expect(lastContent().data).toEqual({ kind: TRIP_ENDED_AUTO_KIND, reason });
+    expect(TRIP_ENDED_AUTO_KIND).toBe('trip-ended-auto');
+  });
+
+  it('호출부 보호 — claim 키 조회·문구 조립 단계가 throw해도 reject하지 않는다(종료 cleanup을 막지 않는다)', async () => {
+    mockGetCorrId.mockImplementation(() => {
+      throw new Error('corrId cache broken');
+    });
+    await expect(notifyTripEnded({ destination: null, reason: 'lifecycle' })).resolves.toBeUndefined();
+    expect(mockSchedule).not.toHaveBeenCalled();
+    mockGetCorrId.mockReturnValue('corr-1');
+    const tSpy = jest.spyOn(i18next, 't').mockImplementation(() => {
+      throw new Error('i18n broken');
+    });
+    try {
+      await expect(notifyTripEnded({ destination: null, reason: 'lifecycle' })).resolves.toBeUndefined();
+    } finally {
+      tSpy.mockRestore();
+    }
+  });
+
+  it('active trip 토큰이 있으면 data.tripToken에 싣는다', async () => {
+    mockGetItem.mockResolvedValue('tok-abc');
+    await notifyTripEnded({ destination: null, reason: 'lifecycle' });
+    expect(lastContent().data.tripToken).toBe('tok-abc');
+  });
+
+  it('active trip 토큰 조회가 throw해도 알림은 나간다', async () => {
+    mockGetItem.mockRejectedValue(new Error('storage down'));
+    await notifyTripEnded({ destination: null, reason: 'lifecycle' });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+    expect(lastContent().data.tripToken).toBeUndefined();
+  });
+
+  it('sound는 undefined가 아니라 명시 false다', async () => {
+    await notifyTripEnded({ destination: null, reason: 'paused' });
+    expect(Object.prototype.hasOwnProperty.call(lastContent(), 'sound')).toBe(true);
+    expect(lastContent().sound).toBe(false);
+  });
+
+  it('interruption: 평상시 active, 취침모드 on이면 passive', async () => {
+    await notifyTripEnded({ destination: null, reason: 'paused' });
+    expect(lastContent().interruptionLevel).toBe('active');
+    __resetTripEndClaimsForTests__();
+    useSettingsStore.setState({ sleepMode: true });
+    await notifyTripEnded({ destination: null, reason: 'paused' });
+    expect(lastContent().interruptionLevel).toBe('passive');
+  });
+
+  it('비-iOS는 interruptionLevel 키를 싣지 않는다', async () => {
+    const original = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { value: 'android', configurable: true });
+    try {
+      await notifyTripEnded({ destination: null, reason: 'paused' });
+      expect('interruptionLevel' in lastContent()).toBe(false);
+    } finally {
+      Object.defineProperty(Platform, 'OS', { value: original, configurable: true });
+    }
+  });
+
+  it.each(ALL_REASONS)('reason=%s — 문구는 reason→i18n 데이터 맵을 따른다', async (reason) => {
+    await notifyTripEnded({ destination: null, reason });
+    const { title, body } = TRIP_ENDED_TEXT_KEYS[reason];
+    expect(lastContent().title).toBe(i18next.t(title));
+    expect(lastContent().body).toBe(i18next.t(body));
+  });
+
+  it('새 reason은 도착 문구를 재사용하지 않고, backend 두 reason만 문구를 공유한다', () => {
+    expect(TRIP_ENDED_TEXT_KEYS.paused.body).not.toBe(TRIP_ENDED_TEXT_KEYS.arrived.body);
+    expect(TRIP_ENDED_TEXT_KEYS.lifecycle.body).not.toBe(TRIP_ENDED_TEXT_KEYS.paused.body);
+    expect(TRIP_ENDED_TEXT_KEYS['backend-gone'].body).toBe(
+      TRIP_ENDED_TEXT_KEYS['backend-silent'].body,
+    );
+  });
+
+  it.each([
+    ['ko', ko],
+    ['en', en],
+    ['ja', ja],
+    ['zh', zh],
+  ])('%s 로케일에 reason 맵이 참조하는 모든 키가 비어있지 않게 존재한다', (_name, locale) => {
+    const route = (locale as unknown as { route: Record<string, string> }).route;
+    for (const reason of ALL_REASONS) {
+      const { title, body } = TRIP_ENDED_TEXT_KEYS[reason];
+      for (const key of [title, body]) {
+        const leaf = key.replace(/^route\./, '');
+        expect(typeof route[leaf]).toBe('string');
+        expect(route[leaf].length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  describe('dedupe — 1 end = 1 notification', () => {
+    it('같은 corrId로 동시에 두 경로가 불러도 1회만 표시한다', async () => {
+      await Promise.all([
+        notifyTripEnded({ destination: null, reason: 'lifecycle' }),
+        notifyTripEnded({ destination: null, reason: 'backend-gone' }),
+      ]);
+      expect(mockSchedule).toHaveBeenCalledTimes(1);
+    });
+
+    it('corrId가 다르면(다른 트립) 각각 표시한다', async () => {
+      mockGetCorrId.mockReturnValue('corr-1');
+      await notifyTripEnded({ destination: null, reason: 'paused' });
+      mockGetCorrId.mockReturnValue('corr-2');
+      await notifyTripEnded({ destination: null, reason: 'paused' });
+      expect(mockSchedule).toHaveBeenCalledTimes(2);
+    });
+
+    it('corrId가 없으면 startedAt 키로 dedupe한다', async () => {
+      mockGetCorrId.mockReturnValue(null);
+      await notifyTripEnded({ destination: null, reason: 'arrived' });
+      await notifyTripEnded({ destination: null, reason: 'arrived' });
+      expect(mockSchedule).toHaveBeenCalledTimes(1);
+      mockGetStartedAt.mockResolvedValue(1_700_000_999_000);
+      await notifyTripEnded({ destination: null, reason: 'arrived' });
+      expect(mockSchedule).toHaveBeenCalledTimes(2);
+    });
+
+    it('corrId·startedAt 둘 다 없으면(cleanup 뒤 HomeScreen 호출) 분 단위 키로 dedupe한다', async () => {
+      mockGetCorrId.mockReturnValue(null);
+      mockGetStartedAt.mockResolvedValue(null);
+      const base = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(base);
+      try {
+        await notifyTripEnded({ destination: null, reason: 'arrived' });
+        await notifyTripEnded({ destination: null, reason: 'arrived' });
+        expect(mockSchedule).toHaveBeenCalledTimes(1);
+        nowSpy.mockReturnValue(base + 61_000);
+        await notifyTripEnded({ destination: null, reason: 'arrived' });
+        expect(mockSchedule).toHaveBeenCalledTimes(2);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('startedAt 조회가 throw해도 분 단위 키로 폴백하고 알림은 나간다', async () => {
+      mockGetCorrId.mockReturnValue(null);
+      mockGetStartedAt.mockRejectedValue(new Error('storage down'));
+      await notifyTripEnded({ destination: null, reason: 'arrived' });
+      expect(mockSchedule).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('alarmLog 행', () => {
+    it('표시 시 source=trip-end-notice 행을 reason과 함께 1건 적재한다', async () => {
+      await notifyTripEnded({ destination: null, reason: 'lifecycle' });
+      expect(mockAppendAlarmLog).toHaveBeenCalledTimes(1);
+      expect(mockAppendAlarmLog.mock.calls[0][0]).toMatchObject({
+        source: 'trip-end-notice',
+        outcome: 'fired',
+        reason: 'trip-end-notice',
+        stationName: 'reason=lifecycle',
+      });
+    });
+
+    it('dedupe로 건너뛴 호출은 행을 적재하지 않는다', async () => {
+      await notifyTripEnded({ destination: null, reason: 'lifecycle' });
+      await notifyTripEnded({ destination: null, reason: 'backend-gone' });
+      expect(mockAppendAlarmLog).toHaveBeenCalledTimes(1);
+    });
+
+    it('알림 예약이 실패하면 행을 적재하지 않는다(표시된 적 없음)', async () => {
+      mockSchedule.mockRejectedValue(new Error('denied'));
+      await notifyTripEnded({ destination: null, reason: 'lifecycle' });
+      expect(mockAppendAlarmLog).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('captureTripEndIdentity / identity 인자 (#3005 PR-B)', () => {
+  beforeEach(resetAll);
+
+  it('corrId 캐시가 있으면 storage를 읽지 않고 그 값', async () => {
+    await expect(captureTripEndIdentity()).resolves.toBe('corr-1');
+    // corrId/startedAt은 읽지 않는다(ACTIVE_TRIP_KEY는 snapshot의 expected 신원용).
+    expect(mockGetItem.mock.calls.map(([key]) => key)).toEqual([ACTIVE_TRIP_KEY]);
+    expect(mockGetStartedAt).not.toHaveBeenCalled();
+  });
+
+  it('cold launch — 캐시가 비어도 storage의 corrId를 hydrate 대기해 잡는다', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    mockGetItem.mockImplementation(async (k) => (k.includes('corr') ? 'stored-corr' : null));
+    await expect(captureTripEndIdentity()).resolves.toBe('stored-corr');
+  });
+
+  it('corrId가 어디에도 없으면 start:<startedAt>, startedAt도 없으면 null', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    await expect(captureTripEndIdentity()).resolves.toBe('start:1700000000000');
+    mockGetStartedAt.mockResolvedValue(null);
+    await expect(captureTripEndIdentity()).resolves.toBeNull();
+  });
+
+  it('storage/startedAt 읽기가 실패해도 reject하지 않고 null', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    mockGetItem.mockRejectedValue(new Error('io'));
+    mockGetStartedAt.mockRejectedValue(new Error('io'));
+    await expect(captureTripEndIdentity()).resolves.toBeNull();
+  });
+
+  it('같은 identity를 넘긴 두 호출은 알림 시점 corrId가 달라져도 1건 (사유가 달라도)', async () => {
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: 'corr-1' });
+    mockGetCorrId.mockReturnValue(null); // 다른 경로의 cleanup이 corrId를 지운 뒤
+    await notifyTripEnded({ destination: null, reason: 'backend-silent', identity: 'corr-1' });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('거부 — 다른 identity는 별개 종료라 각각 알린다', async () => {
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: 'corr-1' });
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: 'corr-2' });
+    expect(mockSchedule).toHaveBeenCalledTimes(2);
+  });
+
+  it('identity=null(캡처 시점에도 trip 불명)이면 분 단위 키로 폴백', async () => {
+    await notifyTripEnded({ destination: null, reason: 'arrived', identity: null });
+    await notifyTripEnded({ destination: null, reason: 'backend-silent', identity: null });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearAndNotifyTripEnded(lock trip) — clear를 동기로 먼저 실행하고 clear 전에 캡처한 identity로 알린다', async () => {
+    mockMemoryLock = { trainCode: 'T1' };
+    const clear = jest.fn(() => mockGetCorrId.mockReturnValue(null));
+    clearAndNotifyTripEnded(clear, { destination: null, reason: 'arrived' });
+    expect(clear).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+    // 같은 trip(corr-1)의 다른 경로 알림은 이미 claim된 키라 막힌다 = 캡처가 clear 이전 값이었다.
+    await notifyTripEnded({ destination: null, reason: 'backend-silent', identity: 'corr-1' });
+    expect(mockSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearAndNotifyTripEnded(lockless trip) — 종료(clear)는 하되 알림은 내지 않는다 (lock-only-alerts)', async () => {
+    const clear = jest.fn();
+    clearAndNotifyTripEnded(clear, { destination: null, reason: 'arrived' });
+    expect(clear).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(mockSchedule).not.toHaveBeenCalled();
+  });
+});
+
+describe('captureTripEndSnapshot / hasBoardingLock (#3005 PR-C)', () => {
+  beforeEach(resetAll);
+
+  it('snapshot — corrId 캐시 + ACTIVE_TRIP 토큰을 한 번에 캡처한다', async () => {
+    mockGetItem.mockImplementation(async (k) => (k === ACTIVE_TRIP_KEY ? 'tok-1' : null));
+    await expect(captureTripEndSnapshot()).resolves.toEqual({
+      identity: 'corr-1',
+      corrId: 'corr-1',
+      activeTripToken: 'tok-1',
+    });
+  });
+
+  it('snapshot — cold launch(캐시 비어 있음): identity는 storage corrId로 hydrate하되 expected corrId는 캐시값(null) 그대로', async () => {
+    mockGetCorrId.mockReturnValue(null);
+    mockGetItem.mockImplementation(async (k) => (k === ACTIVE_TRIP_KEY ? 'tok-1' : 'stored-corr'));
+    await expect(captureTripEndSnapshot()).resolves.toEqual({
+      identity: 'stored-corr',
+      corrId: null,
+      activeTripToken: 'tok-1',
+    });
+  });
+
+  it('snapshot — ACTIVE_TRIP 읽기 실패는 null로 흡수', async () => {
+    mockGetItem.mockRejectedValue(new Error('io'));
+    await expect(captureTripEndSnapshot()).resolves.toEqual({
+      identity: 'corr-1',
+      corrId: 'corr-1',
+      activeTripToken: null,
+    });
+  });
+
+  it('hasBoardingLock — 메모리 lock이 있으면 storage를 읽지 않고 true', async () => {
+    mockMemoryLock = { trainCode: 'T1' };
+    await expect(hasBoardingLock()).resolves.toBe(true);
+    expect(mockGetStoredLock).not.toHaveBeenCalled();
+  });
+
+  it('hasBoardingLock — 메모리가 비어도(cold launch 재수화 전) storage lock이 있으면 true', async () => {
+    mockGetStoredLock.mockResolvedValue({ trainCode: 'T1' });
+    await expect(hasBoardingLock()).resolves.toBe(true);
+  });
+
+  it('hasBoardingLock — 어디에도 없으면 false', async () => {
+    await expect(hasBoardingLock()).resolves.toBe(false);
+  });
+});

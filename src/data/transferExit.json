@@ -1,0 +1,1813 @@
+{
+  "도봉산": [
+    {
+      "fromLine": "1",
+      "toLine": "7",
+      "fromTerminal": "연천",
+      "doorNumber": "2-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "7",
+      "fromTerminal": "인천",
+      "doorNumber": "9-3"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "1",
+      "fromTerminal": "석남",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "1",
+      "fromTerminal": "장암",
+      "doorNumber": "1-1"
+    }
+  ],
+  "창동": [
+    {
+      "fromLine": "1",
+      "toLine": "4",
+      "fromTerminal": "연천",
+      "doorNumber": "8-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "4",
+      "fromTerminal": "인천",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "1",
+      "fromTerminal": "진접",
+      "doorNumber": "5-3"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "1",
+      "fromTerminal": "오이도",
+      "doorNumber": "4-2"
+    }
+  ],
+  "석계": [
+    {
+      "fromLine": "1",
+      "toLine": "6",
+      "fromTerminal": "연천",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "6",
+      "fromTerminal": "인천",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "6",
+      "fromTerminal": "신창",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "1",
+      "fromTerminal": "신내",
+      "doorNumber": "5-2"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "1",
+      "fromTerminal": "응암순환",
+      "doorNumber": "4-3"
+    }
+  ],
+  "회기": [
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "연천",
+      "doorNumber": "4-3"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "인천",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "신창",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "1",
+      "fromTerminal": "용문",
+      "doorNumber": "6-2"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "1",
+      "fromTerminal": "문산",
+      "doorNumber": "3-3"
+    }
+  ],
+  "청량리": [
+    {
+      "fromLine": "bundang",
+      "toLine": "1",
+      "toTerminal": "용문",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "bundang",
+      "toLine": "gyeongui",
+      "toTerminal": "용문",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "bundang",
+      "toLine": "1",
+      "toTerminal": "문산",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "bundang",
+      "toLine": "gyeongui",
+      "toTerminal": "문산",
+      "doorNumber": "8-4"
+    }
+  ],
+  "동묘앞": [
+    {
+      "fromLine": "1",
+      "toLine": "6",
+      "fromTerminal": "연천",
+      "doorNumber": "9-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "6",
+      "fromTerminal": "인천",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "6",
+      "fromTerminal": "신창",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "1",
+      "fromTerminal": "신내",
+      "doorNumber": "2-2"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "1",
+      "fromTerminal": "응암",
+      "doorNumber": "7-3"
+    }
+  ],
+  "동대문": [
+    {
+      "fromLine": "1",
+      "toLine": "4",
+      "fromTerminal": "연천",
+      "doorNumber": "9-3"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "4",
+      "fromTerminal": "인천",
+      "doorNumber": "1-3"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "4",
+      "fromTerminal": "신창",
+      "doorNumber": "1-3"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "1",
+      "fromTerminal": "진접",
+      "doorNumber": "3-4"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "1",
+      "fromTerminal": "오이도",
+      "doorNumber": "7-4"
+    }
+  ],
+  "종로3가": [
+    {
+      "fromLine": "1",
+      "toLine": "3",
+      "fromTerminal": "연천",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "3",
+      "fromTerminal": "광운대",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "5",
+      "fromTerminal": "연천",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "5",
+      "fromTerminal": "광운대",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "3",
+      "fromTerminal": "인천",
+      "doorNumber": "4-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "3",
+      "fromTerminal": "신창",
+      "doorNumber": "4-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "5",
+      "fromTerminal": "인천",
+      "doorNumber": "4-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "5",
+      "fromTerminal": "신창",
+      "doorNumber": "4-2"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "1",
+      "fromTerminal": "대화",
+      "toTerminal": "소요산",
+      "doorNumber": "9-2"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "1",
+      "fromTerminal": "대화",
+      "toTerminal": "인천",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "1",
+      "fromTerminal": "대화",
+      "toTerminal": "신창",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "5",
+      "fromTerminal": "대화",
+      "doorNumber": "2-2"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "1",
+      "fromTerminal": "오금",
+      "toTerminal": "소요산",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "1",
+      "fromTerminal": "오금",
+      "toTerminal": "인천",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "1",
+      "fromTerminal": "오금",
+      "toTerminal": "신창",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "5",
+      "fromTerminal": "오금",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "1",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "1",
+      "fromTerminal": "마천",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "3",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "3",
+      "fromTerminal": "마천",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "1",
+      "fromTerminal": "방화",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "3",
+      "fromTerminal": "방화",
+      "doorNumber": "8-4"
+    }
+  ],
+  "시청": [
+    {
+      "fromLine": "1",
+      "toLine": "2",
+      "fromTerminal": "연천",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "2",
+      "fromTerminal": "인천",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "2",
+      "fromTerminal": "신창",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "1",
+      "fromTerminal": "외선순환: 신촌",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "1",
+      "fromTerminal": "내선순환: 왕십리",
+      "doorNumber": "1-1"
+    }
+  ],
+  "서울역": [
+    {
+      "fromLine": "gyeongui",
+      "toLine": "1",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "4",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "airport",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "4",
+      "fromTerminal": "경부선 급행",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "경부선 급행",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "airport",
+      "fromTerminal": "경부선 급행",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "연천",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "인천",
+      "doorNumber": "4-3"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "천안",
+      "doorNumber": "4-3"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "gyeongui",
+      "fromTerminal": "신창",
+      "doorNumber": "4-3"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "1",
+      "doorNumber": "5-1"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "4",
+      "doorNumber": "5-1"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "gyeongui",
+      "doorNumber": "5-1"
+    }
+  ],
+  "노량진": [
+    {
+      "fromLine": "1",
+      "toLine": "9",
+      "fromTerminal": "연천 방면 완행",
+      "doorNumber": "5-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "9",
+      "fromTerminal": "용산 급행",
+      "doorNumber": "5-2"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "9",
+      "fromTerminal": "인천·신창 방면 완행",
+      "doorNumber": "3-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "9",
+      "fromTerminal": "천안 급행",
+      "doorNumber": "3-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "9",
+      "fromTerminal": "동인천 급행",
+      "doorNumber": "6-3"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "1",
+      "fromTerminal": "개화",
+      "doorNumber": "4-2"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "1",
+      "fromTerminal": "중앙보훈병원",
+      "doorNumber": "2-4"
+    }
+  ],
+  "신길": [
+    {
+      "fromLine": "1",
+      "toLine": "5",
+      "fromTerminal": "연천",
+      "doorNumber": "9-1"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "5",
+      "fromTerminal": "인천",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "1",
+      "toLine": "5",
+      "fromTerminal": "신창",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "1",
+      "fromTerminal": "방화",
+      "doorNumber": "7-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "1",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "2-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "1",
+      "fromTerminal": "마천",
+      "doorNumber": "2-1"
+    }
+  ],
+  "인천": [
+    {
+      "fromLine": "1",
+      "toLine": "bundang",
+      "fromTerminal": "당역 종착",
+      "doorNumber": "4-1"
+    },
+    {
+      "fromLine": "bundang",
+      "toLine": "1",
+      "fromTerminal": "당역 종착",
+      "doorNumber": "4-1"
+    }
+  ],
+  "을지로3가": [
+    {
+      "fromLine": "2",
+      "toLine": "3",
+      "fromLoop": "외선순환",
+      "fromTerminal": "을지로입구",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "3",
+      "fromLoop": "내선순환",
+      "fromTerminal": "을지로4가",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "2",
+      "toLoop": "외선순환",
+      "fromTerminal": "대화",
+      "toTerminal": "을지로입구",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "2",
+      "toLoop": "내선순환",
+      "fromTerminal": "대화",
+      "toTerminal": "을지로4가",
+      "doorNumber": "7-1"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "2",
+      "toLoop": "외선순환",
+      "fromTerminal": "오금",
+      "toTerminal": "을지로입구",
+      "doorNumber": "9-3"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "2",
+      "toLoop": "내선순환",
+      "fromTerminal": "오금",
+      "toTerminal": "을지로4가",
+      "doorNumber": "4-4"
+    }
+  ],
+  "을지로4가": [
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromLoop": "외선순환",
+      "fromTerminal": "을지로3가",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromLoop": "내선순환",
+      "fromTerminal": "동대문역사문화공원",
+      "doorNumber": "4-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "toLoop": "외선순환",
+      "fromTerminal": "방화",
+      "toTerminal": "을지로3가",
+      "doorNumber": "8-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "toLoop": "내선순환",
+      "fromTerminal": "방화",
+      "toTerminal": "동대문역사문화공원",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "toLoop": "외선순환",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "을지로3가",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "toLoop": "외선순환",
+      "fromTerminal": "마천",
+      "toTerminal": "을지로3가",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "toLoop": "내선순환",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "동대문역사문화공원",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "toLoop": "내선순환",
+      "fromTerminal": "마천",
+      "toTerminal": "동대문역사문화공원",
+      "doorNumber": "1-1"
+    }
+  ],
+  "동대문역사문화공원": [
+    {
+      "fromLine": "2",
+      "toLine": "4",
+      "fromLoop": "외선순환",
+      "fromTerminal": "을지로4가",
+      "doorNumber": "2-4"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromLoop": "외선순환",
+      "fromTerminal": "을지로4가",
+      "doorNumber": "3-3"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "4",
+      "fromLoop": "내선순환",
+      "fromTerminal": "신당",
+      "doorNumber": "9-2"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromLoop": "내선순환",
+      "fromTerminal": "신당",
+      "doorNumber": "6-2"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "2",
+      "fromTerminal": "진접",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "5",
+      "fromTerminal": "진접",
+      "doorNumber": "9-2"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "2",
+      "fromTerminal": "오이도",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "5",
+      "fromTerminal": "오이도",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "방화",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "4",
+      "fromTerminal": "방화",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "마천",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "4",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "4",
+      "fromTerminal": "마천",
+      "doorNumber": "1-1"
+    }
+  ],
+  "신당": [
+    {
+      "fromLine": "2",
+      "toLine": "6",
+      "fromLoop": "외선순환",
+      "fromTerminal": "동대문역사문화공원",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "6",
+      "fromLoop": "내선순환",
+      "fromTerminal": "상왕십리",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "2",
+      "fromTerminal": "응암순환",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "2",
+      "fromTerminal": "신내",
+      "doorNumber": "8-4"
+    }
+  ],
+  "왕십리": [
+    {
+      "fromLine": "gyeongui",
+      "toLine": "2",
+      "fromTerminal": "용문",
+      "doorNumber": "7-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "5",
+      "fromTerminal": "용문",
+      "doorNumber": "7-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "bundang",
+      "fromTerminal": "용문",
+      "doorNumber": "7-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "2",
+      "fromTerminal": "문산",
+      "doorNumber": "8-2"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "5",
+      "fromTerminal": "문산",
+      "doorNumber": "8-2"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "bundang",
+      "fromTerminal": "문산",
+      "doorNumber": "8-2"
+    },
+    {
+      "fromLine": "bundang",
+      "toLine": "2",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "bundang",
+      "toLine": "5",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "bundang",
+      "toLine": "gyeongui",
+      "doorNumber": "3-4"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromLoop": "외선순환",
+      "fromTerminal": "상왕십리",
+      "doorNumber": "5-4"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "gyeongui",
+      "fromLoop": "외선순환",
+      "fromTerminal": "상왕십리",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "bundang",
+      "fromLoop": "외선순환",
+      "fromTerminal": "상왕십리",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromLoop": "내선순환",
+      "fromTerminal": "한양대",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "gyeongui",
+      "fromLoop": "내선순환",
+      "fromTerminal": "한양대",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "bundang",
+      "fromLoop": "내선순환",
+      "fromTerminal": "한양대",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "마천",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "gyeongui",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "gyeongui",
+      "fromTerminal": "마천",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "bundang",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "bundang",
+      "fromTerminal": "마천",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "방화",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "gyeongui",
+      "fromTerminal": "방화",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "bundang",
+      "fromTerminal": "방화",
+      "doorNumber": "2-3"
+    }
+  ],
+  "건대입구": [
+    {
+      "fromLine": "2",
+      "toLine": "7",
+      "fromLoop": "외선순환",
+      "fromTerminal": "성수",
+      "doorNumber": "8-3"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "7",
+      "fromLoop": "내선순환",
+      "fromTerminal": "구의",
+      "doorNumber": "3-2"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "2",
+      "fromTerminal": "장암",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "2",
+      "fromTerminal": "석남",
+      "doorNumber": "1-1"
+    }
+  ],
+  "잠실": [
+    {
+      "fromLine": "2",
+      "toLine": "8",
+      "fromLoop": "외선순환",
+      "fromTerminal": "잠실나루",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "8",
+      "fromLoop": "내선순환",
+      "fromTerminal": "잠실새내",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "2",
+      "fromTerminal": "별내",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "2",
+      "fromTerminal": "모란",
+      "doorNumber": "1-1"
+    }
+  ],
+  "종합운동장": [
+    {
+      "fromLine": "2",
+      "toLine": "9",
+      "fromLoop": "외선순환",
+      "fromTerminal": "잠실새내",
+      "doorNumber": "3-1"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "9",
+      "fromLoop": "내선순환",
+      "fromTerminal": "삼성",
+      "doorNumber": "9-1"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "2",
+      "fromTerminal": "개화",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "2",
+      "fromTerminal": "중앙보훈병원",
+      "doorNumber": "3-4"
+    }
+  ],
+  "강남": [
+    {
+      "fromLine": "2",
+      "toLine": "sinbundang",
+      "fromLoop": "외선순환",
+      "fromTerminal": "역삼",
+      "doorNumber": "5-2"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "sinbundang",
+      "fromLoop": "내선순환",
+      "fromTerminal": "교대",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "sinbundang",
+      "toLine": "2",
+      "fromTerminal": "신사",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "sinbundang",
+      "toLine": "2",
+      "fromTerminal": "광교",
+      "doorNumber": "4-3"
+    }
+  ],
+  "사당": [
+    {
+      "fromLine": "2",
+      "toLine": "4",
+      "fromLoop": "외선순환",
+      "fromTerminal": "방배",
+      "doorNumber": "5-3"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "4",
+      "fromLoop": "내선순환",
+      "fromTerminal": "낙성대",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "2",
+      "toLoop": "외선순환",
+      "fromTerminal": "진접",
+      "toTerminal": "방배",
+      "doorNumber": "10-4"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "2",
+      "toLoop": "내선순환",
+      "fromTerminal": "진접",
+      "toTerminal": "낙성대",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "2",
+      "toLoop": "외선순환",
+      "fromTerminal": "오이도",
+      "toTerminal": "방배",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "4",
+      "toLine": "2",
+      "toLoop": "내선순환",
+      "fromTerminal": "오이도",
+      "toTerminal": "낙성대",
+      "doorNumber": "5-2"
+    }
+  ],
+  "합정": [
+    {
+      "fromLine": "2",
+      "toLine": "6",
+      "fromLoop": "외선순환",
+      "fromTerminal": "당산",
+      "doorNumber": "2-2"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "6",
+      "fromLoop": "내선순환",
+      "fromTerminal": "홍대입구",
+      "doorNumber": "9-3"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "2",
+      "fromTerminal": "응암순환",
+      "doorNumber": "3-3"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "2",
+      "fromTerminal": "신내",
+      "doorNumber": "6-2"
+    }
+  ],
+  "충정로": [
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromTerminal": "내선순환",
+      "doorNumber": "7-2"
+    },
+    {
+      "fromLine": "2",
+      "toLine": "5",
+      "fromTerminal": "외선순환",
+      "doorNumber": "2-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "방화",
+      "doorNumber": "4-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "3-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "2",
+      "fromTerminal": "마천",
+      "doorNumber": "3-3"
+    }
+  ],
+  "옥수": [
+    {
+      "fromLine": "3",
+      "toLine": "gyeongui",
+      "fromTerminal": "대화",
+      "doorNumber": "9-4"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "gyeongui",
+      "fromTerminal": "오금",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "3",
+      "fromTerminal": "문산",
+      "doorNumber": "2-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "3",
+      "fromTerminal": "용문",
+      "doorNumber": "5-1"
+    }
+  ],
+  "고속터미널": [
+    {
+      "fromLine": "3",
+      "toLine": "7",
+      "fromTerminal": "대화",
+      "doorNumber": "9-2"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "9",
+      "fromTerminal": "대화",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "7",
+      "fromTerminal": "오금",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "9",
+      "fromTerminal": "오금",
+      "doorNumber": "9-2"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "3",
+      "fromTerminal": "장암",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "9",
+      "fromTerminal": "장암",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "3",
+      "fromTerminal": "석남",
+      "doorNumber": "7-1"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "9",
+      "fromTerminal": "석남",
+      "doorNumber": "7-1"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "3",
+      "fromTerminal": "개화",
+      "doorNumber": "4-1"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "7",
+      "fromTerminal": "개화",
+      "doorNumber": "4-1"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "3",
+      "fromTerminal": "중앙보훈병원",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "7",
+      "fromTerminal": "중앙보훈병원",
+      "doorNumber": "1-4"
+    }
+  ],
+  "수서": [
+    {
+      "fromLine": "3",
+      "toLine": "bundang",
+      "fromTerminal": "대화/구파발",
+      "doorNumber": "3-1"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "bundang",
+      "fromTerminal": "당역종착/오금",
+      "doorNumber": "6-3"
+    }
+  ],
+  "가락시장": [
+    {
+      "fromLine": "3",
+      "toLine": "8",
+      "fromTerminal": "대화",
+      "doorNumber": "9-4"
+    },
+    {
+      "fromLine": "3",
+      "toLine": "8",
+      "fromTerminal": "오금",
+      "doorNumber": "2-1"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "3",
+      "fromTerminal": "별내",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "3",
+      "fromTerminal": "모란",
+      "doorNumber": "1-1"
+    }
+  ],
+  "여의도": [
+    {
+      "fromLine": "5",
+      "toLine": "9",
+      "fromTerminal": "방화",
+      "doorNumber": "5-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "9",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "5-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "9",
+      "fromTerminal": "마천",
+      "doorNumber": "5-4"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "5",
+      "fromTerminal": "개화",
+      "doorNumber": "3-3"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "5",
+      "fromTerminal": "중앙보훈병원",
+      "doorNumber": "4-3"
+    }
+  ],
+  "공덕": [
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "방화",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "airport",
+      "fromTerminal": "방화",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "gyeongui",
+      "fromTerminal": "방화",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "마천",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "airport",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "airport",
+      "fromTerminal": "마천",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "gyeongui",
+      "fromTerminal": "하남검단산",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "gyeongui",
+      "fromTerminal": "마천",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "5",
+      "fromTerminal": "봉화산",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "5",
+      "fromTerminal": "신내",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "airport",
+      "fromTerminal": "봉화산",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "airport",
+      "fromTerminal": "신내",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "gyeongui",
+      "fromTerminal": "봉화산",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "gyeongui",
+      "fromTerminal": "신내",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "5",
+      "fromTerminal": "응암순환",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "airport",
+      "fromTerminal": "응암순환",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "gyeongui",
+      "fromTerminal": "응암순환",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "5",
+      "fromTerminal": "서울역",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "6",
+      "fromTerminal": "서울역",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "gyeongui",
+      "fromTerminal": "서울역",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "5",
+      "fromTerminal": "인천공항2터미널",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "6",
+      "fromTerminal": "인천공항2터미널",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "airport",
+      "toLine": "gyeongui",
+      "fromTerminal": "인천공항2터미널",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "5",
+      "fromTerminal": "문산",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "6",
+      "fromTerminal": "문산",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "airport",
+      "fromTerminal": "문산",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "5",
+      "fromTerminal": "용문",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "5",
+      "fromTerminal": "지평",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "6",
+      "fromTerminal": "용문",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "6",
+      "fromTerminal": "지평",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "airport",
+      "fromTerminal": "용문",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "airport",
+      "fromTerminal": "지평",
+      "doorNumber": "8-4"
+    }
+  ],
+  "청구": [
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "방화",
+      "toTerminal": "신내",
+      "doorNumber": "5-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "방화",
+      "toTerminal": "응암순환",
+      "doorNumber": "2-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "신내",
+      "doorNumber": "4-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "마천",
+      "toTerminal": "신내",
+      "doorNumber": "4-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "응암순환",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "6",
+      "fromTerminal": "마천",
+      "toTerminal": "응암순환",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "5",
+      "fromTerminal": "신내",
+      "doorNumber": "6-2"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "5",
+      "fromTerminal": "응암순환",
+      "doorNumber": "6-2"
+    }
+  ],
+  "군자": [
+    {
+      "fromLine": "5",
+      "toLine": "7",
+      "fromTerminal": "방화",
+      "toTerminal": "장암",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "7",
+      "fromTerminal": "방화",
+      "toTerminal": "석남",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "7",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "장암",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "7",
+      "fromTerminal": "마천",
+      "toTerminal": "장암",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "7",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "석남",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "7",
+      "fromTerminal": "마천",
+      "toTerminal": "석남",
+      "doorNumber": "8-4"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "5",
+      "fromTerminal": "장암",
+      "doorNumber": "5-1"
+    },
+    {
+      "fromLine": "7",
+      "toLine": "5",
+      "fromTerminal": "석남",
+      "doorNumber": "5-1"
+    }
+  ],
+  "천호": [
+    {
+      "fromLine": "5",
+      "toLine": "8",
+      "fromTerminal": "방화",
+      "toTerminal": "별내",
+      "doorNumber": "1-3"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "8",
+      "fromTerminal": "방화",
+      "toTerminal": "모란",
+      "doorNumber": "1-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "8",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "별내",
+      "doorNumber": "8-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "8",
+      "fromTerminal": "마천",
+      "toTerminal": "별내",
+      "doorNumber": "8-1"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "8",
+      "fromTerminal": "하남검단산",
+      "toTerminal": "모란",
+      "doorNumber": "8-2"
+    },
+    {
+      "fromLine": "5",
+      "toLine": "8",
+      "fromTerminal": "마천",
+      "toTerminal": "모란",
+      "doorNumber": "8-2"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "5",
+      "fromTerminal": "별내",
+      "toTerminal": "방화",
+      "doorNumber": "1-4"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "5",
+      "fromTerminal": "별내",
+      "toTerminal": "하남검단산",
+      "doorNumber": "2-2"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "5",
+      "fromTerminal": "별내",
+      "toTerminal": "마천",
+      "doorNumber": "2-2"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "5",
+      "fromTerminal": "모란",
+      "toTerminal": "방화",
+      "doorNumber": "6-1"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "5",
+      "fromTerminal": "모란",
+      "toTerminal": "하남검단산",
+      "doorNumber": "5-3"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "5",
+      "fromTerminal": "모란",
+      "toTerminal": "마천",
+      "doorNumber": "5-3"
+    }
+  ],
+  "신논현": [
+    {
+      "fromLine": "9",
+      "toLine": "sinbundang",
+      "fromTerminal": "개화",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "sinbundang",
+      "fromTerminal": "중앙보훈병원",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "sinbundang",
+      "toLine": "9",
+      "fromTerminal": "신사",
+      "doorNumber": "1-2"
+    },
+    {
+      "fromLine": "sinbundang",
+      "toLine": "9",
+      "fromTerminal": "광교",
+      "doorNumber": "6-4"
+    }
+  ],
+  "석촌": [
+    {
+      "fromLine": "8",
+      "toLine": "9",
+      "fromTerminal": "별내",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "8",
+      "toLine": "9",
+      "fromTerminal": "모란",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "8",
+      "fromTerminal": "개화",
+      "toTerminal": "별내",
+      "doorNumber": "4-4"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "8",
+      "fromTerminal": "개화",
+      "toTerminal": "모란",
+      "doorNumber": "3-3"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "8",
+      "fromTerminal": "중앙보훈병원",
+      "toTerminal": "별내",
+      "doorNumber": "1-1"
+    },
+    {
+      "fromLine": "9",
+      "toLine": "8",
+      "fromTerminal": "중앙보훈병원",
+      "toTerminal": "모란",
+      "doorNumber": "4-2"
+    }
+  ],
+  "효창공원앞": [
+    {
+      "fromLine": "6",
+      "toLine": "gyeongui",
+      "fromTerminal": "응암",
+      "doorNumber": "6-4"
+    },
+    {
+      "fromLine": "6",
+      "toLine": "gyeongui",
+      "fromTerminal": "신내",
+      "doorNumber": "3-1"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "6",
+      "fromTerminal": "문산",
+      "doorNumber": "2-3"
+    },
+    {
+      "fromLine": "gyeongui",
+      "toLine": "6",
+      "fromTerminal": "용문",
+      "doorNumber": "8-3"
+    }
+  ]
+}

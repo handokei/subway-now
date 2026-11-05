@@ -1,0 +1,162 @@
+{
+  "$schema": "./permission-matrix.schema.json",
+  "_doc": [
+    "권한 매트릭스 회귀 테스트 정의 (#923 E2).",
+    "각 cell은 권한 × 앱상태 × 환경 × 모드 × OS 차원의 한 점이며, Maestro flow와 expected를 매핑한다.",
+    "새 셀 추가는 cells 배열에 entry 하나만 추가하면 된다 (runner는 데이터 주도).",
+    "expectedRecallPct는 후속 PR에서 실측 기반으로 채워질 예정(현재는 baseline 1셀만 정의)."
+  ],
+  "dimensions": {
+    "permission": ["always", "whileInUse"],
+    "appState": ["fg", "bg"],
+    "environment": ["aboveground", "underground"],
+    "mode": ["normal", "sleep"],
+    "os": ["ios17", "ios18", "android"]
+  },
+  "cells": [
+    {
+      "id": "whileInUse-fg-aboveground-normal-ios18",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "whileInUse-fg-aboveground-normal.yaml",
+      "baseline": true,
+      "_doc": "E2 baseline. 가장 흔한 사용자 시나리오(권한=사용중 + 앱 열림 + 지상 + 일반모드). 매역 알람 정상 발사를 보장한다."
+    },
+    {
+      "id": "always-fg-aboveground-normal-ios18",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "always-fg-aboveground-normal-ios18.yaml",
+      "_doc": "권한 다른 쪽 baseline 대조군. Always 권한 경로(매역 알림 SLA 정본 권한)에서도 홈 진입점이 동작함을 보장한다."
+    },
+    {
+      "id": "whileInUse-fg-aboveground-sleep-ios18",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 90,
+      "flow": "whileInUse-fg-aboveground-sleep-ios18.yaml",
+      "_doc": "권한 다운그레이드 + 취침 모드 조합 회귀 가드. 두 차원이 결합해도 토글이 reachable 해야 한다."
+    },
+    {
+      "id": "always-fg-aboveground-sleep-ios18",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "always-fg-aboveground-sleep-ios18.yaml",
+      "_doc": "매역 알림 SLA의 정본 조합(권한=항상 + 취침). 후속 PR에서 실측 recall로 업데이트."
+    },
+    {
+      "id": "always-bg-aboveground-normal-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "always-bg-aboveground-normal-ios18.yaml",
+      "_doc": "BG 차원 첫 진입. 매역 알람 SLA 본진 시나리오(Always + 백그라운드)에서 BG→FG 복귀 후 홈 진입점 유지 회귀 가드. 후속 PR에서 BG 알람 발사 verify로 확장."
+    },
+    {
+      "id": "whileInUse-fg-aboveground-normal-ios17",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios17",
+      "expectedRecallPct": 95,
+      "flow": "whileInUse-fg-aboveground-normal-ios17.yaml",
+      "_doc": "iOS 17 OS 차원 첫 진입. baseline과 동일 시나리오를 iOS 17 시뮬레이터에서 회귀 가드. 후속 PR에서 SIM_NAME 분기."
+    },
+    {
+      "id": "always-fg-aboveground-normal-android",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "android",
+      "expectedRecallPct": 90,
+      "flow": "always-fg-aboveground-normal-android.yaml",
+      "_doc": "Android 플랫폼 차원 첫 진입. ACCESS_BACKGROUND_LOCATION 권한 dispatch가 Maestro permission 매핑에서 올바르게 처리되는지 회귀 가드. 후속 PR에서 Android 시뮬레이터 부팅 분기."
+    },
+    {
+      "id": "always-fg-underground-normal-ios18",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "underground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 90,
+      "flow": "always-fg-underground-normal-ios18.yaml",
+      "_doc": "underground 환경 차원 첫 진입. 지하역 GPS 좌표(신도림 1호선) dispatch 후 홈 진입점 유지 회귀 가드. mock fixture 확장 전까지는 dispatch-only(ios17/android 패턴과 동일)."
+    },
+    {
+      "id": "always-bg-aboveground-sleep-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "aboveground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 90,
+      "flow": "always-bg-aboveground-sleep-ios18.yaml",
+      "_doc": "BG × sleep 결합 차원 첫 진입. 매역 알람 SLA 정본 운영 조합(Always + BG + 취침). 후속 PR에서 BG silent push 발사 verify로 확장."
+    },
+    {
+      "id": "always-bg-underground-normal-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "underground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 85,
+      "flow": "always-bg-underground-normal-ios18.yaml",
+      "_doc": "BG × underground 결합 차원 첫 진입. cold-restart 후 Always 권한 보존 회귀 가드. 매역 알람 SLA 최난도 조합(Always + BG + 지하)의 직전 단계."
+    },
+    {
+      "id": "always-bg-underground-sleep-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "underground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 80,
+      "flow": "always-bg-underground-sleep-ios18.yaml",
+      "_doc": "매역 알람 SLA 최난도 조합(Always + BG + 지하 + 취침) 첫 진입. 3차 wave의 BG×sleep / BG×underground 결합 직후 단계. underground는 dispatch-only(fixture 확장 전)."
+    },
+    {
+      "id": "whileInUse-bg-aboveground-normal-ios18",
+      "permission": "whileInUse",
+      "appState": "bg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 80,
+      "flow": "whileInUse-bg-aboveground-normal-ios18.yaml",
+      "_doc": "WhileInUse × BG 결합 첫 진입. 가장 흔한 권한 다운그레이드 사용자 시나리오(앱 BG 진입 시 권한 격하) 회귀 가드. cold-restart 후 WhileInUse 권한 보존 + 홈 진입점 유지."
+    },
+    {
+      "id": "whileInUse-fg-underground-normal-ios18",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "underground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 85,
+      "flow": "whileInUse-fg-underground-normal-ios18.yaml",
+      "_doc": "WhileInUse × underground 결합 첫 진입. 권한↓ + 가혹 환경 결합 회귀 가드. underground는 dispatch-only(fixture 확장 전)."
+    }
+  ]
+}

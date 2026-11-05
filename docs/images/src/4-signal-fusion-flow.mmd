@@ -1,0 +1,20 @@
+flowchart TD
+    GPS["🛰️ GPS<br/>(expo-location)"] --> Vote["🗳️ 환경 vote 합산"]
+    Accel["📈 가속도 패턴<br/>(motion-activity)"] --> Vote
+    Baro["🌡️ 기압계<br/>(barometer)"] --> Vote
+    Cell["📶 Cellular tech<br/>(5G / LTE / 3G)"] --> Vote
+
+    Vote --> Env{"🎯 inferEnvironment SSOT<br/>(ADR-016)"}
+    Env -->|"underground"| UG["🚇 지하<br/>가속도 + 기압계 우선"]
+    Env -->|"aboveground"| AG["☀️ 지상<br/>GPS 우선"]
+    Env -->|"mixed / unknown"| Reject["❌ 자동 lock 거부"]
+
+    UG --> Consensus{"🚦 4 신호 합의 게이트<br/>(ADR-015)"}
+    AG --> Consensus
+
+    Consensus -->|"통과"| AutoLock["🔒 자동 lock<br/>+ station progression<br/>(±1 hop 가드)"]
+    Consensus -->|"실패"| Lockless["🔓 Lockless mode<br/>+ 사용자 명시 의향 trip"]
+
+    AutoLock --> Alarm["🔔 환승 / 하차 알람"]
+    Lockless --> Alarm
+    Alarm --> Widget["📊 위젯 + Live Activity"]

@@ -1,0 +1,488 @@
+/**
+ * #2615 (재설계, 코드리뷰 F8 — allowlist 함수를 직접 단위로 다룰 수 있게 분리) —
+ * `runMidCycleFireOnly` 단위 테스트. `runScheduled`를 전혀 거치지 않고 스냅샷을 직접
+ * 구성해 fire-only 진입점만 격리 검증한다.
+ *
+ * 커버 범위:
+ *   - 도착 확증(arvlCd ENTERING) 시 station-passed alert push 1건 발사 + D1
+ *     cron-fire-attempt에 midCycle:true meta 기록
+ *   - 미확증(arrived=false/estimate=null)이면 발사하지 않음(no-op, no mutation)
+ *   - trip mutation 없음 — 이 함수는 putTrip을 호출하지 않는다(trip.boardingLock 등 캡처된
+ *     스냅샷 값이 KV 상의 trip record와 무관하게 유지)
+ *   - sleepModeEnabled 트립은 skip
+ *   - 같은 pass 내 같은 (trip, station) 스냅샷 2건이면 in-memory dedup으로 1회만 발사
+ *   - 발사 직전 KV dedup 키가 이미 존재하면(이전 mid pass가 이미 쐈음) skip — 재생 실증으로
+ *     발견한 무한 재발사 회귀 차단
+ *   - push 실패 시 D1에 outcome='failed' + midCycle:true 기록, 발사 카운트 미증가
+ */
+import { generateKeyPair, exportPKCS8 } from 'jose';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetApnsJwtCache, type ApnsConfig } from '../apns';
+import {
+  runMidCycleFireOnly,
+  stationPassedFiredKey,
+  type MidCycleTripSnapshot,
+} from '../scheduled';
+import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
+import { ARRIVAL_CODE } from '../alarm';
+import { readSsot, seedSsot, writeSsot } from '../tripPositionSsot';
+import { putTrip } from '../trips';
+import type { BoardingLockMeta, Env, Trip } from '../types';
+import { InMemoryKV } from './inMemoryKv';
+
+let apnsConfig: ApnsConfig;
+
+beforeAll(async () => {
+  const { privateKey } = await generateKeyPair('ES256');
+  const pem = await exportPKCS8(privateKey);
+  apnsConfig = { keyId: 'K', teamId: 'T', privateKeyPem: pem, bundleId: 'com.example.app' };
+});
+
+beforeEach(() => resetApnsJwtCache());
+
+const NOW = 1_700_000_000_000;
+const APNS_HOSTS = { production: 'api.push.apple.com', sandbox: 'api.sandbox.push.apple.com' } as const;
+
+/** D1 INSERT를 가로채 trip_events row(특히 meta JSON)를 관측하는 mock binding. */
+function makeDbMock() {
+  const rows: { kind: string; station: string | null; meta: Record<string, unknown> | null }[] = [];
+  const prepare = () => ({
+    bind: (...args: unknown[]) => {
+      rows.push({
+        kind: args[2] as string,
+        station: args[3] as string | null,
+        meta: args[5] ? (JSON.parse(args[5] as string) as Record<string, unknown>) : null,
+      });
+      return { run: async () => ({ success: true }) };
+    },
+  });
+  return { db: { prepare } as unknown as D1Database, rows };
+}
+
+function makeEnv(kv: InMemoryKV, db?: D1Database): Env {
+  return {
+    TRIPS: kv as unknown as KVNamespace,
+    APNS_HOST: APNS_HOSTS.production,
+    APNS_HOST_SANDBOX: APNS_HOSTS.sandbox,
+    SEOUL_API_HOST: 'seoul.api',
+    SEOUL_API_KEY: 'KEY',
+    APNS_KEY_ID: 'K',
+    APNS_TEAM_ID: 'T',
+    APNS_PRIVATE_KEY: apnsConfig.privateKeyPem,
+    APNS_BUNDLE_ID: 'com.example.app',
+    DB: db,
+  };
+}
+
+function makeBoardingLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
+  return {
+    trainCode: '7246',
+    line: '7',
+    subwayId: '1007',
+    selectedDepartureTime: NOW,
+    segmentStations: ['용마산', '중곡', '군자'],
+    expiresAt: NOW + 60 * 60_000,
+    ...overrides,
+  };
+}
+
+function makeTrip(overrides: Partial<Trip> = {}): Trip {
+  return {
+    token: 'mid-fire-tok',
+    route: { type: 'direct', line: '7', stops: 2 },
+    destination: '군자',
+    waypoints: [
+      { stationName: '중곡', line: '7', kind: 'intermediate' },
+      { stationName: '군자', line: '7', kind: 'destination' },
+    ],
+    expiresAt: NOW + 60 * 60_000,
+    createdAt: NOW,
+    alarmAtEpochMs: NOW - 60_000,
+    boardingLock: makeBoardingLock(),
+    ...overrides,
+  };
+}
+
+function makeSnapshot(trip: Trip): MidCycleTripSnapshot {
+  return { trip, waypoint: trip.waypoints[0], lock: trip.boardingLock! };
+}
+
+function makeSeoul(arrivals: ArrivalEntry[]): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: arrivals.map((a) => ({
+            barvlDt: String(a.arrivalSeconds),
+            recptnDt: '',
+            updnLine: a.isUp ? '상행' : '하행',
+            trainLineNm: a.destination,
+            btrainNo: a.trainCode,
+            subwayNm: a.subwayNm,
+            arvlCd: a.arvlCd,
+          })),
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  });
+}
+
+const SUCCESS_APNS_FETCH: typeof fetch = (async () =>
+  new Response('', { status: 200 })) as unknown as typeof fetch;
+
+const ENTERING_ARRIVAL: ArrivalEntry = {
+  trainCode: '7246',
+  arrivalSeconds: 30,
+  isUp: true,
+  destination: '온수',
+  subwayNm: '7호선',
+  arvlCd: ARRIVAL_CODE.ENTERING,
+};
+
+const NOT_YET_ARRIVAL: ArrivalEntry = {
+  trainCode: '7246',
+  arrivalSeconds: 120,
+  isUp: true,
+  destination: '온수',
+  subwayNm: '7호선',
+  arvlCd: 3,
+};
+
+describe('#2615 — runMidCycleFireOnly (allowlist fire-only 진입점)', () => {
+  it('도착 확증(ENTERING) — station-passed alert push 1건 발사 + D1 midCycle:true 기록', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const { db, rows } = makeDbMock();
+    const trip = makeTrip();
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv, db),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: SUCCESS_APNS_FETCH },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+
+    expect(stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    const fireRow = rows.find((r) => r.kind === 'cron-fire-attempt');
+    expect(fireRow?.station).toBe('중곡');
+    expect(fireRow?.meta?.outcome).toBe('sent');
+    expect(fireRow?.meta?.midCycle).toBe(true);
+  });
+
+  it('미확증(아직 도착 전) — 발사하지 않는다(no-op)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([NOT_YET_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+    expect(stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+  });
+
+  it('estimate=null(Seoul 무응답) — 발사하지 않는다(vanish-fallback/consecutiveEtaMissing 등 범위 밖)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([]), apnsConfig, apnsHosts: APNS_HOSTS },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+    expect(stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+  });
+
+  it('trip mutation 없음 — putTrip을 호출하지 않는다(KV의 trip record 불변)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const before = await kv.get(`trip:${trip.token}`);
+
+    await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: SUCCESS_APNS_FETCH },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+
+    const after = await kv.get(`trip:${trip.token}`);
+    expect(after).toBe(before);
+  });
+
+  it('sleepModeEnabled 트립은 skip', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip({ sleepModeEnabled: true });
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: SUCCESS_APNS_FETCH },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+    expect(stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+  });
+
+  // #3100 (plan v4/v4.2) — 취침 mute는 intermediate 한정. 환승·하차 도착은 취침 무관 발사.
+  // #2510 반전(2026-11-02): payload의 sound는 모드별 — 취침=alarm.wav·time-sensitive, 비취침=무음 배너·active.
+  it.each<{ kind: 'transfer' | 'destination'; station: string }>([
+    { kind: 'transfer', station: '중곡' },
+    { kind: 'destination', station: '군자' },
+  ])('#3100 sleepModeEnabled + $kind — station- push 발사 (sound만 모드별)', async ({ kind, station }) => {
+    const capture = async (sleepModeEnabled: boolean) => {
+      const kv = new InMemoryKV(() => NOW);
+      const calls: [string, RequestInit][] = [];
+      const fetchImpl = (async (url: string, init: RequestInit) => {
+        calls.push([url, init]);
+        return new Response('', { status: 200 });
+      }) as unknown as typeof fetch;
+      const trip = makeTrip({
+        sleepModeEnabled,
+        waypoints: [{ stationName: station, line: '7', kind }],
+      });
+      const stats = await runMidCycleFireOnly(
+        makeEnv(kv),
+        [makeSnapshot(trip)],
+        { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl },
+        NOW,
+        () => undefined,
+        () => 'push-3100',
+      );
+      const pushes = calls
+        .filter(([, init]) => ((init.headers ?? {}) as Record<string, string>)['apns-collapse-id']?.startsWith('station-'))
+        .map(([, init]) => {
+          const body = JSON.parse(init.body as string) as {
+            aps: { sound?: unknown; 'interruption-level'?: unknown };
+            data: Record<string, unknown>;
+          };
+          return { aps: body.aps, data: body.data };
+        });
+      return { stats, pushes };
+    };
+    const base = await capture(false);
+    const sleep = await capture(true);
+    expect(base.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(sleep.stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(sleep.pushes).toHaveLength(1);
+    expect(sleep.pushes[0].aps.sound).toBe('alarm.wav');
+    expect(sleep.pushes[0].aps['interruption-level']).toBe('time-sensitive');
+    expect(base.pushes).toHaveLength(1);
+    expect('sound' in base.pushes[0].aps).toBe(false);
+    expect(base.pushes[0].aps['interruption-level']).toBe('active');
+    expect(sleep.pushes[0].data).toEqual(base.pushes[0].data);
+  });
+
+  it('같은 pass 내 같은 (trip, station) 스냅샷 2건 — in-memory dedup으로 1회만 발사', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const snapshot = makeSnapshot(trip);
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [snapshot, snapshot],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: SUCCESS_APNS_FETCH },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+    expect(stats).toEqual({ evaluated: 2, fired: 1, errors: 0 });
+  });
+
+  it('발사 직전 KV dedup 키가 이미 존재 — skip (이전 mid pass가 이미 쐈음, 무한 재발사 회귀 차단)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const dedupKey = stationPassedFiredKey(trip.token, trip.boardingLock!.trainCode, trip.waypoints[0].stationName);
+    await kv.put(dedupKey, '1');
+
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: SUCCESS_APNS_FETCH },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+    expect(stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+  });
+
+  it('발사 성공 시 표준 dedup 키에 best-effort 1 put — 다음 primary/mid pass가 이 키로 skip한다', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const dedupKey = stationPassedFiredKey(trip.token, trip.boardingLock!.trainCode, trip.waypoints[0].stationName);
+
+    await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl: SUCCESS_APNS_FETCH },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+
+    expect(await kv.get(dedupKey)).toBe('1');
+  });
+
+  // #2909 (ADR-040 0단계) — runMidCycleFireOnly(:4029)가 trip 단위 collapseId를 쓰면 같은
+  // trip의 역A 배너가 역B 배너에 덮여 알림센터에서 사라진다. 역 단위로 분리한다.
+  it('#2909 같은 trip 다른 두 역(mid-cycle) 발사 — collapseId가 서로 달라야 한다(역 단위)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const snapshotA: MidCycleTripSnapshot = { trip, waypoint: trip.waypoints[0], lock: trip.boardingLock! };
+    const snapshotB: MidCycleTripSnapshot = { trip, waypoint: trip.waypoints[1], lock: trip.boardingLock! };
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [snapshotA, snapshotB],
+      {
+        seoul: makeSeoul([ENTERING_ARRIVAL]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+      },
+      NOW,
+      () => undefined,
+      () => 'push-2909-mid',
+    );
+    expect(stats.fired).toBe(2);
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const [collapseIdA, collapseIdB] = calls
+      .map((c) => (c[1].headers as Record<string, string>)['apns-collapse-id']);
+    // 같은 trip.token이지만 발사 역이 다르므로(중곡/군자) collapseId도 달라야 한다.
+    expect(collapseIdA).not.toBe(collapseIdB);
+  });
+
+  // #2909 회귀 가드 ⓐ — 같은 trip·같은 역의 재발사는 여전히 같은 collapseId(중복 스택 방지 유지).
+  it('#2909 회귀 가드 ⓐ 같은 trip·같은 역(mid-cycle) 재발사 — collapseId는 여전히 동일', async () => {
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    for (const pushId of ['p-2909-guard-mid-1', 'p-2909-guard-mid-2']) {
+      // 매 발사마다 fresh kv — station-passed dedup이 두 번째 발사를 skip하지 않게 한다.
+      const kv = new InMemoryKV(() => NOW);
+      const trip = makeTrip();
+      await runMidCycleFireOnly(
+        makeEnv(kv),
+        [{ trip, waypoint: trip.waypoints[0], lock: trip.boardingLock! }],
+        {
+          seoul: makeSeoul([ENTERING_ARRIVAL]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+        },
+        NOW,
+        () => undefined,
+        () => pushId,
+      );
+    }
+    expect(apnsFetch.mock.calls).toHaveLength(2);
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const [collapseIdFirst, collapseIdSecond] = calls
+      .map((c) => (c[1].headers as Record<string, string>)['apns-collapse-id']);
+    expect(collapseIdFirst).toBe(collapseIdSecond);
+  });
+
+  it('push 실패 시 D1에 outcome=failed + midCycle:true 기록, 발사 카운트 미증가', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const { db, rows } = makeDbMock();
+    const trip = makeTrip();
+    const failFetch: typeof fetch = (async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 })) as unknown as typeof fetch;
+
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv, db),
+      [makeSnapshot(trip)],
+      {
+        seoul: makeSeoul([ENTERING_ARRIVAL]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: failFetch,
+      },
+      NOW,
+      () => undefined,
+      () => 'push-1',
+    );
+
+    expect(stats.fired).toBe(0);
+    expect(stats.errors).toBe(1);
+    const fireRow = rows.find((r) => r.kind === 'cron-fire-attempt');
+    expect(fireRow?.meta?.outcome).toBe('failed');
+    expect(fireRow?.meta?.midCycle).toBe(true);
+  });
+});
+
+// #3319 PR-c — mid-cycle 매역 push가 ssot:null로 나가 기기 미러가 갱신되지 않았다(11/04 D1 2180·2195·2209 전부 mid-cycle).
+describe('#3319 PR-c — mid-cycle 매역 push는 현재 SSoT를 동봉한다', () => {
+  async function fireAndCapture(kv: InMemoryKV): Promise<{ stats: Awaited<ReturnType<typeof runMidCycleFireOnly>>; data: Record<string, unknown>[] }> {
+    const calls: RequestInit[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      calls.push(init);
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+    const trip = makeTrip();
+    const stats = await runMidCycleFireOnly(
+      makeEnv(kv),
+      [makeSnapshot(trip)],
+      { seoul: makeSeoul([ENTERING_ARRIVAL]), apnsConfig, apnsHosts: APNS_HOSTS, fetchImpl },
+      NOW,
+      () => undefined,
+      () => 'push-3319',
+    );
+    const data = calls
+      .filter((init) => ((init.headers ?? {}) as Record<string, string>)['apns-collapse-id']?.startsWith('station-'))
+      .map((init) => (JSON.parse(init.body as string) as { data: Record<string, unknown> }).data);
+    return { stats, data };
+  }
+
+  it('SSoT가 있으면 payload.ssot에 현재 역/노선/마지막 passedStations가 실린다', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    const seeded = await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { line: '7' });
+    await writeSsot(kv as unknown as KVNamespace, {
+      ...seeded,
+      passedStations: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+      lastAdvanceAt: NOW - 5_000,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    });
+    const { stats, data } = await fireAndCapture(kv);
+    expect(stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(data).toHaveLength(1);
+    expect(data[0].ssot).toMatchObject({
+      currentStationId: '용마산',
+      currentStationLine: '7',
+      lastAdvanceAt: NOW - 5_000,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      passedStations: ['c', 'd', 'e', 'f', 'g'],
+    });
+  });
+
+  it('SSoT가 없으면 ssot 없이 그대로 발사한다(키를 만들지 않는다)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const { stats, data } = await fireAndCapture(kv);
+    expect(stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(data).toHaveLength(1);
+    expect('ssot' in data[0]).toBe(false);
+    expect(await readSsot(kv as unknown as KVNamespace, makeTrip().token)).toBeNull();
+  });
+
+  it('SSoT 읽기가 실패해도 push는 발사된다(fail-open)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const trip = makeTrip();
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '용마산', { line: '7' });
+    const realGet = kv.get.bind(kv) as (key: string, ...rest: unknown[]) => Promise<unknown>;
+    vi.spyOn(kv, 'get').mockImplementation(((key: string, ...rest: unknown[]) => {
+      if (key.startsWith('ssot:')) return Promise.reject(new Error('kv down'));
+      return realGet(key, ...rest);
+    }) as unknown as typeof kv.get);
+    const { stats, data } = await fireAndCapture(kv);
+    expect(stats).toEqual({ evaluated: 1, fired: 1, errors: 0 });
+    expect(data).toHaveLength(1);
+    expect('ssot' in data[0]).toBe(false);
+  });
+});

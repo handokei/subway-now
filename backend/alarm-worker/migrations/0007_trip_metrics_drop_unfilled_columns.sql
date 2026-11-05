@@ -1,0 +1,23 @@
+-- #2783 — trip_metrics 엔티티(Drizzle) 도입으로 드러난 컬럼 3개 중 2개를 제거한다.
+-- `silent_push_received`/`environment_distribution`은 0001_initial.sql이 만든 이후
+-- #1835부터 지금까지 INSERT 목록에 한 번도 포함된 적이 없어 항상 0/NULL이었다
+-- (git 확인, `src/d1TripMetrics.ts` 모듈 헤더 주석 이력 참고). DEFAULT 값이 있어 타입/런타임
+-- 에러 없이 조용히 틀린 값(측정값처럼 보이는 0)을 만들어 왔다 — 2026-09-21 라이드 분석에서
+-- 실제로 "silent push 수신 0건"이라는 오진의 근거로 쓰였다.
+--
+-- 채울 수 없다고 판단한 근거(요구사항 3, 상세는 `src/db/schema.ts` 헤더 주석 + PR 본문):
+--   - silent_push_received: 유일 후보 소스(KV `received:` prefix, `baselineCheck.ts`)가 trip
+--     단위가 아니라 전역 1h 윈도우 집계이고, stamp 자체가 tripToken을 기록하지 않아 trip 창으로
+--     좁힐 방법이 없다. write 경로(`pendingPushes.ts:stampReceived`)를 바꾸는 것은 #2784(push
+--     단일 관문)와 파일이 겹치는 별도 스코프 — 이번 PR(트립 메트릭 엔티티 도입)에서 손대지 않는다.
+--   - environment_distribution: 유일 후보 소스(`cellularEnvironmentVote`, positionSeries KV)가
+--     최근 60s~30point ring buffer일 뿐 trip 전체 기간을 누적하지 않는다(#2765 감사로 게이트
+--     consumer도 0건 확정). trip 단위 분포 생성은 새 누적 인프라가 필요해 "동작 변경 금지"
+--     범위를 벗어난다.
+--
+-- 데이터 손실 없음 — 두 컬럼 모두 이 마이그레이션 적용 시점까지 실제 값이 채워진 적이
+-- 없다(항상 0 또는 NULL). 다른 13개 컬럼(90행 실데이터, 2026-09-21 라이드 포함)은 그대로 보존.
+--
+-- D1(SQLite 3.35+)은 ALTER TABLE ... DROP COLUMN을 지원한다.
+ALTER TABLE trip_metrics DROP COLUMN silent_push_received;
+ALTER TABLE trip_metrics DROP COLUMN environment_distribution;

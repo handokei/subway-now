@@ -1,0 +1,91 @@
+appId: com.subwaynow.app
+name: "manual - 취침모드 lockless station-passed 회귀 (보고 6)"
+# 사용자 trip 2026-06-12 evidence — 22:11:56 사가정 fg fired (취침모드 첫 환승 전).
+# Root cause: shouldSuppressBySleepRule이 lockless 비활성 + transfer만 차단, station-passed 통과.
+# 회귀 8 + 권한 매트릭스 (취침 환경): lockless trip 취침모드 첫 hop 전 station-passed fire 0건.
+# 실기기에서 취침 모드 + lockless trip station-passed 음소거(D8) 검증.
+---
+- setLocation:
+    latitude: 37.5851
+    longitude: 127.0838
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+- waitForAnimationToEnd
+
+# lockless toggle ON (사용자 명시 의향 trip)
+- tapOn:
+    text: ".*설정.*|.*Settings.*"
+    optional: true
+- waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      id: "lockless-station-passed-switch"
+    direction: DOWN
+    timeout: 10000
+- tapOn:
+    id: "lockless-station-passed-switch"
+- evalScript: maestro.wait(500)
+- back
+
+# 목적지: 성수
+- assertVisible:
+    id: "destination-button"
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(1000)
+- setClipboard: "성수"
+- evalScript: maestro.wait(500)
+- pasteText
+- evalScript: maestro.wait(2000)
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    text: "성수"
+- waitForAnimationToEnd
+
+# 취침모드 ON
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+    timeout: 10000
+- tapOn:
+    id: "home-sleep-mode-switch"
+- evalScript: maestro.wait(1000)
+
+# 사가정 좌표로 이동 — 첫 환승 전 station-passed 트리거 시도
+- setLocation:
+    latitude: 37.5806
+    longitude: 127.0876
+- repeat:
+    times: 90
+    commands:
+      - evalScript: maestro.wait(1000)
+
+# 회귀 검증: 취침 모드 + lockless + 첫 환승 전이면 station-passed 알람 부재.
+- assertNotVisible:
+    id: "alarm-overlay-title"
+
+# DebugModal Sleep + Trip + Alarm log 확인
+- tapOn:
+    text: ".*debug.*|.*디버그.*"
+    optional: true
+- evalScript: maestro.wait(500)
+- assertVisible:
+    id: "debug-modal-trip-section"
+- assertVisible:
+    id: "alarm-log-modal-content"
