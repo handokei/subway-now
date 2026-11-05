@@ -103,9 +103,9 @@ module.exports = {
       './plugins/with-fmt-consteval-patch.js',
       '@sentry/react-native/expo',
       '@bacons/apple-targets',
-      // #1861 — iCloud KV entitlement 자동 주입 (NSUbiquitousKeyValueStore).
-      // App Store Connect에서 iCloud Capability 수동 활성화 후 expo prebuild 필요 (L15).
-      './plugins/with-icloud-kv',
+      // #3340 — './plugins/with-icloud-kv'(#1861) 등록 보류. Portal App ID에 iCloud capability가
+      // 없어 ubiquity-kvstore-identifier entitlement 주입 시 EAS iOS 빌드가 실패한다(8/29, 11/05).
+      // 복구: Portal iCloud 활성화 → 이 자리에 플러그인 재등록 → expo prebuild --clean (이슈 #3340).
     ],
     extra: {
       publicDataApiKey: '',
