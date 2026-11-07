@@ -29,6 +29,7 @@ import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { extractOriginStation, recordTripMetrics } from './d1TripMetrics';
 import { readDeviceContact } from './deviceContact';
 import { buildTripEndedAlertContent } from './alertContent';
+import { resolveStationDisplayName } from './stationsLookup';
 import { resolveStationAlert } from './alertSoundPolicy';
 import { t } from './i18n';
 import { LINE_META } from './lineAlias';
@@ -767,7 +768,8 @@ export async function cleanupTripWithLa(
   await recordTripEvent(env.DB, {
     tokenHash,
     kind: 'trip-end',
-    station: trip.destination ?? undefined,
+    // #3342 — destination은 역 id일 수 있다. D1은 사람이 읽는 역명으로 적재(해석 불가면 진단용으로 원문 유지).
+    station: (trip.destination && (resolveStationDisplayName(trip.destination) ?? trip.destination)) || undefined,
     meta: {
       reason: effectiveReason,
       ...(endPath !== undefined ? { endPath } : {}),

@@ -27,6 +27,7 @@
 
 import type { AlarmPhase } from './alarm';
 import { t, type SupportedLocale } from './i18n';
+import { resolveStationDisplayName } from './stationsLookup';
 import type { TripEndedReason } from './types';
 
 /**
@@ -95,10 +96,12 @@ export function buildTripEndedAlertContent(
   destinationStation: string | undefined,
   locale: SupportedLocale | undefined,
 ): AlertContent {
-  if (reason === 'destination-arrived' && destinationStation) {
+  // #3342 — destinationStation은 역 id일 수 있다 → 표시명으로 해석. 해석 불가면 원문을 노출하지 않고 일반 문구.
+  const destinationName = destinationStation ? resolveStationDisplayName(destinationStation) : null;
+  if (reason === 'destination-arrived' && destinationName) {
     const strings = t(locale);
     return {
-      title: strings.tripArrivedEndedTitle(destinationStation),
+      title: strings.tripArrivedEndedTitle(destinationName),
       body: strings.tripArrivedEndedBody,
     };
   }

@@ -14,7 +14,11 @@
  * tsconfig include로 shared file 직접 컴파일.
  */
 import type { EvidenceEnvironment } from './advanceTripPosition';
-import { findStationByNameAndLine } from '../../../src/shared/utils/stationLookup';
+import {
+  findStationById,
+  findStationByName,
+  findStationByNameAndLine,
+} from '../../../src/shared/utils/stationLookup';
 import type { LineNumber, Waypoint } from './types';
 
 /** Station 좌표 (좌표만 필요한 호출자가 전체 Station 객체에 의존하지 않도록 좁힌 shape). */
@@ -40,6 +44,18 @@ export function findStationCoordsByNameAndLine(
   );
   if (station === null) return null;
   return { lat: station.lat, lng: station.lng };
+}
+
+/**
+ * #3342 — `Trip.destination`은 device가 보내는 역 id(`destination.id`, #3177)지만 레거시 trip은 역명이다.
+ * 사용자 노출 텍스트(종료 알림 제목)·D1 관측 컬럼에 쓸 표시명을 돌려준다. id면 stations.json `name`
+ * (다른 push가 쓰는 waypoint.stationName과 같은 표기), 이미 유효한 역명이면 그대로.
+ * 둘 다 아니면 null — 호출자는 원문(id일 수 있음)을 노출하지 않고 일반 문구로 폴백한다.
+ */
+export function resolveStationDisplayName(idOrName: string): string | null {
+  const byId = findStationById(idOrName);
+  if (byId !== null) return byId.name;
+  return findStationByName(idOrName) === null ? null : idOrName;
 }
 
 /**
