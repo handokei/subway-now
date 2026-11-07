@@ -18,6 +18,8 @@ import { readSsot, seedSsot } from '../tripPositionSsot';
 import { getDeviceTripIndex, putDeviceTripIndex } from '../trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
+import { makeFakeLaPushDb } from './fakeLaPushDb';
+import { findStationById } from '../../../../src/shared/utils/stationLookup';
 
 let apnsConfig: ApnsConfig;
 
@@ -1055,6 +1057,25 @@ describe('cleanupTripWithLa', () => {
       title: '뚝섬 도착 · 안내 종료',
       body: '목적지에 도착해 경로 안내를 마쳤어요',
     });
+  });
+
+  it('#3342 — destination이 역 id(7-015)여도 종료 push 제목·D1 trip-end station은 역명이다', async () => {
+    const kv = new InMemoryKV();
+    const { db, rows } = makeFakeLaPushDb();
+    const trip = makeTrip({ destination: '7-015', locale: 'ko', activityPushToken: undefined });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    const env = { TRIPS: kv as unknown as KVNamespace, DB: db } as Env;
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await cleanupTripWithLa(trip, env, makeDeps(fetchImpl as unknown as typeof fetch), makeStats(), NOW, () => undefined, {
+      reason: 'destination-arrived',
+    });
+    const expectedName = findStationById('7-015')?.name as string;
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const { title } = JSON.parse(call[1].body as string).aps.alert;
+    expect(title).toContain(expectedName);
+    expect(title).not.toMatch(/\d-\d{3}/);
+    const tripEnd = rows.find((r) => r.kind === 'trip-end');
+    expect(tripEnd?.station).toBe(expectedName);
   });
 
   it('#3223 — 도착이 아닌 종료 사유(expired)는 기존 "안내 종료" 문구 유지', async () => {

@@ -7,7 +7,12 @@
  *   3. canonical fallback (alias name) — shared findStationByNameAndLine 동작 위임 검증.
  */
 import { describe, expect, it } from 'vitest';
-import { deriveWaypointEnvironment, findStationCoordsByNameAndLine } from '../stationsLookup';
+import {
+  deriveWaypointEnvironment,
+  findStationCoordsByNameAndLine,
+  resolveStationDisplayName,
+} from '../stationsLookup';
+import { findStationById } from '../../../../src/shared/utils/stationLookup';
 
 describe('findStationCoordsByNameAndLine (#1707)', () => {
   it('returns coords for known (stationName, line) pair', () => {
@@ -68,5 +73,17 @@ describe('deriveWaypointEnvironment (#2623)', () => {
   it('알려진 이름이지만 노선이 다름(overlap 없음) → "unknown" fallback', () => {
     // 합정은 line 2 / 6에만 존재 — line 1에는 없음.
     expect(deriveWaypointEnvironment({ stationName: '합정', line: '1' })).toBe('unknown');
+  });
+});
+
+describe('resolveStationDisplayName (#3342)', () => {
+  it('역 id → stations.json name', () => {
+    expect(resolveStationDisplayName('7-015')).toBe(findStationById('7-015')?.name);
+  });
+  it('역명 → 그대로', () => {
+    expect(resolveStationDisplayName('합정')).toBe('합정');
+  });
+  it('id도 역명도 아니면 null (원문 노출 금지)', () => {
+    expect(resolveStationDisplayName('7-999')).toBeNull();
   });
 });
