@@ -99,7 +99,7 @@ import {
 import { persistProgressStamps } from './cronProgressCell';
 import type { StampChange } from './cronLockCell';
 import { applyLaCell } from './laCellOps';
-import { lockLegKey, type LockOpResult } from './lockOps';
+import { burstSessionCreatedAt, lockLegKey, type LockOpResult } from './lockOps';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
@@ -956,7 +956,15 @@ async function applyRegisterCells(
   const flag = await readCellStage(env);
   if (!flag) return trip;
   const now = Date.now();
-  if (existing === null) await seedCells(env, { token: incoming.token, createdAt: incoming.createdAt }, flag, now);
+  // #3055 — existing===null이어도 셀이 같은 burst의 세션이면(낡은 KV 읽기) 신규 trip이 아니다: 재시드·신규 세션 처리 금지.
+  const burstCreatedAt =
+    existing === null && !routeReset ? burstSessionCreatedAt((await fetchCells(env, incoming.token)).lock, incoming, flag.epoch) : undefined;
+  const sameBurst = burstCreatedAt !== undefined;
+  if (existing === null && !sameBurst) {
+    await seedCells(env, { token: incoming.token, createdAt: incoming.createdAt }, flag, now);
+  }
+  const knownCreatedAt = existing?.createdAt ?? burstCreatedAt;
+  const knownLines = (existing ?? incoming).waypoints.map((w) => w.line);
   const result = await runLockOp(
     env,
     incoming.token,
@@ -964,7 +972,7 @@ async function applyRegisterCells(
       type: 'registerSession',
       source: 'register',
       incomingLock: incoming.boardingLock ?? null,
-      existing: existing ? { createdAt: existing.createdAt, waypointLines: existing.waypoints.map((w) => w.line) } : null,
+      existing: knownCreatedAt === undefined ? null : { createdAt: knownCreatedAt, waypointLines: knownLines },
       incomingCreatedAt: incoming.createdAt,
       routeReset,
     },
@@ -985,7 +993,7 @@ async function applyRegisterCells(
     {
       type: 'registerProgress',
       source: 'register',
-      newSession: routeReset || existing === null || !isSameSession,
+      newSession: routeReset || (existing === null ? !sameBurst : !isSameSession),
       incoming: {
         createdAt: incoming.createdAt,
         waypoints: incoming.waypoints,

@@ -88,7 +88,7 @@ const registerBody = (createdAt: number): Record<string, unknown> => ({
   promptDisplay: { originStation: '뚝섬', line: '2' },
 });
 
-const post = (path: string, body: unknown, env: Env): Promise<Response> =>
+const post = async (path: string, body: unknown, env: Env): Promise<Response> =>
   app.fetch(
     new Request(`http://example.com${path}`, {
       method: 'POST',
@@ -114,6 +114,8 @@ describe.each(FLAGS)('#3055 — 같은 초 이중 register가 셀을 지우지 �
   it('LA 토큰: register -> la-register -> 낡은 시야의 register(createdAt 더 큼) 뒤에도 토큰이 산다 + cron la-push가 그 토큰으로 발사', async () => {
     const env = await makeEnv(flag);
     await registerBurst(env, CREATED_1 + BURST_DRIFT_MS);
+    // 다음 cron tick — KV 60s 캐시가 걷힌 뒤의 overlay 시야(register#2가 쓴 createdAt이 더 큰 KV trip 위에 셀을 덮는다).
+    vi.setSystemTime(CREATED_1 + 61_000);
     const seen = await getTrip(env, TOKEN);
     expect(seen?.activityPushToken).toBe(LA_TOKEN);
     expect(seen?.activityState).toBe('live');
@@ -126,7 +128,7 @@ describe.each(FLAGS)('#3055 — 같은 초 이중 register가 셀을 지우지 �
       fetchImpl: fetchImpl as unknown as typeof fetch,
       seoul: new SeoulArrivalClient({ host: 'h', apiKey: 'K', fetchImpl: fetchImpl as unknown as typeof fetch }),
     } as ScheduledDeps;
-    const now = CREATED_1 + 18_000;
+    const now = CREATED_1 + 61_000;
     const fired = await maybeFireLiveActivityUpdate(
       seen!,
       seen!.waypoints[0],
