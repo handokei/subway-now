@@ -210,7 +210,11 @@ function extractHeader(headers: RequestInit['headers'], name: string): string | 
 }
 
 /** APNs 전송(fetchImpl)을 가로채 CapturedPush로 기록하고 200을 반환하는 fake sender. */
-function makeCapturingApnsFetch(sink: CapturedPush[], getNow: () => number): typeof fetch {
+function makeCapturingApnsFetch(
+  sink: CapturedPush[],
+  getNow: () => number,
+  statusFor?: (push: CapturedPush) => number,
+): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     let body: Record<string, unknown> = {};
     try {
@@ -218,7 +222,7 @@ function makeCapturingApnsFetch(sink: CapturedPush[], getNow: () => number): typ
     } catch {
       body = {};
     }
-    sink.push({
+    const push: CapturedPush = {
       simNowMs: getNow(),
       url: String(input),
       body,
@@ -227,8 +231,10 @@ function makeCapturingApnsFetch(sink: CapturedPush[], getNow: () => number): typ
         priority: extractHeader(init?.headers, 'apns-priority'),
         collapseId: extractHeader(init?.headers, 'apns-collapse-id'),
       },
-    });
-    return new Response('', { status: 200 });
+    };
+    sink.push(push);
+    const status = statusFor?.(push) ?? 200;
+    return status === 200 ? new Response('', { status }) : new Response(`{"reason":"${status >= 500 ? 'InternalServerError' : 'BadRequest'}"}`, { status });
   }) as unknown as typeof fetch;
 }
 
@@ -315,6 +321,8 @@ export async function runCaptureReplay(opts: {
   phaseOffsetMs?: number;
   freshMs?: number;
   apns?: 'capture';
+  /** #3055 — push마다 APNs 응답 status를 정한다(실패 주입). 생략 = 전부 200. 이 push는 `pushes`에 이미 기록된 뒤라 재시도 횟수를 센다. */
+  apnsStatusFor?: (push: CapturedPush) => number;
   /**
    * K5 #2926 PR-A — true면 `killSwitchLocklessAdvanceLegacy`를 runScheduled에 전달해 lockless cron 전진(C1/C2/C3) 구 동작으로
    * 재생한다. 기본(미지정)은 hold(새 계약). lockless 전진을 전제로 쓰인 구 replay를 PR-C(물리 삭제)까지 구 경로 보호용으로 고정한다.
@@ -430,7 +438,7 @@ export async function runCaptureReplay(opts: {
 
   const capturedPushes: CapturedPush[] = [];
   const apnsFetchImpl =
-    opts.apns === 'capture' ? makeCapturingApnsFetch(capturedPushes, () => simNow) : NOOP_APNS_FETCH;
+    opts.apns === 'capture' ? makeCapturingApnsFetch(capturedPushes, () => simNow, opts.apnsStatusFor) : NOOP_APNS_FETCH;
 
   let pushSeq = 0;
   const cycles: ReplayCycleResult[] = [];

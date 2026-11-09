@@ -10,7 +10,7 @@ import type { Env, Trip, Waypoint } from '../../types';
 import { stationPassedFiredKey } from '../../scheduled';
 import { waypointSignatureKey } from '../../trips';
 import { buildReplayFixture, parseSeoulCaptureCycle } from '../../replayFixture';
-import { runCaptureReplay } from './replayHarness';
+import { runCaptureReplay, type CapturedPush } from './replayHarness';
 import { loadD1Events, makeTripEventSink, parseRouteSig, routeSigOf, stubReplayFetch } from './replay20261019';
 import { attachDb, makeLagKv, primeReplayKv } from './progressAuthorityReplay';
 import { firedStationOccurrences } from './pushAssertions';
@@ -77,6 +77,8 @@ export async function replayTick(trip: Trip, opts: {
     cells?: LockCellFlag | `progress@${number}`;
     /** 첫 tick 직전(셀 설치 직후)에 호출 — 셀 상태를 미리 만드는 용도. */
     beforeFirstTick?: (env: Pick<Env, 'TRIPS' | 'TRIP_DO'>) => Promise<void>;
+    /** #3055 — push별 APNs 응답 status(실패 주입). 생략 = 전부 200. */
+    apnsStatusFor?: (push: CapturedPush) => number;
   } = {}) {
   const { db, events } = makeTripEventSink();
   const stub = stubReplayFetch(fixture);
@@ -86,6 +88,7 @@ export async function replayTick(trip: Trip, opts: {
     fixture,
     seedTrips: [trip],
     apns: 'capture',
+    ...(opts.apnsStatusFor ? { apnsStatusFor: opts.apnsStatusFor } : {}),
     makeKv: makeLagKv,
     beforeTick: async ({ tick, env, kv }) => {
       // progress가 이미 head를 가리키는 운영 상태(재등록 없음) — 진입 맞춤(#3282)은 no-op이어야 한다.
