@@ -96,6 +96,7 @@ import {
   runProgressOp,
   seedCells,
 } from './tripDoCells';
+import type { SendClaim } from './apnsHost';
 import { persistProgressStamps } from './cronProgressCell';
 import type { StampChange } from './cronLockCell';
 import { applyLaCell } from './laCellOps';
@@ -412,7 +413,7 @@ function scheduleSyncConsumedPrecedingAlarms(
   trip: Trip,
   shiftedCount: number,
   now: number,
-  options: { requestedCount?: number; source: SleepAlarmSyncSource },
+  options: { requestedCount?: number; source: SleepAlarmSyncSource; claim?: SendClaim },
 ): void {
   const log = createJsonLogger();
   scheduleTripEvent(
@@ -4010,6 +4011,8 @@ app.post('/boarding-lock/sync', async (c) => {
   // #3300 PR-3a — 셀 권위 단계(lock@N 이상)면 이 요청의 lock 변경(해제/승격/TTL 갱신)은 op로만 영속한다.
   // `syncRev`는 op 응답으로 갱신되는 같은 요청 안의 rev(spread/clone으로 trip 객체가 바뀌어도 잃지 않는다).
   const syncStage = await readCellStage(c.env);
+  // #3055 PR-5 — 이 요청이 진행 셀 claim(`advanceHead`)으로 확정한 소비의 발사는 전송 실패 시 같은 요청 안에서 1회 재전송한다(`sendWithClaimRetry`). legacy 단계는 현행.
+  const syncClaim: SendClaim = isProgressStage(syncStage) ? 'applied' : 'legacy';
   let syncRev = existing.__lockRev ?? -1;
   // #2645 PR 코드리뷰 (코드리뷰 HIGH-1/HIGH-2/MEDIUM-3/LOW-5, 2026-09-15) — 실제로 적용된 hop 수.
   // `advance.shiftedCount`(요청/관측값)와 다를 수 있다 — drift 가드, 관측역-intermediate defer,
@@ -4127,6 +4130,7 @@ app.post('/boarding-lock/sync', async (c) => {
               now,
               log,
               () => crypto.randomUUID(),
+              syncClaim,
             );
           const isDestinationWp = wp.kind === 'destination';
           const result = await advanceBoardingLockWaypoint(
@@ -4199,6 +4203,7 @@ app.post('/boarding-lock/sync', async (c) => {
         scheduleSyncConsumedPrecedingAlarms(c, mixedTrip, appliedShiftedCount, now, {
           requestedCount: consumedWaypoints.length,
           source: 'sync-mixed',
+          claim: syncClaim,
         });
       }
     } else {
@@ -4285,6 +4290,7 @@ app.post('/boarding-lock/sync', async (c) => {
                 now,
                 log,
                 () => crypto.randomUUID(),
+                { claim: syncClaim },
               ),
             )
             .then(() => undefined),
@@ -4297,7 +4303,7 @@ app.post('/boarding-lock/sync', async (c) => {
       // (cron 경로와 동일 단일 게이트). dedup은 기존 (token, target) 키.
       // 혼합 분기(transfer/destination 소비)의 같은 catch-up은 그 분기 루프 뒤에서 한 번 호출한다(#3100).
       if (pureClaimed && selectConsumedPrecedingAlarmPairs(existing, advance.shiftedCount).length > 0) {
-        scheduleSyncConsumedPrecedingAlarms(c, existing, advance.shiftedCount, now, { source: 'sync-advance' });
+        scheduleSyncConsumedPrecedingAlarms(c, existing, advance.shiftedCount, now, { source: 'sync-advance', claim: syncClaim });
       }
     }
 

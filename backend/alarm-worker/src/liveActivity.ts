@@ -25,7 +25,7 @@ import {
   sendTripEndedAlertPush,
   type LiveActivityContentState,
 } from './apns';
-import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
+import { pickApnsHost, sendWithClaimRetry, sendWithEnvHeal, type SendClaim } from './apnsHost';
 import { extractOriginStation, recordTripMetrics } from './d1TripMetrics';
 import { readDeviceContact } from './deviceContact';
 import { buildTripEndedAlertContent } from './alertContent';
@@ -676,15 +676,17 @@ export async function cleanupTripWithLa(
     endPath?: TripEndPath;
     /** #3100 F-S2 — 이 종료가 하차 도착 알림을 겸해야 한다(도착 push가 아직 안 나감). 소리는 정책 표가 정한다. */
     arrivalAlert?: boolean;
+    /** #3055 PR-5 — 호출자가 진행 셀 claim을 선점(applied)한 종료인지. applied면 종료 alert 전송 실패를 같은 tick에 1회 재전송한다(생략 = legacy). */
+    claim?: SendClaim;
   },
 ): Promise<void> {
-  const { reason, metricsReason, endPath, arrivalAlert } = options ?? {};
+  const { reason, metricsReason, endPath, arrivalAlert, claim } = options ?? {};
   stats.tripEndedTokens?.add(trip.token);
   // #3055 PR-3b (§3 #20) — lock 셀 세션을 닫는다(flag on일 때만 DO 호출). 같은 token의 다음 trip이 이전 lock/rev를 이어받지 않게 한다.
   await endLockSession(env, trip, 'cleanup', now);
   await fireLiveActivityDismissal(trip, { ...deps, db: deps.db ?? env.DB }, stats, now, log);
   if (reason) {
-    await fireTripEndedAlertPush(trip, reason, env, deps, now, log, arrivalAlert);
+    await fireTripEndedAlertPush(trip, reason, env, deps, now, log, arrivalAlert, claim);
     // #1339 — launch reconciliation 백스톱. alert push가 APNs drop/디바이스 오프라인으로
     // 누락된 케이스에서 디바이스가 다음 launch 시 GET /trips/:token/status로 종료 사실을
     // 확인하고 자체 cleanup한다. KV write 실패는 cleanup 흐름을 차단하지 않는다 —
@@ -828,6 +830,7 @@ export async function fireTripEndedAlertPush(
   now: number,
   log: Logger,
   arrivalAlert = false,
+  claim: SendClaim = 'legacy',
 ): Promise<void> {
   const dedupKey = tripEndedAlertDedupKey(trip.token, trip.createdAt);
   const existing = await env.TRIPS.get(dedupKey);
@@ -851,7 +854,7 @@ export async function fireTripEndedAlertPush(
     // #1283 — 다른 push 경로(reschedule/lockless/arvlcd)와 동일하게 env-heal 적용.
     // trip.apnsEnv가 stale/오설정이면 BadDeviceToken → opposite host 1회 retry로 종료 푸시 도달.
     // trip은 곧 deleteTrip되므로 correctedEnv KV 반영은 불필요 — retry 성공만으로 충분(로그만 남김).
-    const heal = await sendWithEnvHeal(
+    const heal = await sendWithClaimRetry(claim, () => sendWithEnvHeal(
       (host) =>
         sendTripEndedAlertPush({
           // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
@@ -876,7 +879,7 @@ export async function fireTripEndedAlertPush(
       log,
       trip.token.slice(0, 8),
       { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-    );
+    ), log, { path: 'trip-ended', token: trip.token.slice(0, 8), reason });
     if (!heal.result.ok) {
       log('trip-ended push failed', {
         token: trip.token.slice(0, 8),

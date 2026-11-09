@@ -10,6 +10,7 @@
  * 진행 스탬프(`lastLaPush*`·`lastTrackedArrivalEpoch`·`legResolveStreak`·`legBoardingPromptState`)는 매 tick 여러 곳에서 생기므로
  * `stampProgressFields`(동기, 메모리 즉시 반영 + tick 버퍼)로 모아 `flushProgressStamps`가 trip당 한 번 op로 영속한다(DO 호출 예산 절약).
  */
+import type { SendClaim } from './apnsHost';
 import { cronTickOf, type StampChange } from './cronLockCell';
 import { hashTripToken } from './sentry';
 import { HEAD_SCOPED_STAMPS, progressHeadKey, type ProgressOp, type ProgressOpResult, type ProgressStampKey, type ProgressStamps } from './progressOps';
@@ -20,6 +21,15 @@ import type { Env, Trip } from './types';
 export type ProgressCommit =
   | { mode: 'legacy' }
   | { mode: 'cell'; outcome: ProgressOpResult['outcome'] | 'skipped'; result?: ProgressOpResult };
+
+/**
+ * claim-then-fire 호출자가 "이 commit으로 발사권을 선점했는가"를 발사 헬퍼(`sendWithClaimRetry`)에 넘기는 값.
+ * 셀 단계에서 applied일 때만 `applied`(= 전송 실패 시 같은 tick 1회 재전송). legacy(flag off / lock@N)는 현행 흐름 그대로 `legacy`.
+ * 호출자는 이미 `outcome !== 'applied'`를 걸러낸 뒤에만 발사하므로 `denied`는 여기서 만들지 않는다.
+ */
+export function sendClaimOf(commit: ProgressCommit): SendClaim {
+  return commit.mode === 'cell' && commit.outcome === 'applied' ? 'applied' : 'legacy';
+}
 
 /** 이 trip의 진행 변경이 셀 op로 가야 하는 cron 추적 trip인지(`progress@N` 이상 tick). */
 export function isCronProgressTracked(trip: Trip): boolean {

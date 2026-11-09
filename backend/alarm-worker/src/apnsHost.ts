@@ -156,3 +156,30 @@ export async function sendWithEnvHeal(
     envMismatchExhausted: isApnsEnvMismatch(retry.status, retry.reason),
   };
 }
+
+/**
+ * #3055 PR-5 — 발사권(진행 셀 claim) 선점 결과. `legacy` = 선점 없음(flag off / lock@N, 현행 흐름), `applied` = 선점 성공 후 발사, `denied` = 선점 실패(발사 안 함).
+ * 매역 push·환승 해제·취침 알람·하차 프롬프트·종료 alert 등 claim-then-fire인 모든 발사가 같은 값을 쓴다.
+ */
+export type SendClaim = 'legacy' | 'applied' | 'denied';
+
+export type RetriedHeal = EnvHealResult & { retried?: true };
+
+/**
+ * #3055 PR-5 (사용자 결정 2026-11-09 "retry once", ADR-055) — claim이 applied인 발사가 transient(429/5xx)로 실패하면 **같은 tick에 정확히 1회** 재전송한다.
+ * claim-then-fire는 선점 뒤 전송이 실패하면 다음 tick이 noop이라 push가 유실된다(legacy는 마커 미stamp로 다음 tick 자연 재시도). 성공이면 재전송 0,
+ * 재시도도 실패해도 3번째 시도 0, 영구 오류(BadDeviceToken 등)는 같은 요청을 다시 보내도 소용없어 재시도하지 않는다. `legacy`/`denied`는 호출자가 이미 현행 흐름이다.
+ * 같은 `pushId`·collapse-id를 재사용하므로 첫 시도가 사실 도달했어도 기기에서 같은 알림으로 합쳐진다.
+ * 재전송이 끝내 실패해도 호출자의 기존 실패 처리(fallback 큐 등)는 그대로 이어진다.
+ */
+export async function sendWithClaimRetry(
+  claim: SendClaim,
+  send: () => Promise<EnvHealResult>,
+  log: Logger,
+  logCtx: Record<string, unknown>,
+): Promise<RetriedHeal> {
+  const first = await send();
+  if (claim !== 'applied' || first.result.ok || !isRetryableApnsError(first.result.status)) return first;
+  log('claimed send failed — retry once', { ...logCtx, status: first.result.status, reason: first.result.reason });
+  return { ...(await send()), retried: true };
+}
