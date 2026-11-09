@@ -29,7 +29,7 @@ import {
   type PushOrigin,
   type SilentPushPayload,
 } from './apns';
-import { flipApnsEnv, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
+import { flipApnsEnv, isRetryableApnsError, pickApnsHost, sendWithEnvHeal, type EnvHealResult } from './apnsHost';
 import type { ArchFlagValue } from './archFlag';
 import { CRON_INTERVAL_MS, FALLBACK_HOP_SEC } from './cronConstants';
 import {
@@ -4212,6 +4212,8 @@ async function recordFireAttempt(
   // 부재로 영구 판정 불가였다). push 자체가 시도되지 않은 gate-skip 호출처(skipped-reason/
   // skipped-by-shift)는 pushId가 없는 것이 의미상 정확 — 생략 시 meta에 필드 자체를 싣지 않는다.
   pushId?: string,
+  // #3055 PR-5 — claim 선점 후 전송 실패를 같은 tick에 1회 재전송한 발사임을 D1에서 구분한다(생략 = 재시도 없음, row 형태 불변).
+  retry?: boolean,
 ): Promise<void> {
   await recordTripEvent(
     env.DB,
@@ -4227,10 +4229,63 @@ async function recordFireAttempt(
         ...(midCycle ? { midCycle: true } : {}),
         ...(path !== undefined ? { path } : {}),
         ...(pushId !== undefined ? { pushId } : {}),
+        ...(retry ? { retry: true } : {}),
       },
     },
     now,
   );
+}
+
+/** 매역 push 발사권 선점 결과 — `legacy`: 진행 셀 단계 아님(현행 마커 dedup 흐름) / `applied`: 선점 성공(발사 진행) / `denied`: 발사 금지(D1 기록 완료). */
+type StationPushClaim = 'legacy' | 'applied' | 'denied';
+
+/**
+ * #3055 PR-5 (#3338 잔여 1) — 매역 push를 **claim-first**로 만든다: 진행 셀에서 이 head의 발사권(`claimStationPush`)을 먼저 선점하고 applied일 때만 전송한다.
+ * KV fire-once 마커(`station-passed-fired:`)는 성공 후에 stamp되고 읽기가 엣지 캐시(60s)라, 두 소비자(arvlCd·vanish-fallback·진입/mid-cycle)가 같은 tick에
+ * 같은 역을 보면 서로의 마커를 못 봐 둘 다 발사했다. 셀 선점은 DO 직렬화로 역당 1회만 통과시킨다.
+ * 호출 위치는 **모든 skip 게이트(취침/마커/fire-once/cross-station/T7)를 지난 뒤 전송 직전** — 게이트가 다음 tick 재시도를 기대하며 막는 발사에서 선점을 소진하면 안 된다.
+ * `off`/`lock@N`은 `legacy`(동작 변화 0). 셀 단계에서 noop(이미 선점/지나간 head)·conflict·skipped(셀 시야 없음/DO 오류/예산 초과, fail-closed)는 모두 `denied`.
+ */
+async function claimStationPush(
+  env: Env,
+  trip: Trip,
+  waypoint: Waypoint,
+  now: number,
+  log: Logger,
+  path?: string,
+): Promise<StationPushClaim> {
+  const claim = await commitProgressOp(
+    env,
+    trip,
+    { type: 'claimStationPush', source: 'cron', expectedHeadKey: waypointSignatureKey(waypoint) },
+    now,
+    { apply: false },
+  );
+  if (claim.mode === 'legacy') return 'legacy';
+  if (claim.outcome === 'applied') return 'applied';
+  log('station-push claim denied', { token: trip.token.slice(0, 8), station: waypoint.stationName, outcome: claim.outcome, ...(path !== undefined ? { path } : {}) });
+  await recordFireAttempt(env, trip, waypoint, 'skipped-reason', now, `station-push-claim-${claim.outcome}`, undefined, path);
+  return 'denied';
+}
+
+type RetriedHeal = EnvHealResult & { retried?: true };
+
+/**
+ * #3055 PR-5 (#3338 잔여 2, 사용자 결정 2026-11-09 "retry once") — claim이 applied인 발사가 transient(429/5xx)로 실패하면 **같은 tick에 정확히 1회** 재전송한다.
+ * claim-then-fire는 선점 뒤 전송이 실패하면 다음 tick이 noop이라 push가 유실된다(legacy는 마커 미stamp로 다음 tick 자연 재시도). 성공이면 재전송 0,
+ * 재시도도 실패해도 3번째 시도 0, 영구 오류(BadDeviceToken 등)는 같은 요청을 다시 보내도 소용없어 재시도하지 않는다. `legacy`/`denied`는 호출자가 이미 현행 흐름이다.
+ * 같은 `pushId`·collapse-id를 재사용하므로 첫 시도가 사실 도달했어도 기기에서 같은 알림으로 합쳐진다.
+ */
+async function sendWithClaimRetry(
+  claim: StationPushClaim,
+  send: () => Promise<EnvHealResult>,
+  log: Logger,
+  logCtx: Record<string, unknown>,
+): Promise<RetriedHeal> {
+  const first = await send();
+  if (claim !== 'applied' || first.result.ok || !isRetryableApnsError(first.result.status)) return first;
+  log('station-push: claimed send failed — retry once', { ...logCtx, status: first.result.status, reason: first.result.reason });
+  return { ...(await send()), retried: true };
 }
 
 /**
@@ -4452,6 +4507,9 @@ export async function fireArvlCdStationPush(
     );
     return { dirty: false };
   }
+  // #3055 PR-5 — 모든 skip 게이트 통과 후 전송 직전에 발사권 선점(진행 셀 단계 한정).
+  const claim = await claimStationPush(env, trip, waypoint, now, log);
+  if (claim === 'denied') return { dirty: false };
   const pushId = generatePushId();
   log('arvlcd-fire: station-passed push', {
     token: trip.token.slice(0, 8),
@@ -4490,7 +4548,7 @@ export async function fireArvlCdStationPush(
   const stationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
   // #3221 PR-3 — split trip의 intermediate는 일반 alert 대신 여정 LA 무음 update(실패/비대상이면 null -> 아래 일반 alert).
   const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log, stats });
-  const heal = laHeal ?? await sendWithEnvHeal(
+  const heal: RetriedHeal = laHeal ?? await sendWithClaimRetry(claim, () => sendWithEnvHeal(
     (host) =>
       // #2510 재오픈 — sound/level은 정책 표(모드 x 종류)가 정한다: 환승·하차 도착 = 취침 alarm.wav / 일반 `NORMAL_ARRIVAL_ALERT`,
       // intermediate = 무음 INFO(#2507).
@@ -4516,7 +4574,7 @@ export async function fireArvlCdStationPush(
     log,
     trip.token.slice(0, 8),
     { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-  );
+  ), log, { token: trip.token.slice(0, 8), station: waypoint.stationName });
   let dirty = false;
   if (heal.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;
@@ -4560,7 +4618,7 @@ export async function fireArvlCdStationPush(
     );
     // #2343 — fire-attempt(실패) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
     // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId);
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, undefined, pushId, heal.retried);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return { dirty };
   }
@@ -4617,7 +4675,7 @@ export async function fireArvlCdStationPush(
   });
   // #2343 — fire-attempt(성공) D1 관측. 다음 검증 탑승에서 backend 발사 판정에 사용.
   // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId);
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, undefined, pushId, heal.retried);
   return { dirty };
 }
 
@@ -4693,8 +4751,10 @@ async function sendStationPassedAlertPush(inputs: {
   log: Logger;
   pushId: string;
   origin: PushOrigin;
-}) {
-  const { env, trip, waypoint, lock, deps, now, log, pushId, origin } = inputs;
+  /** #3055 PR-5 — 발사권 선점 결과(생략 = legacy). applied면 transient 실패를 같은 tick에 1회 재전송한다(`sendWithClaimRetry`). */
+  claim?: StationPushClaim;
+}): Promise<RetriedHeal> {
+  const { env, trip, waypoint, lock, deps, now, log, pushId, origin, claim = 'legacy' } = inputs;
   // #3221 PR-3 — split trip의 intermediate는 여정 LA 무음 update(성공 시 일반 alert 생략).
   const asLaUpdate = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log });
   if (asLaUpdate !== null) return asLaUpdate;
@@ -4718,7 +4778,7 @@ async function sendStationPassedAlertPush(inputs: {
     archFlag: deps.archFlag,
   });
   const content = buildStationNotifContent(trip, waypoint, trip.locale);
-  return sendWithEnvHeal(
+  return sendWithClaimRetry(claim, () => sendWithEnvHeal(
     (host) =>
       sendStationAlert(trip, stationAlertKind(waypoint.kind, 'arrival'), content, {
         deviceToken: resolveTripDeviceToken(trip),
@@ -4741,7 +4801,7 @@ async function sendStationPassedAlertPush(inputs: {
     log,
     trip.token.slice(0, 8),
     { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-  );
+  ), log, { token: trip.token.slice(0, 8), station: waypoint.stationName, origin });
 }
 
 /**
@@ -4763,10 +4823,13 @@ async function sendStationPassedFireOnly(inputs: {
   entering: boolean;
   /** D1 meta.midCycle — mid pass 발사만 true. */
   midCycle: boolean;
-}): Promise<{ ok: boolean }> {
+}): Promise<{ ok: boolean; denied?: true }> {
   const { env, trip, waypoint, lock, deps, now, log, pushId, entering, midCycle } = inputs;
-  const heal = await sendStationPassedAlertPush({ env, trip, waypoint, lock, deps, now, log, pushId, origin: 'arvlcd' });
   const path = entering ? POSITION_ENTERING_FIRE_PATH : undefined;
+  // #3055 PR-5 — 호출자의 마커 dedup GET 통과 후 전송 직전에 발사권 선점(진행 셀 단계 한정). 거절은 오류가 아니다(`denied`).
+  const claim = await claimStationPush(env, trip, waypoint, now, log, path);
+  if (claim === 'denied') return { ok: false, denied: true };
+  const heal = await sendStationPassedAlertPush({ env, trip, waypoint, lock, deps, now, log, pushId, origin: 'arvlcd', claim });
 
   if (!heal.result.ok) {
     log('mid-cycle-fire: push failed', {
@@ -4776,7 +4839,7 @@ async function sendStationPassedFireOnly(inputs: {
       station: waypoint.stationName,
     });
     // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, midCycle, path, pushId);
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, midCycle, path, pushId, heal.retried);
     return { ok: false };
   }
 
@@ -4799,7 +4862,7 @@ async function sendStationPassedFireOnly(inputs: {
     });
   }
   // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, midCycle, path, pushId);
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, midCycle, path, pushId, heal.retried);
   return { ok: true };
 }
 
@@ -4957,6 +5020,7 @@ export async function runMidCycleFireOnly(
         entering,
         midCycle: true,
       });
+      if (outcome.denied) continue; // 다른 소비자가 이미 이 역을 선점 — 오류 아님.
       if (!outcome.ok) {
         stats.errors += 1;
         continue;
@@ -5632,6 +5696,9 @@ export async function fireVanishFallbackStationPush(
       return;
     }
   }
+  // #3055 PR-5 — 모든 skip 게이트 통과 후 전송 직전에 발사권 선점(진행 셀 단계 한정).
+  const claim = await claimStationPush(env, trip, waypoint, now, log, origin);
+  if (claim === 'denied') return;
   const pushId = generatePushId();
   log(`${logPrefix}: station-passed push`, {
     token: trip.token.slice(0, 8),
@@ -5663,7 +5730,7 @@ export async function fireVanishFallbackStationPush(
   const vanishStationNotifContent = buildStationNotifContent(trip, waypoint, trip.locale);
   // #3221 PR-3 — fireArvlCdStationPush와 같은 split intermediate 대체(편측 방지).
   const laHeal = await trySendStationPassedAsLaUpdate({ trip, waypoint, deps, db: env.DB, now, log, stats });
-  const heal = laHeal ?? await sendWithEnvHeal(
+  const heal: RetriedHeal = laHeal ?? await sendWithClaimRetry(claim, () => sendWithEnvHeal(
     (host) =>
       sendStationAlert(trip, stationAlertKind(waypoint.kind, 'arrival'), vanishStationNotifContent, {
         // #2174 — 로테이션 이후에도 실 토큰 발사를 보장. trip.token은 신원 전용(로테이션 시 UUID로 교체).
@@ -5685,7 +5752,7 @@ export async function fireVanishFallbackStationPush(
     log,
     trip.token.slice(0, 8),
     { deviceToken: resolveTripDeviceToken(trip), db: env.DB, tripToken: trip.token },
-  );
+  ), log, { token: trip.token.slice(0, 8), station: waypoint.stationName, origin });
   if (heal.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;
     stats.envCorrected += 1;
@@ -5723,7 +5790,7 @@ export async function fireVanishFallbackStationPush(
     );
     // #2779 — fire-attempt(실패) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘.
     // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, origin, pushId);
+    await recordFireAttempt(env, trip, waypoint, 'failed', now, heal.result.reason, undefined, origin, pushId, heal.retried);
     // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
     return;
   }
@@ -5765,7 +5832,7 @@ export async function fireVanishFallbackStationPush(
   // #2779 — fire-attempt(성공) D1 관측. arvlcd-fire(#2343)와 동일 outcome 어휘, meta.path로
   // vanish-fallback/vanish-release를 구분(신규 kind 신설 금지).
   // #2893 — pushId 동봉(device 수신 push와 사후 대조).
-  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, origin, pushId);
+  await recordFireAttempt(env, trip, waypoint, 'sent', now, undefined, undefined, origin, pushId, heal.retried);
 }
 
 /**
