@@ -18,7 +18,9 @@ import {
   routeSigOf,
   stubReplayFetch,
 } from './replay20261019';
-import { attachDb, latestTrip, makeLagKv, primeReplayKv } from './progressAuthorityReplay';
+import { attachDb, KV_DEFAULT_CACHE_TTL_SEC, latestTrip, makeLagKv, primeReplayKv } from './progressAuthorityReplay';
+import { CacheLagKV } from './cacheLagKv';
+import { STATION_PASSED_FIRED_KEY_PREFIX } from '../../scheduled';
 import { firedStationOccurrences } from './pushAssertions';
 import { makeLockCellReplayEnv, type LockCellFlag } from './lockCellReplayEnv';
 
@@ -90,7 +92,19 @@ export interface StormOpts {
   cells?: LockCellFlag | `progress@${number}`;
   /** false면 운영 상태의 progress KV 시드를 생략한다(기본 true). */
   primeProgress?: boolean;
+  /** #3055 PR-5 — 1차 tick 뒤 +30s 2차(midCycle) pass를 함께 돌린다(진입·도착 두 소비자가 같은 tick에 같은 역을 본다). */
+  twoPass?: boolean;
+  /** #3055 PR-5 — station-passed 공용 dedup 마커(`station-passed-fired:`)도 KV 엣지 캐시 지연(60s) 대상으로 모델링한다(실 KV 읽기 기본 동작). */
+  laggedFireDedup?: boolean;
 }
+
+/** 운영 KV 읽기 지연 모델 + (옵션) station-passed dedup 마커 지연. */
+const makeLagKvWithFireDedup = (clocks: Parameters<typeof makeLagKv>[0]) =>
+  new CacheLagKV(0, {
+    byCacheTtl: { defaultTtlSec: KV_DEFAULT_CACHE_TTL_SEC, laggedPrefixes: ['trip:', 'progress:', STATION_PASSED_FIRED_KEY_PREFIX] },
+    now: clocks.now,
+    prefixClocks: clocks.prefixClocks,
+  });
 
 export async function replayStorm(opts: StormOpts) {
   const trip = seedTrip({
@@ -127,7 +141,8 @@ export async function replayStorm(opts: StormOpts) {
     fixture,
     seedTrips: [trip],
     apns: 'capture',
-    makeKv: makeLagKv,
+    makeKv: opts.laggedFireDedup ? makeLagKvWithFireDedup : makeLagKv,
+    ...(opts.twoPass ? { twoPass: true } : {}),
     beforeTick: async ({ tick, tickIndex, env, kv, pushes }) => {
       kvRef = kv;
       if (tickIndex === 0) {
