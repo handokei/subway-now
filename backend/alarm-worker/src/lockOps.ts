@@ -9,7 +9,7 @@
  * 호출자 연결은 PR-2(TripDO `/lock`) ~ PR-3a/3b. 스펙: tasks/plan-2026-11-03-trip-do-field-cas.md §2.
  */
 import { appendLockCodeHistory } from './lockCodeHistory';
-import { carryBoardingLock, evaluateSameSession } from './sessionIdentity';
+import { carryBoardingLock, evaluateSameSession, SESSION_DRIFT_WINDOW_MS } from './sessionIdentity';
 import type { BoardingLockMeta, Trip } from './types';
 
 export interface LockCell {
@@ -326,4 +326,22 @@ export function applyLockCell(trip: Trip, cell: LockCell): Trip {
     renumberSuccessor,
     lockEverAttached: trip.lockEverAttached === true || everAttached ? true : trip.lockEverAttached,
   };
+}
+
+/**
+ * #3055 — KV가 낡아 `existing===null`로 읽힌 register가 **같은 register burst의 셀 세션**을 만났는지.
+ *
+ * 셀이 현재 flag epoch로 시드돼 있고, 셀 세션이 incoming과 같은 세션(`evaluateSameSession`)이며 createdAt도 세션 창
+ * (`SESSION_DRIFT_WINDOW_MS`) 안이면 그 셀 세션의 createdAt을 돌려준다. 이 경우 register는 신규 trip이 아니라 같은 세션의 재등록이다 —
+ * 빈 스냅샷으로 재시드하면 같은 burst 안에 셀에 쓰인 LA 토큰·lock·진행이 지워진다. 아니면(셀 없음 / epoch 불일치 / 다른 세션) undefined.
+ */
+export function burstSessionCreatedAt(
+  cell: LockCell | null,
+  incoming: Pick<Trip, 'createdAt' | 'boardingLock'>,
+  epoch: number,
+): number | undefined {
+  if (!cell || cell.seededEpoch !== epoch) return undefined;
+  const { createdAt } = cell.session;
+  const sameWindow = Math.abs(createdAt - incoming.createdAt) <= SESSION_DRIFT_WINDOW_MS;
+  return sameWindow && evaluateSameSession({ boardingLock: cell.lock, createdAt }, incoming) ? createdAt : undefined;
 }
