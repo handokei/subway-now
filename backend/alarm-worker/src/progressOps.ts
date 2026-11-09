@@ -42,6 +42,11 @@ export interface ProgressCell {
    * ("진행 중인 lock — epoch 시작 아님")를 대체한다. 시드 시점에 lock이 이미 있으면 그 lock의 키로 채워 활성화 직후 진행 중인 트립이 되감기지 않는다.
    */
   lockEpochKey?: string;
+  /**
+   * 매역 push를 이미 선점한 head의 키(`claimStationPush`) — 역당 1회 발사의 권위(#3055 PR-5). head 키 자체를 담으므로 head가 바뀌면 저절로 무효가 된다
+   * (전진·탭 점프·재고정 어느 경로로 head가 바뀌어도 리셋을 따로 챙길 필요가 없다). 새 세션/재시드는 같은 서명의 head를 다시 쓸 수 있어 명시적으로 지운다.
+   */
+  stationPushClaimedKey?: string;
   /** seedProgressFromKv가 마지막으로 반영한 flag epoch. */
   seededEpoch: number;
   last: { op: ProgressOp['type'] | 'init'; source: string; at: number };
@@ -102,6 +107,11 @@ export interface AdvanceHeadOp extends OpBase {
   /** 환승 전진이 lock을 함께 푸는 결합(§3 #18) — 전진이 applied일 때만 같은 storage 쓰기로 `releaseAuto`를 적용한다. */
   releaseLock?: { expectedRev: number; reason: string };
 }
+/** 이 head의 매역 push 발사권을 선점한다(전진 아님) — applied일 때만 발사한다. 이미 선점/지나간 head는 noop, 셀보다 앞선 시야는 conflict. */
+export interface ClaimStationPushOp extends OpBase {
+  type: 'claimStationPush';
+  expectedHeadKey: string;
+}
 export interface UserTapAdvanceOp extends OpBase {
   type: 'userTapAdvance';
   toHeadKey: string;
@@ -140,6 +150,7 @@ export type ProgressOp =
   | SeedProgressFromKvOp
   | RegisterProgressOp
   | AdvanceHeadOp
+  | ClaimStationPushOp
   | UserTapAdvanceOp
   | SetLegAnchorOp
   | ReanchorOp
@@ -233,6 +244,7 @@ const HANDLERS: Handlers = {
         lastLaPushEpoch: snapshot.lastLaPushEpoch,
         lastLaPushAt: snapshot.lastLaPushAt,
         lockEpochKey: snapshot.lockEpochKey,
+        stationPushClaimedKey: undefined,
         seededEpoch: epoch,
       },
       true,
@@ -258,6 +270,7 @@ const HANDLERS: Handlers = {
           promptDisplay: incoming.promptDisplay,
           transferObservedAt: undefined,
           lockEpochKey: undefined,
+          stationPushClaimedKey: undefined,
           ...HEAD_STAMPS_CLEARED,
         },
         true,
@@ -282,6 +295,15 @@ const HANDLERS: Handlers = {
             now,
           );
     return applied(cell, op, now, patch, true, lockResult);
+  },
+
+  // 매역 push 선점: head가 이 키일 때만, 그리고 이 head를 아직 선점하지 않았을 때만 applied(전진·rev 불변, 키만 기록).
+  claimStationPush: (cell, _lock, op, now) => {
+    const index = indexOfKey(cell.waypoints, op.expectedHeadKey);
+    if (index < 0) return noop(cell); // 이미 지나간 head — 호출자는 발사하지 않는다.
+    if (index > 0) return conflict(cell); // 호출자 시야가 셀보다 앞섬.
+    if (cell.stationPushClaimedKey === op.expectedHeadKey) return noop(cell); // 다른 소비자가 이미 선점.
+    return applied(cell, op, now, { stationPushClaimedKey: op.expectedHeadKey }, false);
   },
 
   // 사용자 탭 전진은 앞으로만 — 셀이 이미 앞서 있으면(탭 시야가 낡음) 유지한다.

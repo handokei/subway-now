@@ -14,6 +14,7 @@ import { stationNotifCollapseId } from '../collapseId';
 import {
   createEmptyScheduledStats,
   fireVanishFallbackStationPush,
+  runMidCycleFireOnly,
   runTrainCodeTracking,
   STATION_PASSED_FIRED_KEY_PREFIX,
   type ScheduledDeps,
@@ -141,5 +142,22 @@ describe('#3055 PR-5 — 매역 push claim-first: 두 소비자가 같은 역을
     await arvlCdConsumer(c, undefined, NOW + 30 * 60_000);
     const next = c.fetched.calls.filter((call) => call.pushType === 'alert' && call.collapseId === stationNotifCollapseId(TOKEN, '학동'));
     expect(next).toHaveLength(1);
+  });
+
+  it('progress@1: mid-cycle(+30s 2차 pass) 소비자도 같은 역을 선점당하면 발사하지 않고 오류로 세지 않는다', async () => {
+    const c = await setup('progress@1');
+    await arvlCdConsumer(c);
+    const stale = tripOf();
+    const stats = await runMidCycleFireOnly(c.env, [{ trip: stale, waypoint: HEAD, lock: stale.boardingLock! }], c.deps, NOW + 30_000, noop, () => 'p3');
+    expect(stationAlerts(c)).toHaveLength(1);
+    expect(stats).toEqual({ evaluated: 1, fired: 0, errors: 0 });
+  });
+
+  it('control(lock@1): 같은 mid-cycle 소비자는 마커가 지연되면 같은 역을 한 번 더 발사한다', async () => {
+    const c = await setup('lock@1');
+    await arvlCdConsumer(c);
+    const stale = tripOf();
+    await runMidCycleFireOnly(c.env, [{ trip: stale, waypoint: HEAD, lock: stale.boardingLock! }], c.deps, NOW + 30_000, noop, () => 'p3');
+    expect(stationAlerts(c)).toHaveLength(2);
   });
 });
