@@ -337,6 +337,11 @@ export async function runCaptureReplay(opts: {
    */
   twoPass?: boolean;
   /**
+   * #3357 — midCycle(t+30) pass가 보는 Seoul 응답 소스. R2 recorder는 1차 pass만 기록하므로 capture fixture에는 t+30 엔트리가 없다.
+   * 생략 = `fixture`(기존 동작). 지정 시 mid pass의 fetch만 이 fixture를 읽는다(1차 pass 불변).
+   */
+  midFixture?: ReplayFixture;
+  /**
    * #2981 — 각 cron tick **직전**에 호출되는 훅. 재생 중 HTTP 경로(예:
    * `POST /trips/:token/boarding-confirm`)를 주입해 "사용자 행위 → 상태 전이 → 발사"
    * 사슬을 통째로 게이트하기 위한 것이다.
@@ -528,7 +533,7 @@ export async function runCaptureReplay(opts: {
         apiKey: 'KEY',
         host: 'seoul.api',
         now: () => midTick,
-        fetchImpl: makeCaptureFetch(opts.fixture, () => midTick, { freshMs }),
+        fetchImpl: makeCaptureFetch(opts.midFixture ?? opts.fixture, () => midTick, { freshMs }),
       });
       const midPushCountBefore = capturedPushes.length;
       const midStats: MidCycleFireStats = await runMidCycleFireOnly(
