@@ -1447,17 +1447,16 @@ export function isLocklessForSync(trip: Trip, now: number): boolean {
 }
 
 /**
- * #3350 — lockless 관측 sync가 **환승 경계**(= 이번 관측역이 소비 범위의 첫 gated waypoint이자 `transfer`)를 가리키는가.
+ * #3350 — lockless 관측 sync가 **환승 경계**(= 이번 관측역이 소비 범위의 마지막 waypoint이자 `transfer`)를 가리키는가. 범위 안에 더 이른 transfer(놓친 1차 환승)가 있어도 관측된 transfer까지 소비한다.
  * 11/12 b00dd879: leg-1 lock이 한 번도 안 생긴 트립이 건대입구에 도착해 관측을 보냈지만 cap 0이라 환승이 소비되지 않았고, currentLegAnchor가
  * 없어 leg-2 탑승 평가가 영구 return됐다. 사용자 결정 "leg-1에서는 못했어도 leg-2는 제대로 진행할 수 있어야 한다" — 이 경계만 소비를 허용한다.
- * 유지: intermediate 관측은 0(#3083 가짜 진행 금지), destination 관측은 0, 환승 너머 소비 없음(cap = 환승까지), lock 없음 = 알림 없음.
+ * 유지: intermediate/destination이 끝인 관측은 0(#3083 가짜 진행 금지), 환승 너머 소비 없음(관측된 transfer까지), lock 없음 = 알림 없음.
  */
 export function isLocklessTransferBoundaryObservation(advance: { shiftedCount: number }, trip: Trip, now: number): boolean {
   const { waypoints } = trip;
   const { shiftedCount } = advance;
   if (shiftedCount <= 0 || !isLocklessForSync(trip, now)) return false;
-  const firstGatedIdx = waypoints.slice(0, shiftedCount).findIndex(isTransferOrDestination);
-  return firstGatedIdx === shiftedCount - 1 && waypoints[firstGatedIdx].kind === 'transfer';
+  return waypoints[shiftedCount - 1]?.kind === 'transfer';
 }
 
 export function capLocklessSyncAdvance(
@@ -10130,7 +10129,10 @@ export async function maybeFireLegBoardingPrompt(
     log('leg-boarding-prompt: skip (no promptOptIn/infoModeEnabled/trackingOptIn — 의향 이력 없음)', {
       token: trip.token.slice(0, 8),
     });
-    await recordLegBoardingPromptTransitionWithoutSsot(env, trip, gateAnchor?.boardingStation, gateAnchor?.line, 'no-opt-in', now);
+    // F1 — anchor 없는 환승 전 leg-1은 기록하지 않는다(매 tick 누적 방지, 'no-anchor' 제외와 같은 규칙).
+    if (gateAnchor !== undefined) {
+      await recordLegBoardingPromptTransitionWithoutSsot(env, trip, gateAnchor.boardingStation, gateAnchor.line, 'no-opt-in', now);
+    }
     return;
   }
   const weakAxisOnly = !hasExplicitIntent && trip.trackingOptIn === true;
@@ -10145,7 +10147,9 @@ export async function maybeFireLegBoardingPrompt(
     log('leg-boarding-prompt: skip (trackingOptIn-only, no lock history — fail-closed, #2926 FP not inherited)', {
       token: trip.token.slice(0, 8),
     });
-    await recordLegBoardingPromptTransitionWithoutSsot(env, trip, gateAnchor?.boardingStation, gateAnchor?.line, 'weak-axis-blocked', now);
+    if (gateAnchor !== undefined) {
+      await recordLegBoardingPromptTransitionWithoutSsot(env, trip, gateAnchor.boardingStation, gateAnchor.line, 'weak-axis-blocked', now);
+    }
     return;
   }
 

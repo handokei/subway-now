@@ -3902,13 +3902,12 @@ app.post('/boarding-lock/sync', async (c) => {
     !explicitTap && requestedAdvance.shiftedCount > 0 && isLocklessForSync(existing, now)
       ? await getKillSwitch(c.env.TRIPS, 'lockless_advance_legacy').then((v) => v === 'true', () => false)
       : false;
+  // #3350 — lockless 환승 경계 관측(마지막 소비 waypoint가 transfer)은 lockless cap을 우회한다(관측된 transfer까지 소비).
+  const locklessCapped = isLocklessTransferBoundaryObservation(requestedAdvance, existing, now)
+    ? requestedAdvance
+    : capLocklessSyncAdvance(requestedAdvance, existing, now, explicitTap || locklessAdvanceLegacy);
   const advance = capLockSyncAdvance(
-    capLocklessSyncAdvance(
-      requestedAdvance,
-      existing,
-      now,
-      explicitTap || locklessAdvanceLegacy || isLocklessTransferBoundaryObservation(requestedAdvance, existing, now),
-    ),
+    locklessCapped,
     existing,
     now,
   );
