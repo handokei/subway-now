@@ -176,8 +176,11 @@ function applied(
     rev: identityChanged ? cell.rev + 1 : cell.rev,
     last: { op: op.type, source: op.source, at: now },
   };
-  // everAttached는 OR로만 커진다 — patch가 false를 실어도 되돌리지 않는다.
-  next.everAttached = cell.everAttached || patch.everAttached === true || next.lock !== undefined;
+  // everAttached는 **세션 안에서** OR로만 커진다 — patch가 false를 실어도 되돌리지 않는다(#2628).
+  // 세션 경계(endSession / 새 createdAt)에서는 이전 세션 이력을 물려받지 않는다(#3351).
+  const sessionBoundary = op.type === 'endSession' || next.session.createdAt !== cell.session.createdAt;
+  const carried = sessionBoundary ? false : cell.everAttached;
+  next.everAttached = carried || patch.everAttached === true || next.lock !== undefined;
   return { outcome: 'applied', cell: next };
 }
 
