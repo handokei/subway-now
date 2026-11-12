@@ -108,6 +108,16 @@ describe('#3350 A2 — weak-axis 게이트: 환승 관측으로 찍힌 anchor는
   });
 });
 
+describe('#3350 F1 — currentLegAnchor가 없으면(환승 전 leg-1) no-opt-in/weak-axis-blocked도 D1에 쌓지 않는다', () => {
+  it.each([
+    ['의향 축 전무', {}],
+    ['trackingOptIn-only', { trackingOptIn: true }],
+  ])('%s + anchor 없음 -> leg2 행 0', async (_label, overrides) => {
+    const { legRows } = await run(makeLeg2Trip({ ...overrides, currentLegAnchor: undefined }));
+    expect(legRows).toEqual([]);
+  });
+});
+
 describe('#3350 A3 — leg-2 평가 무기록 분기 D1 기록(SSoT 없이, 전이 시에만)', () => {
   it('의향 축 전무 -> outcome=no-opt-in', async () => {
     const { legRows } = await run(makeLeg2Trip());
