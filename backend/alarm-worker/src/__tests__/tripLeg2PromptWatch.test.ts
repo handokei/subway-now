@@ -119,6 +119,22 @@ describe('findLocklessLeg2Misses 경계 (#3357-3)', () => {
   });
 });
 
+describe('hop-end-prompt lockless-skip 신호 (#3359 연계)', () => {
+  // #3359 머지 후 lockless trip은 la-boarding-start hop-end 없이 hop-end-prompt(outcome lockless-skip) 행만 남긴다.
+  const afterRows = rows.filter((r) => r.ts >= HOP_END_TS - 3 * 60_000 && r.id !== HOP_END_ROW_ID);
+  const skipRow = row({ kind: 'hop-end-prompt', station: '건대입구', line: '2', meta: JSON.stringify({ outcome: 'lockless-skip' }) }, 0);
+
+  it('★lockless-skip 행 + leg-2 흔적 0 -> 회귀로 플래그', () => {
+    const misses = findLocklessLeg2Misses([...afterRows, skipRow], SCAN_NOW, 0);
+    expect(misses).toEqual([expect.objectContaining({ station: '건대입구', transferLine: '2', eventIds: [skipRow.id] })]);
+  });
+
+  it('lockless-skip 행 + leg-2 프롬프트 있음 -> 플래그하지 않는다', () => {
+    const leg2 = row({ kind: 'leg-boarding-prompt', station: '건대입구', line: '7', meta: JSON.stringify({ leg: 'leg2', outcome: 'fired' }) }, 10_000);
+    expect(findLocklessLeg2Misses([...afterRows, skipRow, leg2], SCAN_NOW, 0)).toEqual([]);
+  });
+});
+
 describe('buildLeg2WatchSql / findTripLeg2Misses (#3357-3)', () => {
   it('SQL은 trip_events에서 판정에 쓰는 kind만, window 하한에 트립 길이 pre-roll을 둬 조회한다', () => {
     const sql = buildLeg2WatchSql('?');
