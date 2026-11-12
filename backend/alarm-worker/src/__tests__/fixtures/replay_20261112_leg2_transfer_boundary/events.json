@@ -1,0 +1,186 @@
+[
+  {
+    "results": [
+      {
+        "id": 2408,
+        "token_hash": "b00dd879",
+        "ts": 1794471728781,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":false}"
+      },
+      {
+        "id": 2409,
+        "token_hash": "b00dd879",
+        "ts": 1794471731380,
+        "kind": "la-token-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"hadToken\":false}"
+      },
+      {
+        "id": 2410,
+        "token_hash": "b00dd879",
+        "ts": 1794471758837,
+        "kind": "sync-received",
+        "station": "뚝섬",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 2411,
+        "token_hash": "b00dd879",
+        "ts": 1794471767024,
+        "kind": "leg-boarding-prompt",
+        "station": "뚝섬",
+        "line": "2",
+        "meta": "{\"leg\":\"origin\",\"outcome\":\"suppressed-not-imminent\",\"candidateArvlCds\":[99,99],\"candidateEtaSeconds\":[206,346],\"gateDecision\":\"suppressed-not-imminent\"}"
+      },
+      {
+        "id": 2412,
+        "token_hash": "b00dd879",
+        "ts": 1794471767024,
+        "kind": "la-push",
+        "station": "뚝섬",
+        "line": "2호선",
+        "meta": "{\"path\":\"update\",\"stationName\":\"뚝섬\",\"stopsRemaining\":6,\"hasEta\":false,\"activity\":\"journey\"}"
+      },
+      {
+        "id": 2413,
+        "token_hash": "b00dd879",
+        "ts": 1794471813746,
+        "kind": "sync-received",
+        "station": "성수",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 2414,
+        "token_hash": "b00dd879",
+        "ts": 1794471813938,
+        "kind": "advance-held",
+        "station": "성수",
+        "line": null,
+        "meta": "{\"requested\":1,\"cappedTo\":0}"
+      },
+      {
+        "id": 2415,
+        "token_hash": "b00dd879",
+        "ts": 1794471829791,
+        "kind": "route-signature-mismatch",
+        "station": null,
+        "line": null,
+        "meta": "{\"existingSig\":\"7-015::성수|2|intermediate|0/건대입구|2|transfer|0/어린이대공원(세종대)|7|intermediate|0/군자(능동)|7|intermediate|0/중곡|7|intermediate|0/용마산|7|destination|0\",\"incomingSig\":\"7-015::건대입구|2|transfer|0/어린이대공원(세종대)|7|intermediate|0/군자(능동)|7|intermediate|0/중곡|7|intermediate|0/용마산|7|destination|0\",\"selfProgress\":true}"
+      },
+      {
+        "id": 2416,
+        "token_hash": "b00dd879",
+        "ts": 1794471832054,
+        "kind": "trip-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"existedAtRequestStart\":true}"
+      },
+      {
+        "id": 2417,
+        "token_hash": "b00dd879",
+        "ts": 1794471885524,
+        "kind": "leg-boarding-prompt",
+        "station": "성수",
+        "line": "2",
+        "meta": "{\"leg\":\"origin\",\"outcome\":\"no-candidates\"}"
+      },
+      {
+        "id": 2418,
+        "token_hash": "b00dd879",
+        "ts": 1794471931262,
+        "kind": "sync-received",
+        "station": "건대입구",
+        "line": null,
+        "meta": null
+      },
+      {
+        "id": 2419,
+        "token_hash": "b00dd879",
+        "ts": 1794471931446,
+        "kind": "advance-held",
+        "station": "건대입구",
+        "line": null,
+        "meta": "{\"requested\":2,\"cappedTo\":0}"
+      },
+      {
+        "id": 2420,
+        "token_hash": "b00dd879",
+        "ts": 1794471931262,
+        "kind": "la-boarding-start",
+        "station": "건대입구",
+        "line": "2",
+        "meta": "{\"path\":\"hop-end-prompt\",\"phase\":\"hop-end\",\"status\":200,\"ok\":true}"
+      },
+      {
+        "id": 2421,
+        "token_hash": "b00dd879",
+        "ts": 1794471934741,
+        "kind": "la-token-register",
+        "station": null,
+        "line": null,
+        "meta": "{\"outcome\":\"stored\",\"hadToken\":true,\"prevState\":\"live\"}"
+      },
+      {
+        "id": 2422,
+        "token_hash": "b00dd879",
+        "ts": 1794471955633,
+        "kind": "position-kv-sample",
+        "station": null,
+        "line": null,
+        "meta": "{\"stages\":[],\"attempted\":0,\"lockState\":\"lockless\",\"appState\":\"fg\",\"headKind\":\"intermediate\",\"etaMissing\":false,\"hasAccel\":false,\"pointLagMs\":203}"
+      },
+      {
+        "id": 2423,
+        "token_hash": "b00dd879",
+        "ts": 1794472864067,
+        "kind": "position-kv-sample",
+        "station": null,
+        "line": null,
+        "meta": "{\"stages\":[\"pos\",\"accel\"],\"attempted\":2,\"lockState\":\"lockless\",\"appState\":\"bg\",\"headKind\":\"intermediate\",\"etaMissing\":false,\"hasAccel\":true,\"pointLagMs\":4337.419189453125}"
+      },
+      {
+        "id": 2424,
+        "token_hash": "b00dd879",
+        "ts": 1794472868596,
+        "kind": "metrics-window-truncated",
+        "station": null,
+        "line": null,
+        "meta": "{\"startedAt\":1794471721938,\"firstEventTs\":1794307343958,\"lostMs\":164377980,\"firedCountInRow\":0,\"scanFrom\":1794307341556,\"usedPrevRow\":true}"
+      },
+      {
+        "id": 2425,
+        "token_hash": "b00dd879",
+        "ts": 1794472868678,
+        "kind": "trip-end",
+        "station": "용마산",
+        "line": null,
+        "meta": "{\"reason\":\"arrival-auto-clear\",\"endPath\":\"http-delete\"}"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "ICN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.2878
+      },
+      "duration": 0.2878,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 229376,
+      "rows_read": 190,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
