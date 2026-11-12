@@ -15,7 +15,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import app from '../index';
-import { parseReplayFixture } from '../replayFixture';
+import { MID_CYCLE_OFFSET_MS } from '../cronConstants';
+import { parseReplayFixture, type ReplayFixture } from '../replayFixture';
 import type { Env, Trip } from '../types';
 import { attachDb, latestTrip } from './helpers/progressAuthorityReplay';
 import { createDeviceReplayer, loadD1Events, postBoardingConfirmAt, makeTripEventSink, parseRouteSig, routeSigOf, stubReplayFetch } from './helpers/replay20261019';
@@ -83,7 +84,7 @@ const TAP_FROM_MS = 1794472250000; // 2026-11-12 17:30:50 KST — 7254 건대입
 
 type Tap = 'prompt-tap' | 'list-tap';
 
-async function replay(opts: { tap?: Tap } = {}) {
+async function replay(opts: { tap?: Tap; midFixture?: ReplayFixture } = {}) {
   TOKEN = `replay-3350-${(tokenSeq += 1)}`;
   const trip = seedTrip();
   const { db, events } = makeTripEventSink();
@@ -113,6 +114,7 @@ async function replay(opts: { tap?: Tap } = {}) {
     fixture: { ...fixture, cycleStartsMs: fixture.cycleStartsMs.filter((c) => c + 1000 >= FROM_MS) },
     seedTrips: [trip],
     apns: 'capture',
+    ...(opts.midFixture ? { twoPass: true, midFixture: opts.midFixture } : {}),
     beforeTick: async ({ tick, env, kv, pushes }) => {
       kvRef = kv;
       const snapshot = latestTrip(kv, TOKEN);
@@ -233,5 +235,72 @@ describe('#3359 lockless 트립은 환승역 하차 질문(hop-end)을 받지 �
     // leg-2 경계 소비·탑승 질문은 유지(#3350).
     expect(r.final?.currentLegAnchor).toEqual({ boardingStation: TRANSFER.stationName, line: '7' });
     expect(r.events.filter((e) => e.kind === 'la-boarding-start' && e.meta.path === 'boarding-prompt' && e.line === '7').length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * #3357 — midCycle(t+30) pass가 보는 Seoul 응답 view.
+ *
+ * R2 seoul-capture recorder는 1차 pass의 SeoulArrivalClient만 감싼다(index.ts handler.scheduled — `createSeoulCaptureRecorder`;
+ * `scheduleMidCyclePass`는 recorder 없는 fresh client). 그래서 capture.fixture.json 엔트리는 전부 cycle 시작 +0.7~3.6s 이내이고
+ * t+30 응답은 원천적으로 없다. 가장 가까운 실측 근거는 **다음 cycle의 position 엔트리 행 중 recptnDt <= mid 시각**인 행
+ * (Seoul이 그 시각에 이미 발행한 행 = t+30에 조회했다면 보였을 하한)이다. 원본 엔트리는 건드리지 않고 파생 view만 만든다.
+ */
+const KST_DATETIME = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/;
+function recptnEpochMs(recptnDt: string): number {
+  const m = KST_DATETIME.exec(recptnDt);
+  if (!m) throw new Error(`recptnDt 형식 이상: ${recptnDt}`);
+  const [, y, mo, d, h, mi, se] = m.map(Number);
+  return Date.UTC(y, mo - 1, d, h, mi, se) - KST_OFFSET_MS;
+}
+function buildMidCycleView(base: ReplayFixture): ReplayFixture {
+  const starts = base.cycleStartsMs;
+  const midEntries: ReplayFixture['entries'] = [];
+  starts.forEach((start, idx) => {
+    const next = starts[idx + 1];
+    if (next === undefined) return;
+    const midMs = start + MID_CYCLE_OFFSET_MS;
+    const inCycle = (tMs: number, from: number, to: number) => tMs >= from && tMs < to;
+    for (const entry of base.entries) {
+      if (entry.kind === 'position' && inCycle(entry.tMs, next, next + 10_000)) {
+        const parsed = JSON.parse(entry.body) as { realtimePositionList?: Array<{ recptnDt: string }> };
+        const visible = (parsed.realtimePositionList ?? []).filter((row) => recptnEpochMs(row.recptnDt) <= midMs);
+        midEntries.push({ ...entry, tMs: midMs, body: JSON.stringify({ ...parsed, realtimePositionList: visible }) });
+      } else if (entry.kind === 'arrival' && inCycle(entry.tMs, start, start + 10_000)) {
+        midEntries.push({ ...entry, tMs: midMs });
+      }
+    }
+  });
+  return { ...base, entries: [...base.entries, ...midEntries].sort((a, b) => a.tMs - b.tMs) };
+}
+
+describe('#3357 목적지(용마산) 취침 알람 — midCycle pass 재현', () => {
+  const DESTINATION = ROUTE[ROUTE.length - 1].stationName;
+  const destinationAttempts = (events: Awaited<ReturnType<typeof replay>>['events']) =>
+    events.filter((e) => e.kind === 'cron-fire-attempt' && e.station === DESTINATION);
+
+  it('전제(실측): 1차 pass만으로는 7254가 용마산 도착 tick에 arvlCd 부재 + SSoT stale(중곡 17:38:46) -> destination 알람 미발사', async () => {
+    const r = await replay({ tap: 'list-tap' });
+    const attempts = destinationAttempts(r.events);
+    expect(attempts.map((e) => e.meta)).toEqual([
+      { waypointKind: 'destination', phase: 'imminent', outcome: 'skipped-reason', reason: 'ssot-stale', path: 'vanish-fallback' },
+    ]);
+  });
+
+  it('★midCycle pass(프로덕션과 같은 runMidCycleFireOnly)를 포함하면 용마산 destination이 sent(midCycle:true)로 나간다', async () => {
+    const r = await replay({ tap: 'list-tap', midFixture: buildMidCycleView(fixture) });
+    const sent = destinationAttempts(r.events).filter((e) => e.meta.outcome === 'sent');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].meta).toMatchObject({ waypointKind: 'destination', midCycle: true });
+  });
+
+  it('거부: mid view는 recptnDt > t+30 행을 노출하지 않는다(미래 행 누수 금지)', () => {
+    const view = buildMidCycleView(fixture);
+    const midEntries = view.entries.filter((e) => !fixture.entries.includes(e) && e.kind === 'position');
+    expect(midEntries.length).toBeGreaterThan(0);
+    for (const entry of midEntries) {
+      const rowsOf = (JSON.parse(entry.body) as { realtimePositionList?: Array<{ recptnDt: string }> }).realtimePositionList ?? [];
+      expect(rowsOf.every((row) => recptnEpochMs(row.recptnDt) <= entry.tMs)).toBe(true);
+    }
   });
 });

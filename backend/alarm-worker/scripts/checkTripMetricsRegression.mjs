@@ -15,10 +15,13 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  buildLeg2WatchCheckQuery,
   buildReconsumeCheckQuery,
   buildRegressionCheckQuery,
+  formatLeg2WatchReport,
   formatReconsumeReport,
   formatRegressionReport,
+  parseLeg2WatchCheckResponse,
   parseReconsumeCheckResponse,
   parseRegressionCheckResponse,
 } from '../src/checkTripMetricsRegression.ts';
@@ -71,8 +74,12 @@ function main() {
   const reconsumes = parseReconsumeCheckResponse(runQuery(buildReconsumeCheckQuery(windowStart)));
   console.log(formatReconsumeReport(reconsumes, now));
 
+  // #3357 — lockless 환승 후 leg-2 프롬프트 누락 감시.
+  const leg2Misses = parseLeg2WatchCheckResponse(runQuery(buildLeg2WatchCheckQuery(windowStart)), now, windowStart);
+  console.log(formatLeg2WatchReport(leg2Misses, now));
+
   // 회귀 발견 시 exit code 1 — CI 게이트는 아니지만 셸/알림 스크립트에서 체이닝 가능하도록.
-  if (rows.length > 0 || reconsumes.length > 0) {
+  if (rows.length > 0 || reconsumes.length > 0 || leg2Misses.length > 0) {
     process.exitCode = 1;
   }
 }
