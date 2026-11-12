@@ -11979,6 +11979,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     const trip = makeTrip();
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12011,6 +12012,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     const trip = makeTrip({ promptOptIn: false, infoModeEnabled: false });
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12037,6 +12039,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     trip.waypoints = [transferWaypoint, ...trip.waypoints];
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12065,6 +12068,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     await kv.put(hopEndPromptFiredKey(trip.token, '성수|K'), '1');
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12084,6 +12088,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     const kv = new InMemoryKV();
     const trip = makeTrip();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12102,6 +12107,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     trip.hopEndPromptState = { '성수|K': { fired: true, lastFiredAt: NOW - 60_000 } };
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12121,6 +12127,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     const trip = makeTrip();
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12141,6 +12148,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     trip.waypoints = [];
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -12170,6 +12178,7 @@ describe('maybeFireHopEndPrompt (#2034)', () => {
     ];
     const stats = makeStats();
     await maybeFireHopEndPrompt({
+      lockActive: true,
       trip,
       transferWaypoint,
       deps: makeDeps(fetchImpl as unknown as typeof fetch),
@@ -15478,6 +15487,7 @@ describe('#3019 — 의향 축 × 프롬프트 단계 사슬 고정 (trackingOpt
       const trip = makeHopEndTrip({ infoModeEnabled: true });
       const stats = makeLegStats();
       await maybeFireHopEndPrompt({
+        lockActive: true,
         trip,
         transferWaypoint: hopEndTransferWaypoint,
         deps: makeLegDeps(fetchImpl as unknown as typeof fetch),
@@ -15521,6 +15531,7 @@ describe('#3019 — 의향 축 × 프롬프트 단계 사슬 고정 (trackingOpt
       const trip = makeHopEndTrip({ trackingOptIn: true, boardingCommitted: true });
       const stats = makeLegStats();
       await maybeFireHopEndPrompt({
+        lockActive: true,
         trip,
         transferWaypoint: hopEndTransferWaypoint,
         deps: makeLegDeps(fetchImpl as unknown as typeof fetch),
@@ -15560,6 +15571,7 @@ describe('#3019 — 의향 축 × 프롬프트 단계 사슬 고정 (trackingOpt
       const trip = makeHopEndTrip({ trackingOptIn: true });
       const stats = makeLegStats();
       await maybeFireHopEndPrompt({
+        lockActive: true,
         trip,
         transferWaypoint: hopEndTransferWaypoint,
         deps: makeLegDeps(fetchImpl as unknown as typeof fetch),

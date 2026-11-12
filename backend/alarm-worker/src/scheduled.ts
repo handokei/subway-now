@@ -7531,6 +7531,7 @@ export async function completeWaypointAdvance(
       generatePushId: () => crypto.randomUUID(),
       env,
       claim: sendClaim,
+      lockActive: lockBeforeAdvance !== undefined,
     });
   }
   // #2066 (Phase 2-backend) — 이전엔 #2036이 여기서(환승 waypoint 소진 시점) 직접
@@ -10463,6 +10464,12 @@ export async function maybeFireHopEndPrompt(inputs: {
    * 넘기지 않아 동작 100% 불변.
    */
   nextWaypointOverride?: Waypoint | null;
+  /**
+   * #3359 — 이 환승 직전 leg에 활성 boardingLock이 있었는지. 호출부가 판정해 넘긴다(필수 — 누락 시 컴파일 에러).
+   * cron 경로는 `completeWaypointAdvance`가 환승 lock을 먼저 release하므로 `trip.boardingLock`이 아니라 advance **전**
+   * 스냅샷(`lockBeforeAdvance`)이어야 한다. false = lockless → 하차 질문 미발송.
+   */
+  lockActive: boolean;
   /** #3055 PR-5 — 호출자가 진행 셀 claim을 선점(applied)한 발사인지. applied면 "하차했나요?" alert 전송 실패를 같은 tick에 1회 재전송한다(생략 = legacy). */
   claim?: SendClaim;
 }): Promise<void> {
@@ -10484,6 +10491,34 @@ export async function maybeFireHopEndPrompt(inputs: {
     log('hop-end-prompt: skip (no promptOptIn/infoModeEnabled/trackingOptIn — 의향 이력 없음)', {
       token: trip.token.slice(0, 8),
     });
+    return;
+  }
+  // #3359 (사용자 결정 안 A, 2026-11-12) — lock 없는 trip에는 하차 질문을 보내지 않는다. lockless에서 "하차했어요"
+  // 응답은 lock 해제 외 효과가 없고(index.ts disembarked 분기), 환승 경계 소비·leg-2 anchor는 #3354/#3356이 관측만으로
+  // 수행하며 직후 leg-2 탑승 질문(#3350)이 오므로 알림이 환승 1회에 2개가 된다. 위 #3025 "trackingOptIn 단독 trip도
+  // 대상" 설계를 lockless에 대해 대체한다. lock 있는 trip은 아래 기존 경로 그대로.
+  if (!inputs.lockActive) {
+    stats.hopEndPromptBlocked += 1;
+    log('hop-end-prompt: skip (lockless — 활성 boardingLock 없음, #3359)', { token: trip.token.slice(0, 8) });
+    // SSoT가 아직 없는 lockless trip(seed 이전)도 skip 사유가 D1에 남아야 하므로 recorder의 `ssot===null → no-op`을
+    // 쓰지 않고 직접 기록한다. SSoT가 있으면 outcome 마커로 전이 시에만(#2073 quota 보호).
+    const locklessSsot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+    if (locklessSsot?.hopEndPromptOutcome !== 'lockless-skip') {
+      if (locklessSsot !== null) {
+        await patchSsotFresh(env.TRIPS, trip.token, { hopEndPromptOutcome: 'lockless-skip' }, { expiresAt: trip.expiresAt });
+      }
+      await recordTripEvent(
+        env.DB,
+        {
+          tokenHash: hashTripToken(trip.token),
+          kind: 'hop-end-prompt',
+          station: transferWaypoint.stationName,
+          line: transferWaypoint.line,
+          meta: { outcome: 'lockless-skip' },
+        },
+        now,
+      );
+    }
     return;
   }
   const weakAxisOnly = !hasExplicitIntent && trip.trackingOptIn === true;

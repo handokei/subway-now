@@ -400,7 +400,11 @@ export type LegBoardingPromptOutcome =
  * `silenced` = `evaluateHopEndPromptGates` dedup(이미 발사됨/silence 윈도우 합산), `fired` = 실제
  * 발사 성공.
  */
-export type HopEndPromptOutcome = 'silenced' | 'fired';
+export type HopEndPromptOutcome =
+  | 'silenced'
+  | 'fired'
+  /** #3359 — 활성 boardingLock 없음(lockless trip) → 하차 질문 미발송(사용자 결정 안 A). */
+  | 'lockless-skip';
 
 /**
  * #2851 (진단 계측 only) — `maybeFireOriginBoardingPromptGpsFree`(scheduled.ts, leg-1 origin

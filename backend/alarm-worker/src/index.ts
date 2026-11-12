@@ -4045,6 +4045,7 @@ async function handleBoardingLockSync(c: Context<{ Bindings: Env }>, payload: Bo
         generatePushId: () => crypto.randomUUID(),
         env: c.env,
         nextWaypointOverride: nextLegWaypoint,
+        lockActive: existing.boardingLock !== undefined,
       });
     } catch (e) {
       // 프롬프트 발사 실패가 이 엔드포인트 전체를 500으로 만들면 안 된다 — `/boarding-lock/sync`는
