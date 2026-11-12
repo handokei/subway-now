@@ -14,11 +14,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import app from '../index';
 import { parseReplayFixture } from '../replayFixture';
 import type { Env, Trip } from '../types';
 import { attachDb, latestTrip } from './helpers/progressAuthorityReplay';
-import { createDeviceReplayer, loadD1Events, makeTripEventSink, parseRouteSig, routeSigOf, stubReplayFetch } from './helpers/replay20261019';
+import { createDeviceReplayer, loadD1Events, postBoardingConfirmAt, makeTripEventSink, parseRouteSig, routeSigOf, stubReplayFetch } from './helpers/replay20261019';
 import { runCaptureReplay } from './helpers/replayHarness';
+import { firedStationOccurrences } from './helpers/pushAssertions';
 import { useApnsHarness } from './helpers/sleepAlarmHarness';
 
 useApnsHarness();
@@ -70,10 +72,19 @@ function seedTrip(): Trip {
     infoModeEnabled: true,
     sleepModeEnabled: true,
     consecutiveEtaMissing: 0,
+    // 실측: 17:25:31 hop-end-prompt가 la-boarding-start(path hop-end-prompt, status 200)로 나갔다 = push-to-start 대상 기기.
+    laClient: { split: true },
+    boardingPushToStartToken: 'p2s-token',
   } as unknown as Trip;
 }
 
-async function replay() {
+/** 실측 R2: 7호선 상행(장암행) 7254가 건대입구에 17:30:06 도착(sts 1) -> 어린이대공원 17:33:08 -> 군자 17:35:24. 이 열차를 leg-2 실열차로 선택한다. */
+const LEG2_TRAIN = '7254';
+const TAP_FROM_MS = 1794472250000; // 2026-11-12 17:30:50 KST — 7254 건대입구 관측이 담긴 17:30:46 cycle 직후
+
+type Tap = 'prompt-tap' | 'list-tap';
+
+async function replay(opts: { tap?: Tap } = {}) {
   TOKEN = `replay-3350-${(tokenSeq += 1)}`;
   const trip = seedTrip();
   const { db, events } = makeTripEventSink();
@@ -95,7 +106,9 @@ async function replay() {
       },
     },
   });
-  const heads: Array<{ tick: number; at: string; head: string | undefined; anchor: Trip['currentLegAnchor'] }> = [];
+  let tapped = false;
+  const tapResponses: unknown[] = [];
+  const heads: Array<{ tick: number; at: string; head: string | undefined; anchor: Trip['currentLegAnchor']; lockTrain: string | undefined }> = [];
   let kvRef: KVNamespace | undefined;
   const result = await runCaptureReplay({
     fixture: { ...fixture, cycleStartsMs: fixture.cycleStartsMs.filter((c) => c + 1000 >= FROM_MS) },
@@ -104,14 +117,38 @@ async function replay() {
     beforeTick: async ({ tick, env, kv, pushes }) => {
       kvRef = kv;
       const snapshot = latestTrip(kv, TOKEN);
-      heads.push({ tick, at: kst(tick), head: snapshot?.waypoints[0]?.stationName, anchor: snapshot?.currentLegAnchor });
+      heads.push({ tick, at: kst(tick), head: snapshot?.waypoints[0]?.stationName, anchor: snapshot?.currentLegAnchor, lockTrain: snapshot?.boardingLock?.trainCode });
       attachDb(env as Env, db);
       stub.setNow(tick);
       await replayer.beforeTick({ tick, env: env as Env, pushes });
+      if (opts.tap && !tapped && tick >= TAP_FROM_MS) {
+        tapped = true;
+        const spy = vi.spyOn(Date, 'now').mockReturnValue(tick);
+        try {
+          if (opts.tap === 'prompt-tap') {
+            // 프롬프트 탭 = boarding-confirm(실열차 코드 동봉).
+            const res = await postBoardingConfirmAt(tick, env as Env, TOKEN, { station: TRANSFER.stationName, line: '7', trainCode: LEG2_TRAIN });
+            tapResponses.push(await res.json());
+          } else {
+            // 목록 탭 = sync explicitTap(trainCode + boardingLine).
+            const res = await app.fetch(
+              new Request('http://example.com/boarding-lock/sync', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ token: TOKEN, observedStationName: TRANSFER.stationName, observedAtMs: tick, accuracy: 20, trainCode: LEG2_TRAIN, boardingLine: '7' }),
+              }),
+              env as Env,
+            );
+            tapResponses.push(await res.json());
+          }
+        } finally {
+          spy.mockRestore();
+        }
+      }
     },
   });
   const final = latestTrip(kvRef as KVNamespace, TOKEN);
-  return { result, events, heads, final };
+  return { result, events, heads, final, tapResponses };
 }
 
 describe('#3350 11/12 lockless leg-1 뒤 환승역 — leg-2 경계로 전환 (b00dd879)', () => {
@@ -151,5 +188,34 @@ describe('#3350 11/12 lockless leg-1 뒤 환승역 — leg-2 경계로 전환 (b
     const leg2Rows = r.events.filter((e) => e.kind === 'leg-boarding-prompt' && e.meta.leg !== 'origin' && e.line === '7');
     expect(leg2Rows.length).toBeGreaterThan(0);
     expect(leg2Rows.map((e) => e.meta.outcome)).not.toContain('no-anchor');
+  });
+});
+
+describe('#3350 leg-2 lock 3경로 (leg-1 lockless 뒤) — b00dd879 실열차 7254', () => {
+  const leg2Stations = LEG2.filter((w) => w.kind === 'intermediate').map((w) => w.stationName);
+
+  it('LA 버튼 칸: leg-2 탑승 프롬프트와 함께 la-boarding-start(path boarding-prompt, 7호선)가 나간다', async () => {
+    const r = await replay();
+    const starts = r.events.filter((e) => e.kind === 'la-boarding-start' && e.meta.path === 'boarding-prompt' && e.line === '7');
+    expect(starts.length).toBeGreaterThan(0);
+    expect(starts[0].meta).toMatchObject({ phase: 'pre-boarding', ok: true });
+  });
+
+  it.each<[string, Tap]>([
+    ['프롬프트 탭(boarding-confirm)', 'prompt-tap'],
+    ['목록 탭(sync explicitTap)', 'list-tap'],
+  ])('%s: 7호선 실열차 7254 lock 생성 -> 이후 cron에서 stale-line release 없이 유지 -> 매역 발사 진입', async (_label, tap) => {
+    const r = await replay({ tap });
+    expect(r.events.filter((e) => e.kind === 'lock-attached' && e.meta.trainCode === LEG2_TRAIN)).toHaveLength(1);
+    // (b) tap 이후 snapshot이 있는 모든 tick에서 lock 열차가 7254로 유지된다(stale-line release/재부착 없음).
+    // 스냅샷은 tick의 탭 주입 전 값이라 탭 tick 자체는 제외(첫 tick >= TAP_FROM_MS 다음부터).
+    const tapTickIdx = r.heads.findIndex((h) => h.tick >= TAP_FROM_MS);
+    const afterTap = r.heads.slice(tapTickIdx + 1).filter((h) => h.head !== undefined);
+    expect(afterTap.length).toBeGreaterThan(0);
+    expect(afterTap.every((h) => h.lockTrain === LEG2_TRAIN)).toBe(true);
+    expect(r.events.filter((e) => e.kind === 'lock-released')).toEqual([]);
+    // (c) 매역 발사 경로 진입: lock 이후 leg-2 intermediate에 대한 cron-fire-attempt가 기록된다.
+    const attempts = r.events.filter((e) => e.kind === 'cron-fire-attempt' && e.station !== null && leg2Stations.includes(e.station));
+    expect(attempts.length).toBeGreaterThan(0);
   });
 });
