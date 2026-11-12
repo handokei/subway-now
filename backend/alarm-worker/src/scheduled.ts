@@ -1446,6 +1446,20 @@ export function isLocklessForSync(trip: Trip, now: number): boolean {
   return !(isBoardingLockActive(trip, now) && trip.boardingLock?.trainCode !== PENDING_TRAIN_CODE_SENTINEL);
 }
 
+/**
+ * #3350 — lockless 관측 sync가 **환승 경계**(= 이번 관측역이 소비 범위의 첫 gated waypoint이자 `transfer`)를 가리키는가.
+ * 11/12 b00dd879: leg-1 lock이 한 번도 안 생긴 트립이 건대입구에 도착해 관측을 보냈지만 cap 0이라 환승이 소비되지 않았고, currentLegAnchor가
+ * 없어 leg-2 탑승 평가가 영구 return됐다. 사용자 결정 "leg-1에서는 못했어도 leg-2는 제대로 진행할 수 있어야 한다" — 이 경계만 소비를 허용한다.
+ * 유지: intermediate 관측은 0(#3083 가짜 진행 금지), destination 관측은 0, 환승 너머 소비 없음(cap = 환승까지), lock 없음 = 알림 없음.
+ */
+export function isLocklessTransferBoundaryObservation(advance: { shiftedCount: number }, trip: Trip, now: number): boolean {
+  const { waypoints } = trip;
+  const { shiftedCount } = advance;
+  if (shiftedCount <= 0 || !isLocklessForSync(trip, now)) return false;
+  const firstGatedIdx = waypoints.slice(0, shiftedCount).findIndex(isTransferOrDestination);
+  return firstGatedIdx === shiftedCount - 1 && waypoints[firstGatedIdx].kind === 'transfer';
+}
+
 export function capLocklessSyncAdvance(
   advance: { shiftedCount: number },
   trip: Trip,
@@ -4062,6 +4076,37 @@ async function recordVanishSwapAttemptTransition(
  * `trip.currentLegAnchor` 부재('no-anchor') 시 알 수 없어 생략될 수 있다. 발사/advance/lock
  * 판정에는 관여하지 않는다.
  */
+/**
+ * #3350 A3 — SSoT(KV) 마커 없이 leg-2 평가 결과를 D1 전이 시에만 기록한다(origin `recordOriginBoardingPromptTransition`과 같은 경로:
+ * 직전 행 outcome과 같으면 조건부 INSERT가 생략, KV read/write 0). 기존엔 lockless trip은 SSoT가 seed되지 않아(lock 경로에서만 seed)
+ * leg-2 평가가 `ssot === null` return으로 D1에 흔적 없이 사라졌다(11/12 b00dd879: leg-2 이벤트 0).
+ * 환승 전 정상 상태인 'no-anchor'는 매 cycle D1 조회를 늘릴 뿐 진단 가치가 없어 기록하지 않는다(환승 후 결함은
+ * 'anchor-not-stamped-after-transfer'/'anchor-lost-after-transfer'로 분리돼 기록된다, #2693).
+ */
+async function recordLegBoardingPromptTransitionWithoutSsot(
+  env: Env,
+  trip: Trip,
+  station: string | undefined,
+  line: string | undefined,
+  outcome: LegBoardingPromptOutcome,
+  now: number,
+  extra: object = {},
+): Promise<void> {
+  if (outcome === 'no-anchor') return;
+  await recordTripEventOnTransition(
+    env.DB,
+    {
+      tokenHash: hashTripToken(trip.token),
+      kind: 'leg-boarding-prompt',
+      station,
+      line,
+      meta: { leg: 'leg2', outcome, ...extra },
+    },
+    trip.createdAt,
+    now,
+  );
+}
+
 async function recordLegBoardingPromptTransition(
   env: Env,
   trip: Trip,
@@ -4082,7 +4127,15 @@ async function recordLegBoardingPromptTransition(
   // 4분-전 발사인지 판별 가능해야 한다. 기존 meta 확장만, 신규 KV write 없음.
   candidateEtaSeconds?: readonly (number | null)[],
 ): Promise<void> {
-  if (ssot === null || ssot.legBoardingPromptOutcome === outcome) return;
+  if (ssot === null) {
+    await recordLegBoardingPromptTransitionWithoutSsot(env, trip, station, line, outcome, now, {
+      ...(candidateArvlCds !== undefined ? { candidateArvlCds } : {}),
+      ...(candidateEtaSeconds !== undefined ? { candidateEtaSeconds } : {}),
+      ...(gateDecision !== undefined ? { gateDecision } : {}),
+    });
+    return;
+  }
+  if (ssot.legBoardingPromptOutcome === outcome) return;
   await patchSsotFresh(env.TRIPS, trip.token, { legBoardingPromptOutcome: outcome }, { expiresAt: trip.expiresAt });
   await recordTripEvent(
     env.DB,
@@ -10071,19 +10124,28 @@ export async function maybeFireLegBoardingPrompt(
   // `boardingCommitted`)을 추가로 요구한다. `hasBoardingEvidence`(6865)를 재사용하지 않는
   // 이유는 그 술어의 `legResolveStreak` 포함이 #2926 실측에서 false positive 전력이 있어서다.
   const hasExplicitIntent = trip.promptOptIn === true || trip.infoModeEnabled === true;
+  const { currentLegAnchor: gateAnchor, transferObservedAt } = trip;
   if (!hasExplicitIntent && trip.trackingOptIn !== true) {
     stats.legBoardingPromptSkippedNoOptIn += 1;
     log('leg-boarding-prompt: skip (no promptOptIn/infoModeEnabled/trackingOptIn — 의향 이력 없음)', {
       token: trip.token.slice(0, 8),
     });
+    await recordLegBoardingPromptTransitionWithoutSsot(env, trip, gateAnchor?.boardingStation, gateAnchor?.line, 'no-opt-in', now);
     return;
   }
   const weakAxisOnly = !hasExplicitIntent && trip.trackingOptIn === true;
-  if (weakAxisOnly && trip.lockEverAttached !== true && trip.boardingCommitted !== true) {
+  // #3350 A2 — device가 anchor 역에서 환승 도착을 직접 관측(`transferObservedAt`, accuracy≤50m sync)한 trip은 lock 이력이 없어도 통과한다.
+  // 이 증거는 `legResolveStreak`(#2926 FP 전력)가 아니라 사용자 위치 관측이고, leg마다 lock 기회가 독립이어야 한다는 11/12 결정의 구현이다.
+  const transferObservedAtAnchor =
+    gateAnchor !== undefined &&
+    transferObservedAt !== undefined &&
+    normalizeStationName(transferObservedAt.stationName) === normalizeStationName(gateAnchor.boardingStation);
+  if (weakAxisOnly && trip.lockEverAttached !== true && trip.boardingCommitted !== true && !transferObservedAtAnchor) {
     stats.trackingOptInNoBoardingEvidenceBlocked += 1;
     log('leg-boarding-prompt: skip (trackingOptIn-only, no lock history — fail-closed, #2926 FP not inherited)', {
       token: trip.token.slice(0, 8),
     });
+    await recordLegBoardingPromptTransitionWithoutSsot(env, trip, gateAnchor?.boardingStation, gateAnchor?.line, 'weak-axis-blocked', now);
     return;
   }
 

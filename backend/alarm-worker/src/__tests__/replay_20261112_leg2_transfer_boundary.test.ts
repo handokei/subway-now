@@ -25,7 +25,9 @@ useApnsHarness();
 afterEach(() => vi.unstubAllGlobals());
 
 const DIR = 'replay_20261112_leg2_transfer_boundary';
-const TOKEN = 'replay-3350-1112';
+let tokenSeq = 0;
+/** `advance-held` D1 dedup이 isolate 메모리(token 해시 키)라 replay마다 token을 달리한다. */
+let TOKEN = '';
 const KST_OFFSET_MS = 9 * 3600_000;
 const kst = (ms: number) => new Date(ms + KST_OFFSET_MS).toISOString().slice(11, 19);
 
@@ -72,6 +74,7 @@ function seedTrip(): Trip {
 }
 
 async function replay() {
+  TOKEN = `replay-3350-${(tokenSeq += 1)}`;
   const trip = seedTrip();
   const { db, events } = makeTripEventSink();
   const stub = stubReplayFetch(fixture);
@@ -92,7 +95,7 @@ async function replay() {
       },
     },
   });
-  const heads: Array<{ at: string; head: string | undefined; anchor: Trip['currentLegAnchor'] }> = [];
+  const heads: Array<{ tick: number; at: string; head: string | undefined; anchor: Trip['currentLegAnchor'] }> = [];
   let kvRef: KVNamespace | undefined;
   const result = await runCaptureReplay({
     fixture: { ...fixture, cycleStartsMs: fixture.cycleStartsMs.filter((c) => c + 1000 >= FROM_MS) },
@@ -101,7 +104,7 @@ async function replay() {
     beforeTick: async ({ tick, env, kv, pushes }) => {
       kvRef = kv;
       const snapshot = latestTrip(kv, TOKEN);
-      heads.push({ at: kst(tick), head: snapshot?.waypoints[0]?.stationName, anchor: snapshot?.currentLegAnchor });
+      heads.push({ tick, at: kst(tick), head: snapshot?.waypoints[0]?.stationName, anchor: snapshot?.currentLegAnchor });
       attachDb(env as Env, db);
       stub.setNow(tick);
       await replayer.beforeTick({ tick, env: env as Env, pushes });
@@ -136,7 +139,9 @@ describe('#3350 11/12 lockless leg-1 뒤 환승역 — leg-2 경계로 전환 (b
 
   it('거부: 환승 관측은 환승 waypoint까지만 — 그 너머(leg-2 intermediate) 소비 없음(#3083 가짜 진행 금지)', async () => {
     const r = await replay();
-    const after = r.heads.filter((h) => h.at > kst(TRANSFER_SYNC.ts));
+    // tick 스냅샷은 그 tick의 sync 주입 **전** 값이라, sync 이후 값은 sync ts를 지난 첫 tick의 다음부터다.
+    const firstTickAfterSync = r.heads.findIndex((h) => h.tick >= TRANSFER_SYNC.ts);
+    const after = r.heads.slice(firstTickAfterSync + 1);
     expect(after.length).toBeGreaterThan(0);
     expect(after.every((h) => h.head === LEG2[0].stationName)).toBe(true);
   });

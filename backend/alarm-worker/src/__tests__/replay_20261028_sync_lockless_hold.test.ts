@@ -171,17 +171,18 @@ describe('POST /boarding-lock/sync — lockless 순수 hold + 첫 transfer/desti
     expect(held()[0].meta).toMatchObject({ requested: 3, cappedTo: 0 });
   });
 
-  // K5 #2926 PR-A — 기존 기대 "첫 transfer/destination까지 소비" -> 새 기대 "관측만 실은 lockless sync는 환승/목적지도 0".
-  // 사유: 10/21 결정(lock 없는 여정은 backend가 역 전진을 하지 않는다). 구 동작은 kill switch `lockless_advance_legacy` 뒤로.
-  it('K5: 관측이 첫 transfer(건대입구)여도 lockless sync는 소비하지 않는다 — head·앵커 불변, advance-held(requested -> 0)', async () => {
+  // K5 #2926 PR-A — 기존 기대 "첫 transfer/destination까지 소비" -> "관측만 실은 lockless sync는 환승/목적지도 0".
+  // #3350 — 환승 경계만 예외로 되돌린다(11/12 결정 "leg-1에서는 못했어도 leg-2는 제대로 진행"): 첫 gated가 transfer인 관측은 그 환승까지 소비하고
+  // leg-2 anchor를 찍는다. intermediate 관측은 여전히 0(위 테스트), destination 관측·환승 너머 관측도 0(아래).
+  it('#3350: 관측이 첫 transfer(건대입구)면 환승까지 소비 — head=환승 다음, currentLegAnchor 생성, advance-held 없음', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip());
     const { body } = await sync(TRANSFER_NAME);
     const transferIdx = SEED_WAYPOINTS.findIndex((w) => w.kind === 'transfer');
-    expect(body.advanced).toBe(false);
-    expect(await heads()).toEqual(SEED_NAMES);
-    expect(held()[0].meta).toMatchObject({ requested: transferIdx + 1, cappedTo: 0 });
+    expect(body.advanced).toBe(true);
+    expect(await heads()).toEqual(SEED_NAMES.slice(transferIdx + 1));
+    expect(held()).toEqual([]);
     const after = await getTrip(kv as unknown as KVNamespace, TOKEN);
-    expect(after?.currentLegAnchor).toBeUndefined();
+    expect(after?.currentLegAnchor).toEqual({ boardingStation: TRANSFER_NAME, line: SEED_WAYPOINTS[transferIdx + 1].line });
   });
 
   it('K5: 환승 너머 관측(성수)도 0 — requested 5 -> 0, head 불변', async () => {

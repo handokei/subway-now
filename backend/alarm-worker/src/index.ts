@@ -120,6 +120,7 @@ import {
   isBoardingLockActive,
   isLockActiveForLeg,
   capLocklessSyncAdvance,
+  isLocklessTransferBoundaryObservation,
   isLocklessForSync,
   capLockSyncAdvance,
   maybeFireHopEndPrompt,
@@ -3902,7 +3903,12 @@ app.post('/boarding-lock/sync', async (c) => {
       ? await getKillSwitch(c.env.TRIPS, 'lockless_advance_legacy').then((v) => v === 'true', () => false)
       : false;
   const advance = capLockSyncAdvance(
-    capLocklessSyncAdvance(requestedAdvance, existing, now, explicitTap || locklessAdvanceLegacy),
+    capLocklessSyncAdvance(
+      requestedAdvance,
+      existing,
+      now,
+      explicitTap || locklessAdvanceLegacy || isLocklessTransferBoundaryObservation(requestedAdvance, existing, now),
+    ),
     existing,
     now,
   );

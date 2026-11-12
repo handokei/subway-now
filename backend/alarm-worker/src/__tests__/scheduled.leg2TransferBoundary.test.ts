@@ -8,7 +8,7 @@
 import { exportPKCS8, generateKeyPair } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { createEmptyScheduledStats, maybeFireLegBoardingPrompt, type ScheduledDeps } from '../scheduled';
+import { createEmptyScheduledStats, isLocklessTransferBoundaryObservation, maybeFireLegBoardingPrompt, type ScheduledDeps } from '../scheduled';
 import { SeoulArrivalClient } from '../seoul';
 import type { Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -119,9 +119,28 @@ describe('#3350 A3 — leg-2 평가 무기록 분기 D1 기록(SSoT 없이, 전�
     expect(legRows).toEqual([{ leg: 'leg2', outcome: 'weak-axis-blocked' }]);
   });
 
-  it('SSoT 없는 trip의 anchor 부재 -> outcome=no-anchor 기록', async () => {
-    const { legRows } = await run(makeLeg2Trip({ infoModeEnabled: true, currentLegAnchor: undefined }));
-    expect(legRows).toEqual([{ leg: 'leg2', outcome: 'no-anchor' }]);
+  it('SSoT 없는 trip의 환승 후 anchor 부재(b00dd879류 결함) -> outcome=anchor-not-stamped-after-transfer 기록', async () => {
+    const trip = makeLeg2Trip({
+      infoModeEnabled: true,
+      currentLegAnchor: undefined,
+      route: { type: 'transfer', transferName: '건대입구' } as unknown as Trip['route'],
+    });
+    const { legRows } = await run(trip);
+    expect(legRows).toEqual([{ leg: 'leg2', outcome: 'anchor-not-stamped-after-transfer' }]);
+  });
+
+  it('SSoT 없는 leg-1(환승 전 정상 no-anchor)은 매 cycle D1 조회를 늘리지 않는다 -> 기록 0', async () => {
+    const trip = makeLeg2Trip({
+      infoModeEnabled: true,
+      currentLegAnchor: undefined,
+      route: { type: 'transfer', transferName: '건대입구' } as unknown as Trip['route'],
+      waypoints: [
+        { stationName: '건대입구', line: '2', kind: 'transfer' },
+        { stationName: '용마산', line: '7', kind: 'destination' },
+      ],
+    });
+    const { legRows } = await run(trip);
+    expect(legRows).toEqual([]);
   });
 
   it('SSoT 없는 trip의 leg-2 발사 평가 -> outcome=fired 기록', async () => {
@@ -131,3 +150,29 @@ describe('#3350 A3 — leg-2 평가 무기록 분기 D1 기록(SSoT 없이, 전�
   });
 });
 
+
+describe('#3350 A1 — isLocklessTransferBoundaryObservation (환승 경계 관측 판정)', () => {
+  const waypoints: Trip['waypoints'] = [
+    { stationName: '성수', line: '2', kind: 'intermediate' },
+    { stationName: '건대입구', line: '2', kind: 'transfer' },
+    { stationName: '어린이대공원(세종대)', line: '7', kind: 'intermediate' },
+    { stationName: '용마산', line: '7', kind: 'destination' },
+  ];
+  const lockless = (overrides: Partial<Trip> = {}) => makeLeg2Trip({ waypoints, currentLegAnchor: undefined, ...overrides });
+
+  it.each([
+    ['관측역이 첫 transfer(소비 2)', 2, true],
+    ['intermediate 관측(소비 1)', 1, false],
+    ['환승 너머 관측(소비 3) — 첫 gated는 transfer지만 관측역이 아님', 3, false],
+    ['destination 관측(소비 4)', 4, false],
+    ['소비 0(이미 head를 지나친 관측)', 0, false],
+  ])('lockless: %s -> %s', (_label, shiftedCount, expected) => {
+    expect(isLocklessTransferBoundaryObservation({ shiftedCount }, lockless(), NOW)).toBe(expected);
+  });
+
+  it('거부: 활성·비PENDING lock이 있는 trip은 기존 경로(해당 없음)', () => {
+    const lock = { trainCode: '2336', line: '2', subwayId: '1002', selectedDepartureTime: NOW, segmentStations: ['성수'], expiresAt: NOW + 3_600_000 };
+    const trip = lockless({ boardingLock: lock as unknown as Trip['boardingLock'] });
+    expect(isLocklessTransferBoundaryObservation({ shiftedCount: 2 }, trip, NOW)).toBe(false);
+  });
+});
