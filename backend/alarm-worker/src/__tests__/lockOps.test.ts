@@ -160,22 +160,53 @@ describe('lockOps — 실측 재현', () => {
     expect(reattached.cell.lock?.trainCode).toBe('7266');
   });
 
-  it('⑥ everAttached는 OR로만 커진다', () => {
+  it('⑥ everAttached: 세션 내에서는 OR로만 커진다(#2628), endSession·새 세션 seed/register에서는 리셋된다(#3351)', () => {
     const attached = run(emptyLockCell(), userBoarded(0, lock3334()), 1).cell;
     expect(attached.everAttached).toBe(true);
     const released = run(attached, { type: 'releaseAuto', source: 'cron', expectedRev: attached.rev, reason: 'x' }).cell;
     expect(released.lock).toBeUndefined();
     expect(released.everAttached).toBe(true);
-    const ended = run(released, { type: 'endSession', source: 'cron' }).cell;
-    expect(ended.everAttached).toBe(true);
-    const seeded = run(ended, {
+    // 같은 세션 seed(createdAt 불변, epoch만 변경)는 유지 — snapshot이 false여도 OR.
+    const sameSessionSeed = run({ ...released, session: { seq: 0, createdAt: 10 } }, {
       type: 'seedFromKv',
       source: 'seed',
       epoch: 1,
       snapshot: { createdAt: 10, everAttached: false },
     }).cell;
-    expect(seeded.everAttached).toBe(true);
+    expect(sameSessionSeed.everAttached).toBe(true);
+    // 새 세션 seed(createdAt 변경)는 snapshot 기준으로 리셋.
+    const newSessionSeed = run(released, {
+      type: 'seedFromKv',
+      source: 'seed',
+      epoch: 1,
+      snapshot: { createdAt: 99, everAttached: false },
+    }).cell;
+    expect(newSessionSeed.everAttached).toBe(false);
+    // endSession은 리셋.
+    const ended = run(released, { type: 'endSession', source: 'cron' }).cell;
+    expect(ended.everAttached).toBe(false);
     expect(emptyLockCell().everAttached).toBe(false);
+  });
+
+  it('⑥-b 새 세션 registerSession(lockless)은 이전 세션의 everAttached를 물려받지 않는다; 같은 세션 재등록은 유지', () => {
+    const base = run(emptyLockCell(), {
+      type: 'registerSession', source: 'register', incomingLock: null, existing: null,
+      incomingCreatedAt: 1000, routeReset: false,
+    }).cell;
+    const attached = run(base, userBoarded(base.rev, lock3334()), 1).cell;
+    const released = run(attached, { type: 'releaseAuto', source: 'cron', expectedRev: attached.rev, reason: 'x' }).cell;
+    expect(released.everAttached).toBe(true);
+    const same = run(released, {
+      type: 'registerSession', source: 'register', incomingLock: null,
+      existing: { createdAt: 1000, waypointLines: [] }, incomingCreatedAt: 1000, routeReset: false,
+    }).cell;
+    expect(same.everAttached).toBe(true);
+    const fresh = run(released, {
+      type: 'registerSession', source: 'register', incomingLock: null, existing: null,
+      incomingCreatedAt: 2000, routeReset: false,
+    }).cell;
+    expect(fresh.session.createdAt).toBe(2000);
+    expect(fresh.everAttached).toBe(false);
   });
 
   it('⑦ endSession 뒤 낡은 rev의 auto op는 거부된다', () => {

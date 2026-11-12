@@ -21,7 +21,9 @@ import { readStoredRouteLogged } from '../../alarm/utils/readStoredRouteLogged';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY, BG_LAST_POSITION_UPLOAD_AT_KEY } from '../../../shared/constants/storageKeys';
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { refreshLiveActivityOnMirrorAdvance } from '../../alarm/utils/refreshLiveActivityFromBackgroundContext';
-import { POSITION_UPLOAD_MIN_INTERVAL_MS } from '../../../shared/constants/location';
+import { POSITION_UPLOAD_MIN_INTERVAL_MS, MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
+import { findNearestStation } from '../utils/findNearestStation';
+import { isSyncObservationAccuracyEligible } from '../../alarm/utils/syncObservationEligibility';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import {
   applyBgLocationProfile,
@@ -276,6 +278,12 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       // `reference_ios_wifi_api_constraint.md`: 사용자가 5G/LTE만 쓰면 항상 undefined.
       const wifiSsid = await getCurrentWifiSsid().catch(() => null);
       const wifiStation = lookupStationBySsid(wifiSsid);
+      // #3350 PR-2 — 취침 모드는 화면 잠금이 기본이라 `/boarding-lock/sync`(FG 전용)가 안 오고 이 업로드만 도착한다.
+      // FG sync와 같은 적격성(accuracy<=GOOD_FIX_ACCURACY_MAX_M)을 통과한 최근접 역만 관측역으로 싣는다 — backend가
+      // lockless 환승 경계 소비(`isLocklessTransferBoundaryObservation`)에 쓴다. 부적격이면 미송신(소비 0).
+      const observed = isSyncObservationAccuracyEligible(accuracy)
+        ? findNearestStation(lat, lng, MAX_STATION_DISTANCE_KM)
+        : null;
       // #2659 — position 응답(#2261 full SSoT forward)이 backend SSoT mirror를 갱신하므로, 그
       // 직후에 mirror-전진 여부만 보고 LA를 깨운다. 이전에는 BG에서 LA를 갱신할 수 있는 device
       // 경로가 silent push 핸들러 하나뿐이라, 지하에서 push가 밀리면 HTTP가 살아 있어도 LA가
@@ -293,6 +301,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         motion,
         accelSummary,
         ...(wifiStation ? { wifiSsidStationName: wifiStation.name } : {}),
+        ...(observed ? { currentStationName: observed.station.name } : {}),
       })
         .then(() => refreshLiveActivityOnMirrorAdvance())
         // `uploadPosition`이 reject하지 않는 것은 그 구현의 암묵적 계약일 뿐 타입으로 강제되지

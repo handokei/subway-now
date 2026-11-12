@@ -197,13 +197,14 @@ describe('POST /boarding-lock/sync — lock 활성 transfer/destination visible 
     expect(attempts[0].meta).toMatchObject({ outcome: 'skipped-reason', reason: 'sync-station-passed-dedup' });
   });
 
-  it('거부(lockless): lock 없는 트립의 sync는 transfer를 소비하지 않고 visible push 0(lock 없음=알림 없음)', async () => {
+  it('거부(lockless): lock 없는 트립의 sync는 transfer 경계만 소비하고 visible push 0(lock 없음=알림 없음)', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: undefined }));
 
     const { body } = await sync(TRANSFER);
 
-    // K5 #2926 PR-A — 기존 기대 advanced=true(lockless sync가 transfer까지 소비) -> 새 기대 false(소비 0). 알림 0은 그대로.
-    expect(body.advanced).toBe(false);
+    // K5 #2926 PR-A는 advanced=false(소비 0)로 바꿨으나, #3350(11/12 결정 "leg-1에서 못했어도 leg-2는 진행")이 환승 경계만 다시 소비하게 한다
+    // (leg-2 anchor를 만들기 위함). 알림 0은 그대로 — 소비는 알림 권한이 아니다.
+    expect(body.advanced).toBe(true);
     expect(alerts()).toEqual([]);
     expect(fireAttempts(TRANSFER)).toEqual([]);
   });

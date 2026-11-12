@@ -389,7 +389,11 @@ export type LegBoardingPromptOutcome =
    * 본다 — leg-1 lock이 leg-2 프롬프트를 막는 과차단(10/9 `lockState=leg1` 상태)을 방지한다.
    * `PENDING` sentinel trainCode는 특정된 것으로 보지 않는다(ADR-036 보조 항목과 동일 정책).
    */
-  | 'lock-already-attached';
+  | 'lock-already-attached'
+  /** #3350 — 의향 축(promptOptIn/infoModeEnabled/trackingOptIn) 전무로 leg-2 평가 자체를 건너뜀(SSoT 없이 D1에 기록). */
+  | 'no-opt-in'
+  /** #3350 — trackingOptIn 단독 + lock 이력·환승 관측 없음으로 차단(#3025 weak-axis 게이트). */
+  | 'weak-axis-blocked';
 
 /**
  * ADR-037 D2c (#2537) — `maybeFireHopEndPrompt`(scheduled.ts)의 fire/skip 사유(데이터 주도).
