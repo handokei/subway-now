@@ -26,7 +26,7 @@ const ALLOWED_WRITES: Record<string, number> = {
   'post /trips/:token/boarding-confirm': 2,
   attachBoardedLock: 2,
   // sync 승격 2 + TTL 갱신 1 — 영속은 attachIfNone / refreshExpiry / releaseAuto.
-  'post /boarding-lock/sync': 3,
+  handleBoardingLockSync: 3,
   // LA — 메모리 구성, 영속은 registerLaToken / clearLaToken.
   'post /live-activity/register': 1,
   'delete /live-activity/:tripToken': 2,
@@ -42,7 +42,7 @@ const REQUIRED_OPS: Record<string, string[]> = {
   applyRegisterCells: ["'registerSession'"],
   'post /trips/:token/boarding-confirm': ['commitConfirmLockOp('],
   commitConfirmLockOp: ["'userBoarded'", "'userDisembarked'"],
-  'post /boarding-lock/sync': ["'attachIfNone'", "'refreshExpiry'", "'releaseAuto'"],
+  handleBoardingLockSync: ["'attachIfNone'", "'refreshExpiry'", "'releaseAuto'"],
   'post /live-activity/register': ["'registerLaToken'"],
   'delete /live-activity/:tripToken': ["'clearLaToken'"],
 };

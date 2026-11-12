@@ -51,7 +51,7 @@ const ALLOWED_WRITES: Record<string, Record<string, number>> = {
     // attachBoardedLock 메모리 구성(셀 단계는 반환 progressStamps를 op로 영속).
     attachBoardedLock: 3,
     // sync legacy: transferObservedAt / 건너뛴 구간 slice / 순수 전진 slice / 승격 fast-forward(+ cursor·mixedTrip 파생 리터럴).
-    'post /boarding-lock/sync': 13,
+    handleBoardingLockSync: 13,
     // 입력 검증 파싱.
     validateTrip: 2,
   },
@@ -71,7 +71,7 @@ const REQUIRED_OPS: Record<string, Record<string, string[]>> = {
   'index.ts': {
     applyRegisterCells: ["'registerProgress'"],
     commitConfirmProgress: ["'userTapAdvance'"],
-    'post /boarding-lock/sync': ["'advanceHead'", "'attachWithFastForward'"],
+    handleBoardingLockSync: ["'advanceHead'", "'attachWithFastForward'"],
   },
 };
 
