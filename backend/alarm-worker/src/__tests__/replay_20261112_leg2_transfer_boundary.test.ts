@@ -20,7 +20,6 @@ import type { Env, Trip } from '../types';
 import { attachDb, latestTrip } from './helpers/progressAuthorityReplay';
 import { createDeviceReplayer, loadD1Events, postBoardingConfirmAt, makeTripEventSink, parseRouteSig, routeSigOf, stubReplayFetch } from './helpers/replay20261019';
 import { runCaptureReplay } from './helpers/replayHarness';
-import { firedStationOccurrences } from './helpers/pushAssertions';
 import { useApnsHarness } from './helpers/sleepAlarmHarness';
 
 useApnsHarness();
