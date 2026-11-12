@@ -2442,6 +2442,12 @@ app.post('/position', async (c) => {
       }),
     );
   }
+  // #3350 PR-2 — BG 경로: lockless trip이 `currentStationName`으로 환승 경계를 관측하면 sync와 같은 소비·anchor stamp.
+  if (tripAfter !== null && payload.point.currentStationName !== undefined) {
+    await maybeConsumePositionTransferBoundary(c, tripAfter, payload.point.currentStationName, payload.point, () => {
+      degraded = true;
+    });
+  }
   // P0-1 (#1577) — Site 6 of 6: position-upload 적재 (V8a /position rate 검증).
   writeMetric(c.env, {
     eventType: 'position-upload',
@@ -2504,6 +2510,39 @@ app.post('/position', async (c) => {
     ...(ssot ? { ssot: toSilentPushSsot(ssot) } : {}),
   });
 });
+
+/**
+ * #3350 PR-2 (리뷰 F2) — BG `POST /position`의 lockless 환승 경계 관측 소비. 취침 모드는 화면 잠금이 기본이라 `/boarding-lock/sync`(FG 전용) 없이
+ * 이 업로드만 도착한다. 판정은 sync와 같은 `computeLockSyncAdvance` + `isLocklessTransferBoundaryObservation`, 소비·anchor stamp는 같은 본체
+ * (`handleBoardingLockSync`)를 재사용한다. 소비 0 유지: 환승이 끝이 아닌 관측(intermediate/destination), 활성 lock trip, 관측역 미동봉(호출부 가드).
+ *
+ * `/position`의 trip은 `lockView:'skip'`(권위 없는 lock)이라 lockless 판정에 쓸 수 없다 — 환승 waypoint 일치일 때만(드묾) 전체 view로 다시 읽는다.
+ * 실패는 흡수한다: 이 응답은 lockSuggestion primary transport라 부가 소비 실패로 죽으면 안 된다(#3006 D) -> `onFailure`로 degraded 표시.
+ */
+async function maybeConsumePositionTransferBoundary(
+  c: Context<{ Bindings: Env }>,
+  trip: Trip,
+  observedStationName: string,
+  point: { accuracy: number; ts: number },
+  onFailure: () => void,
+): Promise<void> {
+  const advance = computeLockSyncAdvance(trip.waypoints, observedStationName);
+  const { shiftedCount } = advance;
+  if (shiftedCount <= 0 || trip.waypoints[shiftedCount - 1]?.kind !== 'transfer') return;
+  try {
+    const full = await getTrip(c.env, trip.token);
+    if (!full || !isLocklessTransferBoundaryObservation(computeLockSyncAdvance(full.waypoints, observedStationName), full, Date.now())) return;
+    await handleBoardingLockSync(c, {
+      token: trip.token,
+      observedStationName,
+      observedAtMs: point.ts,
+      accuracy: point.accuracy,
+    });
+  } catch (err) {
+    onFailure();
+    void captureBackendException(c.env, err, { path: 'position', stage: 'transferBoundaryConsume' });
+  }
+}
 
 /**
  * #2153 — POST /position body에서 origin 근접 필드(distance/accuracy)만 별도로 뽑는다.
@@ -3868,7 +3907,14 @@ app.post('/boarding-lock/sync', async (c) => {
   }
   const payload = validateBoardingLockSync(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+  return handleBoardingLockSync(c, payload);
+});
 
+/**
+ * `/boarding-lock/sync` 본체. #3350 PR-2 — BG `POST /position`의 lockless 환승 경계 관측도 같은 소비·anchor stamp를 쓰도록
+ * 핸들러에서 분리했다(중복 구현 금지). 호출부는 `/boarding-lock/sync` 라우트와 `/position`(`maybeConsumePositionTransferBoundary`) 둘이다.
+ */
+async function handleBoardingLockSync(c: Context<{ Bindings: Env }>, payload: BoardingLockSyncPayload) {
   const existing = await getTrip(c.env, payload.token);
   if (!existing) return c.json({ error: 'trip_not_found' }, 404);
 
@@ -4650,7 +4696,7 @@ app.post('/boarding-lock/sync', async (c) => {
     currentWaypoint: head ? head.stationName : null,
     nextStation: head ? head.stationName : null,
   });
-});
+}
 
 /**
  * #1364 — KV `putTrip` 직후 boardingLock이 실제로 propagation됐는지 확인.

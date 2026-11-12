@@ -1155,8 +1155,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
         stubApnsTokenAfterStorage('apns-tok-1');
         mockGetCurrentMotionStationary.mockReturnValue(false);
 
-        // 한강 한복판 — 역 반경 밖
-        await taskCallback({ data: { locations: [makeLocation(37.52, 126.99, { accuracy: 10 })] }, error: null });
+        // 수도권 밖 — 역 반경 밖
+        await taskCallback({ data: { locations: [makeLocation(38.5, 127.5, { accuracy: 10 })] }, error: null });
 
         expect(mockUploadPosition.mock.calls[0]?.[0]).not.toHaveProperty('currentStationName');
       });

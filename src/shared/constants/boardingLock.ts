@@ -342,6 +342,9 @@ export const LOCK_ONLY_SYNC_ACCURACY_METERS = 999_999;
  */
 export const LOCK_SYNC_RETRY_MAX_ATTEMPTS = LOCK_SYNC_RETRY_BACKOFF_MS.length;
 
+/** 좋은 fix 임계 — Seam E 정정은 GPS-확신 신호만 받는다. positionUpload의 ≥ 50m drop과 정합. FG sync(useBoardingLockSync)와 BG 업로드(#3350 PR-2)가 공유한다. */
+export const GOOD_FIX_ACCURACY_MAX_M = 50;
+
 /**
  * #3191 PR-S — fix 나이와 무관하게 `/boarding-lock/sync` 관측역으로 보낼 수 있는 fused 출처.
  * WiFi SSID와 lock 유래 역은 GPS 좌표 없이 확정된다. backend-ssot는 backend 값의 되먹임이라 제외.
