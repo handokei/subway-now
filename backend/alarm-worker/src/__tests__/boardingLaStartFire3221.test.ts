@@ -171,7 +171,7 @@ describe('end-prompt due(15분 정지 종료 제안) — split trip은 탑승 LA
 describe('hop-end 질문 — start 결과에 따라 일반 알림 소리가 정해진다', () => {
   const transferWaypoint: Waypoint = { stationName: '건대입구', line: '7', kind: 'transfer' };
 
-  async function fireHopEnd(fetchImpl: typeof fetch) {
+  async function fireHopEnd(fetchImpl: typeof fetch, lockActive = true) {
     const kv = new InMemoryKV();
     const trip = makeTrip({ waypoints: [{ stationName: '성수', line: '2', kind: 'intermediate' }] });
     const { db } = captureDb();
@@ -183,6 +183,7 @@ describe('hop-end 질문 — start 결과에 따라 일반 알림 소리가 정�
     } as unknown as ScheduledDeps;
     const stats = createEmptyScheduledStats(NOW);
     await maybeFireHopEndPrompt({
+      lockActive,
       trip,
       transferWaypoint,
       deps,
@@ -212,6 +213,15 @@ describe('hop-end 질문 — start 결과에 따라 일반 알림 소리가 정�
     const notification = sent.find((s) => s.aps.event === undefined && (s.body.body as Record<string, unknown>)?.hopEndKind === 'disembark');
     expect(notification?.aps.sound).toBe('default');
     expect(stats.hopEndPromptFired).toBe(1);
+  });
+
+  it('#3359 lockless(lockActive=false): start·알림 전송 0, fired stamp 없음, blocked 집계', async () => {
+    const { sent, impl } = makeFetch(200);
+    const { trip, stats } = await fireHopEnd(impl, false);
+    expect(sent).toEqual([]);
+    expect(stats.hopEndPromptFired).toBe(0);
+    expect(stats.hopEndPromptBlocked).toBe(1);
+    expect(trip.hopEndPromptState).toBeUndefined();
   });
 
   it('start도 알림도 실패하면 fired stamp 없음(다음 cycle 재시도)', async () => {

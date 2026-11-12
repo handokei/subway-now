@@ -383,7 +383,9 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // 아래 '건대입구'만 남기는 것은 "정상 설계"가 아니라 "현재 실측과 일치"일 뿐이다 —
       // 이 결함을 공개적으로 추적하는 전용 `it.fails`가
       // `replay_20260918_destination_disembark_suppressed.test.ts`에 있다.
-      hopEndPromptStations: ['건대입구'],
+      // #3359 (사용자 결정 안 A) — 이 라이드는 위 설명대로 lockless가 실측(`boardingLock: None`)이라 환승역 하차 질문(hop-end)이
+      // 더 이상 나가지 않는다. 옛 기대 ['건대입구']는 "lockless도 hop-end 대상"이던 #3025 설계의 산물이다.
+      hopEndPromptStations: [],
       // ADR-039 조건 1 재판정(3차, motion 주입 후) — 경유역 3개는 정상 통과 알림이 뜬다
       // (silent push, device가 로컬 알림 구성). **RED는 여기 없음** — 2차 결론(0건) 철회.
       //
@@ -416,7 +418,7 @@ export const REPLAY_LIBRARY: ReplayLibraryEntry[] = [
       // #3140 — 즉시 "안내 종료" 배너 제거 후에도 trip-ended는 타임아웃 종료 경로(cleanupTripWithLa)로
       // 발사된다(위 tripEnded 단언이 그대로 통과). minPushes: 매역 3 + 준비 알림 + 즉시 배너 제거분 감소(7→5).
       tripEnded: { reason: 'destination-arrived' },
-      minPushes: 5,
+      minPushes: 4, // #3359: lockless hop-end push 1건 제거(5->4)
     },
   },
   {
