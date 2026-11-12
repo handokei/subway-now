@@ -1,4 +1,4 @@
-import { isSyncObservationEligible } from '../syncObservationEligibility';
+import { isSyncObservationAccuracyEligible, isSyncObservationEligible } from '../syncObservationEligibility';
 import type { FusionSource } from '../../../../shared/types/fusion';
 
 /**
@@ -46,5 +46,21 @@ describe('isSyncObservationEligible (#3191 PR-S)', () => {
   it('경계: 나이 14_999ms는 신선, 15_000ms는 묵음 (GPS_QUALITY_GATE_MAX_AGE_MS와 동일)', () => {
     expect(isSyncObservationEligible({ source: 'gps', lastFixAtMs: at(14_999), nowMs: NOW })).toBe(true);
     expect(isSyncObservationEligible({ source: 'gps', lastFixAtMs: at(15_000), nowMs: NOW })).toBe(false);
+  });
+});
+
+describe('isSyncObservationAccuracyEligible (#3350 PR-2 — BG 업로드도 FG sync와 같은 accuracy 임계)', () => {
+  it('50m 이하는 송신 (경계 포함, FG GOOD_FIX_ACCURACY_MAX_M과 동일)', () => {
+    expect(isSyncObservationAccuracyEligible(10)).toBe(true);
+    expect(isSyncObservationAccuracyEligible(50)).toBe(true);
+  });
+
+  it('거부: 50m 초과는 미송신 (BG 알람 게이트 200m를 통과해도)', () => {
+    expect(isSyncObservationAccuracyEligible(50.1)).toBe(false);
+    expect(isSyncObservationAccuracyEligible(150)).toBe(false);
+  });
+
+  it('거부: accuracy를 모르면(null) 정확함을 증명할 수 없으므로 미송신', () => {
+    expect(isSyncObservationAccuracyEligible(null)).toBe(false);
   });
 });

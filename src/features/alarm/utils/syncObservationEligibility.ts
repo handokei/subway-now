@@ -1,5 +1,5 @@
 import { GPS_QUALITY_GATE_MAX_AGE_MS } from '../../../shared/constants/gpsQualityGate';
-import { SYNC_OBSERVATION_FIX_INDEPENDENT_SOURCES } from '../../../shared/constants/boardingLock';
+import { GOOD_FIX_ACCURACY_MAX_M, SYNC_OBSERVATION_FIX_INDEPENDENT_SOURCES } from '../../../shared/constants/boardingLock';
 import type { FusionSource } from '../../../shared/types/fusion';
 
 /**
@@ -19,4 +19,13 @@ export function isSyncObservationEligible(input: {
   if (SYNC_OBSERVATION_FIX_INDEPENDENT_SOURCES.includes(source)) return true;
   if (lastFixAtMs === null) return false;
   return nowMs - lastFixAtMs < GPS_QUALITY_GATE_MAX_AGE_MS;
+}
+
+/**
+ * #3350 PR-2 — BG `POST /position`의 `currentStationName` 적격성. FG sync(`useBoardingLockSync`)와 같은 정확도 임계
+ * (GOOD_FIX_ACCURACY_MAX_M)를 쓴다. BG는 fix가 곧 관측이라(WiFi 출처 제외) source/나이 규칙 대신 accuracy만 본다 —
+ * 나이는 BG task가 `isLocationFresh`로 이미 걸렀다. accuracy를 모르면(null) 정확함을 증명할 수 없으므로 부적격.
+ */
+export function isSyncObservationAccuracyEligible(accuracyMeters: number | null): boolean {
+  return accuracyMeters !== null && accuracyMeters <= GOOD_FIX_ACCURACY_MAX_M;
 }

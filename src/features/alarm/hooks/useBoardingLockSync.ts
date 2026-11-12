@@ -42,6 +42,7 @@ import { syncBoardingLock } from '../../nearest-station/api/boardingLockSync';
 import { resetAlarmBackendDedup } from '../api/alarmBackend';
 import { getStationById } from '../../../shared/utils/stationRoute';
 import {
+  GOOD_FIX_ACCURACY_MAX_M,
   isPendingTrainCode,
   LOCK_ONLY_SYNC_ACCURACY_METERS,
   LOCK_SYNC_RETRY_BACKOFF_MS,
@@ -56,8 +57,8 @@ const logger = createLogger('useBoardingLockSync');
 /** sync 발사 직전 debounce — 사용자가 짧게 역 사이를 GPS jitter로 왕복해도 1회로 묶는다. */
 export const SYNC_DEBOUNCE_MS = 5000;
 
-/** 좋은 fix 임계 — Seam E 정정은 GPS-확신 신호만 받는다. positionUpload의 ≥ 50m drop과 정합. */
-export const GOOD_FIX_ACCURACY_MAX_M = 50;
+// #3350 PR-2 — 임계 SSoT는 shared/constants/boardingLock(BG 업로드와 공유). 기존 import 경로 호환을 위해 re-export.
+export { GOOD_FIX_ACCURACY_MAX_M };
 
 export interface UseBoardingLockSyncOptions {
   /** 클라가 좋은 fix로 확정한 현재역명. null이면 lock 신원 fallback anchor로만 발사(있을 때). */
