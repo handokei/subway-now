@@ -159,4 +159,12 @@ describe('loadAnchorDepartures', () => {
     const view = await loadAnchorDepartures(kvWith(stamp), trip(), NOW);
     expect(view?.departed).toEqual([{ trainCode: '7039', departedAt: NOW - 60_000, currentStation: null }]);
   });
+
+  it('#3352 스냅샷 a가 출발 기록과 같은 코드면 한 행(중복 제거), 다른 코드면 a가 앞에 합산된다', async () => {
+    const logged = { 용마산: { present: [], departed: [{ trainCode: '7039', isUp: IS_UP, departedAt: NOW - 60_000 }] } };
+    const same = { positions: [{ trainCode: '7039', stationName: '중곡', trainSttus: 1, isUp: IS_UP, recptnMs: NOW }], fetchedAt: NOW, stationLogs: logged };
+    expect((await loadAnchorDepartures(kvWith(same), trip(), NOW))?.departed.map((d) => d.trainCode)).toEqual(['7039']);
+    const other = { positions: [{ trainCode: '7040', stationName: '중곡', trainSttus: 1, isUp: IS_UP, recptnMs: NOW }], fetchedAt: NOW, stationLogs: logged };
+    expect((await loadAnchorDepartures(kvWith(other), trip(), NOW))?.departed.map((d) => d.trainCode)).toEqual(['7040', '7039']);
+  });
 });

@@ -666,6 +666,22 @@ describe('SeoulArrivalClient', () => {
       const positions = await client.fetchPositions('2');
       expect(positions[0].stationName).toBe('성수');
       expect(positions[1].stationName).toBe('성수');
+      // #3352 — sentinel이었던 항목만 표시(일반 역명 항목은 필드 생략).
+      expect(positions.map((p) => p.sentinelStation)).toEqual([true, true]);
+    });
+
+    it('#3352 — 일반 역명 항목은 sentinelStation 생략', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [makePositionItem({ trainNo: '3176', statnNm: '성수' })] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const [position] = await client.fetchPositions('2');
+      expect('sentinelStation' in position).toBe(false);
     });
 
     // #2868 — Seoul position statnNm은 Seoul 질의명(괄호 제거)으로 온다. stations.json명으로

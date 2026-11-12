@@ -124,6 +124,8 @@ export interface PositionEntry {
   trainType?: TrainType;
   /** #2328 — realtimePosition API `statnTnm`(종착역명, 이미 순수 역명) 파싱. 누락/빈 문자열은 null. */
   terminus?: string | null;
+  /** #3352 — statnNm이 종착/지선 sentinel(성수종착)이었던 항목(strip 전 원문). 그 역에서 영업을 마친 열차라 탑승 후보가 아니다. 아니면 생략. */
+  sentinelStation?: true;
 }
 
 interface PositionCacheEntry {
@@ -372,6 +374,7 @@ function parsePositionEntry(
     recptnMs,
     trainType: parseTrainTypeFromDirectAt(item.directAt),
     terminus: statnTnm.length > 0 ? statnTnm : null,
+    ...(stripPositionStationSentinel(rawStationName) !== rawStationName ? { sentinelStation: true as const } : {}),
   };
 }
 

@@ -8,6 +8,7 @@ import {
   anchorFromSegment,
   classifyAnchorSighting,
   departedFromStation,
+  justPassedFromPositions,
   planPromotionFastForward,
   updateStationTrainLogs,
   type AnchorForSighting,
@@ -119,13 +120,13 @@ describe('classifyAnchorSighting — 앵커에서 본 열차인가', () => {
     expect(classifyAnchorSighting('3013', anchor, [pos('3013', '강변', APPROACHING)], undefined, NOW)).toBe('approaching');
   });
 
-  it('앵커를 지나 진행 구간 안에 있는데 출발 기록이 없는 열차 = null (앵커를 한 번도 못 본 코드)', () => {
-    expect(classifyAnchorSighting('9999', anchor, [pos('9999', '성수', ARRIVED)], undefined, NOW)).toBeNull();
+  it('앵커를 지나 진행 구간 안에 있는데 출발 기록이 없는 열차 = null (앵커를 한 번도 못 본 코드, S+2 이상)', () => {
+    expect(classifyAnchorSighting('9999', anchor, [pos('9999', '뚝섬', ARRIVED)], undefined, NOW)).toBeNull();
   });
 
   it('10분 초과 출발 기록은 근거가 되지 못한다', () => {
     const stale = { [ANCHOR]: { present: [], departed: [{ trainCode: '2011', isUp: true, departedAt: NOW - ANCHOR_DEPARTURE_WINDOW_MS - 1 }] } };
-    expect(classifyAnchorSighting('2011', anchor, [pos('2011', '성수', ARRIVED)], stale, NOW)).toBeNull();
+    expect(classifyAnchorSighting('2011', anchor, [pos('2011', '뚝섬', ARRIVED)], stale, NOW)).toBeNull();
   });
 
   it('반대 방향 열차는 앵커에 서 있어도 null', () => {
@@ -244,5 +245,36 @@ describe('anchorFromSegment', () => {
 
   it('방향을 알 수 없으면(구간 1개/미매핑) null — fail-closed', () => {
     expect(anchorFromSegment('2', ['건대입구'])).toBeNull();
+  });
+});
+
+describe('justPassedFromPositions — #3352 목록 a 슬롯(스냅샷 한 장)', () => {
+  const anchor: AnchorForSighting = { station: ANCHOR, isUp: true, segmentStations: [ANCHOR, '성수', '뚝섬'] };
+  const trainCodes = (positions: PositionEntry[]) => justPassedFromPositions(anchor, positions, NOW)?.trainCode ?? null;
+
+  it('S에서 출발(sts=2)한 열차 / S+1 구간(진입·도착·출발) 열차가 후보다', () => {
+    expect(trainCodes([pos('A', ANCHOR, DEPARTED)])).toBe('A');
+    expect(trainCodes([pos('A', '성수', APPROACHING)])).toBe('A');
+    expect(trainCodes([pos('A', '성수', ARRIVED)])).toBe('A');
+    expect(trainCodes([pos('A', '성수', DEPARTED)])).toBe('A');
+  });
+
+  it('거부: S에 서 있는(진입/도착) 열차, S+2 이상, 반대 방향, 낡은 관측, 종착 sentinel 열차', () => {
+    expect(trainCodes([pos('A', ANCHOR, ARRIVED)])).toBeNull();
+    expect(trainCodes([pos('A', '뚝섬', ARRIVED)])).toBeNull();
+    expect(trainCodes([pos('A', '성수', ARRIVED, { isUp: false })])).toBeNull();
+    expect(trainCodes([pos('A', '성수', ARRIVED, { recptnMs: NOW - 10 * 60_000 })])).toBeNull();
+    expect(trainCodes([pos('A', '성수', ARRIVED, { sentinelStation: true })])).toBeNull();
+  });
+
+  it('여럿이면 S에 가장 가까운 1대(S 출발 > S+1), 같은 구간이면 더 최근 관측', () => {
+    expect(trainCodes([pos('B', '성수', ARRIVED), pos('A', ANCHOR, DEPARTED)])).toBe('A');
+    expect(trainCodes([pos('B', '성수', ARRIVED, { recptnMs: NOW - 30_000 }), pos('C', '성수', ARRIVED)])).toBe('C');
+  });
+
+  it('classifyAnchorSighting: 스냅샷 a로 본 코드는 departed, 그 외 S+1 열차는 null', () => {
+    expect(classifyAnchorSighting('A', anchor, [pos('A', '성수', ARRIVED)], undefined, NOW)).toBe('departed');
+    const older = pos('B', '성수', ARRIVED, { recptnMs: NOW - 30_000 });
+    expect(classifyAnchorSighting('B', anchor, [older, pos('A', '성수', ARRIVED)], undefined, NOW)).toBeNull();
   });
 });
