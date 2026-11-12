@@ -218,3 +218,20 @@ describe('#3350 leg-2 lock 3경로 (leg-1 lockless 뒤) — b00dd879 실열차 7
     expect(attempts.length).toBeGreaterThan(0);
   });
 });
+
+describe('#3359 lockless 트립은 환승역 하차 질문(hop-end)을 받지 않는다 — b00dd879 17:25:31 건대입구', () => {
+  it('★hop-end alert push 0 + la-boarding-start(path hop-end-prompt) 0 + D1 hop-end-prompt outcome lockless-skip, leg-2 anchor·탑승 질문은 그대로', async () => {
+    const r = await replay();
+    const hopEndAlerts = r.result.pushes.filter(
+      (p) => p.headers.pushType === 'alert' && ((p.body.body ?? {}) as Record<string, unknown>).hopEndKind === 'disembark',
+    );
+    expect(hopEndAlerts).toEqual([]);
+    expect(r.events.filter((e) => e.kind === 'la-boarding-start' && e.meta.path === 'hop-end-prompt')).toEqual([]);
+    const hopOutcomes = r.events.filter((e) => e.kind === 'hop-end-prompt').map((e) => e.meta.outcome);
+    expect(hopOutcomes).toContain('lockless-skip');
+    expect(hopOutcomes).not.toContain('fired');
+    // leg-2 경계 소비·탑승 질문은 유지(#3350).
+    expect(r.final?.currentLegAnchor).toEqual({ boardingStation: TRANSFER.stationName, line: '7' });
+    expect(r.events.filter((e) => e.kind === 'la-boarding-start' && e.meta.path === 'boarding-prompt' && e.line === '7').length).toBeGreaterThan(0);
+  });
+});
