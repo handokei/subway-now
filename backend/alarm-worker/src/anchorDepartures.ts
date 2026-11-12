@@ -136,6 +136,27 @@ export function updateStationTrainLogs(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+/**
+ * #3352 — 목록 a 슬롯: position 피드 **스냅샷 하나**로 본 "방금 지나간 열차" 1대. 출발 관측 이력(stationLogs)에 의존하지 않는다
+ * (탑승 후 트립 생성 / 출발 순간 관측 공백도 커버). 같은 방향·신선한 열차 중 기준역 S에서 출발(sts=2)했거나 S+1 구간
+ * (진입/도착/출발)에 있는 열차 — S+2 이상은 제외(오선택 방지). 여럿이면 S에 가장 가까운(=가장 최근에 지나간) 1대.
+ */
+export function justPassedFromPositions(
+  anchor: AnchorForSighting,
+  positions: readonly PositionEntry[],
+  now: number,
+): StationDeparture | null {
+  const [station, next] = anchor.segmentStations;
+  const candidates = positions
+    .filter((p) => p.isUp === anchor.isUp && !p.sentinelStation && isFreshPosition(p, now))
+    .filter(
+      (p) => (p.stationName === station && p.trainSttus === TRAIN_STATUS.DEPARTED) || p.stationName === next,
+    )
+    .sort((a, b) => Number(a.stationName === next) - Number(b.stationName === next) || b.recptnMs - a.recptnMs);
+  const [nearest] = candidates;
+  return nearest ? { trainCode: nearest.trainCode, isUp: nearest.isUp, departedAt: observedAt(nearest, now) } : null;
+}
+
 /** 목록용 — 같은 방향, 10분 이내, 최근 출발 순. */
 export function departedFromStation(
   logs: StationTrainLogs | undefined,
@@ -165,6 +186,7 @@ export function classifyAnchorSighting(
 ): AnchorSighting {
   const departed = departedFromStation(logs, anchor.station, anchor.isUp, now);
   if (departed.some((d) => d.trainCode === trainCode)) return 'departed';
+  if (justPassedFromPositions(anchor, positions, now)?.trainCode === trainCode) return 'departed';
 
   const own = positions.filter(
     (p) => p.trainCode === trainCode && p.isUp === anchor.isUp && isFreshPosition(p, now),

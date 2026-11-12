@@ -7,6 +7,7 @@ import {
   classifyAnchorSighting,
   departedFromStation,
   isFreshPosition,
+  justPassedFromPositions,
   resolveListAnchor,
 } from './anchorDepartures';
 import type { PositionEntry } from './seoul';
@@ -93,7 +94,14 @@ export async function loadAnchorDepartures(
   }
   if (!stamp) return { station: anchor.station, line: anchor.line, departed: [] };
   const { positions, stationLogs } = stamp;
-  const departed = departedFromStation(stationLogs, anchor.station, anchor.isUp, now).map(
+  // #3352 — a 슬롯은 현재 스냅샷의 "방금 지나간 열차"를 출발 이력에 합산(중복 제거).
+  const snapshotPassed = justPassedFromPositions(anchor, positions, now);
+  const logged = departedFromStation(stationLogs, anchor.station, anchor.isUp, now);
+  const merged =
+    snapshotPassed && !logged.some((d) => d.trainCode === snapshotPassed.trainCode)
+      ? [snapshotPassed, ...logged]
+      : logged;
+  const departed = merged.map(
     ({ trainCode, departedAt }) => ({
       trainCode,
       departedAt,
