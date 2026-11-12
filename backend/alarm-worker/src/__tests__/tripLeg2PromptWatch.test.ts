@@ -91,6 +91,34 @@ describe('findLocklessLeg2Misses (#3357-3)', () => {
   });
 });
 
+describe('findLocklessLeg2Misses 경계 (#3357-3)', () => {
+  const base = rows.filter((r) => r.ts >= HOP_END_TS - 3 * 60_000);
+
+  it('거부: hop-end 뒤 7호선 lock-attached(leg-2 탭 lock)가 있으면 회귀가 아니다', () => {
+    const withLock = [...base, row({ kind: 'lock-attached', station: '건대입구', line: '7', meta: JSON.stringify({ path: 'confirm', trainCode: '7254' }) }, 20_000)];
+    expect(findLocklessLeg2Misses(withLock, SCAN_NOW, 0)).toEqual([]);
+  });
+
+  it('거부: 환승 전 노선(2호선) 재부착 lock-attached는 leg-2 흔적이 아니다 — 단 hop-end 이전이면 lockless가 아니어서 제외', () => {
+    const afterOnly = [...base, row({ kind: 'lock-attached', station: '건대입구', line: '2', meta: null }, 20_000)];
+    expect(findLocklessLeg2Misses(afterOnly, SCAN_NOW, 0).map((m) => m.station)).toEqual(['건대입구']);
+    const before = [...base, row({ kind: 'lock-attached', station: '성수', line: '2', meta: null }, -60_000)];
+    expect(findLocklessLeg2Misses(before, SCAN_NOW, 0)).toEqual([]);
+  });
+
+  it('meta가 깨진 hop-end 신호/역 없는 신호/다른 역 흔적은 방어적으로 처리한다', () => {
+    const odd = [
+      ...base.filter((r) => r.id !== HOP_END_ROW_ID),
+      row({ kind: 'hop-end-prompt', station: '건대입구', line: '2', meta: '{not json' }, 0),
+      row({ kind: 'hop-end-prompt', station: null, line: '2', meta: null }, 1_000),
+      row({ kind: 'trip-register', station: '건대입구', line: '7', meta: null }, 2_000),
+      row({ kind: 'la-boarding-start', station: '건대입구', line: '7', meta: '{not json' }, 2_500),
+      row({ kind: 'la-boarding-start', station: '군자(능동)', line: '7', meta: JSON.stringify({ path: 'boarding-prompt' }) }, 3_000),
+    ];
+    expect(findLocklessLeg2Misses(odd, SCAN_NOW, 0).map((m) => m.station)).toEqual(['건대입구']);
+  });
+});
+
 describe('buildLeg2WatchSql / findTripLeg2Misses (#3357-3)', () => {
   it('SQL은 trip_events에서 판정에 쓰는 kind만, window 하한에 트립 길이 pre-roll을 둬 조회한다', () => {
     const sql = buildLeg2WatchSql('?');
@@ -99,6 +127,11 @@ describe('buildLeg2WatchSql / findTripLeg2Misses (#3357-3)', () => {
       expect(sql).toContain(`'${kind}'`);
     }
     expect(sql).toMatch(/ts > \? - \d+/);
+  });
+
+  it('D1 결과가 비어 있거나 results가 없으면 빈 목록이다', async () => {
+    const db = { prepare: vi.fn().mockReturnValue({ bind: vi.fn().mockReturnValue({ all: vi.fn().mockResolvedValue({}) }) }) } as unknown as D1Database;
+    expect(await findTripLeg2Misses(db, SCAN_NOW)).toEqual([]);
   });
 
   it('D1 조회 결과로 회귀를 반환하고 bind에는 window 하한 1개만 넘긴다', async () => {

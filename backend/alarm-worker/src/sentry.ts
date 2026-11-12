@@ -52,7 +52,12 @@ export type BackendXEventName =
    * #3006 PR-0 — 재진행(같은 역 재소비) 감시. 한 트립 창에서 같은 역 재소비 신호(`prepare-alarm` 2회+ /
    * `sync-station-passed-dedup` 2회+ / `progress-reconcile` 1회+)가 잡힌 (token, station)을 `tripMetricsRegressionScan.ts`가 매일 1회 집계해 emit.
    */
-  | 'X13-trip-reconsume';
+  | 'X13-trip-reconsume'
+  /**
+   * #3357 — lockless 환승 후 leg-2 누락 감시. lock 없이 환승역 hop-end 를 남긴 트립이 leg-2 프롬프트/lock 흔적 0 으로 끝난 (token, 환승역)을
+   * `tripMetricsRegressionScan.ts`가 매일 1회 집계해 emit (#3350 b00dd879 재발 감시).
+   */
+  | 'X14-leg2-prompt-missing';
 
 export type BackendXEventContext = Record<
   string,
