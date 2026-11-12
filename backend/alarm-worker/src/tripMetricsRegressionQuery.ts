@@ -165,3 +165,96 @@ export function findReconsumedStations(rows: ReconsumeEventRow[]): ReconsumedSta
       eventIds: ids,
     }));
 }
+
+/**
+ * lockless 환승 후 leg-2 프롬프트 누락 감시 (#3357 항목 3, #3350 b00dd879 형태의 재발 감시) — `trip_events` 기반.
+ *
+ * 회귀 정의: lockless trip(환승 hop-end 이전에 `lock-attached` 행 없음)이 환승역 T에서 hop-end 신호를 남겼는데(= 환승역 도착 관측),
+ * 그 뒤 같은 트립 창에서 T의 leg-2 흔적(아래 3종)이 한 건도 없다. "leg-1에서 못 했어도 leg-2는 제대로 진행" 결정(11/12)의 사후 감시다.
+ *  - 환승 관측 신호: `hop-end-prompt` 행, 또는 `la-boarding-start` 중 meta.path=`hop-end-prompt`(route 가 D1 에 없어 sync-received 만으로는 환승역인지 알 수 없다).
+ *  - leg-2 흔적: ① `leg-boarding-prompt`(station=T, meta.leg!=='origin') ② `la-boarding-start`(path=boarding-prompt, station=T, line!=환승 전 노선)
+ *    ③ `lock-attached`(station=T, line!=환승 전 노선).
+ * 오탐 방지: 진행 중 트립은 hop-end 후 `LEG2_EVIDENCE_GRACE_MS` 동안 판정을 보류한다(트립 종료 `trip-end` 가 있으면 즉시 판정).
+ * 알려진 사각: ① hop-end 가 안 찍히는 환승 관측(sync 만) ② 환승 전 leg-1 에서 lock 이 붙었다 풀린 트립(lockless 아님) ③ D1 trip_events 보존 ~6일.
+ */
+export const LEG2_EVIDENCE_GRACE_MS = 30 * 60_000;
+/** 트립 최대 길이(expiresAt 3h) — window 하한 앞쪽을 이만큼 더 읽어 hop-end 이전 lock-attached 를 놓치지 않는다. */
+export const LEG2_WATCH_PRE_ROLL_MS = 3 * 3600_000;
+
+const LEG2_WATCH_KINDS = ['hop-end-prompt', 'la-boarding-start', 'leg-boarding-prompt', 'lock-attached', 'trip-register', 'trip-end'] as const;
+export const LEG2_WATCH_SELECT_COLUMNS = 'id, ts, token_hash, kind, station, line, meta';
+
+export interface TripEventRow extends ReconsumeEventRow {
+  line: string | null;
+}
+
+export interface Leg2PromptMiss {
+  tokenHash: string;
+  station: string;
+  /** 환승 전(leg-1) 노선. */
+  transferLine: string | null;
+  transferAt: number;
+  eventIds: number[];
+}
+
+/** `windowExprSql` 의미는 `buildRegressionSql`과 동일(옵션 A는 `'?'`, 옵션 B는 리터럴). */
+export function buildLeg2WatchSql(windowExprSql: string): string {
+  const kinds = LEG2_WATCH_KINDS.map((k) => `'${k}'`).join(', ');
+  return `SELECT ${LEG2_WATCH_SELECT_COLUMNS}
+FROM trip_events
+WHERE kind IN (${kinds})
+  AND ts > ${windowExprSql} - ${LEG2_WATCH_PRE_ROLL_MS}
+ORDER BY token_hash, ts, id;`;
+}
+
+function metaOf(row: TripEventRow): Record<string, unknown> {
+  if (row.meta === null) return {};
+  try {
+    return JSON.parse(row.meta) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+const isHopEndSignal = (row: TripEventRow): boolean =>
+  row.kind === 'hop-end-prompt' || (row.kind === 'la-boarding-start' && metaOf(row).path === 'hop-end-prompt');
+
+function isLeg2Evidence(row: TripEventRow, station: string, transferLine: string | null): boolean {
+  if (row.station !== station) return false;
+  if (row.kind === 'leg-boarding-prompt') return metaOf(row).leg !== 'origin';
+  if (row.kind === 'la-boarding-start') return metaOf(row).path === 'boarding-prompt' && row.line !== transferLine;
+  if (row.kind === 'lock-attached') return row.line !== transferLine;
+  return false;
+}
+
+/** 순수 함수 — D1 행(어떤 순서든)에서 lockless 환승 후 leg-2 흔적이 없는 (token, 환승역)을 찾는다. `windowStartMs` 이전의 hop-end 는 보고하지 않는다. */
+export function findLocklessLeg2Misses(rows: TripEventRow[], now: number, windowStartMs: number): Leg2PromptMiss[] {
+  const sorted = [...rows].sort((a, b) => a.ts - b.ts || a.id - b.id);
+  const windows = new Map<string, TripEventRow[]>();
+  const windowIdByToken = new Map<string, number>();
+  for (const row of sorted) {
+    const windowId = windowIdByToken.get(row.token_hash) ?? 0;
+    if (startsNewTrip(row)) windowIdByToken.set(row.token_hash, windowId + 1);
+    const key = `${row.token_hash}\u0000${windowId}`;
+    windows.set(key, [...(windows.get(key) ?? []), row]);
+  }
+  const misses: Leg2PromptMiss[] = [];
+  for (const windowRows of windows.values()) {
+    const ended = windowRows.some(({ kind }) => kind === 'trip-end');
+    const signalsByStation = new Map<string, TripEventRow[]>();
+    for (const row of windowRows.filter(isHopEndSignal)) {
+      if (row.station === null) continue;
+      signalsByStation.set(row.station, [...(signalsByStation.get(row.station) ?? []), row]);
+    }
+    for (const [station, signals] of signalsByStation) {
+      const [first] = signals;
+      const { ts: transferAt, line: transferLine, token_hash: tokenHash } = first;
+      if (transferAt < windowStartMs) continue;
+      if (!ended && now - transferAt <= LEG2_EVIDENCE_GRACE_MS) continue;
+      if (windowRows.some((r) => r.kind === 'lock-attached' && r.ts <= transferAt)) continue;
+      if (windowRows.some((r) => r.ts >= transferAt && isLeg2Evidence(r, station, transferLine))) continue;
+      misses.push({ tokenHash, station, transferLine, transferAt, eventIds: signals.map(({ id }) => id) });
+    }
+  }
+  return misses.sort((a, b) => a.transferAt - b.transferAt);
+}

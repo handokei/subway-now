@@ -36,11 +36,15 @@
  */
 
 import {
+  buildLeg2WatchSql,
   buildReconsumeSql,
   buildRegressionSql,
+  findLocklessLeg2Misses,
   findReconsumedStations,
+  type Leg2PromptMiss,
   type ReconsumeEventRow,
   type ReconsumedStation,
+  type TripEventRow,
 } from './tripMetricsRegressionQuery';
 import { captureBackendException, captureXEvent } from './sentry';
 import type { Env } from './types';
@@ -107,6 +111,32 @@ export async function findTripReconsumes(db: D1Database, now: number): Promise<R
   return findReconsumedStations(result.results ?? []);
 }
 
+/**
+ * lockless 환승 후 leg-2 프롬프트 누락 후보를 조회한다 (#3357). 실패는 throw — swallow는 호출자 책임.
+ */
+export async function findTripLeg2Misses(db: D1Database, now: number): Promise<Leg2PromptMiss[]> {
+  const windowStart = now - REGRESSION_WINDOW_MS;
+  const result = await db.prepare(buildLeg2WatchSql('?')).bind(windowStart).all<TripEventRow>();
+  return findLocklessLeg2Misses(result.results ?? [], now, windowStart);
+}
+
+function emitLeg2MissAlert(misses: Leg2PromptMiss[], windowStartMs: number): void {
+  const sample = misses.slice(0, REGRESSION_SAMPLE_LIMIT);
+  console.error(
+    JSON.stringify({
+      msg: 'trip_events leg-2 miss detected — lockless trip observed at transfer but no leg-2 prompt/lock trace',
+      count: misses.length,
+      windowStartMs,
+      sample,
+    }),
+  );
+  captureXEvent('X14-leg2-prompt-missing', {
+    count: misses.length,
+    windowStartMs,
+    sampleJson: JSON.stringify(sample),
+  });
+}
+
 function emitReconsumeAlert(reconsumes: ReconsumedStation[], windowStartMs: number): void {
   const sample = reconsumes.slice(0, REGRESSION_SAMPLE_LIMIT);
   console.error(
@@ -171,6 +201,7 @@ export async function maybeRunTripMetricsRegressionScan(
   date?: string;
   regressions?: RegressionTripSummary[];
   reconsumes?: ReconsumedStation[];
+  leg2Misses?: Leg2PromptMiss[];
 }> {
   try {
     const d = new Date(now);
@@ -202,7 +233,12 @@ export async function maybeRunTripMetricsRegressionScan(
       emitReconsumeAlert(reconsumes, windowStart);
     }
 
-    return { ran: true, date, regressions, reconsumes };
+    const leg2Misses = await findTripLeg2Misses(env.DB, now);
+    if (leg2Misses.length > 0) {
+      emitLeg2MissAlert(leg2Misses, windowStart);
+    }
+
+    return { ran: true, date, regressions, reconsumes, leg2Misses };
   } catch (err) {
     console.warn(JSON.stringify({ msg: 'tripMetricsRegressionScan failed', err: String(err) }));
     void captureBackendException(env, err, { path: 'tripMetricsRegressionScan' });

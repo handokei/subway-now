@@ -24,8 +24,8 @@
 // 같은 경로로 Node가 로드하는 `replayFixture.ts:9`가 확장자 없이도 되는 이유는 그게 `import type`
 // (타입 스트리핑에 지워져 해석 자체가 일어나지 않음)이기 때문 — 값 import에는 적용되지 않는다.
 // 이 파일/`fixtureFromTrip.ts`/`replayFixture.ts`에 **값** 상대 import를 새로 추가할 때도 동일.
-import { buildReconsumeSql, buildRegressionSql, findReconsumedStations } from './tripMetricsRegressionQuery.ts';
-import type { ReconsumeEventRow, ReconsumedStation } from './tripMetricsRegressionQuery.ts';
+import { buildLeg2WatchSql, buildReconsumeSql, buildRegressionSql, findLocklessLeg2Misses, findReconsumedStations } from './tripMetricsRegressionQuery.ts';
+import type { Leg2PromptMiss, ReconsumeEventRow, ReconsumedStation, TripEventRow } from './tripMetricsRegressionQuery.ts';
 
 export interface RegressionCheckRow {
   trip_token_hash: string;
@@ -109,6 +109,27 @@ export function formatReconsumeReport(found: ReconsumedStation[], now: number): 
   const lines = found.map(
     ({ tokenHash, station, signal, count, eventIds }) =>
       `  tokenHash=${tokenHash} ${station} x${count} [${signal}] events=${eventIds.join(',')}`,
+  );
+  return [header, ...lines].join('\n');
+}
+
+/** lockless 환승 후 leg-2 누락 조회 SQL — 옵션 B(리터럴 window, #3357). 술어 SSoT는 tripMetricsRegressionQuery. */
+export function buildLeg2WatchCheckQuery(windowStartMs: number): string {
+  return buildLeg2WatchSql(String(windowStartMs));
+}
+
+/** `wrangler d1 execute --json` stdout(trip_events 행) -> leg-2 누락 (token, 환승역) 목록. */
+export function parseLeg2WatchCheckResponse(stdout: string, now: number, windowStartMs: number): Leg2PromptMiss[] {
+  const rows = parseRegressionCheckResponse(stdout) as unknown as TripEventRow[];
+  return findLocklessLeg2Misses(rows, now, windowStartMs);
+}
+
+export function formatLeg2WatchReport(found: Leg2PromptMiss[], now: number): string {
+  const header = `leg-2 누락 스캔 (${new Date(now).toISOString()}) — lockless 환승 관측 후 leg-2 프롬프트/lock 흔적 0: ${found.length}건`;
+  if (found.length === 0) return `${header}\n누락 없음 — 정상.`;
+  const lines = found.map(
+    ({ tokenHash, station, transferLine, transferAt, eventIds }) =>
+      `  tokenHash=${tokenHash} ${station}(${transferLine ?? '?'}호선) at=${new Date(transferAt).toISOString()} events=${eventIds.join(',')}`,
   );
   return [header, ...lines].join('\n');
 }
