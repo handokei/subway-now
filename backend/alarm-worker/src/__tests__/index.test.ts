@@ -7001,8 +7001,8 @@ describe('POST /boarding-lock/sync — 앵커역 관측 corroboration (#3155)', 
     expect((await syncTap(env, '7039')).boardingLock?.trainCode).toBe('7039');
   });
 
-  it('앵커를 한 번도 거친 기록이 없는 코드(진행 구간 안에 있음)는 계속 거부한다', async () => {
-    const env = await seed([{ trainCode: '7039', stationName: '중곡', trainSttus: 1, isUp: IS_UP }]);
+  it('앵커를 한 번도 거친 기록이 없는 코드(S+2 이상 구간 안에 있음)는 계속 거부한다', async () => {
+    const env = await seed([{ trainCode: '7039', stationName: '군자', trainSttus: 1, isUp: IS_UP }]);
     expect((await syncTap(env, '7039')).boardingLock).toBeUndefined();
   });
 
