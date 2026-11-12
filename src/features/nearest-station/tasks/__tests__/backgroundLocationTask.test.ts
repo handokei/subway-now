@@ -1109,6 +1109,56 @@ describe('backgroundLocationTask defineTask 콜백', () => {
         accuracy: 10,
         ts: fixTs,
         motion: 'unknown',
+        currentStationName: expect.any(String), // #3350 PR-2 — accuracy 10 <= 50m 적격 관측
+      });
+    });
+
+    describe('#3350 PR-2 — 적격 관측역만 currentStationName으로 송신 (backend lockless 환승 경계 소비 입력)', () => {
+      // 건대입구 좌표 (stations.json 실측)
+      const KONDAE = { lat: 37.540373, lng: 127.069191 };
+
+      it('accuracy 20m(<=50m) 건대입구 -> currentStationName=건대입구', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        stubApnsTokenAfterStorage('apns-tok-1');
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+
+        await taskCallback({ data: { locations: [makeLocation(KONDAE.lat, KONDAE.lng, { accuracy: 20 })] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledWith(
+          expect.objectContaining({ currentStationName: canonicalStationName('건대입구', '2') }),
+        );
+      });
+
+      it('거부: accuracy 120m(알람 게이트 200m는 통과, FG sync 임계 50m 초과) -> 미송신', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        stubApnsTokenAfterStorage('apns-tok-1');
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+
+        await taskCallback({ data: { locations: [makeLocation(KONDAE.lat, KONDAE.lng, { accuracy: 120 })] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledTimes(1);
+        expect(mockUploadPosition.mock.calls[0]?.[0]).not.toHaveProperty('currentStationName');
+      });
+
+      it('거부: accuracy null -> 미송신', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        stubApnsTokenAfterStorage('apns-tok-1');
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+
+        await taskCallback({ data: { locations: [makeLocation(KONDAE.lat, KONDAE.lng, { accuracy: null })] }, error: null });
+
+        expect(mockUploadPosition.mock.calls[0]?.[0]).not.toHaveProperty('currentStationName');
+      });
+
+      it('거부: 역 반경 밖(최근접 역 없음) -> 미송신', async () => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        stubApnsTokenAfterStorage('apns-tok-1');
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+
+        // 한강 한복판 — 역 반경 밖
+        await taskCallback({ data: { locations: [makeLocation(37.52, 126.99, { accuracy: 10 })] }, error: null });
+
+        expect(mockUploadPosition.mock.calls[0]?.[0]).not.toHaveProperty('currentStationName');
       });
     });
 
