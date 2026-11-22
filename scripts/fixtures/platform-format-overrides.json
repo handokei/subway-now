@@ -1,0 +1,14 @@
+{
+  "4|당고개": {
+    "format": "상대식",
+    "evidence": "https://ko.wikipedia.org/wiki/%EB%8B%B9%EA%B3%A0%EA%B0%9C%EC%97%AD",
+    "quote": "2면 2선의 곡선 상대식 승강장을 갖춘 고가역이며, 반밀폐형 스크린도어가 설치되어 있다.",
+    "note": "건축 CSV에 행이 없는 역의 보조 근거. 당고개는 1993-04~2022-03 4호선 종착역이었으나 진접선 개통 후 중간역이며, 위키에 종착 열차 정차면 서술은 없다."
+  },
+  "2|까치산": {
+    "format": "섬식",
+    "evidence": "https://ko.wikipedia.org/wiki/%EA%B9%8C%EC%B9%98%EC%82%B0%EC%97%AD",
+    "quote": "신정지선은 이 역에만 섬식 승강장이다.",
+    "note": "2-105(신정지선 승강장)는 심도 CSV 상대식과 위키 섬식이 충돌한다. 불일치이므로 override-disagree로 null 유지 (값을 만들지 않는다)."
+  }
+}

@@ -34,8 +34,11 @@ describe('platformExitSide.json 계약', () => {
     expect(map['2-034']).toBeUndefined();
   });
 
-  it('주행방향 미검증 1호선(1-*)은 키가 없다', () => {
-    expect(entries.filter(([id]) => id.startsWith('1-'))).toEqual([]);
+  it('1호선(1-*)은 서울교통공사 구간 1-025~1-034 10역만 키를 가진다 (코레일 구간 없음)', () => {
+    const ids = entries.filter(([id]) => id.startsWith('1-')).map(([id]) => id).sort();
+    expect(ids).toEqual([
+      '1-025', '1-026', '1-027', '1-028', '1-029', '1-030', '1-031', '1-032', '1-033', '1-034',
+    ]);
   });
 });
 

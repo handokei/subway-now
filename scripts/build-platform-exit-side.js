@@ -6,7 +6,8 @@
 //
 // 추정 금지 원칙 — 아래 중 하나라도 해당하면 값을 만들지 않는다(null = 출력에서 키 생략):
 //   - 심도 CSV에 행이 없음 / 형식이 단순 섬식·상대식이 아님(섬식(복합), 단선 …)
-//   - 건축 CSV에 없거나 심도 CSV와 형식이 다름(교차 검증 실패)
+//   - 건축 CSV에 없고 override도 없음 / 심도 CSV와 형식이 다름(교차 검증 실패)
+//     (override는 건축 행이 없을 때만 쓰이며, 심도와 다르면 override-disagree로 null)
 //   - 노선의 주행방향 근거가 없음(line-running-side.json의 side가 null)
 // 'both'는 어떤 경로로도 만들지 않는다 (종착역 override 제거).
 //
@@ -15,6 +16,7 @@
 //   scripts/fixtures/seoul-station-architecture.csv       (역사건축정보) — 교차 검증용
 //   scripts/fixtures/platform-name-aliases.json           (CSV 간 역명 표기 불일치 13쌍)
 //   scripts/fixtures/line-running-side.json               (노선별 주행방향 + 근거)
+//   scripts/fixtures/platform-format-overrides.json       (건축 CSV에 행이 없는 역의 독립 출처 형식. 심도와 일치할 때만 사용)
 //   src/data/stations.json                                (id ← (line, name))
 //
 // 출력:
@@ -35,6 +37,7 @@ const DEPTH_CSV_PATH = path.join(
 );
 const ARCH_CSV_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/seoul-station-architecture.csv');
 const ALIASES_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/platform-name-aliases.json');
+const OVERRIDES_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/platform-format-overrides.json');
 const RUNNING_SIDE_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/line-running-side.json');
 const STATIONS_JSON_PATH = path.join(PROJECT_ROOT, 'src/data/stations.json');
 const OUTPUT_PATH = path.join(PROJECT_ROOT, 'src/data/platformExitSide.json');
@@ -60,13 +63,19 @@ function mapFormatToSide(format, runningSide) {
 }
 
 // 한 역의 좌/우를 결정하고, null이면 사유를 함께 돌려준다.
-function resolveStationSide({ depthFormat, archFormat, runningSide }) {
+function resolveStationSide({ depthFormat, archFormat, overrideFormat = null, runningSide }) {
   if (depthFormat == null) return { side: null, reason: 'no-depth-row' };
   if (!(depthFormat.trim() in RIGHT_HAND_FORMAT_TO_SIDE)) {
     return { side: null, reason: 'depth-not-plain' };
   }
-  if (archFormat == null) return { side: null, reason: 'arch-missing' };
-  if (archFormat.trim() !== depthFormat.trim()) return { side: null, reason: 'format-disagree' };
+  if (archFormat == null) {
+    if (overrideFormat == null) return { side: null, reason: 'arch-missing' };
+    if (overrideFormat.trim() !== depthFormat.trim()) {
+      return { side: null, reason: 'override-disagree' };
+    }
+  } else if (archFormat.trim() !== depthFormat.trim()) {
+    return { side: null, reason: 'format-disagree' };
+  }
   const side = mapFormatToSide(depthFormat, runningSide);
   if (side == null) return { side: null, reason: 'running-side-unknown' };
   return { side, reason: 'derived' };
@@ -183,6 +192,7 @@ function build() {
   const runningSideByLine = readJson(RUNNING_SIDE_PATH);
   const depthMap = loadFormatCsv(DEPTH_CSV_PATH, aliases);
   const archMap = loadFormatCsv(ARCH_CSV_PATH, aliases);
+  const overrides = readJson(OVERRIDES_PATH);
   const stations = readJson(STATIONS_JSON_PATH);
 
   const output = {};
@@ -199,8 +209,14 @@ function build() {
     const { id, line, name } = station;
     const depthFormat = lookupFormat(line, name, depthMap);
     const archFormat = lookupFormat(line, name, archMap);
+    const overrideFormat = overrides[`${line}|${name}`]?.format ?? null;
     const runningSide = runningSideByLine[line]?.side ?? null;
-    const { side, reason } = resolveStationSide({ depthFormat, archFormat, runningSide });
+    const { side, reason } = resolveStationSide({
+      depthFormat,
+      archFormat,
+      overrideFormat,
+      runningSide,
+    });
 
     stats.byLine[line] ??= { left: 0, right: 0, unknown: 0 };
     if (side == null) {
