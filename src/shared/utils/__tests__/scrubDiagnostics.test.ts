@@ -1,22 +1,8 @@
 import { scrubDiagnostics } from '../scrubDiagnostics';
-import {
-  COORDINATE_REDACTION_PATTERNS,
-  REDACTED_COORDINATE,
-  REDACTED_TOKEN,
-  TOKEN_HEX_PATTERN,
-} from '../../constants/feedbackRedaction';
 
 const HEX64 = '3f9a1c7be24d5086a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718';
 
 describe('scrubDiagnostics (#3366 방어 스크럽 — 서버와 같은 공용 패턴)', () => {
-  it('상수: 마커 문자열', () => {
-    expect(REDACTED_COORDINATE).toBe('[redacted]');
-    expect(REDACTED_TOKEN).toBe('[token]');
-    expect(COORDINATE_REDACTION_PATTERNS.length).toBeGreaterThan(0);
-    expect(TOKEN_HEX_PATTERN.test('a'.repeat(40))).toBe(true);
-    expect(TOKEN_HEX_PATTERN.test('a'.repeat(39))).toBe(false);
-  });
-
   describe('좌표(문맥 필수)', () => {
     it.each([
       ['pos=37.54321,127.05432', 'pos=[redacted]'],

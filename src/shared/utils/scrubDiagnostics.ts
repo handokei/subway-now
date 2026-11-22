@@ -11,8 +11,8 @@ import {
  */
 export function scrubDiagnostics(text: string): string {
   const coordinateScrubbed = COORDINATE_REDACTION_PATTERNS.reduce(
-    // 모든 좌표 패턴의 capture group 1 = 보존할 앞부분(feedbackRedaction.ts 계약).
-    (acc, pattern) => acc.replace(pattern, `$1${REDACTED_COORDINATE}`),
+    // 패턴은 lookbehind 방식(경계·접두는 매치 밖) — 매치 전체를 마커로 치환한다.
+    (acc, pattern) => acc.replace(pattern, REDACTED_COORDINATE),
     text,
   );
   return coordinateScrubbed.replace(TOKEN_HEX_PATTERN, REDACTED_TOKEN);
