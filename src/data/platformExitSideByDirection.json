@@ -28,5 +28,15 @@
     "terminating": {
       "down": "left"
     }
+  },
+  "7-042": {
+    "up": "left",
+    "down": "left",
+    "grade": "wiki",
+    "sourceUrl": "https://namu.wiki/w/%EC%98%A8%EC%88%98%EC%97%AD",
+    "note": "온수(7호선, 2면 3선 쌍섬형 유사): 나무위키 '내리는 문의 위치는 석남 착발 열차는 왼쪽, 이 역 착발 열차는 오른쪽이다.' — 통과(석남 착발) up/down 모두 왼쪽, 당역 종착(장암 방면에서 오는 down)은 terminating.down=오른쪽. 같은 문서의 '중간 선로로 들어와 오른쪽 문을 열어 승객들을 내린 다음 왼쪽 문' 서술과 일치. 상행 당역 종착은 문장 없음(unknown) — 종착 값이 없으면 문 라인을 생략한다. 비공식, 2026-11-22 조사.",
+    "terminating": {
+      "down": "right"
+    }
   }
 }
