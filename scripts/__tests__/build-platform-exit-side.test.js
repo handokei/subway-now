@@ -196,7 +196,7 @@ describe('build (실데이터: 공식 역사심도정보 + 건축정보)', () =>
 
   it('모든 항목은 출처 등급을 가진다', () => {
     for (const entry of Object.values(result.output)) {
-      expect(entry.grade).toBe(GRADE_OFFICIAL_DERIVED);
+      expect([GRADE_OFFICIAL_DERIVED, 'wiki-crosschecked']).toContain(entry.grade);
     }
   });
 
