@@ -982,5 +982,109 @@
   "8-018": {
     "side": "right",
     "grade": "official-derived"
+  },
+  "9-001": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
+  },
+  "9-003": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-004": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-006": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-008": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-009": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-010": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-011": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-013": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
+  },
+  "9-014": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
+  },
+  "9-015": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-017": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-018": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-019": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-021": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-022": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-023": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-026": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-027": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-029": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-030": {
+    "side": "right",
+    "grade": "wiki-crosschecked"
+  },
+  "9-032": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
+  },
+  "9-033": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
+  },
+  "9-035": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
+  },
+  "9-036": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
+  },
+  "9-037": {
+    "side": "left",
+    "grade": "wiki-crosschecked"
   }
 }

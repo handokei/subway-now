@@ -1,0 +1,545 @@
+{
+  "line": "9",
+  "retrievedAt": "2026-11-22",
+  "sources": {
+    "wikipedia": "위키백과 한국어판 개별 역 문서 (CC BY-SA 4.0)",
+    "namuwiki": "https://namu.wiki/w/서울%20지하철%209호선/역%20목록 — `승강장` 열 글리프. 교차검증 용도로만 사용(CC BY-NC-SA 2.0 KR, 값의 직접 출처 아님). │■│=섬식 2선, ■││■=상대식 2선"
+  },
+  "stations": {
+    "9-001": {
+      "name": "개화",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EA%B0%9C%ED%99%94%EC%97%AD",
+        "quote": "1면 2선의 섬식 승강장이다."
+      },
+      "namuwiki": {
+        "code": "901",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-002": {
+      "name": "김포공항",
+      "wikipedia": {
+        "format": null,
+        "tracks": null,
+        "url": "https://ko.wikipedia.org/wiki/%EA%B9%80%ED%8F%AC%EA%B3%B5%ED%95%AD%EC%97%AD",
+        "quote": "승강장 = 지하 3층: 2면 3선(혼합식) / 지하 4층: 1면 2선(섬식)",
+        "note": "9호선·공항철도·서해선·5호선 공용 역, 층별 복합 구조라 9호선 단일 형식을 특정할 수 없음"
+      },
+      "namuwiki": {
+        "code": "902",
+        "glyph": "│■│■│\n│■│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-003": {
+      "name": "공항시장",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EA%B3%B5%ED%95%AD%EC%8B%9C%EC%9E%A5%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장이 있는 지하역이며, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "903",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-004": {
+      "name": "신방화",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%8B%A0%EB%B0%A9%ED%99%94%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "904",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-005": {
+      "name": "마곡나루",
+      "wikipedia": {
+        "format": "쌍섬식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EB%A7%88%EA%B3%A1%EB%82%98%EB%A3%A8%EC%97%AD",
+        "quote": "9호선 승강장: 2면 4선의 쌍섬식 승강장을 갖춘 지하역으로 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "905",
+        "glyph": "│■││■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-006": {
+      "name": "양천향교",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%96%91%EC%B2%9C%ED%96%A5%EA%B5%90%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "906",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-007": {
+      "name": "가양",
+      "wikipedia": {
+        "format": "쌍섬식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EA%B0%80%EC%96%91%EC%97%AD",
+        "quote": "2면 4선식 쌍섬식의 승강장 구조를 가진 지하역이다. 바깥쪽 승강장을 일반열차가, 안쪽 승강장을 급행열차가 각각 사용한다."
+      },
+      "namuwiki": {
+        "code": "907",
+        "glyph": "│■││■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-008": {
+      "name": "증미",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%A6%9D%EB%AF%B8%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "908",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-009": {
+      "name": "등촌",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EB%93%B1%EC%B4%8C%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있으며, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "909",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-010": {
+      "name": "염창",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%97%BC%EC%B0%BD%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장이 있는 지하역으로, 승강장은 곡선이다."
+      },
+      "namuwiki": {
+        "code": "910",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-011": {
+      "name": "신목동",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%8B%A0%EB%AA%A9%EB%8F%99%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "911",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-012": {
+      "name": "선유도",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EC%84%A0%EC%9C%A0%EB%8F%84%EC%97%AD",
+        "quote": "승강장은 2면 4선 상대식이며, 스크린도어가 설치되어있다. 중앙의 2선은 승강장이 없는 급행 통과선이다."
+      },
+      "namuwiki": {
+        "code": "912",
+        "glyph": "■││││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-013": {
+      "name": "당산",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EB%8B%B9%EC%82%B0%EC%97%AD",
+        "quote": "서울 지하철 2호선은 2면 2선 상대식 승강장, 서울 지하철 9호선은 1면 2선의 섬식 승강장을 갖추고 있으며"
+      },
+      "namuwiki": {
+        "code": "913",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-014": {
+      "name": "국회의사당",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EA%B5%AD%ED%9A%8C%EC%9D%98%EC%82%AC%EB%8B%B9%EC%97%AD",
+        "quote": "승강장은 1면 2선의 섬식 승강장을 갖추고 있으며, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "914",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-015": {
+      "name": "여의도",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%97%AC%EC%9D%98%EB%8F%84%EC%97%AD",
+        "quote": "두 노선 모두 2면 2선의 상대식 승강장을 갖춘 지하역이며, 완전밀폐형 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "915",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-016": {
+      "name": "샛강",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EC%83%9B%EA%B0%95%EC%97%AD",
+        "quote": "9호선은 2면 2선 상대식 승강장 … 9호선의 경우 상대식 승강장 사이에 통과선이 2선 있는 형태다. (인포박스: 승강장 = 2면 4선(상대식))",
+        "note": "인포박스는 2면 4선, 본문은 2면 2선 + 통과선 2선으로 표기가 갈려 선로 수를 2로 확정할 수 없음(4로 기록)"
+      },
+      "namuwiki": {
+        "code": "916",
+        "glyph": "■││││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-017": {
+      "name": "노량진",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EB%85%B8%EB%9F%89%EC%A7%84%EC%97%AD",
+        "quote": "(9호선 인포박스) 승강장 = 2면 2선(상대식)"
+      },
+      "namuwiki": {
+        "code": "917",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-018": {
+      "name": "노들",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EB%85%B8%EB%93%A4%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "918",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-019": {
+      "name": "흑석(중앙대입구)",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%ED%9D%91%EC%84%9D%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 가지고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "919",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-020": {
+      "name": "동작(현충원)",
+      "wikipedia": {
+        "format": "쌍섬식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EB%8F%99%EC%9E%91%EC%97%AD",
+        "quote": "서울 지하철 9호선은 2면 4선의 쌍섬식 승강장이며, 두 노선 모두 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "920",
+        "glyph": "│■││■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-021": {
+      "name": "구반포",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EA%B5%AC%EB%B0%98%ED%8F%AC%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 가지고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "921",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-022": {
+      "name": "신반포",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%8B%A0%EB%B0%98%ED%8F%AC%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 가지고 있으며, 승강장에 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "922",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-023": {
+      "name": "고속터미널",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EA%B3%A0%EC%86%8D%ED%84%B0%EB%AF%B8%EB%84%90%EC%97%AD",
+        "quote": "세 노선 모두 2면 2선의 상대식 승강장으로 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "923",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-024": {
+      "name": "사평",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EC%82%AC%ED%8F%89%EC%97%AD",
+        "quote": "승강장은 2면 4선의 상대식 승강장으로, 내선은 급행열차 통과선, 외선은 승강장 바로 앞에 있어 일반열차가 정차하는 곳이다."
+      },
+      "namuwiki": {
+        "code": "924",
+        "glyph": "■││││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-025": {
+      "name": "신논현",
+      "wikipedia": {
+        "format": "혼합식",
+        "tracks": 3,
+        "url": "https://ko.wikipedia.org/wiki/%EC%8B%A0%EB%85%BC%ED%98%84%EC%97%AD",
+        "quote": "2면 3선의 혼합식 승강장이 있는 지하역이다."
+      },
+      "namuwiki": {
+        "code": "925",
+        "glyph": "│■││■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-026": {
+      "name": "언주",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%96%B8%EC%A3%BC%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있으며, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "926",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-027": {
+      "name": "선정릉",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%84%A0%EC%A0%95%EB%A6%89%EC%97%AD",
+        "quote": "두 노선 모두 2면 2선의 상대식 승강장을 갖추고 있으며, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "927",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-028": {
+      "name": "삼성중앙",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EC%82%BC%EC%84%B1%EC%A4%91%EC%95%99%EC%97%AD",
+        "quote": "2면 4선의 곡선 상대식 승강장을 갖추고 있으며, 스크린도어가 설치되어 있다. 가운데 2선은 급행열차 통과선이 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "928",
+        "glyph": "■││││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-029": {
+      "name": "봉은사",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EB%B4%89%EC%9D%80%EC%82%AC%EC%97%AD",
+        "quote": "2면 2선의 상대식 승강장을 갖추고 있는 지하역이며, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "929",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-030": {
+      "name": "종합운동장",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%A2%85%ED%95%A9%EC%9A%B4%EB%8F%99%EC%9E%A5%EC%97%AD_%28%EC%84%9C%EC%9A%B8%29",
+        "quote": "두 노선 모두 2면 2선의 상대식 승강장을 갖춘 지하역으로"
+      },
+      "namuwiki": {
+        "code": "930",
+        "glyph": "■││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-031": {
+      "name": "삼전",
+      "wikipedia": {
+        "format": "상대식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EC%82%BC%EC%A0%84%EC%97%AD",
+        "quote": "2면 4선의 상대식 승강장으로 되어 있으며, 스크린도어가 설치되어 있다. 가운데 2선은 급행열차 통과선이 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "931",
+        "glyph": "■││││■",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-032": {
+      "name": "석촌고분",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%84%9D%EC%B4%8C%EA%B3%A0%EB%B6%84%EC%97%AD",
+        "quote": "1면 2선의 섬식 승강장을 갖춘 지하역으로, 승강장에는 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "932",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-033": {
+      "name": "석촌",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%84%9D%EC%B4%8C%EC%97%AD",
+        "quote": "9호선 승강장: 1면 2선의 섬식 승강장을 갖춘 지하역으로, 승강장에는 스크린도어가 설치되었다."
+      },
+      "namuwiki": {
+        "code": "933",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-034": {
+      "name": "송파나루",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 4,
+        "url": "https://ko.wikipedia.org/wiki/%EC%86%A1%ED%8C%8C%EB%82%98%EB%A3%A8%EC%97%AD",
+        "quote": "1면 4선의 섬식 승강장을 갖춘 역이며, 통과선 2선이 승강장 옆에 있다."
+      },
+      "namuwiki": {
+        "code": "934",
+        "glyph": "││■││",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-035": {
+      "name": "한성백제",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%ED%95%9C%EC%84%B1%EB%B0%B1%EC%A0%9C%EC%97%AD",
+        "quote": "1면 2선의 섬식 승강장을 갖춘 지하역으로, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "935",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-036": {
+      "name": "올림픽공원(한국체대)",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EC%98%AC%EB%A6%BC%ED%94%BD%EA%B3%B5%EC%9B%90%EC%97%AD",
+        "quote": "9호선 승강장: 1면 2선의 섬식 승강장을 갖춘 역으로, 승강장에는 스크린도어가 설치되었다."
+      },
+      "namuwiki": {
+        "code": "936",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-037": {
+      "name": "둔촌오륜",
+      "wikipedia": {
+        "format": "섬식",
+        "tracks": 2,
+        "url": "https://ko.wikipedia.org/wiki/%EB%91%94%EC%B4%8C%EC%98%A4%EB%A5%9C%EC%97%AD",
+        "quote": "1면 2선의 섬식 승강장을 갖춘 지하역으로, 스크린도어가 설치되어 있다."
+      },
+      "namuwiki": {
+        "code": "937",
+        "glyph": "│■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    },
+    "9-038": {
+      "name": "중앙보훈병원",
+      "wikipedia": {
+        "format": null,
+        "tracks": 3,
+        "url": "https://ko.wikipedia.org/wiki/%EC%A4%91%EC%95%99%EB%B3%B4%ED%9B%88%EB%B3%91%EC%9B%90%EC%97%AD",
+        "quote": "2면 3선의 승강장을 갖춘 지하역이다. 스크린도어가 설치되어 있다.",
+        "note": "형식(섬식/상대식) 명시 없음 + 3선"
+      },
+      "namuwiki": {
+        "code": "938",
+        "glyph": "│■││■│",
+        "url": "https://namu.wiki/w/%EC%84%9C%EC%9A%B8%20%EC%A7%80%ED%95%98%EC%B2%A0%209%ED%98%B8%EC%84%A0/%EC%97%AD%20%EB%AA%A9%EB%A1%9D"
+      }
+    }
+  }
+}

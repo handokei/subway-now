@@ -1,0 +1,172 @@
+{
+  "retrievedAt": "2026-11-22",
+  "sections": [
+    {
+      "id": "9",
+      "line": "9",
+      "stationIds": "all",
+      "side": "right",
+      "scope": "서울 지하철 9호선 전 구간(개화~중앙보훈병원)",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8_%EC%A7%80%ED%95%98%EC%B2%A0_9%ED%98%B8%EC%84%A0",
+          "quote": "통행방향은 어디서든 우측통행이다.",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "sinbundang",
+      "line": "sinbundang",
+      "stationIds": "all",
+      "side": "left",
+      "scope": "신분당선 전 구간",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%8B%A0%EB%B6%84%EB%8B%B9%EC%84%A0",
+          "quote": "통행방향은 어디서든 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "airport",
+      "line": "airport",
+      "stationIds": "all",
+      "side": "left",
+      "scope": "인천국제공항철도(공항철도) 전 구간",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%9D%B8%EC%B2%9C%EA%B5%AD%EC%A0%9C%EA%B3%B5%ED%95%AD%EC%B2%A0%EB%8F%84",
+          "quote": "* 통행 방식: 좌측 통행",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "gyeongui",
+      "line": "gyeongui",
+      "stationIds": "all",
+      "side": "left",
+      "scope": "경의·중앙선 전 구간(경의선·용산선·경원선·중앙선 경유)",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%88%98%EB%8F%84%EA%B6%8C_%EC%A0%84%EC%B2%A0_%EA%B2%BD%EC%9D%98%C2%B7%EC%A4%91%EC%95%99%EC%84%A0",
+          "quote": "통행방향은 어디서든 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%88%98%EB%8F%84%EA%B6%8C_%EC%A0%84%EC%B2%A0_%EA%B2%BD%EC%9D%98%EC%84%A0",
+          "quote": "통행방향은 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%88%98%EB%8F%84%EA%B6%8C_%EC%A0%84%EC%B2%A0_%EC%A4%91%EC%95%99%EC%84%A0",
+          "quote": "통행방향은 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "bundang",
+      "line": "bundang",
+      "stationIds": "all",
+      "side": "left",
+      "scope": "수인·분당선 전 구간(수인선·분당선)",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%88%98%EB%8F%84%EA%B6%8C_%EC%A0%84%EC%B2%A0_%EC%88%98%EC%9D%B8%C2%B7%EB%B6%84%EB%8B%B9%EC%84%A0",
+          "quote": "통행방향은 어디서든 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%88%98%EC%9D%B8%EC%84%A0",
+          "quote": "전 구간 통행방향은 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "1-korail",
+      "line": "1",
+      "side": "left",
+      "scope": "1호선 한국철도공사 구간(경부선·경인선·경원선·장항선 등). 서울교통공사 구간(서울~청량리)은 기존 line-running-side.json \"1\"(null 보류)이 관할. 역 목록 매핑은 1호선 PR에서 stationIds로 채운다(미지정 = 어떤 역에도 적용되지 않음).",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%88%98%EB%8F%84%EA%B6%8C_%EC%A0%84%EC%B2%A0_1%ED%98%B8%EC%84%A0",
+          "quote": "통행방향은 어디서든 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EB%B6%80%EC%84%A0",
+          "quote": "통행방향은 어디서든 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EA%B2%BD%EC%9B%90%EC%84%A0",
+          "quote": "용산역부터 동두천역까지는 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%9E%A5%ED%95%AD%EC%84%A0",
+          "quote": "* 통행 방식 : 좌측 통행",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "4-korail",
+      "line": "4",
+      "side": "left",
+      "scope": "4호선 한국철도공사 구간 선바위~오이도(과천선·안산선). 서울교통공사 구간(당고개~남태령)은 line-running-side.json \"4\"(right). 역 목록 매핑은 4호선 PR에서 stationIds로 채운다.",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%84%A0%EB%B0%94%EC%9C%84%EC%97%AD",
+          "quote": "이 역부터 오이도역까지 한국철도공사 구간이고 좌측 통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%95%88%EC%82%B0%EC%84%A0",
+          "quote": "통행방향은 전 구간 좌측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EA%B3%BC%EC%B2%9C%EC%84%A0",
+          "quote": "통행방향은 어디서든 좌측통행이다(남태령역 제외).",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "3-ilsan",
+      "line": "3",
+      "side": "right",
+      "scope": "3호선 일산선(한국철도공사, 지축~대화). 역 목록 매핑은 3호선 PR에서 stationIds로 채운다.",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%9D%BC%EC%82%B0%EC%84%A0",
+          "quote": "한국철도공사 운용 노선 중 유일무이하게 우측 통행 방식이며 … 어디서든 우측통행이고, 직류를 이용한다.",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    },
+    {
+      "id": "7-bucheon-incheon",
+      "line": "7",
+      "side": "right",
+      "scope": "7호선 부천·인천 연장(인천교통공사 구간). 역 목록 매핑은 7호선 PR에서 stationIds로 채운다.",
+      "evidence": [
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%84%9C%EC%9A%B8_%EC%A7%80%ED%95%98%EC%B2%A0_7%ED%98%B8%EC%84%A0",
+          "quote": "통행방향은 어디서든 우측통행이다.",
+          "retrievedAt": "2026-11-22"
+        },
+        {
+          "url": "https://ko.wikipedia.org/wiki/%EC%9D%BC%EC%82%B0%EC%84%A0",
+          "quote": "우측 통행 방식인 7호선 부천 및 인천 구간(인천교통공사 소속)과는 달리 …",
+          "retrievedAt": "2026-11-22"
+        }
+      ]
+    }
+  ]
+}
