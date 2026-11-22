@@ -4,7 +4,7 @@
  *
  * 규칙: transfer/destination waypoint만(intermediate 제외), waypoint.stationId로 판정,
  *       근거 없으면(stationId 없음 / 데이터 없는 역) 줄을 생략한다(ADR-010: 틀린 줄보다 없는 줄).
- * 데이터(고정 id): 2-026 사당(2호선)=right / 4-025 사당(4호선)=left / 7-015 용마산=right / 2-012 건대입구=right / 9-001 개화=데이터 없음.
+ * 데이터(고정 id): 2-026 사당(2호선)=right / 4-025 사당(4호선)=left / 7-015 용마산=right / 2-012 건대입구=right / 9-002 김포공항=데이터 없음(#3177 PR-1 이후에도 not-two-tracks라 null).
  */
 import { exportPKCS8, generateKeyPair } from 'jose';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,8 +73,8 @@ describe('매역 알림(buildStationNotifContent) — transfer/destination 본�
     expect(buildStationNotifContent(tripOf([dest]), dest, 'ko').body).toBe('이번 역에서 내리세요');
   });
 
-  it('데이터 없는 역(9-001) 이면 줄 생략', () => {
-    const dest = wp('개화', '9', 'destination', '9-001');
+  it('데이터 없는 역(9-002 김포공항, 다층 복합) 이면 줄 생략', () => {
+    const dest = wp('김포공항', '9', 'destination', '9-002');
     expect(buildStationNotifContent(tripOf([dest]), dest, 'ko').body).toBe('이번 역에서 내리세요');
   });
 
