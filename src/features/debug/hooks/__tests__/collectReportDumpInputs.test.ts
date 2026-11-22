@@ -5,14 +5,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { collectReportDumpInputs } from '../useDebugDumpInputs';
 import { hashTripToken } from '../../../../shared/infra/monitoring/tripTokenHash';
-import {
-  ACTIVE_TRIP_KEY,
-  APNS_TOKEN_KEY,
-} from '../../../../shared/constants/storageKeys';
 import { deviceLocalTripId } from '../../../alarm/utils/safetyNetScheduler';
 import { useBoardingLockStore } from '../../../alarm/store/useBoardingLockStore';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
+import { useTripGroundTruthStore } from '../../store/useTripGroundTruthStore';
 
 const mockReadSilentPushDiagnostics = jest.fn();
 jest.mock('../../../alarm/hooks/useSilentPushDiagnostics', () => ({
@@ -86,8 +83,6 @@ describe('collectReportDumpInputs (#3366)', () => {
     mockReadSilentPushDiagnostics.mockResolvedValue(DIAG);
     mockGetTripStartedAt.mockResolvedValue(TRIP_START);
     mockDumpScheduled.mockResolvedValue([]);
-    await AsyncStorage.setItem(APNS_TOKEN_KEY, APNS);
-    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, ACTIVE);
     useBoardingLockStore.setState({ lock: null });
     useSettingsStore.setState({ sleepMode: true });
     useDestinationStore.setState({ destination: null, tripOrigin: null });
@@ -120,6 +115,52 @@ describe('collectReportDumpInputs (#3366)', () => {
     expect(args.trip?.lockless).toBe(true);
   });
 
+  describe('lock 상태별 lockless 판정', () => {
+    const DEST = { id: '2-222', name: '잠실', line: '2', lineColor: '#000', lat: 0, lng: 0 } as const;
+    const lockAt = (boardedAt: number) => ({
+      boardedAt,
+      expectedDurationMs: 30 * 60 * 1000,
+      destinationId: '2-222',
+      trainCode: 'T-101',
+      boardingStationId: '2-211',
+      boardingLine: '2',
+    });
+
+    it('활성 lock이 있으면 destination이 있어도 lockless=false', async () => {
+      useDestinationStore.setState({ destination: DEST });
+      useBoardingLockStore.setState({ lock: lockAt(Date.now()) as never });
+      const { args } = await collectReportDumpInputs();
+      expect(args.trip?.lockless).toBe(false);
+      expect(args.boardingLock).not.toBeNull();
+    });
+
+    it('만료된 lock은 lock 없음과 같다(lockless=true)', async () => {
+      useDestinationStore.setState({ destination: DEST });
+      useBoardingLockStore.setState({ lock: lockAt(Date.now() - 24 * 60 * 60 * 1000) as never });
+      const { args } = await collectReportDumpInputs();
+      expect(args.trip?.lockless).toBe(true);
+    });
+  });
+
+  it('Operation Dashboard alarmAccuracy(local)는 정답지 응답 store에서 센다', async () => {
+    useTripGroundTruthStore.setState({
+      responses: [
+        { corrId: 'a', endedAt: 1, respondedAt: 2, outcome: 'accurate' },
+        { corrId: 'b', endedAt: 1, respondedAt: 2, outcome: 'inaccurate' },
+        { corrId: 'c', endedAt: 1, respondedAt: 2, outcome: 'unanswered' },
+      ],
+    });
+    try {
+      const { args } = await collectReportDumpInputs();
+      expect(args.operationDashboard).toEqual({
+        groundTruthAccurateCount: 1,
+        groundTruthAnsweredCount: 2,
+      });
+    } finally {
+      useTripGroundTruthStore.setState({ responses: [] });
+    }
+  });
+
   it('tokens = APNS · 활성 trip token · device-local trip id', async () => {
     const { tokens } = await collectReportDumpInputs();
     expect(tokens).toEqual(expect.arrayContaining([APNS, ACTIVE, deviceLocalTripId(TRIP_START)]));
@@ -133,7 +174,6 @@ describe('collectReportDumpInputs (#3366)', () => {
   });
 
   it('APNS token 없음 → tripKey null, tokens에서도 빠진다', async () => {
-    await AsyncStorage.removeItem(APNS_TOKEN_KEY);
     mockReadSilentPushDiagnostics.mockResolvedValue({ ...DIAG, apnsToken: null });
     const { tripKey, tokens } = await collectReportDumpInputs();
     expect(tripKey).toBeNull();
@@ -142,7 +182,7 @@ describe('collectReportDumpInputs (#3366)', () => {
 
   it('trip 시작 시각·활성 trip token 모두 없으면 tokens는 APNS만', async () => {
     mockGetTripStartedAt.mockResolvedValue(null);
-    await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+    mockReadSilentPushDiagnostics.mockResolvedValue({ ...DIAG, activeTripToken: null });
     const { tokens } = await collectReportDumpInputs();
     expect(tokens).toEqual([APNS]);
   });

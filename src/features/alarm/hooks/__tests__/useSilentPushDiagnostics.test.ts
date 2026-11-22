@@ -254,6 +254,9 @@ describe('readSilentPushDiagnostics (#3366)', () => {
       Promise.resolve(key === APNS_TOKEN_KEY ? 'apns-tok' : null),
     );
     const addSpy = jest.spyOn(AppState, 'addEventListener');
+    // 이전 테스트에서 렌더된 훅의 비동기 effect가 남긴 호출 기록을 비운 뒤, 읽기 함수 단독 호출만 본다.
+    await flushPromises();
+    addSpy.mockClear();
     const diag = await readSilentPushDiagnostics();
     expect(diag).toMatchObject({
       apnsToken: 'apns-tok',

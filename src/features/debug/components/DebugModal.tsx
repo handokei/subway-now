@@ -14,6 +14,10 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createLogger } from '../../../shared/utils/logger';
+import { scrubDiagnostics } from '../../../shared/utils/scrubDiagnostics';
+import { redactTokenValues, tokenMarker } from '../utils/redactDump';
+import { REDACTED_COORDINATE } from '../../../shared/constants/feedbackRedaction';
+import { REPORT_NA_LABEL, useDebugDumpInputs } from '../hooks/useDebugDumpInputs';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { DESTINATION_KEY, ROUTE_KEY } from '../../../shared/constants/storageKeys';
@@ -25,7 +29,6 @@ import {
   type TripLifecyclePhase,
 } from '../../alarm/utils/tripStartStorage';
 import {
-  readBackendSsotMirror,
   type BackendSsotMirrorEntry,
 } from '../../alarm/utils/backendSsotMirror';
 import { isDebugModalEnabled } from '../../../shared/constants/debugFlags';
@@ -38,7 +41,7 @@ import { useArchFlagRemote } from '../../../shared/config/useArchFlagRemote';
 import type { GpsActiveState } from '../../../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../../../shared/utils/formatTime';
 import { useFusedNearestStation } from '../../../features/nearest-station/hooks/useFusedNearestStation';
-import { readBgLastFix, type BgLastFix } from '../../../features/nearest-station/utils/bgLastFix';
+import type { BgLastFix } from '../../../features/nearest-station/utils/bgLastFix';
 import { useArrivalInfo } from '../../../features/arrival/hooks/useArrivalInfo';
 import {
   useSilentPushDiagnostics,
@@ -56,10 +59,6 @@ import {
   countSilentPushKindBreakdown,
   countSilentPushOutcomes,
   formatFusionPickerTierDistribution,
-  getAlarmLog,
-  getFiredAlarmLog,
-  getFusionTierLog,
-  readBgTaskLastHeartbeat,
   summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
   summarizeAlarmLogCounters,
@@ -79,7 +78,6 @@ import {
 // 재집계(computeBoardingPromptMonitor.byDay, cap=200 회전에 취약) 대신 이 영속 소스를 읽는다.
 // totals(displayed/responded/boarded/dismissed 합계 + rate)는 여전히 ring 기반("최근" 뷰).
 import {
-  getBoardingPromptDailyCounters,
   clearBoardingPromptDailyCounters,
 } from '../../../features/alarm/utils/boardingPromptDailyCounters';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
@@ -96,30 +94,22 @@ import {
 import { isPendingTrainCode } from '../../../shared/constants/boardingLock';
 import {
   clearEstimatorEntries,
-  getEstimatorEntries,
-  subscribeEstimatorDebug,
   type EstimatorDebugEntry,
 } from '../../../features/route/utils/estimatorDebugBuffer';
 import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../../../shared/constants/labels';
 import {
   clearFusionDebugEntries,
-  getFusionDebugEntries,
-  subscribeFusionDebug,
   type FusionDebugEntry,
 } from '../../../features/nearest-station/utils/fusionDebugBuffer';
 // #1540 (S7) — gps-drop 전용 buffer. fusionDebugBuffer와 cap을 공유하지 않아 fire-related
 // entry(fusion decision / sticky / gps-fix)를 점령하지 않는다.
 import {
   clearGpsDropEntries,
-  getGpsDropEntries,
-  subscribeGpsDrop,
   type GpsDropEntry,
 } from '../../../features/nearest-station/utils/gpsDropBuffer';
 // #1902 (RC-18) — candidate-reject 전용 buffer. fusionDebugBuffer 200 cap 점령 자기 파괴 차단.
 import {
   clearCandidateRejectEntries,
-  getCandidateRejectEntries,
-  subscribeCandidateReject,
   type CandidateRejectEntry,
 } from '../../../features/nearest-station/utils/candidateRejectBuffer';
 // #2594 (옵션 D) — 재평가 빈도 계측(GPS fix 도착 간격, candidates 재계산, candidate-distance/
@@ -135,31 +125,23 @@ import {
 // 점령하는 self-pollution 차단 (candidateRejectBuffer 패턴 동일).
 import {
   clearBoardingLockDriftEntries,
-  getBoardingLockDriftEntries,
-  subscribeBoardingLockDrift,
   type BoardingLockDriftEntry,
 } from '../../../features/nearest-station/utils/boardingLockDriftBuffer';
 // #2152 — BoardingLock lifecycle(생성 source/해제 reason) 전용 buffer. drift buffer와 동일 패턴
 // (fusionDebugBuffer 점령 회귀 차단 위해 소형 cap 별도 buffer).
 import {
   clearLockLifecycleEntries,
-  getLockLifecycleEntries,
-  subscribeLockLifecycle,
   type LockLifecycleEntry,
 } from '../../../features/alarm/utils/boardingLockLifecycleBuffer';
 // #1518 — device → backend HTTP 호출 ring buffer. 모든 backend fetch chokepoint가 entry를 push.
 import {
   clearBackendCallEntries,
-  getBackendCallEntries,
-  subscribeBackendCallEntries,
   type BackendCallEntry,
 } from '../../../shared/utils/backendCallBuffer';
 // #1501 — PR-C. PR-A(#1512)가 만든 raw signal ring buffer를 DebugModal에 자동 노출 + share dump 통합.
 // 매 fusion cycle/enter/exit 시 push되는 entry를 직전 30건까지 표시 — toggle 없이 모달 열면 즉시.
 import {
   clearRawSignalEntries,
-  getRawSignalEntries,
-  subscribeRawSignal,
   type RawSignalEntry,
   type PushReceiptDetail,
 } from '../../observability/utils/rawSignalBuffer';
@@ -167,13 +149,10 @@ import {
 // rawSignalLog가 아니라 이 채널을 소스로 읽는다(긴 트립 초반 receipt 증발 방지).
 import {
   clearPushReceiptEntries,
-  getPushReceiptEntries,
-  subscribePushReceipt,
   type PushReceiptBufferEntry,
 } from '../../observability/utils/pushReceiptBuffer';
 import type { AlarmEventMirror } from '../../alarm/utils/backendSsotMirror';
 import {
-  dumpScheduledNotifications,
   formatScheduledNotificationLine,
   type ScheduledNotificationDumpEntry,
 } from '../../../features/alarm/utils/scheduledNotificationsDump';
@@ -463,13 +442,19 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
   return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;
 }
 
+function formatRawSignalPos(entry: RawSignalEntry, redactCoordinates: boolean): string {
+  if (entry.gps == null) return '-';
+  if (redactCoordinates) return REDACTED_COORDINATE;
+  return `${entry.gps.lat.toFixed(5)},${entry.gps.lng.toFixed(5)}`;
+}
+
 /**
  * #1501 — Raw signal ring buffer entry를 한 줄 텍스트로. 필드 순서:
  *   `HH:MM:SS | kind | stationId | source/confidence | gps(acc/speed) | motion | sub | arvlCd | arc | cell`
  * 누락 필드는 `-`로 출력 — Fusion log와 동일 컨벤션.
  * #1859 — cellular 필드 추가: `cell=<tech_short>/<vote>` (예: `cell=LTE/surface`, `cell=-/unknown`).
  */
-function formatRawSignalLine(entry: RawSignalEntry): string {
+function formatRawSignalLine(entry: RawSignalEntry, options?: { redactCoordinates?: boolean }): string {
   const time = formatTime(entry.ts);
   const stationId = entry.stationId ?? '-';
   const source = entry.source ?? '-';
@@ -501,7 +486,8 @@ function formatRawSignalLine(entry: RawSignalEntry): string {
   // #3191 PR-2 — hold가 꺼진 첫 조건 / G2 입력 거리(m) / fix 좌표(임계 표본 수집용). 끝에 append.
   const holdBlk = entry.holdBlock ?? '-';
   const distM = entry.distM != null ? String(Math.round(entry.distM)) : '-';
-  const pos = entry.gps != null ? `${entry.gps.lat.toFixed(5)},${entry.gps.lng.toFixed(5)}` : '-';
+  // #3366 — redact 모드(버그 신고 첨부)에서는 좌표를 구조적으로 치환한다.
+  const pos = formatRawSignalPos(entry, options?.redactCoordinates === true);
   const base = `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress} | ${cellular} | hpa=${hpa} | fix=${gpsFixAt} | watch=${watch} | app=${appState} | baroEvt=${baroEvt} | hold=${hold} | holdBlk=${holdBlk} | distM=${distM} | pos=${pos}`;
   if (!entry.launch) return base;
   const { coldStartAtMs, firstHpa, firstHpaAtMs } = entry.launch;
@@ -512,8 +498,10 @@ function formatRawSignalLine(entry: RawSignalEntry): string {
  * APNs token은 32~64자 hex라 그대로 노출하면 라인이 길어진다.
  * 끝 8자만 표시 — 동일성 비교에 충분하고 공유 시에도 부담이 적다.
  */
-function formatTokenTail(token: string | null): string {
+function formatTokenTail(token: string | null, redact = false): string {
   if (!token) return '(none)';
+  // #3366 — 끝 8자도 token 일부라 redact 모드에서는 hash 마커로 구조적 치환.
+  if (redact) return tokenMarker(token);
   if (token.length <= 8) return token;
   return `…${token.slice(-8)}`;
 }
@@ -537,6 +525,7 @@ function silentPushDiagRows(
   d: SilentPushDiagnostics,
   logs: readonly AlarmLogEntry[],
   lowPowerMode: boolean,
+  redactTokens = false,
 ): { uiLabel: string; dumpKey: string; value: string }[] {
   const task = d.taskRegistrationError
     ? `${d.taskRegistrationState} (${d.taskRegistrationError})`
@@ -554,8 +543,8 @@ function silentPushDiagRows(
   const receivedKindValue = `stn=${kindBreakdown['station-passed']} xfer=${kindBreakdown.transfer} dst=${kindBreakdown.destination} resched=${kindBreakdown.reschedule} tripEnd=${kindBreakdown.tripEnded} unk=${kindBreakdown.unknown}`;
   return [
     { uiLabel: 'permission', dumpKey: 'permission', value: d.permissionStatus ?? '(unknown)' },
-    { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
-    { uiLabel: 'activeTrip', dumpKey: 'activeTrip', value: formatTokenTail(d.activeTripToken) },
+    { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken, redactTokens) },
+    { uiLabel: 'activeTrip', dumpKey: 'activeTrip', value: formatTokenTail(d.activeTripToken, redactTokens) },
     { uiLabel: 'apnsEnv', dumpKey: 'apnsEnv', value: d.apnsEnv },
     // #1931 — RC-5 stamp(`LAST_CONFIRMED_APNS_ENV_KEY`) self-verify. cold start 직후 register가
     // stamp 반영 전이면 '(none)'으로 표시되어 사용자가 race window 발생 여부를 즉시 확인 가능.
@@ -656,7 +645,7 @@ function buildGpsRows(args: {
  * 공유 dump의 단일 args 타입. SSOT 배열의 모든 builder가 같은 args를 받는다.
  * 새 섹션이 의존하는 필드는 여기에 optional로 추가하면 된다.
  */
-interface BuildDumpArgs {
+export interface BuildDumpArgs {
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
   accuracyMeters: number | null;
@@ -670,8 +659,9 @@ interface BuildDumpArgs {
   nearestDistanceM: number | null;
   variants: string[];
   fusion: {
-    confidence: FusionConfidence;
-    source: FusionSource;
+    // #3366 — report 모드(버그 신고)는 fusion을 돌리지 않으므로 REPORT_NA_LABEL.
+    confidence: FusionConfidence | typeof REPORT_NA_LABEL;
+    source: FusionSource | typeof REPORT_NA_LABEL;
     fusedLabel: string;
     gpsLabel: string;
     differs: boolean;
@@ -871,6 +861,11 @@ interface BuildDumpArgs {
    * 미전달/빈 배열은 (none) 반환(포맷터 컨벤션 따라).
    */
   fusionTierLog?: readonly FusionTierLogEntry[];
+  /**
+   * #3366 — redact 모드 내부 플래그(`buildDumpText`가 옵션에서 채운다 — 호출부가 직접 넣지 않는다).
+   * 존재하면 좌표 2곳(GPS 섹션·Raw Signal pos)과 token tail을 구조적으로 치환한다.
+   */
+  redaction?: { readonly tokens: readonly string[] };
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -885,8 +880,12 @@ function buildGpsSection(args: BuildDumpArgs): string[] {
     const fusedDump = args.fusedSpeed
       ? `${args.fusedSpeed.kmh.toFixed(1)} km/h (${args.fusedSpeed.source})`
       : NO_FUSED_SIGNAL_LABEL;
+    const coordinates =
+      args.redaction === undefined
+        ? `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}`
+        : `lat=${REDACTED_COORDINATE}, lng=${REDACTED_COORDINATE}`;
     lines.push(
-      `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`,
+      `${coordinates}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`,
       `fused=${fusedDump}`,
     );
   } else {
@@ -1241,6 +1240,7 @@ function buildSilentPushSection(args: BuildDumpArgs): string[] {
     args.silentPush,
     args.logs,
     args.lowPowerMode ?? false,
+    args.redaction !== undefined,
   ).map(({ dumpKey, value }) => `${dumpKey}=${value}`);
 }
 
@@ -1347,7 +1347,8 @@ function buildAlarmLogReasonsSummarySection(args: BuildDumpArgs): string[] {
 function buildRawSignalSection(args: BuildDumpArgs): string[] {
   const entries = args.rawSignalLog ?? [];
   if (entries.length === 0) return ['(empty)'];
-  return [...entries].reverse().map(formatRawSignalLine);
+  const redactCoordinates = args.redaction !== undefined;
+  return [...entries].reverse().map((entry) => formatRawSignalLine(entry, { redactCoordinates }));
 }
 
 /**
@@ -2274,15 +2275,32 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   },
 ];
 
-function buildDumpText(args: BuildDumpArgs): string {
+/**
+ * #3366 — dump 렌더 옵션. redact=true는 버그 신고 자동 첨부용(좌표 구조 치환 + token 값 기반 전수 치환 +
+ * 방어 스크럽). 기본값(미지정)은 기존 DebugModal 공유 dump와 바이트 동일.
+ */
+export interface BuildDumpOptions {
+  redact?: boolean;
+  /** 값 기반으로 전수 치환할 token 목록(APNS·활성 trip·device-local trip id 등). */
+  tokens?: readonly string[];
+}
+
+export function buildDumpText(args: BuildDumpArgs, options: BuildDumpOptions = {}): string {
+  const { redact = false, tokens = [] } = options;
+  // silentPush 입력의 token은 호출부가 tokens를 빠뜨려도 항상 치환 대상에 포함한다.
+  const redactTokens = [...tokens, args.silentPush.apnsToken, args.silentPush.activeTripToken].filter(
+    (token): token is string => typeof token === 'string',
+  );
+  const effectiveArgs: BuildDumpArgs = redact ? { ...args, redaction: { tokens: redactTokens } } : args;
   const lines: string[] = [`[Subway debug] ${new Date().toISOString()}`];
   for (const spec of SHARE_SECTIONS) {
-    const body = spec.build(args);
+    const body = spec.build(effectiveArgs);
     if (spec.omitIfEmpty && body.length === 0) continue;
-    const suffix = spec.suffix ? spec.suffix(args) : '';
+    const suffix = spec.suffix ? spec.suffix(effectiveArgs) : '';
     lines.push('', `## ${spec.title}${suffix}`, ...body);
   }
-  return lines.join('\n');
+  const text = lines.join('\n');
+  return redact ? scrubDiagnostics(redactTokenValues(text, redactTokens)) : text;
 }
 
 /** 게이트 reason 분류. 동일 prefix로 시작하면 같은 범주. */
@@ -2395,7 +2413,39 @@ function DebugModalInner({
   // Operation Dashboard(local alarmAccuracy) 계산용 tripGroundTruth 응답 subscribe.
   // Modal render 는 OperationDashboardSection 이 자체 store subscribe, share dump 는 handleShare
   // 호출 시점 스냅샷만 필요하므로 responses 참조가 안정적으로 갱신되면 dump 도 갱신된다.
-  const groundTruthResponses = useTripGroundTruthStore((s) => s.responses);
+  // #3366 — 순수 읽기 입력(ring buffer 구독·폴링·refresh)은 useDebugDumpInputs로 이동(FeedbackModal과 공용).
+  const {
+    backendSsotMirror,
+    bgTaskLastHeartbeat,
+    bgLastFix,
+    lock,
+    groundTruthResponses,
+    logs,
+    boardingPromptDailyCounters,
+    firedAlarmLog,
+    fusionTierLogs,
+    fusionLogs,
+    setFusionLogs,
+    gpsDropLogs,
+    setGpsDropLogs,
+    candidateRejectLogs,
+    setCandidateRejectLogs,
+    boardingLockDriftLog,
+    setBoardingLockDriftLog,
+    lockLifecycleLog,
+    setLockLifecycleLog,
+    estimatorLogs,
+    setEstimatorLogs,
+    backendCalls,
+    setBackendCalls,
+    rawSignalLog,
+    setRawSignalLog,
+    pushReceiptLog,
+    setPushReceiptLog,
+    scheduledDump,
+    refreshScheduledDump,
+    refreshLogs,
+  } = useDebugDumpInputs();
   // #1812 — routeContext 빌드: HomeScreen이 ROUTE_KEY에 영속화한 route + destinationStore의
   // tripOrigin + destination으로 routeContext를 구성한다. destination 변경 시 재조회.
   // tripStartedAt과 동일 패턴 (AsyncStorage SSOT, destination 의존 effect).
@@ -2480,71 +2530,6 @@ function DebugModalInner({
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
   const silentPush = useSilentPushDiagnostics();
-  // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror 폴링. 5s 간격.
-  // 미존재(backend가 한 번도 forward 안 함) / parse 실패 시 null → '(no recent SSoT push)' 표시.
-  const [backendSsotMirror, setBackendSsotMirror] =
-    useState<BackendSsotMirrorEntry | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      void readBackendSsotMirror().then((entry) => {
-        if (cancelled) return;
-        setBackendSsotMirror((prev) => {
-          if (prev === null && entry === null) return prev;
-          if (
-            prev !== null &&
-            entry !== null &&
-            prev.receivedAt === entry.receivedAt &&
-            prev.currentStationId === entry.currentStationId
-          ) {
-            return prev;
-          }
-          return entry;
-        });
-      });
-    };
-    // 첫 read 즉시 실행 — DebugModal은 사용자가 명시적으로 연 화면이라 첫 entry를 빠르게 표시.
-    tick();
-    const id = setInterval(tick, 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
-  // #2618 — BG task heartbeat 폴링. alarmLog ring 적재를 폐지하고 AsyncStorage 단일 키로
-  // 전환한 뒤에도 "BG task가 죽지 않았다" 생존 확인은 5s 간격 폴링으로 보존.
-  const [bgTaskLastHeartbeat, setBgTaskLastHeartbeat] =
-    useState<BgTaskHeartbeatSnapshot | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      void readBgTaskLastHeartbeat().then((snapshot) => {
-        if (!cancelled) setBgTaskLastHeartbeat(snapshot);
-      });
-    };
-    tick();
-    const id = setInterval(tick, 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
-  // #3191 PR-0 — BG last fix 폴링. heartbeat와 동일 5s cadence(새 타이머 종류 없이 같은 패턴).
-  const [bgLastFix, setBgLastFix] = useState<BgLastFix | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      void readBgLastFix().then((fix) => {
-        if (!cancelled) setBgLastFix(fix);
-      });
-    };
-    tick();
-    const id = setInterval(tick, 5_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
   // #1215 (D9) — 기압계 subsurface. useBarometer는 shared/hooks이라 의존 위배 없음.
   // useFusedNearestStation 내부 useBarometer와 별개 listener — DebugModal 관찰자 효과 허용 범위.
   // #1398 — `stop=undefined` 원인(unavailableReason)과 readingCount도 dump에 노출.
@@ -2586,7 +2571,6 @@ function DebugModalInner({
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
-  const lock = useBoardingLockStore((s) => s.lock);
 
   // #1235 (D9 wire) — fusionDetection/trip/sleep SSOT 도출.
   // 호출자가 props로 명시 전달하면 그 값이 우선(테스트/외부 주입). 미전달이면 내부 SSOT 사용.
@@ -2691,59 +2675,6 @@ function DebugModalInner({
     return () => clearInterval(id);
   }, []);
 
-  const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
-  // #2861 (T2) — Boarding Prompt Acceptance 일별 영속 카운터 스냅샷. logs와 함께 refresh.
-  const [boardingPromptDailyCounters, setBoardingPromptDailyCounters] = useState<
-    Readonly<Record<string, BoardingPromptDayCounts>>
-  >({});
-  // #2284 — fired-only 독립 영속 버퍼 스냅샷. alarmLog(200-cap, 모든 outcome 혼합) rotate와
-  // 무관하게 보존되는 fired count SSoT.
-  const [firedAlarmLog, setFiredAlarmLog] = useState<FiredAlarmLogEntry[]>([]);
-  // #1706 — fusion picker tier 별 ring buffer snapshot. alarmLog ring 점령 회귀 차단으로
-  // 분리된 채널 (alarmLog와 다른 200 cap). refresh 사이클에 함께 snapshot.
-  const [fusionTierLogs, setFusionTierLogs] = useState<readonly FusionTierLogEntry[]>(() =>
-    getFusionTierLog(),
-  );
-  const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
-    getFusionDebugEntries(),
-  );
-  // #1540 (S7) — gps-drop ring buffer. fusionLogs와 동일 패턴(snapshot + subscribe + clear button).
-  const [gpsDropLogs, setGpsDropLogs] = useState<readonly GpsDropEntry[]>(() =>
-    getGpsDropEntries(),
-  );
-  // #1902 (RC-18) — candidate-reject ring buffer. fusionLogs와 동일 패턴.
-  const [candidateRejectLogs, setCandidateRejectLogs] = useState<readonly CandidateRejectEntry[]>(() =>
-    getCandidateRejectEntries(),
-  );
-  // #2049 — boarding-lock-drift ring buffer. #1896 (RC-8) 별 buffer를 UI/dump에 노출.
-  // fusionLogs와 동일 패턴 (snapshot + subscribe + clear button).
-  const [boardingLockDriftLog, setBoardingLockDriftLog] = useState<readonly BoardingLockDriftEntry[]>(() =>
-    getBoardingLockDriftEntries(),
-  );
-  // #2152 — BoardingLock lifecycle ring buffer. boardingLockDriftLog와 동일 패턴.
-  const [lockLifecycleLog, setLockLifecycleLog] = useState<readonly LockLifecycleEntry[]>(() =>
-    getLockLifecycleEntries(),
-  );
-  const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
-    getEstimatorEntries(),
-  );
-  // #1518 — backend call ring buffer subscribe. 모든 backend fetch chokepoint가 push.
-  const [backendCalls, setBackendCalls] = useState<readonly BackendCallEntry[]>(() =>
-    getBackendCallEntries(),
-  );
-  // #1501 — PR-C. Raw signal buffer는 module-level singleton(영속 + boot hydrate).
-  // 모달 마운트 시점 스냅샷으로 초기화, 이후 subscribe로 실시간 갱신.
-  const [rawSignalLog, setRawSignalLog] = useState<readonly RawSignalEntry[]>(() =>
-    getRawSignalEntries(),
-  );
-  // #2861 (T1) — push-receipt 독립 버퍼. rawSignalLog와 동일 패턴(스냅샷 초기화 + subscribe).
-  const [pushReceiptLog, setPushReceiptLog] = useState<readonly PushReceiptBufferEntry[]>(() =>
-    getPushReceiptEntries(),
-  );
-  // #756: OS 큐 ground-truth dump. 호출 직후 한 번 비동기로 채워진다.
-  // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
-  const [scheduledDump, setScheduledDump] = useState<ScheduledNotificationDumpEntry[] | null>(null);
-
   // #1956 — Operation Dashboard metric 클릭 시 진입할 TripDetailModal state.
   // tripToken=null이면 modal 닫힘. set 시 visible+token이 함께 갱신된다.
   const [tripDetailToken, setTripDetailToken] = useState<string | null>(null);
@@ -2753,86 +2684,6 @@ function DebugModalInner({
   const handleTripDetailClose = useCallback(() => {
     setTripDetailToken(null);
   }, []);
-
-  const refreshScheduledDump = useCallback(async () => {
-    setScheduledDump(await dumpScheduledNotifications());
-  }, []);
-
-  // #1525 — DebugModal 진입 즉시 OS scheduled queue를 1회 dump한다. 사용자가 Refresh를
-  // 누르지 않은 share dump가 항상 "(not loaded)"로 나가 zombie alarm 추적이 불가능했던
-  // 회귀 차단. 이후 갱신은 기존 Refresh 버튼이 담당.
-  useEffect(() => {
-    void refreshScheduledDump();
-  }, [refreshScheduledDump]);
-
-  useEffect(() => {
-    return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
-  }, []);
-
-  // #1540 (S7) — gps-drop buffer 구독. push/clear 어느 쪽이든 같은 listener로 반응.
-  useEffect(() => {
-    return subscribeGpsDrop(() => setGpsDropLogs([...getGpsDropEntries()]));
-  }, []);
-
-  // #1902 (RC-18) — candidate-reject buffer 구독. gps-drop과 동일 패턴.
-  useEffect(() => {
-    return subscribeCandidateReject(() =>
-      setCandidateRejectLogs([...getCandidateRejectEntries()]),
-    );
-  }, []);
-
-  // #2049 — boarding-lock-drift buffer 구독. candidate-reject와 동일 패턴.
-  useEffect(() => {
-    return subscribeBoardingLockDrift(() =>
-      setBoardingLockDriftLog([...getBoardingLockDriftEntries()]),
-    );
-  }, []);
-
-  // #2152 — BoardingLock lifecycle buffer 구독. boardingLockDrift와 동일 패턴.
-  useEffect(() => {
-    return subscribeLockLifecycle(() =>
-      setLockLifecycleLog([...getLockLifecycleEntries()]),
-    );
-  }, []);
-
-  useEffect(() => {
-    return subscribeEstimatorDebug(() => setEstimatorLogs([...getEstimatorEntries()]));
-  }, []);
-
-  useEffect(() => {
-    return subscribeBackendCallEntries(() =>
-      setBackendCalls([...getBackendCallEntries()]),
-    );
-  }, []);
-
-  // #1501 — PR-C. Raw signal buffer 변경 구독. push/clear 어느 쪽이든 같은 listener로 반응.
-  useEffect(() => {
-    return subscribeRawSignal(() => setRawSignalLog([...getRawSignalEntries()]));
-  }, []);
-
-  // #2861 (T1) — push-receipt 독립 버퍼 변경 구독.
-  useEffect(() => {
-    return subscribePushReceipt(() => setPushReceiptLog([...getPushReceiptEntries()]));
-  }, []);
-
-  const refreshLogs = useCallback(async () => {
-    setLogs(await getAlarmLog());
-    // #1706 — fusion picker tier 별 ring buffer 동시 snapshot. AsyncStorage 없는 in-memory ring
-    // 이라 동기 read. logs와 함께 refresh되어 UI/share dump 정합성 유지.
-    setFusionTierLogs(getFusionTierLog());
-    // #2284 — fired-only 독립 버퍼도 동시 refresh. alarmLog와 별도 key라 별도 read 필요.
-    setFiredAlarmLog(await getFiredAlarmLog());
-    // #2861 (T2) — Boarding Prompt Acceptance 영속 daily counter도 동시 refresh.
-    setBoardingPromptDailyCounters(await getBoardingPromptDailyCounters());
-  }, []);
-
-  useEffect(() => {
-    void refreshLogs();
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void refreshLogs();
-    });
-    return () => sub.remove();
-  }, [refreshLogs]);
 
   const handleClear = useCallback(async () => {
     await Promise.all([

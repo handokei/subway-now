@@ -158,7 +158,21 @@
     "submit": "보내기",
     "submitting": "보내는 중…",
     "successToast": "전송했어요. 감사합니다!",
-    "errorToast": "전송에 실패했어요. 잠시 후 다시 시도해 주세요."
+    "errorToast": "전송에 실패했어요. 잠시 후 다시 시도해 주세요.",
+    "whereWrong": "어디서 틀렸나요? (선택)",
+    "stationSearchPlaceholder": "역 이름 검색",
+    "recommended": "진행 중인 경로",
+    "stationClear": "선택한 역 지우기",
+    "attachNotice": "앱 버전·기기·최근 이동 기록(위치 좌표 제외)이 함께 전송됩니다",
+    "category": {
+      "alarm-missing": "알람이 안 왔어요",
+      "alarm-late": "알람이 늦게 왔어요",
+      "alarm-early": "알람이 너무 일찍 왔어요",
+      "wrong-station": "역 안내가 틀렸어요",
+      "wrong-door": "내리는 문 방향이 틀렸어요",
+      "boarding-not-detected": "탑승이 인식되지 않았어요",
+      "other": "기타"
+    }
   },
   "map": {
     "originBadge": "출발",

@@ -158,7 +158,21 @@
     "submit": "Send",
     "submitting": "Sending…",
     "successToast": "Sent. Thank you!",
-    "errorToast": "Failed to send. Please try again later."
+    "errorToast": "Failed to send. Please try again later.",
+    "whereWrong": "What went wrong? (optional)",
+    "stationSearchPlaceholder": "Search station name",
+    "recommended": "Current trip",
+    "stationClear": "Clear selected station",
+    "attachNotice": "App version, device and recent trip history (location coordinates excluded) will be sent along",
+    "category": {
+      "alarm-missing": "Alarm never came",
+      "alarm-late": "Alarm came late",
+      "alarm-early": "Alarm came too early",
+      "wrong-station": "Wrong station shown",
+      "wrong-door": "Wrong exit door side",
+      "boarding-not-detected": "Boarding not detected",
+      "other": "Other"
+    }
   },
   "map": {
     "originBadge": "Origin",
