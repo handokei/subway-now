@@ -103,6 +103,26 @@ describe('resolveStationSide (실패 사유까지 판정)', () => {
     });
   });
 
+  it('건축 행이 없을 때만 override 형식을 쓴다: 심도와 일치하면 derived', () => {
+    expect(resolveStationSide({ ...base, archFormat: null, overrideFormat: '상대식' })).toEqual({
+      side: 'right',
+      reason: 'derived',
+    });
+  });
+
+  it('override가 심도와 다르면 override-disagree (null)', () => {
+    expect(resolveStationSide({ ...base, archFormat: null, overrideFormat: '섬식' })).toEqual({
+      side: null,
+      reason: 'override-disagree',
+    });
+  });
+
+  it('건축 행이 있으면 override는 무시된다 (불일치 건축 행을 override로 구제 불가)', () => {
+    expect(
+      resolveStationSide({ ...base, archFormat: '복합식', overrideFormat: '상대식' }),
+    ).toEqual({ side: null, reason: 'format-disagree' });
+  });
+
   it('주행방향 근거가 없으면 running-side-unknown', () => {
     expect(resolveStationSide({ ...base, runningSide: null })).toEqual({
       side: null,
@@ -232,11 +252,44 @@ describe('build (실데이터: 공식 역사심도정보 + 건축정보)', () =>
     expect(sideOf('6-001')).toBe('left'); // 응암 (섬식)
   });
 
-  it('주행방향 미검증 1호선은 전부 null (running-side-unknown)', () => {
+  it('1호선 서울교통공사 구간 10역은 좌측통행 반전으로 도출된다 (사용자 결정 2026-11-22 신문 출처 인정)', () => {
+    expect(sideOf('1-025')).toBe('right'); // 청량리 (섬식)
+    for (const id of ['1-026', '1-027', '1-028', '1-029', '1-030', '1-031', '1-032', '1-033']) {
+      expect(sideOf(id)).toBe('left'); // 제기동~시청 (상대식)
+    }
+    expect(sideOf('1-034')).toBe('right'); // 서울역 (섬식)
+  });
+
+  it('1호선 코레일 구간(심도 행 없음)은 값이 없다 — 서울교통공사 10역만 키를 가진다', () => {
     const line1 = Object.keys(result.output).filter((id) => id.startsWith('1-'));
-    expect(line1).toEqual([]);
-    const reasons = result.nullList.filter((e) => e.line === '1').map((e) => e.reason);
-    expect(reasons).toContain('running-side-unknown');
+    expect(line1.sort()).toEqual([
+      '1-025', '1-026', '1-027', '1-028', '1-029', '1-030', '1-031', '1-032', '1-033', '1-034',
+    ]);
+    const korail = result.nullList.filter((e) => e.line === '1');
+    expect(korail).toHaveLength(53);
+    expect(korail.every((e) => e.reason === 'no-depth-row')).toBe(true);
+  });
+
+  it('당고개(4-001): 건축 CSV 행이 없어도 독립 출처(override)가 심도와 일치하면 도출 (상대식 → right)', () => {
+    expect(sideOf('4-001')).toBe('right');
+  });
+
+  it('까치산(2-105): override(위키 신정지선=섬식)가 심도(상대식)와 불일치 → null, 사유 override-disagree', () => {
+    expect(result.output['2-105']).toBeUndefined();
+    const entry = result.nullList.find((e) => e.id === '2-105');
+    expect(entry.reason).toBe('override-disagree');
+  });
+
+  it('platform-format-overrides.json: 항목마다 format/evidence/quote를 가진다', () => {
+    const overrides = JSON.parse(
+      fs.readFileSync(require('node:path').join(__dirname, '../fixtures/platform-format-overrides.json'), 'utf8'),
+    );
+    for (const [key, entry] of Object.entries(overrides)) {
+      expect(key).toMatch(/^[1-8]\|.+/);
+      expect(['상대식', '섬식']).toContain(entry.format);
+      expect(entry.evidence).toMatch(/^https:\/\//);
+      expect(entry.quote.length).toBeGreaterThan(0);
+    }
   });
 
   it('이름 불일치 13쌍이 별칭으로 매칭된다 (을지3가→을지로3가 등)', () => {
@@ -278,7 +331,7 @@ describe('build (방어 경로: 합성 CSV)', () => {
   const DEPTH_HEADER = '연번,호선,역명,층수,형식,지반고\n';
   const ARCH_HEADER = '"호선","역명","형식","층수"\n';
 
-  function mockFiles({ depth, arch, stations, aliases = {}, running }) {
+  function mockFiles({ depth, arch, stations, aliases = {}, running, overrides = {} }) {
     readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, enc) => {
       const name = String(file);
       if (name.endsWith('서울교통공사_역사심도정보_20241104.csv')) return DEPTH_HEADER + depth;
@@ -286,6 +339,7 @@ describe('build (방어 경로: 합성 CSV)', () => {
       if (name.endsWith('src/data/stations.json')) return JSON.stringify(stations);
       if (name.endsWith('platform-name-aliases.json')) return JSON.stringify(aliases);
       if (name.endsWith('line-running-side.json')) return JSON.stringify(running);
+      if (name.endsWith('platform-format-overrides.json')) return JSON.stringify(overrides);
       return realRead(file, enc);
     });
     writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => undefined);
@@ -316,6 +370,28 @@ describe('build (방어 경로: 합성 CSV)', () => {
     const r = build();
     expect(r.output['1-001']).toEqual({ side: 'left', grade: GRADE_OFFICIAL_DERIVED });
     expect(r.output['1-002']).toEqual({ side: 'right', grade: GRADE_OFFICIAL_DERIVED });
+  });
+
+  it('override: 건축 행 없는 역은 override==심도일 때만 도출, 불일치면 null', () => {
+    mockFiles({
+      depth: '1,2,가역,B2,상대식,1\n2,2,나역,B2,상대식,1\n',
+      arch: '',
+      stations: [
+        { id: '2-001', line: '2', name: '가역' },
+        { id: '2-002', line: '2', name: '나역' },
+      ],
+      overrides: {
+        '2|가역': { format: '상대식', evidence: 'https://example.com/a', quote: 'q' },
+        '2|나역': { format: '섬식', evidence: 'https://example.com/b', quote: 'q' },
+      },
+      running: RUNNING,
+    });
+    const r = build();
+    expect(r.output['2-001']).toEqual({ side: 'right', grade: GRADE_OFFICIAL_DERIVED });
+    expect(r.output['2-002']).toBeUndefined();
+    expect(r.nullList).toEqual([
+      { id: '2-002', line: '2', name: '나역', reason: 'override-disagree', depthFormat: '상대식', archFormat: null },
+    ]);
   });
 
   it('주행방향 테이블에 없는 노선/null 노선은 running-side-unknown', () => {
