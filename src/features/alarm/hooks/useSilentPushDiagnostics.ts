@@ -87,77 +87,85 @@ const SOURCE_TO_FIELD: Partial<Record<AlarmLogSource, LastTsField>> = {
   'silent-push-skipped': 'lastSkippedAt',
 };
 
+/**
+ * #3366 — 리스너 없는 1회 읽기. 버그 신고(report 모드)가 훅 마운트(AppState 구독) 없이 같은 진단을 얻는다.
+ * 훅의 refresh와 동일 로직(단일 소스).
+ */
+export async function readSilentPushDiagnostics(): Promise<SilentPushDiagnostics> {
+  const [
+    apnsToken,
+    activeTripToken,
+    logs,
+    permission,
+    routeJson,
+    destinationJson,
+    lastNotifiedStationId,
+    apnsEnvStamped,
+  ] = await Promise.all([
+    AsyncStorage.getItem(APNS_TOKEN_KEY),
+    AsyncStorage.getItem(ACTIVE_TRIP_KEY),
+    getAlarmLog(),
+    Notifications.getPermissionsAsync().catch(() => null),
+    AsyncStorage.getItem(ROUTE_KEY),
+    AsyncStorage.getItem(DESTINATION_KEY),
+    AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
+    // #1931 — RC-5 stamp 표시. warmup cache 사용으로 추가 round-trip 없음.
+    warmupConfirmedApnsEnv(),
+  ]);
+  const reg = getSilentPushRegistrationStatus();
+  // alarmLog는 최신순이 보장되지 않으므로 source별 최신 ts를 데이터 주도로 골라낸다.
+  const latest: Record<LastTsField, number | null> = {
+    lastReceivedAt: null,
+    lastFiredAt: null,
+    lastSkippedAt: null,
+  };
+  for (const entry of logs) {
+    const field = SOURCE_TO_FIELD[entry.source];
+    if (!field) continue;
+    if (latest[field] == null || entry.ts > latest[field]!) latest[field] = entry.ts;
+  }
+  // destination은 JSON.stringify(Station). id 추출 실패 시 null로 graceful degrade.
+  let destinationId: string | null = null;
+  if (destinationJson) {
+    try {
+      const parsed = JSON.parse(destinationJson) as { id?: unknown };
+      if (typeof parsed?.id === 'string') destinationId = parsed.id;
+    } catch {
+      // 깨진 entry는 무시 — 진단 표시만 빈 값.
+    }
+  }
+  // #1011: lastNotifiedStationId는 { destinationId, stationId } JSON. stationId만 표시.
+  // 이전 포맷(plain string) 또는 파싱 실패 시 raw 값으로 graceful degrade.
+  let parsedLastNotifiedStationId: string | null = null;
+  if (lastNotifiedStationId) {
+    try {
+      const parsed = JSON.parse(lastNotifiedStationId) as { stationId?: unknown };
+      parsedLastNotifiedStationId =
+        typeof parsed?.stationId === 'string' ? parsed.stationId : lastNotifiedStationId;
+    } catch {
+      parsedLastNotifiedStationId = lastNotifiedStationId;
+    }
+  }
+  return {
+    apnsToken,
+    activeTripToken,
+    apnsEnv: resolveApnsEnv(),
+    apnsEnvStamped,
+    permissionStatus: permission?.status ?? null,
+    taskRegistrationState: reg.state,
+    taskRegistrationError: reg.error,
+    ...latest,
+    hasRoute: routeJson != null && routeJson.length > 0,
+    destinationId,
+    lastNotifiedStationId: parsedLastNotifiedStationId,
+  };
+}
+
 export function useSilentPushDiagnostics(): SilentPushDiagnostics {
   const [diag, setDiag] = useState<SilentPushDiagnostics>(EMPTY);
 
   const refresh = useCallback(async () => {
-    const [
-      apnsToken,
-      activeTripToken,
-      logs,
-      permission,
-      routeJson,
-      destinationJson,
-      lastNotifiedStationId,
-      apnsEnvStamped,
-    ] = await Promise.all([
-      AsyncStorage.getItem(APNS_TOKEN_KEY),
-      AsyncStorage.getItem(ACTIVE_TRIP_KEY),
-      getAlarmLog(),
-      Notifications.getPermissionsAsync().catch(() => null),
-      AsyncStorage.getItem(ROUTE_KEY),
-      AsyncStorage.getItem(DESTINATION_KEY),
-      AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
-      // #1931 — RC-5 stamp 표시. warmup cache 사용으로 추가 round-trip 없음.
-      warmupConfirmedApnsEnv(),
-    ]);
-    const reg = getSilentPushRegistrationStatus();
-    // alarmLog는 최신순이 보장되지 않으므로 source별 최신 ts를 데이터 주도로 골라낸다.
-    const latest: Record<LastTsField, number | null> = {
-      lastReceivedAt: null,
-      lastFiredAt: null,
-      lastSkippedAt: null,
-    };
-    for (const entry of logs) {
-      const field = SOURCE_TO_FIELD[entry.source];
-      if (!field) continue;
-      if (latest[field] == null || entry.ts > latest[field]!) latest[field] = entry.ts;
-    }
-    // destination은 JSON.stringify(Station). id 추출 실패 시 null로 graceful degrade.
-    let destinationId: string | null = null;
-    if (destinationJson) {
-      try {
-        const parsed = JSON.parse(destinationJson) as { id?: unknown };
-        if (typeof parsed?.id === 'string') destinationId = parsed.id;
-      } catch {
-        // 깨진 entry는 무시 — 진단 표시만 빈 값.
-      }
-    }
-    // #1011: lastNotifiedStationId는 { destinationId, stationId } JSON. stationId만 표시.
-    // 이전 포맷(plain string) 또는 파싱 실패 시 raw 값으로 graceful degrade.
-    let parsedLastNotifiedStationId: string | null = null;
-    if (lastNotifiedStationId) {
-      try {
-        const parsed = JSON.parse(lastNotifiedStationId) as { stationId?: unknown };
-        parsedLastNotifiedStationId =
-          typeof parsed?.stationId === 'string' ? parsed.stationId : lastNotifiedStationId;
-      } catch {
-        parsedLastNotifiedStationId = lastNotifiedStationId;
-      }
-    }
-    setDiag({
-      apnsToken,
-      activeTripToken,
-      apnsEnv: resolveApnsEnv(),
-      apnsEnvStamped,
-      permissionStatus: permission?.status ?? null,
-      taskRegistrationState: reg.state,
-      taskRegistrationError: reg.error,
-      ...latest,
-      hasRoute: routeJson != null && routeJson.length > 0,
-      destinationId,
-      lastNotifiedStationId: parsedLastNotifiedStationId,
-    });
+    setDiag(await readSilentPushDiagnostics());
   }, []);
 
   useEffect(() => {

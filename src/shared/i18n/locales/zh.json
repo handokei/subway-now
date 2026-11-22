@@ -158,7 +158,21 @@
     "submit": "发送",
     "submitting": "正在发送…",
     "successToast": "已发送，感谢您的反馈！",
-    "errorToast": "发送失败，请稍后再试。"
+    "errorToast": "发送失败，请稍后再试。",
+    "whereWrong": "哪里出错了？（可选）",
+    "stationSearchPlaceholder": "搜索站名",
+    "recommended": "当前行程",
+    "stationClear": "清除所选车站",
+    "attachNotice": "应用版本、设备和近期行程记录（不含位置坐标）将一并发送",
+    "category": {
+      "alarm-missing": "提醒没有响",
+      "alarm-late": "提醒来得太晚",
+      "alarm-early": "提醒来得太早",
+      "wrong-station": "车站信息有误",
+      "wrong-door": "下车开门方向有误",
+      "boarding-not-detected": "未识别到上车",
+      "other": "其他"
+    }
   },
   "map": {
     "originBadge": "出发",

@@ -1,4 +1,9 @@
-import { buildFeedbackContext, submitFeedback } from '../feedback';
+import {
+  buildFeedbackContext,
+  FEEDBACK_DIAGNOSTICS_REQUEST_TIMEOUT_MS,
+  FEEDBACK_REQUEST_TIMEOUT_MS,
+  submitFeedback,
+} from '../feedback';
 
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -115,5 +120,94 @@ describe('submitFeedback', () => {
     const result = await promise;
     expect(result).toEqual({ ok: false });
     jest.useRealTimers();
+  });
+
+  describe('진단 첨부(#3366)', () => {
+    const HEX64 = '3f9a1c7be24d5086a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718';
+
+    beforeEach(() => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
+      (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 201 });
+    });
+
+    const sentBody = () =>
+      JSON.parse((globalThis.fetch as jest.Mock).mock.calls[0][1].body as string);
+
+    it('options 없으면 body에 report·diagnostics 키가 없다(하위호환)', async () => {
+      await submitFeedback('hello');
+      const body = sentBody();
+      expect(Object.keys(body).sort()).toEqual(['context', 'message']);
+    });
+
+    it('report·diagnostics를 body에 싣는다', async () => {
+      await submitFeedback('m', {
+        report: { category: 'alarm-missing', stationId: '2-211', tripKey: 'abcd1234', occurredAt: 1 },
+        diagnostics: 'dump',
+      });
+      const body = sentBody();
+      expect(body.report).toEqual({
+        category: 'alarm-missing',
+        stationId: '2-211',
+        tripKey: 'abcd1234',
+        occurredAt: 1,
+      });
+      expect(body.diagnostics).toBe('dump');
+    });
+
+    it('diagnostics는 송신 직전 방어 스크럽(좌표 문맥·40자 이상 hex)을 거친다', async () => {
+      await submitFeedback('m', {
+        diagnostics: `pos=37.54321,127.05432 /trips/${HEX64}/status arc=33.53`,
+      });
+      expect(sentBody().diagnostics).toBe('pos=[redacted] /trips/[token]/status arc=33.53');
+    });
+
+    it('진단 첨부 요청은 20s 타임아웃, message-only는 5s 유지', () => {
+      expect(FEEDBACK_REQUEST_TIMEOUT_MS).toBe(5000);
+      expect(FEEDBACK_DIAGNOSTICS_REQUEST_TIMEOUT_MS).toBe(20000);
+    });
+
+    it('진단 첨부 요청은 5s에 끊기지 않고 20s에 abort', async () => {
+      jest.useFakeTimers();
+      (globalThis.fetch as jest.Mock).mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            (init.signal as AbortSignal).addEventListener('abort', () =>
+              reject(new Error('aborted')),
+            );
+          }),
+      );
+      try {
+        const promise = submitFeedback('m', { diagnostics: 'dump' });
+        let settled = false;
+        void promise.then(() => {
+          settled = true;
+        });
+        await jest.advanceTimersByTimeAsync(19_999);
+        expect(settled).toBe(false);
+        await jest.advanceTimersByTimeAsync(2);
+        expect(await promise).toEqual({ ok: false });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('diagnostics 없이 report만 보내면 5s 타임아웃', async () => {
+      jest.useFakeTimers();
+      (globalThis.fetch as jest.Mock).mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            (init.signal as AbortSignal).addEventListener('abort', () =>
+              reject(new Error('aborted')),
+            );
+          }),
+      );
+      try {
+        const promise = submitFeedback('m', { report: { occurredAt: 1 } });
+        await jest.advanceTimersByTimeAsync(5_001);
+        expect(await promise).toEqual({ ok: false });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 });

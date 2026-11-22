@@ -158,7 +158,21 @@
     "submit": "送信",
     "submitting": "送信中…",
     "successToast": "送信しました。ありがとうございます！",
-    "errorToast": "送信に失敗しました。しばらくしてからもう一度お試しください。"
+    "errorToast": "送信に失敗しました。しばらくしてからもう一度お試しください。",
+    "whereWrong": "どこが間違っていましたか？（任意）",
+    "stationSearchPlaceholder": "駅名を検索",
+    "recommended": "進行中の経路",
+    "stationClear": "選択した駅を消去",
+    "attachNotice": "アプリのバージョン・端末・最近の移動履歴（位置座標は除く）も一緒に送信されます",
+    "category": {
+      "alarm-missing": "アラームが鳴りませんでした",
+      "alarm-late": "アラームが遅れました",
+      "alarm-early": "アラームが早すぎました",
+      "wrong-station": "駅の案内が間違っていました",
+      "wrong-door": "降りるドアの方向が違いました",
+      "boarding-not-detected": "乗車が認識されませんでした",
+      "other": "その他"
+    }
   },
   "map": {
     "originBadge": "出発",

@@ -28,7 +28,7 @@ jest.mock('expo-notifications', () => ({
   getPermissionsAsync: () => mockGetPermissionsAsync(),
 }));
 
-import { useSilentPushDiagnostics } from '../useSilentPushDiagnostics';
+import { readSilentPushDiagnostics, useSilentPushDiagnostics } from '../useSilentPushDiagnostics';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
@@ -239,5 +239,32 @@ describe('useSilentPushDiagnostics', () => {
     const { unmount } = renderHook(() => useSilentPushDiagnostics());
     unmount();
     expect(removeSpy).toHaveBeenCalled();
+  });
+});
+
+// #3366 — 버그 신고 report 모드: 리스너 없는 1회 읽기. 훅과 같은 값을 돌려주되 AppState를 구독하지 않는다.
+describe('readSilentPushDiagnostics (#3366)', () => {
+  it('1회 읽기 결과가 훅과 동일하고 AppState 리스너를 등록하지 않는다', async () => {
+    mockResolveApnsEnv.mockReturnValue('production');
+    mockWarmupConfirmedApnsEnv.mockResolvedValue('production');
+    mockGetRegistrationStatus.mockReturnValue({ state: 'success', error: null });
+    mockGetAlarmLog.mockResolvedValue([]);
+    mockGetPermissionsAsync.mockResolvedValue({ status: 'granted' });
+    mockGetItem.mockImplementation((key: string) =>
+      Promise.resolve(key === APNS_TOKEN_KEY ? 'apns-tok' : null),
+    );
+    const addSpy = jest.spyOn(AppState, 'addEventListener');
+    // 이전 테스트에서 렌더된 훅의 비동기 effect가 남긴 호출 기록을 비운 뒤, 읽기 함수 단독 호출만 본다.
+    await flushPromises();
+    addSpy.mockClear();
+    const diag = await readSilentPushDiagnostics();
+    expect(diag).toMatchObject({
+      apnsToken: 'apns-tok',
+      activeTripToken: null,
+      apnsEnv: 'production',
+      permissionStatus: 'granted',
+      taskRegistrationState: 'success',
+    });
+    expect(addSpy).not.toHaveBeenCalled();
   });
 });
