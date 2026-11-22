@@ -21,12 +21,14 @@
  * 다른 push kind(station-passed, arrival, transfer, alighting)의 4언어 분기는 device-side
  * stationNotification.ts가 처리한다(silent push payload → device가 본문 빌드).
  *
- * exitSide/quickHint suffix는 백엔드에 GPS 정보가 없어 생략 — alert는 보조 채널이라
- * "어느 문으로 하차" 같은 정밀 정보 없이도 충분히 의미를 전달한다.
+ * #3177 — 하차문 줄(`alarms.exitSideLeft/Right`)은 waypoint.stationId(apns.ts silent push에도 실리는 `Waypoint.stationId`)로
+ * 판정한 `exitSide`가 입력에 있을 때만 transfer/destination 본문 끝에 "\n문장"으로 붙는다(한국어 고정 유지).
+ * quickHint suffix는 GPS 기반 정보라 백엔드에 없어 여전히 생략한다.
  */
 
 import type { AlarmPhase } from './alarm';
-import { t, type SupportedLocale } from './i18n';
+import type { PlatformExitSide } from '../../../src/shared/types/platformExitSide';
+import { appendExitSide, t, type SupportedLocale } from './i18n';
 import { resolveStationDisplayName } from './stationsLookup';
 import type { TripEndedReason } from './types';
 
@@ -35,7 +37,7 @@ import type { TripEndedReason } from './types';
  * caller가 잘못된 phase를 전달하지 못하도록 타입 레벨에서 차단(P2c 작성 시 컴파일 타임 캐치).
  */
 export type AlertContentInput =
-  | { kind: 'destination' | 'transfer'; phase: AlarmPhase; stationName: string }
+  | { kind: 'destination' | 'transfer'; phase: AlarmPhase; stationName: string; exitSide?: PlatformExitSide | null }
   | { kind: 'intermediate'; stationName: string };
 
 export interface AlertContent {
@@ -118,6 +120,6 @@ export function buildAlertContent(input: AlertContentInput): AlertContent {
   }
   return {
     title: ARRIVAL_TITLE[input.kind][input.phase](input.stationName),
-    body: ARRIVAL_BODY[input.kind][input.phase](input.stationName),
+    body: appendExitSide(ARRIVAL_BODY[input.kind][input.phase](input.stationName), 'ko', input.exitSide),
   };
 }

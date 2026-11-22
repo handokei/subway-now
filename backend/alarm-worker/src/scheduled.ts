@@ -196,7 +196,8 @@ import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 import { assertNever } from '../../../src/shared/types/pushContract';
 import { writeMetric } from './analytics';
 import { accumulateLaPushCounters } from './laPushCounters';
-import { sleepAlarmContent, t, type StationNotifCounts, type SupportedLocale } from './i18n';
+import { appendExitSide, sleepAlarmContent, t, type StationNotifCounts, type SupportedLocale } from './i18n';
+import { resolveWaypointExitSide } from './exitSide';
 import {
   resolveStationAlert,
   sendStationAlert,
@@ -3460,9 +3461,11 @@ export function buildStationNotifContent(
 ): ArrivalContent {
   const strings = t(locale);
   const counts = deriveStationNotifContext(trip, waypoint);
+  // #3177 — transfer/destination 본문 끝에 하차문 줄(판정 불가면 생략). 방향은 이 leg의 origin→waypoint 추론.
+  const exitSide = resolveWaypointExitSide(waypoint, resolveLegDirectionForWaypoint(trip, waypoint));
   return {
     title: strings.stationNotifTitle(waypoint.kind, waypoint.stationName),
-    body: strings.stationNotifBody(waypoint.kind, waypoint.stationName, counts),
+    body: appendExitSide(strings.stationNotifBody(waypoint.kind, waypoint.stationName, counts), locale, exitSide),
   } as ArrivalContent;
 }
 
@@ -3684,7 +3687,9 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
 
   const targetKind: 'transfer' | 'destination' =
     target.kind === 'destination' ? 'destination' : 'transfer';
-  const content = sleepAlarmContent(trip.locale, targetKind, target.stationName, remaining);
+  // #3177 — alert와 companion(TTS)이 같은 content.body를 쓰므로 한 번만 붙이면 양쪽에 실린다.
+  const exitSide = resolveWaypointExitSide(target, resolveLegDirectionForWaypoint(trip, target));
+  const content = sleepAlarmContent(trip.locale, targetKind, target.stationName, remaining, exitSide);
   const collapseId = sleepAlarmCollapseId(trip.token, target.stationName, remaining);
 
   const alertPushId = generatePushId();

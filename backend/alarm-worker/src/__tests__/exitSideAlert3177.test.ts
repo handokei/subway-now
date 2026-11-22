@@ -234,3 +234,16 @@ describe('취침 알람 push wire — alert와 companion 모두 줄 포함', () 
     for (const b of hits) expect(b).not.toContain('문으로 하차하세요');
   });
 });
+
+describe('resolveWaypointExitSide — direction 전달', () => {
+  it('direction이 있으면 SSoT(resolveExitSideForStation)에 그대로 전달(terminus=unknown)', async () => {
+    const { resolveWaypointExitSide } = await import('../exitSide');
+    const { resolveExitSideForStation } = await import('../../../../src/shared/utils/resolveExitSideForStation');
+    const dest = wp('성수', '2', 'destination', '2-011');
+    for (const direction of ['up', 'down'] as const) {
+      expect(resolveWaypointExitSide(dest, direction)).toBe(
+        resolveExitSideForStation({ stationId: '2-011', direction, terminus: 'unknown' }).side,
+      );
+    }
+  });
+});
