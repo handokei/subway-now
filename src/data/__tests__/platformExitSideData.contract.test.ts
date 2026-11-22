@@ -24,8 +24,10 @@ describe('platformExitSide.json 계약', () => {
     expect(JSON.stringify(platformExitSide)).not.toContain('both');
   });
 
-  it('모든 항목은 official-derived 등급', () => {
-    for (const [, { grade }] of entries) expect(grade).toBe('official-derived');
+  it('모든 항목은 official-derived 또는 wiki-crosschecked 등급', () => {
+    for (const [, { grade }] of entries) {
+      expect(['official-derived', 'wiki-crosschecked']).toContain(grade);
+    }
   });
 
   it('공식 두 CSV가 불일치하는 성수(2-011)·신도림(2-034)은 키가 없다', () => {
@@ -95,5 +97,32 @@ describe('platformExitSideByDirection.json 계약', () => {
       expect(entry.sourceUrl).toMatch(/^https:\/\/(ko\.wikipedia\.org|namu\.wiki)\/(wiki|w)\//);
       expect(entry.note.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('platformExitSide.json — 9호선 wiki-crosschecked (#3177 PR-1)', () => {
+  const map = platformExitSide as Record<string, Entry>;
+
+  it.each([
+    ['9-001', 'left'], // 개화 섬식
+    ['9-003', 'right'], // 공항시장 상대식
+    ['9-013', 'left'], // 당산 섬식
+    ['9-023', 'right'], // 고속터미널 상대식
+    ['9-037', 'left'], // 둔촌오륜 섬식
+  ])('%s → %s, grade wiki-crosschecked', (id, side) => {
+    expect(map[id]).toEqual({ side, grade: 'wiki-crosschecked' });
+  });
+
+  it.each(['9-002', '9-005', '9-007', '9-012', '9-025', '9-034', '9-038'])(
+    '%s(복합/급행 4선/3선)은 키가 없다',
+    (id) => {
+      expect(map[id]).toBeUndefined();
+    },
+  );
+
+  it('wiki-crosschecked 항목은 9호선뿐이며 26건이다', () => {
+    const wiki = Object.entries(map).filter(([, { grade }]) => grade === 'wiki-crosschecked');
+    expect(wiki).toHaveLength(26);
+    for (const [id] of wiki) expect(id.startsWith('9-')).toBe(true);
   });
 });

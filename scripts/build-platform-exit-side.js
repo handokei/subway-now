@@ -24,6 +24,16 @@
 //   콘솔 리포트 (노선별 left/right/null + null 사유)
 //
 // 방향별 override(위키 등)는 src/data/platformExitSideByDirection.json에 수작업으로 둔다.
+//
+// ── 공식 데이터셋 밖 노선: 위키 교차검증 (#3177, 사용자 결정 2026-11-22 옵션 1) ──
+//   두 위키가 일치할 때만 채운다 (grade 'wiki-crosschecked'):
+//     · 위키백과 개별 역 문서의 승강장 형식 (scripts/fixtures/wiki-platform-formats/<line>.json)
+//     · 나무위키 노선 '역 목록' 승강장 열 글리프 (│■│=섬식 2선, ■││■=상대식 2선; ■=승강장, │=선로)
+//   도출 조건: 두 소스가 같은 단순형(섬식/상대식) + 선로 정확히 2개(3선↑·복합·두단식·단선 제외)
+//             + 해당 구간 주행방향(좌/우측통행)이 인용과 함께 확립됨.
+//   구간별 주행방향은 scripts/fixtures/section-running-side.json (line-running-side.json의
+//   1~8호선 값은 서울교통공사 구간 전용이라 건드리지 않는다). 하나라도 어긋나면 키 생략(null).
+//   나무위키(CC BY-NC-SA)는 교차검증 용도로만 쓰고 값의 직접 출처로 삼지 않는다.
 
 'use strict';
 
@@ -39,10 +49,24 @@ const ARCH_CSV_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/seoul-station-ar
 const ALIASES_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/platform-name-aliases.json');
 const OVERRIDES_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/platform-format-overrides.json');
 const RUNNING_SIDE_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/line-running-side.json');
+const SECTION_RUNNING_SIDE_PATH = path.join(
+  PROJECT_ROOT,
+  'scripts/fixtures/section-running-side.json',
+);
+const WIKI_FORMATS_DIR = path.join(PROJECT_ROOT, 'scripts/fixtures/wiki-platform-formats');
 const STATIONS_JSON_PATH = path.join(PROJECT_ROOT, 'src/data/stations.json');
 const OUTPUT_PATH = path.join(PROJECT_ROOT, 'src/data/platformExitSide.json');
 
 const GRADE_OFFICIAL_DERIVED = 'official-derived';
+const GRADE_WIKI_CROSSCHECKED = 'wiki-crosschecked';
+
+// 나무위키 승강장 열 글리프 → 형식. ■=승강장, │=선로. 2선 단순형만 형식을 가진다.
+const NAMU_GLYPH_TO_FORMAT = Object.freeze({
+  '│■│': '섬식',
+  '■││■': '상대식',
+});
+const NAMU_TRACK_CHAR = '│';
+const REQUIRED_TRACKS = 2;
 
 // 우측통행 기준 형식 → 좌/우. 좌측통행은 FLIP으로 반전. 여기 없는 형식은 모두 null.
 const RIGHT_HAND_FORMAT_TO_SIDE = Object.freeze({
@@ -79,6 +103,41 @@ function resolveStationSide({ depthFormat, archFormat, overrideFormat = null, ru
   const side = mapFormatToSide(depthFormat, runningSide);
   if (side == null) return { side: null, reason: 'running-side-unknown' };
   return { side, reason: 'derived' };
+}
+
+// 나무위키 글리프 → { format, tracks }. 단순 2선형이 아니면 format null(선로 수만 센다).
+function classifyNamuGlyph(glyph) {
+  if (!glyph) return { format: null, tracks: null };
+  const tracks = Array.from(glyph).filter((ch) => ch === NAMU_TRACK_CHAR).length;
+  return { format: NAMU_GLYPH_TO_FORMAT[glyph.trim()] ?? null, tracks };
+}
+
+// 위키백과 + 나무위키가 일치할 때만 좌/우를 도출한다. null이면 사유를 함께 돌려준다.
+function resolveWikiCrosscheckSide({ wikipedia, namuGlyph, runningSide }) {
+  if (!wikipedia || !namuGlyph) return { side: null, reason: 'missing-source' };
+  const namu = classifyNamuGlyph(namuGlyph);
+  if (wikipedia.tracks !== REQUIRED_TRACKS || namu.tracks !== REQUIRED_TRACKS) {
+    return { side: null, reason: 'not-two-tracks' };
+  }
+  const isPlain = (format) => format != null && Object.hasOwn(RIGHT_HAND_FORMAT_TO_SIDE, format);
+  if (!isPlain(wikipedia.format) || !isPlain(namu.format)) {
+    return { side: null, reason: 'not-plain' };
+  }
+  if (wikipedia.format !== namu.format) return { side: null, reason: 'format-disagree' };
+  const side = mapFormatToSide(wikipedia.format, runningSide);
+  if (side == null) return { side: null, reason: 'running-side-unknown' };
+  return { side, reason: 'derived' };
+}
+
+// 구간 테이블에서 (노선, 역 id)에 적용되는 주행방향. stationIds 미지정 구간은 매핑 보류라 적용 안 함.
+function findSectionRunningSide(sections, line, stationId) {
+  const section = sections.find(
+    (s) =>
+      s.line === line &&
+      (s.stationIds === 'all' ||
+        (Array.isArray(s.stationIds) && s.stationIds.includes(stationId))),
+  );
+  return section?.side ?? null;
 }
 
 // CSV 한 줄을 따옴표 포함/미포함 컬럼으로 파싱한다.
@@ -166,6 +225,56 @@ function lookupFormat(line, name, formatMap) {
   return null;
 }
 
+// scripts/fixtures/wiki-platform-formats/*.json 전부 로드 (파일 1개 = 노선 1개, 파일명 순).
+function loadWikiFormatFixtures() {
+  return fs
+    .readdirSync(WIKI_FORMATS_DIR)
+    .filter((file) => file.endsWith('.json'))
+    .sort()
+    .map((file) => readJson(path.join(WIKI_FORMATS_DIR, file)));
+}
+
+// 공식 데이터셋 밖 노선을 위키 교차검증으로 채운다. fixture가 있는 노선만 대상.
+function buildWikiCrosscheck(stations, sections, fixtures) {
+  const output = {};
+  const wikiStats = {};
+  const wikiNullList = [];
+  for (const { line, stations: raw } of fixtures) {
+    wikiStats[line] = { left: 0, right: 0, unknown: 0 };
+    const lineStations = stations
+      .filter((s) => s.line === line)
+      .slice()
+      .sort((a, b) => a.id.localeCompare(b.id));
+    for (const { id, name } of lineStations) {
+      const { wikipedia, namuwiki } = raw[id] ?? {};
+      const runningSide = findSectionRunningSide(sections, line, id);
+      const { side, reason } = resolveWikiCrosscheckSide({
+        wikipedia,
+        namuGlyph: namuwiki?.glyph,
+        runningSide,
+      });
+      if (side == null) {
+        wikiStats[line].unknown++;
+        wikiNullList.push({ id, line, name, reason });
+        continue;
+      }
+      output[id] = { side, grade: GRADE_WIKI_CROSSCHECKED };
+      wikiStats[line][side]++;
+    }
+  }
+  return { output, wikiStats, wikiNullList };
+}
+
+function printWikiReport(wikiStats, wikiNullList) {
+  console.log('\n=== 위키 교차검증 (wiki-crosschecked) ===');
+  for (const [line, counts] of Object.entries(wikiStats)) {
+    console.log(`  ${line}호선 left=${counts.left} right=${counts.right} null=${counts.unknown}`);
+  }
+  for (const entry of wikiNullList) {
+    console.log(`  ${entry.id} ${entry.line}호선 ${entry.name} [${entry.reason}]`);
+  }
+}
+
 function printBuildReport(supported, stats, nullList) {
   console.log('=== Platform Exit Side 빌드 완료 ===');
   console.log(`출력: ${path.relative(PROJECT_ROOT, OUTPUT_PATH)}`);
@@ -231,12 +340,26 @@ function build() {
     stats.byLine[line][side]++;
   }
 
-  // 결정적 출력 — 키 정렬은 id sort된 input 순서로 이미 보장됨. 파일 끝 newline 유지.
-  fs.writeFileSync(OUTPUT_PATH, JSON.stringify(output, null, 2) + '\n', 'utf8');
+  const sections = readJson(SECTION_RUNNING_SIDE_PATH).sections;
+  const wiki = buildWikiCrosscheck(stations, sections, loadWikiFormatFixtures());
+  Object.assign(output, wiki.output);
+
+  // 결정적 출력 — id 사전순 정렬. 파일 끝 newline 유지.
+  const sorted = Object.fromEntries(
+    Object.entries(output).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  fs.writeFileSync(OUTPUT_PATH, JSON.stringify(sorted, null, 2) + '\n', 'utf8');
 
   printBuildReport(supported, stats, nullList);
+  printWikiReport(wiki.wikiStats, wiki.wikiNullList);
 
-  return { output, stats, nullList };
+  return {
+    output: sorted,
+    stats,
+    nullList,
+    wikiStats: wiki.wikiStats,
+    wikiNullList: wiki.wikiNullList,
+  };
 }
 
 if (require.main === module) {
@@ -250,6 +373,10 @@ module.exports = {
   parseCsvLine,
   buildNameAliases,
   stripParens,
+  classifyNamuGlyph,
+  resolveWikiCrosscheckSide,
+  findSectionRunningSide,
   SUPPORTED_LINES,
   GRADE_OFFICIAL_DERIVED,
+  GRADE_WIKI_CROSSCHECKED,
 };

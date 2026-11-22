@@ -38,6 +38,11 @@ const MISSING: ReadonlyArray<[string, Side]> = [
   ['7-038', 'right'], ['6-027', 'left'], ['6-035', 'right'], ['8-006', 'right'],
 ];
 // §1.2 SPURIOUS 30건 — 데이터가 없는데 다른 노선 값이 표시되던 역(정답 = 안내 생략)
+// #3177 PR-1: 9호선 위키 교차검증으로 자기 id의 값이 채워진 역 — 여전히 "다른 노선 값을 빌려오지 않고" 자기 값(platform)만 쓴다.
+const SPURIOUS_NOW_OWN_DATA: ReadonlyArray<[string, Side]> = [
+  ['9-013', 'left'], ['9-015', 'right'], ['9-023', 'right'], ['9-030', 'right'], ['9-036', 'left'],
+];
+const OWN_DATA_IDS = new Set(SPURIOUS_NOW_OWN_DATA.map(([id]) => id));
 const SPURIOUS: readonly string[] = [
   '9-002', '9-013', '9-015', '9-020', '9-023', '9-030', '9-036',
   'airport-002', 'airport-003', 'airport-004', 'airport-006',
@@ -46,6 +51,7 @@ const SPURIOUS: readonly string[] = [
   'bundang-039', 'bundang-046', 'bundang-048', 'bundang-050', 'bundang-041a',
   'sinbundang-012', 'sinbundang-013', 'sinbundang-015', 'sinbundang-016',
 ];
+const SPURIOUS_STILL_NULL: readonly string[] = SPURIOUS.filter((id) => !OWN_DATA_IDS.has(id));
 // §1.2 이름 표기가 다른 역(왕십리)
 const WANGSIMNI: ReadonlyArray<[string, Side | null]> = [
   ['2-008', 'right'], ['5-031', 'right'], ['bundang-053', null],
@@ -70,7 +76,16 @@ describe('resolveExitSideForStation — #3177 §1.2 실데이터 표', () => {
     }
   });
 
-  it.each(SPURIOUS)('%s → 데이터 없음(null, no-data) — 다른 노선 값을 빌려오지 않는다', (stationId) => {
+  it.each(SPURIOUS_NOW_OWN_DATA)('%s → %s (자기 id의 platform 값, 환승 노선 값 아님)', (stationId, side) => {
+    for (const direction of DIRECTIONS) {
+      expect(resolveExitSideForStation({ stationId, direction, terminus: 'unknown' })).toEqual({
+        side,
+        reason: 'platform',
+      });
+    }
+  });
+
+  it.each(SPURIOUS_STILL_NULL)('%s → 데이터 없음(null, no-data) — 다른 노선 값을 빌려오지 않는다', (stationId) => {
     for (const direction of DIRECTIONS) {
       expect(resolveExitSideForStation({ stationId, direction, terminus: 'unknown' })).toEqual({
         side: null,
@@ -134,8 +149,12 @@ describe('buildAlarmContent 본문 줄 — event.stationId 기반', () => {
     expect(exitSideLines(eventOf(stationId))).toEqual([side === 'left' ? LEFT : RIGHT]);
   });
 
-  it.each([...SPURIOUS, 'bundang-053'])('%s → 좌/우 줄 0개', (stationId) => {
+  it.each([...SPURIOUS_STILL_NULL, 'bundang-053'])('%s → 좌/우 줄 0개', (stationId) => {
     expect(exitSideLines(eventOf(stationId))).toEqual([]);
+  });
+
+  it.each(SPURIOUS_NOW_OWN_DATA)('%s → %s 줄이 정확히 1개 (자기 id 값)', (stationId, side) => {
+    expect(exitSideLines(eventOf(stationId))).toEqual([side === 'left' ? LEFT : RIGHT]);
   });
 
   it.each(WANGSIMNI.filter(([, side]) => side))('%s (왕십리) → 1개', (stationId, side) => {

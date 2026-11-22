@@ -11,7 +11,9 @@ export type PlatformExitSide = 'left' | 'right';
 
 // 항목의 신뢰 출처. 알림 레이어가 표시 여부를 결정할 때 사용한다.
 //   official-derived: 서울교통공사 공식 역사심도정보 + 건축정보 일치 형식에서 도출
-export type PlatformExitSideGrade = 'official-derived';
+//   wiki-crosschecked: 공식 데이터셋 밖 노선 — 위키백과 형식 + 나무위키 승강장 글리프가 일치(2선 단순형)하고
+//                      구간 주행방향(인용 확보)이 확립된 경우만 도출 (#3177)
+export type PlatformExitSideGrade = 'official-derived' | 'wiki-crosschecked';
 
 export interface PlatformExitSideEntry {
   side: PlatformExitSide;
