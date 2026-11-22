@@ -23,10 +23,10 @@
 
 원칙: **최소 수집·최소 보관**
 
-- 사용자는 위치 좌표가 backend에 60초 ring buffer 이상으로 영속 저장되지 않음을 보장받는다.
+- 사용자는 위치 좌표가 backend에 60초 ring buffer 이상으로 영속 저장되지 않음을 보장받는다. 버그 신고 진단 첨부(#3366)도 예외 아님 — 클라이언트와 서버(`/feedback`)가 같은 패턴(`src/shared/constants/feedbackRedaction.ts`)으로 좌표·40자+ hex(token)를 2중 스크럽한 뒤에만 저장한다.
 - 사용자는 backend 식별자가 **APNs token** 외에 사용되지 않음을 보장받는다. (이메일/계정 미수집)
 - 사용자는 위치 좌표가 로그(콘솔)에 남지만 외부 전송되지 않음을 보장받는다.
-- 사용자는 AsyncStorage에 저장된 즐겨찾기·경로 히스토리가 기기 외부로 전송되지 않음을 보장받는다.
+- 사용자는 AsyncStorage에 저장된 즐겨찾기·경로 히스토리가 기기 외부로 전송되지 않음을 보장받는다. **예외(#3366)**: 사용자가 버그 신고를 직접 보낼 때에 한해 진단 정보(현재/최근 trip 경로 노선·발사 알림 역 이력)를 첨부한다. 즐겨찾기 목록은 첨부하지 않으며, 위치 좌표·전체 token은 제거된다.
 - 사용자는 데이터 정책을 설정 화면에서 한 줄 요약으로 확인할 수 있다.
 
 ✅ 현재 정책 (코드 일치): `src/features/alarm/api/positionUpload.ts:180-197` → `POST /position`로 `{token, lat, lng, accuracy, ts, motion, [accelSummary, mapMatchedLine, mapMatchedArcM, nearestStationDistanceM]}` 전송. KV 60초 ring buffer만, 영속 X. APNs token이 유일 식별자 (이메일/계정 미수집). 로그(`logger.ts`)는 콘솔만, 외부 전송 없음.
@@ -84,9 +84,9 @@
 ### 버그 신고 (사용자 명시 입력 → 자체 backend)
 
 - 사용자는 앱 내 설정에서 **버그 신고 / 기능 제안** 화면에 진입할 수 있다. ⚠️ 미구현
-- 사용자는 신고 시 자동으로 첨부되는 컨텍스트(앱 버전·OS·언어·현재 trip 상태)를 미리 확인하고 동의할 수 있다. ⚠️ 미구현
+- 사용자는 신고 시 자동으로 첨부되는 컨텍스트(앱 버전·OS·언어·최근 이동 기록)를 **첨부 항목 요약 한 줄**("앱 버전·기기·최근 이동 기록(위치 좌표 제외)이 함께 전송됩니다")로 확인한다. 진단 본문 미리보기는 제공하지 않는다(#3366 사용자 결정). ⚠️ 미구현(PR-2 앱)
 - 사용자는 신고 내용이 자체 backend(Cloudflare Worker)로 전달되어 운영자가 확인할 수 있음을 보장받는다. ⚠️ 미구현
-- 결정된 저장 방안: **Cloudflare KV `FEEDBACK` namespace 신규 추가** + `POST /feedback` endpoint. 이유: 자유 텍스트 + 메타 저장에 최적, TTL로 자연 폐기, 스키마 진화 불필요. (D1·R2 비추 — 정규화/blob 필요 없음.)
+- 결정된 저장 방안: **Cloudflare KV `FEEDBACK` namespace 신규 추가** + `POST /feedback` endpoint. 진단 첨부(#3366)는 같은 namespace의 별도 키 `feedback-diag:<entryKey>`(TTL 30일, 최대 512KB)에 저장하고 목록·통계·CSV는 읽지 않는다. 운영자 상세는 `GET /admin/feedback/:key`. 이유: 자유 텍스트 + 메타 저장에 최적, TTL로 자연 폐기, 스키마 진화 불필요. (D1·R2 비추 — 정규화/blob 필요 없음.)
 
 ### 자동 에러·크래시 모니터링 (자동 수집 → 외부 SaaS)
 

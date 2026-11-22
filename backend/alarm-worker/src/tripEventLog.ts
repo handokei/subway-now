@@ -598,3 +598,41 @@ export async function cleanupTripEvents(
     return 0;
   }
 }
+
+export interface TripEventRow {
+  ts: number;
+  kind: string;
+  station: string | null;
+  line: string | null;
+  meta: string | null;
+}
+
+/** 시간 창 조회 상한 — 제보 상세 응답 크기 보호. */
+export const TRIP_EVENT_WINDOW_DEFAULT_LIMIT = 500;
+
+/**
+ * #3366 — token_hash 키 + 시간 창 [fromMs, toMs]의 trip_events를 ts 오름차순으로 읽는다
+ * (`idx_trip_events_token_hash(token_hash, ts)` 사용, 파라미터 바인딩). 버그 신고 상세의 trip 요약용.
+ *
+ * @returns 행 배열. D1 실패 시 null — 호출자가 unavailable로 처리(읽기라 Sentry escalation 없음).
+ */
+export async function listTripEventsByKeyWindow(
+  db: D1Database,
+  tripKey: string,
+  fromMs: number,
+  toMs: number,
+  limit: number = TRIP_EVENT_WINDOW_DEFAULT_LIMIT,
+): Promise<TripEventRow[] | null> {
+  try {
+    const { results } = await db
+      .prepare(
+        'SELECT ts, kind, station, line, meta FROM trip_events WHERE token_hash = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT ?',
+      )
+      .bind(tripKey, fromMs, toMs, limit)
+      .all<TripEventRow>();
+    return results;
+  } catch (e) {
+    console.warn(JSON.stringify({ msg: 'tripEventLog window read failed', err: String(e) }));
+    return null;
+  }
+}

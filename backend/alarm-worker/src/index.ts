@@ -46,12 +46,18 @@ import { runFallbackPushes } from './fallback';
 import { runRetryPushes } from './retryPushes';
 import {
   checkRateLimit,
+  feedbackKey,
   generateFeedbackId,
+  processDiagnostics,
   storeFeedback,
+  storeFeedbackDiagnostics,
   validateFeedback,
+  type FeedbackDiagnosticsMeta,
 } from './feedback';
 import {
   dayStartFromIsoDate,
+  FEEDBACK_ENTRY_KEY_PATTERN,
+  getFeedbackDetail,
   getFeedbackStats,
   isoDateUtc,
   listFeedback,
@@ -587,8 +593,19 @@ app.post('/feedback', async (c) => {
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
   const id = generateFeedbackId();
-  const key = await storeFeedback(kv, payload, now, id);
-  return c.json({ ok: true, key }, 201);
+  const entryKey = feedbackKey(now, id);
+  // #3366 — diagnostics는 스크럽·truncate 후 별도 키에 먼저 저장(실패해도 entry는 저장, stored:false).
+  let diagnosticsMeta: FeedbackDiagnosticsMeta | undefined;
+  if (payload.diagnostics !== undefined) {
+    const processed = processDiagnostics(payload.diagnostics);
+    const stored = await storeFeedbackDiagnostics(kv, entryKey, processed.text);
+    diagnosticsMeta = { ...processed.meta, stored };
+  }
+  const key = await storeFeedback(kv, payload, now, id, diagnosticsMeta);
+  return c.json(
+    { ok: true, key, ...(diagnosticsMeta ? { diagnosticsStored: diagnosticsMeta.stored } : {}) },
+    201,
+  );
 });
 
 /**
@@ -669,6 +686,26 @@ app.get('/admin/feedback/stats', async (c) => {
   const stats = await getFeedbackStats(kv, date);
   if (!stats) return c.json({ error: 'stats_not_found' }, 404);
   return c.json(stats);
+});
+
+/**
+ * 운영자용 제보 1건 상세 (#3366): entry + 스크럽된 diagnostics 본문 + trip 요약.
+ * 정적 경로(`export.csv`, `stats`) **뒤에** 등록해야 그 경로가 `:key`로 가로채이지 않는다.
+ *
+ * Response 200: { key, entry, diagnostics: string | null, trip: { status: 'ok', events } | { status: 'expired' | 'unavailable' } }
+ * Response 400: { error: 'invalid_key' } / 404: { error: 'not_found' } / 401·503: `/admin/feedback`과 동일.
+ */
+app.get('/admin/feedback/:key', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.FEEDBACK;
+  if (!kv) return c.json({ error: 'feedback_unavailable' }, 503);
+
+  const key = c.req.param('key');
+  if (!FEEDBACK_ENTRY_KEY_PATTERN.test(key)) return c.json({ error: 'invalid_key' }, 400);
+  const detail = await getFeedbackDetail(kv, c.env.DB, key, Date.now());
+  if (!detail) return c.json({ error: 'not_found' }, 404);
+  return c.json(detail);
 });
 
 
