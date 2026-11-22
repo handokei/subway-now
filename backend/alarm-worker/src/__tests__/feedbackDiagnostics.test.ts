@@ -255,6 +255,9 @@ describe('listFeedback는 diag를 읽지 않는다', () => {
     const keys = getSpy.mock.calls.map((c) => c[0]);
     expect(keys.length).toBeGreaterThan(0);
     expect(keys.some((k) => k.startsWith('feedback-diag:'))).toBe(false);
+    // 읽은 키는 entry 키 형식뿐 — diag 키가 entry 접두로 새도 잡는다.
+    expect(keys.every((k) => /^feedback:\d+:[0-9a-f]+$/.test(k))).toBe(true);
+    expect(feedbackDiagKey(keys[0])).not.toMatch(/^feedback:/);
   });
 });
 
@@ -311,6 +314,16 @@ describe('GET /admin/feedback/:key', () => {
       occurredAt + 2 * 3600_000,
       expect.any(Number),
     );
+  });
+
+  it('meta가 JSON이 아니면 원문 문자열, null이면 null', async () => {
+    const { db } = mockDb([
+      { ts: 1, kind: 'a', station: null, line: null, meta: 'not-json' },
+      { ts: 2, kind: 'b', station: null, line: null, meta: null },
+    ]);
+    const { res } = await seedAndGet({ tripKey: TRIP_KEY, occurredAt: Date.now() }, db);
+    const { trip } = (await res.json()) as any;
+    expect(trip.events.map((e: any) => e.meta)).toEqual(['not-json', null]);
   });
 
   it('7일 초과 → expired(D1 미조회)', async () => {

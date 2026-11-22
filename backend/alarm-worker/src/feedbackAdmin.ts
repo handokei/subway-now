@@ -18,7 +18,14 @@
  *   - 원문 archive(R2/D1) 미도입 — 1년 카운트 통계로 충분하고, 원문 보존은 PII 표면을 늘림.
  */
 
-import type { FeedbackContext, FeedbackRecord } from './feedback';
+import {
+  feedbackDiagKey,
+  type FeedbackContext,
+  type FeedbackDiagnosticsMeta,
+  type FeedbackRecord,
+  type FeedbackReport,
+} from './feedback';
+import { listTripEventsByKeyWindow, TRIP_EVENT_RETENTION_MS } from './tripEventLog';
 
 export const FEEDBACK_LIST_DEFAULT_LIMIT = 50;
 export const FEEDBACK_LIST_MAX_LIMIT = 500;
@@ -47,6 +54,10 @@ export interface FeedbackListEntry {
   receivedAt: number;
   message: string;
   context?: FeedbackContext;
+  /** #3366 — 제보 유형/역/시각. 목록의 category 분포 측정용(작은 메타). */
+  report?: FeedbackReport;
+  /** #3366 — diagnostics 메타(본문은 별도 키, 목록은 읽지 않는다). */
+  diagnostics?: FeedbackDiagnosticsMeta;
 }
 
 export interface FeedbackListResult {
@@ -125,6 +136,8 @@ export async function listFeedback(
       receivedAt: parsed.receivedAt ?? receivedAt,
       message: parsed.message,
       ...(parsed.context ? { context: parsed.context } : {}),
+      ...(parsed.report ? { report: parsed.report } : {}),
+      ...(parsed.diagnostics ? { diagnostics: parsed.diagnostics } : {}),
     });
   }
 
@@ -148,6 +161,12 @@ function safeParseRecord(raw: string): FeedbackRecord | null {
     };
     if (r.context && typeof r.context === 'object') {
       record.context = r.context as FeedbackContext;
+    }
+    if (r.report && typeof r.report === 'object') {
+      record.report = r.report as FeedbackReport;
+    }
+    if (r.diagnostics && typeof r.diagnostics === 'object') {
+      record.diagnostics = r.diagnostics as FeedbackDiagnosticsMeta;
     }
     return record;
   } catch {
@@ -383,4 +402,82 @@ export async function maybeRunDailyFeedbackStats(
   const stats = await aggregateFeedbackStats(kv, yesterdayStart);
   await storeFeedbackStats(kv, stats);
   return { ran: true, date };
+}
+
+/** `feedback:${epochMs}:${hex}` — GET /admin/feedback/:key 경로 파라미터 검증. */
+export const FEEDBACK_ENTRY_KEY_PATTERN = /^feedback:\d+:[0-9a-f]+$/;
+
+/** trip 요약 조회 창: occurredAt ±2h. */
+export const FEEDBACK_TRIP_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+export type FeedbackTripSummary =
+  | { status: 'ok'; events: FeedbackTripEvent[] }
+  | { status: 'expired' }
+  | { status: 'unavailable' };
+
+export interface FeedbackTripEvent {
+  ts: number;
+  kind: string;
+  station: string | null;
+  line: string | null;
+  meta: unknown;
+}
+
+export interface FeedbackDetail {
+  key: string;
+  entry: FeedbackRecord;
+  /** 스크럽된 diagnostics 본문. 첨부 없음/만료/저장 실패면 null. */
+  diagnostics: string | null;
+  trip: FeedbackTripSummary;
+}
+
+function parseMeta(raw: string | null): unknown {
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * 제보 1건 상세 — entry + diag 본문 + trip 요약.
+ * trip 요약: tripKey 없음/DB 미바인딩/D1 오류 → unavailable, occurredAt(없으면 receivedAt)이
+ * 보존 7일 초과 → expired(D1 미조회), 그 외 occurredAt ±2h 창의 trip_events.
+ */
+export async function getFeedbackDetail(
+  kv: KVNamespace,
+  db: D1Database | undefined,
+  key: string,
+  nowMs: number,
+): Promise<FeedbackDetail | null> {
+  const raw = await kv.get(key);
+  if (raw === null) return null;
+  const entry = safeParseRecord(raw);
+  if (!entry) return null;
+  const diagnostics = await kv.get(feedbackDiagKey(key));
+  return { key, entry, diagnostics, trip: await summarizeTrip(db, entry, nowMs) };
+}
+
+async function summarizeTrip(
+  db: D1Database | undefined,
+  entry: FeedbackRecord,
+  nowMs: number,
+): Promise<FeedbackTripSummary> {
+  const { report, receivedAt } = entry;
+  const tripKey = report?.tripKey;
+  if (!tripKey || !db) return { status: 'unavailable' };
+  const occurredAt = report?.occurredAt ?? receivedAt;
+  if (nowMs - occurredAt > TRIP_EVENT_RETENTION_MS) return { status: 'expired' };
+  const rows = await listTripEventsByKeyWindow(
+    db,
+    tripKey,
+    occurredAt - FEEDBACK_TRIP_WINDOW_MS,
+    occurredAt + FEEDBACK_TRIP_WINDOW_MS,
+  );
+  if (!rows) return { status: 'unavailable' };
+  return {
+    status: 'ok',
+    events: rows.map((r) => ({ ...r, meta: parseMeta(r.meta) })),
+  };
 }
