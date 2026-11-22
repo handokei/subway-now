@@ -17,6 +17,7 @@ import type { ArchFlagValue } from './archFlag';
 import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
 import { stampSent } from './silentPushReachMetric';
 import type { ApnsEnv } from './types';
+import type { PlatformExitSide } from '../../../src/shared/types/platformExitSide';
 import type { StationWaypointKind } from '../../../src/shared/types/pushContract';
 
 const PENDING_PREFIX = 'pending:';
@@ -60,6 +61,11 @@ export interface PendingPush {
   stationName: string;
   kind: StationWaypointKind;
   phase: AlarmPhase;
+  /**
+   * #3177 — 발사 waypoint(transfer/destination)의 하차문 좌/우. fallback alert 본문 끝 줄 생성용.
+   * 판정 불가·intermediate·구 entry는 부재 — 줄 생략.
+   */
+  exitSide?: PlatformExitSide;
   etaSeconds: number;
   /** APNs host 선택 (sandbox/production). silent push가 self-heal로 정정된 경우 정정된 값을 보관. */
   apnsEnv: ApnsEnv;

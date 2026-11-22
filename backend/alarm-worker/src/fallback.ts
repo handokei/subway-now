@@ -294,6 +294,7 @@ async function sendOneFallback(
           kind: entry.kind,
           phase: entry.phase,
           stationName: entry.stationName,
+          exitSide: entry.exitSide,
         });
   // #566 머지 직후 KV에 남아있던 구 entry는 apnsEnv 필드가 없을 수 있다.
   // scheduled.ts의 `?? 'sandbox'` 패턴과 정합 — 잘못된 host 발사로 entry가 통째로 소실되는 것을 막는다.

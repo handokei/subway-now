@@ -123,6 +123,19 @@ describe('runFallbackPushes (#572 P2c)', () => {
     expect(kv.store.has(pendingKey('p-fire'))).toBe(false);
   });
 
+  it('#3177 — entry.exitSide가 있으면 resend alert 본문 끝에 하차문 줄', async () => {
+    await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p-exit', exitSide: 'left' }));
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await runFallbackPushes(makeEnv(kv), {
+      apnsConfig: apnsConfig(),
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string).aps.alert.body).toBe('이번 역에서 내리세요\n왼쪽 문으로 하차하세요');
+  });
+
   it('apnsEnv=production이면 production host로 발사', async () => {
     await putPending(
       kv as unknown as KVNamespace,

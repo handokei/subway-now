@@ -11,6 +11,7 @@
  */
 
 import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../src/shared/constants/sleepAlarm';
+import type { PlatformExitSide } from '../../../src/shared/types/platformExitSide';
 import type { OneStopContent } from './alertSoundPolicy';
 
 /** 지원 locale — 디바이스 SUPPORTED_LANGUAGES와 1:1 매핑. */
@@ -146,6 +147,8 @@ interface I18nStrings {
   tripArrivedEndedBody: string;
   /** #3007 PR-3 — 정지 질문 무응답 자동 종료 안내 본문(title은 "안내 종료" 상수). */
   tripIdleEndedBody: string;
+  /** #3177 — 하차문 안내 줄. device `alarms.exitSideLeft/Right`와 byte-identical(드리프트 테스트가 고정). */
+  exitSide: Record<PlatformExitSide, string>;
 }
 
 /**
@@ -217,6 +220,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     tripArrivedEndedTitle: (destinationStation) => `${destinationStation} 도착 · 안내 종료`,
     tripArrivedEndedBody: '목적지에 도착해 경로 안내를 마쳤어요',
     tripIdleEndedBody: '움직임이 없어 안내를 종료했어요',
+    exitSide: { left: '왼쪽 문으로 하차하세요', right: '오른쪽 문으로 하차하세요' },
   },
   en: {
     endPromptTitle: 'End guidance?',
@@ -276,6 +280,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     tripArrivedEndedTitle: (destinationStation) => `Arrived at ${destinationStation} · Guidance ended`,
     tripArrivedEndedBody: 'You reached your destination and guidance has ended',
     tripIdleEndedBody: 'Guidance ended because there was no movement',
+    exitSide: { left: 'Exit on the left', right: 'Exit on the right' },
   },
   ja: {
     endPromptTitle: '案内を終了しますか?',
@@ -331,6 +336,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     tripArrivedEndedTitle: (destinationStation) => `${destinationStation}に到着 · 案内終了`,
     tripArrivedEndedBody: '目的地に到着したため、ルート案内を終了しました',
     tripIdleEndedBody: '動きがないため案内を終了しました',
+    exitSide: { left: '左側のドアから降りてください', right: '右側のドアから降りてください' },
   },
   zh: {
     endPromptTitle: '要结束导航吗?',
@@ -387,6 +393,7 @@ const I18N: Record<SupportedLocale, I18nStrings> = {
     tripArrivedEndedTitle: (destinationStation) => `已到达${destinationStation} · 导航结束`,
     tripArrivedEndedBody: '已到达目的地,路线导航已结束',
     tripIdleEndedBody: '因没有移动,导航已结束',
+    exitSide: { left: '请从左侧车门下车', right: '请从右侧车门下车' },
   },
 };
 
@@ -399,12 +406,24 @@ export function sleepAlarmContent(
   kind: SleepAlarmKind,
   stationName: string,
   remaining: number,
+  exitSide?: PlatformExitSide | null,
 ): OneStopContent {
   const strings = t(locale);
   if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE) {
-    return { title: strings.sleepAlarmOneStopTitle(kind), body: strings.sleepAlarmOneStopBody(kind, stationName) } as OneStopContent;
+    const body = appendExitSide(strings.sleepAlarmOneStopBody(kind, stationName), locale, exitSide);
+    return { title: strings.sleepAlarmOneStopTitle(kind), body } as OneStopContent;
   }
-  return { title: strings.sleepAlarmTitle(kind, stationName, remaining), body: strings.sleepAlarmBody(kind, stationName, remaining) } as OneStopContent;
+  const body = appendExitSide(strings.sleepAlarmBody(kind, stationName, remaining), locale, exitSide);
+  return { title: strings.sleepAlarmTitle(kind, stationName, remaining), body } as OneStopContent;
+}
+
+/**
+ * #3177 — 본문 끝에 "\n{하차문 문장}"을 붙인다(device `appendExitSide`와 동일 규칙). side가 없으면 본문 그대로 —
+ * 근거 없는 줄을 붙이느니 생략한다(ADR-010).
+ */
+export function appendExitSide(body: string, locale: SupportedLocale | undefined, side?: PlatformExitSide | null): string {
+  if (!side) return body;
+  return `${body}\n${t(locale).exitSide[side]}`;
 }
 
 /**
