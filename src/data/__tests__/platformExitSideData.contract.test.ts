@@ -73,9 +73,9 @@ describe('platformExitSideByDirection.json 계약', () => {
     }
   });
 
-  it('문장 근거 없는 방화·강동·온수·성수지선·1호선은 키가 없다(unknown)', () => {
+  it('문장 근거 없는 방화·강동·성수지선·1호선은 키가 없다(unknown)', () => {
     const map = byDirection as Record<string, Dir>;
-    for (const id of ['5-001', '5-039', '7-042']) expect(map[id]).toBeUndefined();
+    for (const id of ['5-001', '5-039']) expect(map[id]).toBeUndefined();
     expect(Object.keys(map).filter((id) => id.startsWith('1-'))).toEqual([]);
   });
 

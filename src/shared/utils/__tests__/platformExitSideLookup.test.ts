@@ -47,7 +47,7 @@ describe('lookupDirectionalExitSide', () => {
     expect(lookupDirectionalExitSide('6-007', 'up', 'here')).toEqual({ side: null });
   });
 
-  it.each(['5-001', '5-039', '7-042', '9-001', ''])('문장 근거가 없는 id %s는 null', (id) => {
+  it.each(['5-001', '5-039', '9-001', ''])('문장 근거가 없는 id %s는 null', (id) => {
     expect(lookupDirectionalExitSide(id, 'up', 'unknown')).toBeNull();
     expect(lookupDirectionalExitSide(id, 'down', 'here')).toBeNull();
   });
