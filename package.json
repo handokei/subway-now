@@ -43,6 +43,7 @@
   "jest": {
     "preset": "jest-expo",
     "testEnvironment": "node",
+    "globalSetup": "<rootDir>/jest.global-setup.js",
     "setupFiles": [
       "<rootDir>/jest.setup.js"
     ],
