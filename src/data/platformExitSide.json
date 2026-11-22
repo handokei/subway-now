@@ -1,4 +1,44 @@
 {
+  "1-025": {
+    "side": "right",
+    "grade": "official-derived"
+  },
+  "1-026": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-027": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-028": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-029": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-030": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-031": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-032": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-033": {
+    "side": "left",
+    "grade": "official-derived"
+  },
+  "1-034": {
+    "side": "right",
+    "grade": "official-derived"
+  },
   "2-001": {
     "side": "left",
     "grade": "official-derived"
@@ -296,6 +336,10 @@
     "grade": "official-derived"
   },
   "3-044": {
+    "side": "right",
+    "grade": "official-derived"
+  },
+  "4-001": {
     "side": "right",
     "grade": "official-derived"
   },
