@@ -31,7 +31,7 @@ type LayoutNode = {
   label: Label;
 };
 type LayoutEdge = { line: string; from: string; to: string; points?: [number, number][] };
-type Layout = { nodes: Record<string, LayoutNode>; edges: LayoutEdge[] };
+type Layout = { bounds: { w: number; h: number }; nodes: Record<string, LayoutNode>; edges: LayoutEdge[] };
 type Branch = { id: string; loop?: boolean; stations: string[] };
 type LineDef = { branches: Branch[] };
 
@@ -227,6 +227,22 @@ const angleViolations = (layout: Layout) => {
   return out;
 };
 
+// 사용자 결정(2026-11-26): 외곽 구간 역은 전부 유지, 지리 비율로 늘어진 간격만 균일하게 압축.
+// 압축 전 실측: bounds 2958x4034, 도심 면적 비율 0.127.
+const MAX_BOUNDS_W = 2200;
+const MAX_BOUNDS_H = 2600;
+const MIN_CORE_AREA_RATIO = 0.25;
+
+const coreAreaRatio = (layout: Layout) => {
+  const loopNames = lineDefs['2'].branches.find(({ loop }) => loop)?.stations ?? [];
+  const pts = loopNames.map((name) => layout.nodes[entityNodeId(layout, '2', name)]);
+  const xs = pts.map(({ x }) => x);
+  const ys = pts.map(({ y }) => y);
+  const core = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+  const { w, h } = layout.bounds;
+  return core / (w * h);
+};
+
 describe('schematicLines.json — 노선 정의', () => {
   it('1~9호선 전부 branch·출처 URL·조회일(2026-11-26)을 가진다', () => {
     expect(LINES).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
@@ -318,6 +334,25 @@ describe('schematicLayout.json — 커밋된 산출물', () => {
 
   it('모든 edge 구간(points 꺾임 포함) 각도가 45° 배수(±1°)', () => {
     expect(angleViolations(layout)).toEqual([]);
+  });
+
+  it('외곽 긴 꼬리 압축: bounds 상한 + 도심(2호선 순환 bbox) 면적 비율 하한', () => {
+    const { w, h } = layout.bounds;
+    expect(w).toBeLessThanOrEqual(MAX_BOUNDS_W);
+    expect(h).toBeLessThanOrEqual(MAX_BOUNDS_H);
+    expect(coreAreaRatio(layout)).toBeGreaterThanOrEqual(MIN_CORE_AREA_RATIO);
+  });
+
+  it('외곽 구간 역은 하나도 삭제되지 않는다 (노선 정의의 모든 역이 node로 존재)', () => {
+    const missing: string[] = [];
+    for (const line of LINES) {
+      for (const { stations: names } of lineDefs[line].branches) {
+        for (const name of names) {
+          if (!layout.nodes[entityNodeId(layout, line, name)]) missing.push(`${line}호선 ${name}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });
 
