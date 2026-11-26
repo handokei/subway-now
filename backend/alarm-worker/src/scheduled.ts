@@ -3568,11 +3568,12 @@ interface MaybeFireSleepAlarmInputs {
 }
 
 /**
- * #3100 — 비기본 발사(1역 전이 아닌 N역 전, 또는 선택 모드 clamp = 선점 칸이 실제 남은 수와 다름)의 outcome을
- * D1 `trip_events`(kind='sleep-alarm')에 1행 append한다. 기본 칸·매 역의 1역 전은 행을 만들지 않는다(D1 행 증가 0).
+ * 취침 알람 발사 1건의 outcome을 D1 `trip_events`(kind='sleep-alarm')에 1행 append한다.
+ * #3373 (ADR-048 결정 8 개정) — 기본 칸(1역 전)도 기록한다. 11/24 실측에서 1역 전 서버 alert가 BG에 표시되지 않았는데 기본 칸은 행이 없어
+ * alert/companion 전달 결과(`alertStatus`/`companionStatus`)를 사후에 알 수 없었다. 트립당 0~2행(leg마다 1역 전 1건) 증가.
  * clamp 발사만 `meta.cells`(선점한 칸)를 싣는다. 관측 전용 — 발사/dedup 판정에는 관여하지 않는다.
  */
-async function recordNonDefaultSleepAlarm(
+async function recordSleepAlarm(
   env: Env,
   trip: Trip,
   waypoint: Waypoint,
@@ -3584,7 +3585,6 @@ async function recordNonDefaultSleepAlarm(
   now: number,
 ): Promise<void> {
   const isClamp = cells.some((cell) => cell !== remaining);
-  if (remaining === SLEEP_ALARM_MIN_STOPS_BEFORE && !isClamp) return;
   await recordTripEvent(
     env.DB,
     {
@@ -3760,7 +3760,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       remaining,
       companionOk: companionHeal.result.ok,
     });
-    await recordNonDefaultSleepAlarm(
+    await recordSleepAlarm(
       env,
       trip,
       waypoint,
@@ -3768,7 +3768,12 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       remaining,
       newCells,
       'fired',
-      { pushId: alertPushId, ...(source === undefined ? {} : { source }) },
+      {
+        pushId: alertPushId,
+        alertStatus: alertHeal.result.status,
+        companionStatus: companionHeal.result.status,
+        ...(source === undefined ? {} : { source }),
+      },
       now,
     );
   } else {
@@ -3782,7 +3787,7 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       status: alertHeal.result.status,
       reason: alertHeal.result.reason,
     });
-    await recordNonDefaultSleepAlarm(
+    await recordSleepAlarm(
       env,
       trip,
       waypoint,
@@ -3793,6 +3798,8 @@ async function maybeFireSleepAlarm(inputs: MaybeFireSleepAlarmInputs): Promise<v
       {
         pushId: alertPushId,
         status: alertHeal.result.status,
+        alertStatus: alertHeal.result.status,
+        companionStatus: companionHeal.result.status,
         pushReason: alertHeal.result.reason,
         ...(source === undefined ? {} : { source }),
       },

@@ -145,6 +145,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-1',
       station: '강남',
       kind: 'transfer',
+      title: '알림',
       body: '곧 강남입니다',
     });
     expect(result).toEqual({ fired: false, reason: 'not-sleep-mode' });
@@ -158,6 +159,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-1',
       station: '강남',
       kind: 'transfer',
+      title: '알림',
       body: '곧 강남입니다',
     });
     expect(result.reason).toBe('not-sleep-mode');
@@ -169,6 +171,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-1',
       station: '강남',
       kind: 'transfer',
+      title: '알림',
       body: '곧 강남입니다',
     });
     expect(result.reason).toBe('not-sleep-mode');
@@ -180,6 +183,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-1',
       station: '강남',
       kind: 'transfer',
+      title: '알림',
       body: '곧 강남입니다',
     });
     expect(result).toEqual({ fired: true, bannerPosted: true });
@@ -205,6 +209,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-2',
       station: '역삼',
       kind: 'transfer',
+      title: '알림',
       body: '곧 역삼입니다',
     });
     expect(result).toEqual({ fired: true, bannerPosted: true });
@@ -224,6 +229,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-3',
       station: '선릉',
       kind: 'destination',
+      title: '알림',
       body: '곧 선릉입니다',
     });
     expect(result).toEqual({ fired: true, bannerPosted: true });
@@ -239,6 +245,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-4',
       station: '삼성',
       kind: 'transfer',
+      title: '알림',
       body: '곧 삼성입니다',
     });
     expect(mockedSpeak).toHaveBeenCalledWith('곧 삼성입니다', {
@@ -257,6 +264,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-5',
       station: '종합운동장',
       kind: 'destination',
+      title: '알림',
       body: '곧 종합운동장입니다',
     });
     expect(mockedSpeak).toHaveBeenCalledWith('곧 종합운동장입니다', {
@@ -277,6 +285,7 @@ describe('fireCompanionAlarm', () => {
       tripToken: 'trip-1',
       station: '강남',
       kind: 'transfer',
+      title: '알림',
       body: '곧 강남입니다',
     });
     expect(result).toEqual({ fired: false, reason: 'dedup' });
@@ -292,6 +301,7 @@ describe('fireCompanionAlarm', () => {
         tripToken: 'trip-1',
         station: '강남',
         kind: 'destination',
+        title: '알림',
         body: '도착했습니다',
       }),
     ).resolves.toEqual({ fired: true, bannerPosted: true });

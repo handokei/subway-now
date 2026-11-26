@@ -113,7 +113,7 @@ Epic #2061 audit(2026-07-29)로 다음이 확정되면서 전제가 깨졌다:
 
 - **알림 채널** (ADR-024 §1): backend가 `Trip.sleepModeEnabled`(Issue D, #2032)를 참조해 발사 자체를 mute한다. 이 이슈 문서 원문(§구현 지점)의 "Issue D의 `Trip.sleepModeEnabled`는 저장/monitoring 전용, 발사 gate에 사용하지 않는다"는 서술은 **알림 채널에는 더 이상 적용되지 않는다**.
 - **알람 주 채널(원격 visible)** (ADR-024 §1): 마찬가지로 backend가 취침모드 여부로 발사 시점(1역 전 환승/도착)을 결정한다 — 알람은 애초에 취침 전용이므로 "backend가 sleepMode를 안다"는 전제가 자연스럽다.
-- **Device 로컬 경로**: 알람의 device 부가 채널(TTS/진동, 배너 생성 금지)과 OS 예약 안전망은 원래 §결정 2~3의 device gate 정책을 그대로 유지한다. 원래 문서의 "Backend가 정책 state machine을 소유하면 device sleep 토글 시점과 backend KV 동기화 race window가 리스크"라는 이유(§이유 항목 1)는 **device 로컬 판단이 남아있는 경로에는 여전히 유효**하다.
+- **Device 로컬 경로**: 알람의 device 부가 채널(TTS/진동, 배너 생성 금지)과 OS 예약 안전망은 원래 §결정 2~3의 device gate 정책을 그대로 유지한다. **(2026-11-26 개정, #3373: 취침 알람 device 채널의 "배너 생성 금지"는 폐기 — 아래 개정 이력 참조. device gate(sleepMode 확인)는 그대로.)** 원래 문서의 "Backend가 정책 state machine을 소유하면 device sleep 토글 시점과 backend KV 동기화 race window가 리스크"라는 이유(§이유 항목 1)는 **device 로컬 판단이 남아있는 경로에는 여전히 유효**하다.
 
 ### 원래 §"이유" 표(Backend 안 보냄 대안 비교)와의 관계
 
@@ -127,3 +127,13 @@ Epic #2061 audit(2026-07-29)로 다음이 확정되면서 전제가 깨졌다:
 ## 개정 이력 (2026-11-02)
 
 환승·하차 도착 `station-` push의 **sound** 축에서 backend 취침 분기를 다시 허용한다: 취침 = alarm.wav·time-sensitive, 일반 = 정책 표 `NORMAL_ARRIVAL_ALERT`(`backend/alarm-worker/src/alertSoundPolicy.ts`). 발사 여부는 계속 취침 무관(intermediate 매역 mute만 예외)이다 — ADR-048:26이 "환승·하차 도착에 한해 복원"했던 첫 원칙을 sound 축에서만 해제한다. 2026-07-29 개정이 이미 허용한 "알림 계열 backend sleep 분기" 범위 안이다. 근거와 충돌 목록: ADR-024 개정 이력(2026-11-02, #2510 재오픈).
+
+## 개정 이력 (2026-11-26, #3373)
+
+취침 알람은 backend가 취침 여부로 발사를 결정하고, 기기는 companion 수신 시 sleepMode gate(`readSleepMode`)를 통과하면 **로컬 배너+소리를 게시한다**(이전: TTS/진동만, 배너 생성 금지). 일반 모드는 device gate에서 걸러져 로컬 알림 0건이다 — "backend 발사 / device 필터" 구조 자체는 불변이고, device가 통과시킨 뒤의 표시 행위만 확장된다. 상세는 ADR-024 개정 이력(2026-11-26).
+
+### 이 ADR이 수정·대체·모순하는 결정
+
+- **ADR-023 2026-07-29 개정 내용 "Device 로컬 경로: 알람의 device 부가 채널(TTS/진동, 배너 생성 금지)"(`:116`) — 수정**: 취침 알람의 device 채널이 TTS/진동에 더해 로컬 배너+소리를 게시한다. device gate(sleepMode on일 때만 동작)와 ledger dedup은 그대로 유지한다.
+- **ADR-023 "Backend는 취침 무관 발사 → device가 필터" 원칙**: 변경 없음(2026-07-29·2026-11-02 개정 상태 유지). 이번 개정은 표시 행위 축만 건드린다.
+- 확인한 결정 목록: ADR-023, ADR-024, ADR-048.
