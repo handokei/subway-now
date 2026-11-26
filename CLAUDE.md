@@ -235,7 +235,7 @@ ADR "Feature-based + Ports & Adapters 디렉토리 재정비" (https://app.notio
   - `arrival/` — 실시간 도착 정보
   - `nearest-station/` — GPS 기반 최근접 역 탐색 + fusion
   - `route/` — 경로 탐색·환승·trip 진행
-  - `map/` — 지도 화면(Kakao Maps WebView)
+  - `map/` — 지도 화면(react-native-maps) + 노선도 모드(View 렌더)
   - `widget/` — iOS 홈 위젯 데이터 게이트웨이
   - `settings/` — 설정·언어·취침모드
   - `debug/` — DebugModal (cross-feature observer)
@@ -263,10 +263,10 @@ ADR "Feature-based + Ports & Adapters 디렉토리 재정비" (https://app.notio
 - StyleSheet.create는 레이아웃 전용, 색상은 인라인 `[layout, { color: colors.xxx }]`
 
 ### 지도 구현
-- `src/features/map/utils/buildMapConfig.ts`로 HTML 생성 → `WebView`에 주입 (Kakao Maps SDK)
-- `MarkerClusterer`로 528개 역 마커 성능 최적화 (자동 클러스터링)
-- SDK 로드 실패 시 `window.onerror` → RN fallback UI 표시
-- 웹 플랫폼은 `src/features/map/components/StationMap.web.tsx`로 별도 구현
+- 지도 모드: `src/features/map/components/StationMap.tsx` — `react-native-maps`(`MapView`/`Marker`/`Polyline`/`Circle`). 같은 이름 역은 `groupStationsByName`으로 한 마커(대표 역)에 묶는다. `buildMapConfig.ts`는 지도 설정(중심·마커 입력) 계산 util.
+- 노선도 모드(#3371): `src/features/map/components/SchematicMap.tsx` — 1~9호선 도식 노선도. 자체 배치 데이터(`src/data/schematicLayout.json`, `schematicLines.json`; 생성 `scripts/build-schematic-layout.js`)를 신규 네이티브 의존성 없이 RN `View`(선분=회전 View, 역=원 View, 환승 node=큰 원, `supported:false`=회색·탭 불가)로 그린다. 확대/이동은 중첩 `ScrollView` + iOS 네이티브 pinch(`maximumZoomScale`) + 전 플랫폼 확대/축소 버튼 scale 단계. 역 탭 → `pickNodeStation`(대표 역, 지도 모드와 동일 규칙) → 기존 `setSelectedStation`(같은 하단 카드).
+- 모드 전환: `MapScreen`의 segmented "지도 | 노선도"(`MapModeSwitch`), 선택은 `useMapMode`가 AsyncStorage(`MAP_MODE_KEY`)에 저장·복원(로드 전·웹은 지도 모드). 노선도 모드는 위치 게이트(`shouldShowLocationGate`)를 우회 — 위치가 없으면 가까운 역 강조만 생략.
+- 웹 플랫폼은 `src/features/map/components/StationMap.web.tsx`로 별도 구현(노선도 전환 숨김)
 
 ### iOS 위젯 & Live Activity
 - `src/features/widget/api/widgetStorage.ts`가 App Groups → SharedGroupPreferences에 현재 역 정보 저장

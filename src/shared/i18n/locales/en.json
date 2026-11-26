@@ -188,6 +188,15 @@
     "recenter": "Recenter on my location",
     "search": {
       "placeholder": "Search stations"
+    },
+    "mode": {
+      "map": "Map",
+      "schematic": "Line map"
+    },
+    "schematic": {
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "goNearest": "Go to nearest station"
     }
   },
   "favorites": {

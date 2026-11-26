@@ -5,6 +5,7 @@ import { act, fireEvent } from '@testing-library/react-native';
 import { SchematicMap } from '../SchematicMap';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { lightColors, darkColors } from '../../../../shared/theme';
+import { SCHEMATIC_FOCUS_HIGHLIGHT_MS } from '../../../../shared/constants/schematicMap';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
 import layout from '../../../../data/schematicLayout.json';
 import stationsData from '../../../../data/stations.json';
@@ -29,6 +30,7 @@ const baseProps = {
   selectedStation: null,
   focusStation: null,
   focusNonce: 0,
+  bottomOffset: 0,
   onStationPress: jest.fn(),
 };
 
@@ -81,7 +83,39 @@ describe('SchematicMap 구조', () => {
   });
 });
 
+describe('SchematicMap 검색 강조 수명', () => {
+  it('강조는 일정 시간 뒤 사라진다', () => {
+    jest.useFakeTimers();
+    try {
+      const { queryByTestId } = renderWithTheme(
+        <SchematicMap {...baseProps} focusStation={gangnam} focusNonce={1} />,
+      );
+      expect(queryByTestId('schematic-focus-highlight')).not.toBeNull();
+      act(() => {
+        jest.advanceTimersByTime(SCHEMATIC_FOCUS_HIGHLIGHT_MS);
+      });
+      expect(queryByTestId('schematic-focus-highlight')).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('focusStation이 노선도에 없는 역이면 강조하지 않는다', () => {
+    const { queryByTestId } = renderWithTheme(
+      <SchematicMap {...baseProps} focusStation={{ ...gangnam, id: 'nope' }} focusNonce={1} />,
+    );
+    expect(queryByTestId('schematic-focus-highlight')).toBeNull();
+  });
+});
+
 describe('SchematicMap 역 탭', () => {
+  it('stations에 해당 역이 없으면 onStationPress를 호출하지 않는다', () => {
+    const [nodeId] = nodes.find(([, n]) => n.supported) as (typeof nodes)[number];
+    const { getByTestId, queryByTestId } = renderWithTheme(<SchematicMap {...baseProps} stations={[]} />);
+    fireEvent.press(queryByTestId(`schematic-node-${nodeId}`) ?? getByTestId(`schematic-transfer-${nodeId}`));
+    expect(baseProps.onStationPress).not.toHaveBeenCalled();
+  });
+
   it('일반 node 탭 → onStationPress(해당 stationId의 Station)', () => {
     const [nodeId, node] = nodes.find(([, n]) => n.supported && n.stationIds.length === 1) as (typeof nodes)[number];
     const { getByTestId } = renderWithTheme(<SchematicMap {...baseProps} />);
@@ -166,7 +200,7 @@ describe('SchematicMap 확대/축소 (버튼 scale 단계)', () => {
 describe('SchematicMap 테마', () => {
   function labelColor(getByTestId: (id: string) => { props: { style?: unknown } }) {
     const [nodeId] = nodes[0];
-    return StyleSheet.flatten(getByTestId(`schematic-label-${nodeId}`).props.style).color;
+    return (StyleSheet.flatten(getByTestId(`schematic-label-${nodeId}`).props.style) as { color: string }).color;
   }
 
   it('라이트: 배경·라벨 색이 lightColors', () => {

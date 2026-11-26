@@ -46,6 +46,14 @@ describe('useMapMode', () => {
     expect(result.current.loaded).toBe(true);
   });
 
+  it('로드 전에 사용자가 지도 모드로 전환했다면 저장값(노선도)이 덮지 않는다', async () => {
+    await AsyncStorage.setItem(MAP_MODE_KEY, 'schematic');
+    const { result } = renderHook(() => useMapMode());
+    act(() => result.current.setMode('map'));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.mode).toBe('map');
+  });
+
   it('알 수 없는 저장값은 지도 모드', async () => {
     await AsyncStorage.setItem(MAP_MODE_KEY, 'garbage');
     const { result } = renderHook(() => useMapMode());
