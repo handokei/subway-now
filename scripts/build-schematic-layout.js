@@ -50,7 +50,8 @@ const BRANCH_ROTATE_RAD = (35 * Math.PI) / 180;
 const EXTRAPOLATE_STEP_MIN_M = 700;
 const EXTRAPOLATE_STEP_MAX_M = 2500;
 
-const keyOf = (name) => applyStationAlias(normalizeStationName(name));
+const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const keyOf =(name) => applyStationAlias(normalizeStationName(name));
 
 function haversineMeters(a, b) {
   const rad = Math.PI / 180;
@@ -153,12 +154,12 @@ function buildGraph(entities, sequences, roots) {
     const supportedMembers = members.filter((m) => m.lat !== null);
     const stationIds = members.flatMap((m) => m.stationIds);
     const first = supportedMembers[0] ?? members[0];
-    const id = stationIds.length ? [...stationIds].sort()[0] : `u:${first.line}:${first.key}`;
+    const id = stationIds.length ? [...stationIds].sort(compareStrings)[0] : `u:${first.line}:${first.key}`;
     const node = {
       id,
       name: first.name,
-      lines: [...new Set(members.map((m) => m.line))].sort(),
-      stationIds: [...stationIds].sort(),
+      lines: [...new Set(members.map((m) => m.line))].sort(compareStrings),
+      stationIds: [...stationIds].sort(compareStrings),
       supported: stationIds.length > 0,
       lat: supportedMembers.length ? supportedMembers.reduce((s, m) => s + m.lat, 0) / supportedMembers.length : null,
       lng: supportedMembers.length ? supportedMembers.reduce((s, m) => s + m.lng, 0) / supportedMembers.length : null,
