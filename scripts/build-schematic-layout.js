@@ -38,6 +38,11 @@ const MERGE_MAX_METERS = 500; // 환승 병합 최대 좌표 거리
 const MARGIN = 40;
 const EDGE_MIN = MIN_SPACING + 6;
 const EDGE_MAX = 96;
+const OUTER_RADIUS_M = 10000; // 도심 중심에서 이 거리(m) 밖의 node는 외곽 — 양 끝이 모두 외곽인 edge는 길이 상한을 줄인다
+const OUTER_EDGE_MAX = MIN_SPACING + 12; // 외곽 edge 길이 상한(균일 간격)
+const OUTER_COMPRESS = 0.15; // 외곽 반경 초과분(m)의 선형 압축 계수 — 이완 수렴 전에 긴 꼬리를 먼저 접는다
+const ANCHOR_WEIGHT = 0.02;
+const OUTER_ANCHOR_WEIGHT = 0.003; // 외곽은 지리 앵커를 약하게 — 긴 꼬리가 도심 쪽으로 접힐 수 있게
 const FISHEYE_K = 3;
 const FISHEYE_EXP = 0.6;
 const RELAX_ITER = 500;
@@ -272,14 +277,13 @@ function fillUnknown(pos, seqNodes, edges) {
 }
 
 /** 도심 확대용 어안 압축: r' = K * r^EXP (방향 보존). */
-function fisheye(pos) {
-  const cx = pos.reduce((s, p) => s + p.x, 0) / pos.length;
-  const cy = pos.reduce((s, p) => s + p.y, 0) / pos.length;
+function fisheye(pos, cx, cy) {
   return pos.map((p) => {
-    const r = Math.hypot(p.x - cx, p.y - cy);
-    if (r === 0) return { x: 0, y: 0 };
+    const r0 = Math.hypot(p.x - cx, p.y - cy);
+    if (r0 === 0) return { x: 0, y: 0 };
+    const r = r0 > OUTER_RADIUS_M ? OUTER_RADIUS_M + (r0 - OUTER_RADIUS_M) * OUTER_COMPRESS : r0;
     const rp = FISHEYE_K * r ** FISHEYE_EXP;
-    return { x: ((p.x - cx) / r) * rp, y: ((p.y - cy) / r) * rp };
+    return { x: ((p.x - cx) / r0) * rp, y: ((p.y - cy) / r0) * rp };
   });
 }
 
@@ -313,7 +317,7 @@ function nearestOnSegment(px, py, ax, ay, bx, by) {
   return { t, x: ax + t * dx, y: ay + t * dy };
 }
 
-function relax(xs, ys, anchorXs, anchorYs, edges, pinned) {
+function relax(xs, ys, anchorXs, anchorYs, edges, pinned, outer) {
   const n = xs.length;
   const cell = MIN_SPACING * 1.5;
   const segThreshold = MIN_SPACING * 0.6;
@@ -322,8 +326,9 @@ function relax(xs, ys, anchorXs, anchorYs, edges, pinned) {
     const dys = new Float64Array(n);
     // 지리 앵커
     for (let i = 0; i < n; i += 1) {
-      dxs[i] += (anchorXs[i] - xs[i]) * 0.02;
-      dys[i] += (anchorYs[i] - ys[i]) * 0.02;
+      const w = outer[i] ? OUTER_ANCHOR_WEIGHT : ANCHOR_WEIGHT;
+      dxs[i] += (anchorXs[i] - xs[i]) * w;
+      dys[i] += (anchorYs[i] - ys[i]) * w;
     }
     // 8방위 스냅 + 길이 클램프 스프링
     for (const { from, to } of edges) {
@@ -331,7 +336,8 @@ function relax(xs, ys, anchorXs, anchorYs, edges, pinned) {
       const ey = ys[to] - ys[from];
       const len = Math.hypot(ex, ey) || 1e-6;
       const snapped = Math.round(Math.atan2(ey, ex) / (Math.PI / 4)) * (Math.PI / 4);
-      const target = Math.min(EDGE_MAX, Math.max(EDGE_MIN, len));
+      const maxLen = outer[from] && outer[to] ? OUTER_EDGE_MAX : EDGE_MAX;
+      const target = Math.min(maxLen, Math.max(EDGE_MIN, len));
       const fx = (Math.cos(snapped) * target - ex) * 0.15;
       const fy = (Math.sin(snapped) * target - ey) * 0.15;
       dxs[from] -= fx;
@@ -632,7 +638,10 @@ function buildLayout(options = {}) {
 
   const meters = projectSupported(nodes);
   fillUnknown(meters, seqNodes, edges);
-  const fish = fisheye(meters);
+  const cx = meters.reduce((sum, p) => sum + p.x, 0) / meters.length;
+  const cy = meters.reduce((sum, p) => sum + p.y, 0) / meters.length;
+  const outer = meters.map((p) => Math.hypot(p.x - cx, p.y - cy) > OUTER_RADIUS_M);
+  const fish = fisheye(meters, cx, cy);
   const xs = fish.map((p) => p.x);
   const ys = fish.map((p) => p.y);
   const anchorXs = [...xs];
@@ -648,7 +657,7 @@ function buildLayout(options = {}) {
 
   let routes;
   if (doRelax) {
-    relax(xs, ys, anchorXs, anchorYs, edges, pinned);
+    relax(xs, ys, anchorXs, anchorYs, edges, pinned, outer);
     routes = repairIntegers(xs, ys, edges, pinned);
   } else {
     xs.forEach((x, i) => {
