@@ -13,6 +13,19 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
+jest.mock('expo-notifications', () => ({
+  scheduleNotificationAsync: jest.fn(),
+  getPresentedNotificationsAsync: jest.fn(),
+  dismissNotificationAsync: jest.fn(),
+  AndroidNotificationPriority: { MAX: 'max' },
+}));
+
+jest.mock('../stationNotification', () => ({
+  ALARM_NOTIFICATION_ID: 'station-alarm',
+  ALARM_CHANNEL_ID: 'station-alarm',
+  iosTimeSensitiveOption: () => ({ interruptionLevel: 'timeSensitive' }),
+}));
+
 jest.mock('../alarmSound', () => ({
   vibrateAlarm: jest.fn(),
 }));
@@ -22,6 +35,8 @@ jest.mock('../tts', () => ({
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 import {
   buildAlarmLocalId,
   hasFiredLocally,
@@ -42,6 +57,9 @@ const mockedSetItem = AsyncStorage.setItem as jest.Mock;
 const mockedRemoveItem = AsyncStorage.removeItem as jest.Mock;
 const mockedVibrate = vibrateAlarm as jest.Mock;
 const mockedSpeak = speakAlarm as jest.Mock;
+const mockedSchedule = Notifications.scheduleNotificationAsync as jest.Mock;
+const mockedPresented = Notifications.getPresentedNotificationsAsync as jest.Mock;
+const mockedDismiss = Notifications.dismissNotificationAsync as jest.Mock;
 
 const NOW = 1_700_000_000_000;
 
@@ -116,6 +134,9 @@ describe('fireCompanionAlarm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedSetItem.mockResolvedValue(undefined);
+    mockedSchedule.mockResolvedValue('id');
+    mockedPresented.mockResolvedValue([]);
+    mockedDismiss.mockResolvedValue(undefined);
   });
 
   it('sleepMode off면 skip (not-sleep-mode)', async () => {
@@ -161,7 +182,7 @@ describe('fireCompanionAlarm', () => {
       kind: 'transfer',
       body: '곧 강남입니다',
     });
-    expect(result).toEqual({ fired: true });
+    expect(result).toEqual({ fired: true, bannerPosted: true });
     expect(mockedVibrate).toHaveBeenCalledWith(true);
     expect(mockedSpeak).toHaveBeenCalledWith('곧 강남입니다', {
       sleepMode: false,
@@ -186,7 +207,7 @@ describe('fireCompanionAlarm', () => {
       kind: 'transfer',
       body: '곧 역삼입니다',
     });
-    expect(result).toEqual({ fired: true });
+    expect(result).toEqual({ fired: true, bannerPosted: true });
     expect(mockedVibrate).toHaveBeenCalledWith(true);
     expect(mockedSpeak).toHaveBeenCalledWith('곧 역삼입니다', {
       sleepMode: false,
@@ -205,7 +226,7 @@ describe('fireCompanionAlarm', () => {
       kind: 'destination',
       body: '곧 선릉입니다',
     });
-    expect(result).toEqual({ fired: true });
+    expect(result).toEqual({ fired: true, bannerPosted: true });
     expect(mockedSpeak).toHaveBeenCalledWith('곧 선릉입니다', {
       sleepMode: false,
       allowSpeaker: true,
@@ -273,7 +294,7 @@ describe('fireCompanionAlarm', () => {
         kind: 'destination',
         body: '도착했습니다',
       }),
-    ).resolves.toEqual({ fired: true });
+    ).resolves.toEqual({ fired: true, bannerPosted: true });
   });
 });
 
@@ -282,5 +303,103 @@ describe('__resetAlarmLocalLedgerForTest', () => {
     mockedRemoveItem.mockResolvedValue(undefined);
     await __resetAlarmLocalLedgerForTest();
     expect(mockedRemoveItem).toHaveBeenCalledWith(ALARM_LOCAL_LEDGER_KEY);
+  });
+});
+
+// #3373 — 취침 알람은 기기가 직접 울린다(배너+소리). 서버 alert가 BG에서 표시 안 된 11/24 실사례 → companion 수신 = 로컬 게시.
+describe('fireCompanionAlarm — 로컬 배너 게시 (#3373)', () => {
+  const params = {
+    tripToken: 'trip-1',
+    station: '건대입구',
+    kind: 'transfer' as const,
+    title: '환승 알림',
+    body: '다음 역 건대입구에서 환승하세요!',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedSetItem.mockResolvedValue(undefined);
+    mockedSchedule.mockResolvedValue('id');
+    mockedPresented.mockResolvedValue([]);
+    mockedDismiss.mockResolvedValue(undefined);
+    mockStorage({ [SLEEP_MODE_KEY]: JSON.stringify(true) });
+  });
+
+  it('발사 시 로컬 알림 1건 게시: identifier=station-alarm(FG 소리 판정), sound=alarm.wav, time-sensitive, 즉시(trigger null)', async () => {
+    const result = await fireCompanionAlarm(params);
+    expect(result).toEqual({ fired: true, bannerPosted: true });
+    expect(mockedSchedule).toHaveBeenCalledTimes(1);
+    expect(mockedSchedule).toHaveBeenCalledWith({
+      identifier: 'station-alarm',
+      content: {
+        title: '환승 알림',
+        body: '다음 역 건대입구에서 환승하세요!',
+        sound: 'alarm.wav',
+        interruptionLevel: 'timeSensitive',
+      },
+      trigger: null,
+    });
+  });
+
+  it('Android: 취침 알람 채널(MAX) 사용', async () => {
+    jest.replaceProperty(Platform, 'OS', 'android');
+    await fireCompanionAlarm(params);
+    const [[arg]] = mockedSchedule.mock.calls;
+    expect(arg.content).toMatchObject({ channelId: 'station-alarm', priority: 'max' });
+    jest.restoreAllMocks();
+  });
+
+  it('같은 칸 companion 2회 → 로컬 알림 1건 (ledger dedup)', async () => {
+    // 첫 호출이 쓴 ledger를 다음 호출이 읽도록 setItem 값을 getItem에 반영.
+    let ledger: string | null = null;
+    mockedSetItem.mockImplementation(async (_k: string, v: string) => {
+      ledger = v;
+    });
+    mockedGetItem.mockImplementation(async (key: string) => {
+      if (key === SLEEP_MODE_KEY) return JSON.stringify(true);
+      if (key === ALARM_LOCAL_LEDGER_KEY) return ledger;
+      return null;
+    });
+    await fireCompanionAlarm(params);
+    const second = await fireCompanionAlarm(params);
+    expect(second).toEqual({ fired: false, reason: 'dedup' });
+    expect(mockedSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('일반 모드(sleepMode off): 로컬 알림 0건', async () => {
+    mockStorage({ [SLEEP_MODE_KEY]: JSON.stringify(false) });
+    await fireCompanionAlarm(params);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedPresented).not.toHaveBeenCalled();
+  });
+
+  it('게시 직후 title·body가 동일한 원격 알림만 dismiss (다른 문구·로컬 자신은 유지)', async () => {
+    const remote = (identifier: string, title: string, body: string) => ({ request: { identifier, content: { title, body } } });
+    mockedPresented.mockResolvedValue([
+      remote('remote-1', '환승 알림', '다음 역 건대입구에서 환승하세요!'),
+      remote('remote-other', '환승 알림', '다음 역 어린이대공원에서 환승하세요!'),
+      remote('station-alarm', '환승 알림', '다음 역 건대입구에서 환승하세요!'),
+    ]);
+    await fireCompanionAlarm(params);
+    expect(mockedDismiss).toHaveBeenCalledTimes(1);
+    expect(mockedDismiss).toHaveBeenCalledWith('remote-1');
+    // 로컬 게시가 dismiss보다 먼저(순서) — 둘 다 보이는 공백보다 중복이 낫다(ADR-010).
+    expect(mockedSchedule.mock.invocationCallOrder[0]).toBeLessThan(mockedDismiss.mock.invocationCallOrder[0]);
+  });
+
+  it('presented 조회 실패해도 발사는 성공 (dismiss 생략)', async () => {
+    mockedPresented.mockRejectedValue(new Error('boom'));
+    const result = await fireCompanionAlarm(params);
+    expect(result).toEqual({ fired: true, bannerPosted: true });
+    expect(mockedDismiss).not.toHaveBeenCalled();
+  });
+
+  it('게시 실패: 진동/TTS는 유지하고 bannerPosted=false (원격 alert가 남아 있으니 dismiss 시도 안 함)', async () => {
+    mockedSchedule.mockRejectedValue(new Error('denied'));
+    const result = await fireCompanionAlarm(params);
+    expect(result).toEqual({ fired: true, bannerPosted: false });
+    expect(mockedVibrate).toHaveBeenCalledWith(true);
+    expect(mockedPresented).not.toHaveBeenCalled();
+    expect(mockedDismiss).not.toHaveBeenCalled();
   });
 });

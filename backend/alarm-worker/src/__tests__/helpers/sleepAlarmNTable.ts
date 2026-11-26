@@ -107,8 +107,6 @@ function expectedGets(cfg: ConfigCase, m: number): number {
   return range(MIN, m).reduce((sum, r) => sum + cfg.stops.filter((n) => r <= n).length, 0);
 }
 
-const isRecorded = (e: FireEvent): boolean => e.remaining !== MIN || e.cells.some((c) => c !== e.remaining);
-
 export function registerSleepAlarmNTable(): void {
   describe(`#3100 N역 전 cron table (MAX=${MAX})`, () => {
     for (const cfg of configCases()) {
@@ -157,14 +155,16 @@ export function registerSleepAlarmNTable(): void {
             expect(stored).toEqual(claimed.map((c) => `${ALARM_KEY_PREFIX}${TOKEN}:${TARGET}${suffix(c)}`).sort());
             expect(spy.alarmKeyCalls()).toEqual({ get: expectedGets(cfg, m), put: claimed.length, delete: 0 });
 
-            // D1: 비기본 칸(또는 선택 모드 clamp 발사 = 칸 != 남은 수)만 'sleep-alarm' 행 1건씩. 기본 칸/기본 설정은 0.
+            // D1: #3373 — 기본 칸 포함 발사마다 'sleep-alarm' 행 1건씩. clamp 발사(칸 != 남은 수)만 meta.cells를 싣는다.
             const sleepRows = d1.rows.filter((row) => row.kind === 'sleep-alarm');
-            const recorded = events.filter(isRecorded);
+            const recorded = events;
             expect(sleepRows.map((row) => row.meta?.remaining)).toEqual(recorded.map((e) => e.remaining));
             sleepRows.forEach((row, idx) => {
               expect(row.meta).toMatchObject({ outcome: 'fired', targetStation: TARGET });
               if (recorded[idx].cells.some((c) => c !== recorded[idx].remaining)) {
                 expect(row.meta?.cells).toEqual(recorded[idx].cells);
+              } else {
+                expect(row.meta).not.toHaveProperty('cells');
               }
             });
           });
