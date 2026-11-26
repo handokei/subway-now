@@ -25,6 +25,7 @@ import {
   startAmbientLiveActivityTokenRegistration,
 } from './liveActivityPushChannel';
 import { stopVibration } from './alarmSound';
+import { ALARM_SOUND_FILE } from '../../../shared/constants/alarmSoundFile';
 import { createLogger } from '../../../shared/utils/logger';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
@@ -170,6 +171,18 @@ async function scheduleFallbackStationNotification(
   logFiredLaFallbackNotification(stationName);
 }
 
+/**
+ * #3373 — 원격(backend) 취침 알람 alert 여부. iOS는 `content.sound`를 'default'|'defaultCritical'|'custom'
+ * 으로만 직렬화해(EXNotificationSerializer.m:85-100) 파일명이 사라지므로, 원 APNs payload가 실리는
+ * `trigger.payload.aps.sound`(EXNotificationSerializer.m:126-128)로 alarm.wav를 판정한다.
+ */
+function isRemoteAlarmSoundAlert(notification: Notifications.Notification): boolean {
+  const { trigger } = notification.request;
+  const payload = (trigger as { payload?: { aps?: { sound?: unknown } } } | null)?.payload;
+  const aps = payload?.aps;
+  return aps?.sound === ALARM_SOUND_FILE;
+}
+
 export function setupNotificationHandler(): void {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
@@ -217,7 +230,7 @@ export function setupNotificationHandler(): void {
         // #3146 — prompt 카테고리는 payload sound가 아니라 카테고리가 FG 소리를 결정한다. backend가
         // LA alert 성공 시 일반 프롬프트 알림을 무음(sound 키 없음)으로 보내는데, 앱이 FG면 LA가
         // 안 보여 소리가 사라지기 때문(3단 우선순위: 프롬프트=소리 필수). 알람은 기존대로 hasSound.
-        shouldPlaySound: isAlarm ? hasSound : isPromptCategory,
+        shouldPlaySound: isAlarm ? hasSound : isPromptCategory || isRemoteAlarmSoundAlert(notification),
         shouldSetBadge: false,
       };
     },
