@@ -241,6 +241,58 @@ describe('stationNotification', () => {
       expect(silentAlarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
     });
 
+    // #3373 — 취침 모드 backend 원격 alert(identifier가 ALARM_NOTIFICATION_ID 아님)는 FG에서 소리 없이
+    // 표시됐다. iOS는 content.sound를 'custom'으로만 직렬화(파일명 소실)하므로 파일명은 원 push payload
+    // (trigger.payload.aps.sound)에서 판정한다.
+    describe('#3373 원격 취침 알람 alert FG 소리', () => {
+      const remote = (apsSound: unknown, contentSound: unknown = 'custom', categoryIdentifier?: string) => ({
+        request: {
+          identifier: 'remote-uuid',
+          content: { sound: contentSound, categoryIdentifier },
+          trigger: { type: 'push', payload: { aps: { sound: apsSound } } },
+        },
+      });
+      const getHandler = () => {
+        setupNotificationHandler();
+        return (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0].handleNotification;
+      };
+
+      it('원격 push의 aps.sound가 alarm.wav면 shouldPlaySound=true', async () => {
+        const result = await getHandler()(remote('alarm.wav'));
+        expect(result.shouldPlaySound).toBe(true);
+        expect(result.shouldShowBanner).toBe(true);
+      });
+
+      it('일반 모드 원격 알림(sound 없음)은 shouldPlaySound=false 유지', async () => {
+        const result = await getHandler()(remote(undefined, null));
+        expect(result.shouldPlaySound).toBe(false);
+      });
+
+      it('alarm.wav가 아닌 다른 원격 sound(default)는 shouldPlaySound=false', async () => {
+        const result = await getHandler()(remote('default', 'default'));
+        expect(result.shouldPlaySound).toBe(false);
+      });
+
+      it('trigger가 없는 알림(로컬 비-알람)에는 적용되지 않는다', async () => {
+        const result = await getHandler()({
+          request: { identifier: 'current-station', content: { sound: 'custom' } },
+        });
+        expect(result.shouldPlaySound).toBe(false);
+      });
+
+      it('payload가 없는 push trigger는 false', async () => {
+        const result = await getHandler()({
+          request: { identifier: 'x', content: { sound: 'custom' }, trigger: { type: 'push' } },
+        });
+        expect(result.shouldPlaySound).toBe(false);
+      });
+
+      it('prompt 카테고리 원격 알림은 기존대로 소리 true', async () => {
+        const result = await getHandler()(remote(undefined, null, 'BOARDING_PROMPT'));
+        expect(result.shouldPlaySound).toBe(true);
+      });
+    });
+
     // #2591 (code review 1번, 치명) — 이 FG 핸들러가 shouldPlaySound를 ALARM_NOTIFICATION_ID
     // identifier로만 게이트해, boarding/disembark-prompt(로컬 발사, FG 전용 채널)는 content에
     // sound를 실어도 항상 무음 처리됐다(root — presentation 동급화만으로는 FG에서 무효). 이
