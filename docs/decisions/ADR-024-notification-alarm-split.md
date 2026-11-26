@@ -29,7 +29,7 @@ Accepted — 이슈 #2065 (Epic #2061), 2026-07-29. 사용자 체감 회귀 2건
 | 모드 | 일반 모드. **취침모드 mute (backend 분기)** | **취침모드 전용** |
 | 소리 | 무소리 배너 | alarm.wav |
 | 제약 | 동일 알림 5분 1회 (서버 단일 dedup) | "1역 전 = 출발역"이면 발사 금지 (환승·도착 동일) + 등록 시 UI 안내 |
-| 채널 | **backend visible push 단일 결정자** (device 발사 관여 X) | **원격 visible(alarm.wav+time-sensitive) 주 채널** + device TTS/진동 부가(배너 생성 금지) + OS 예약 안전망(취침 한정, outage 대비) |
+| 채널 | **backend visible push 단일 결정자** (device 발사 관여 X) | **원격 visible(alarm.wav+time-sensitive) 주 채널** + device TTS/진동 부가(배너 생성 금지) + OS 예약 안전망(취침 한정, outage 대비)**(2026-11-26 개정, #3373: 취침 알람은 companion 수신 시 기기가 로컬 배너+소리를 게시 — "배너 생성 금지" 폐기)** |
 
 ### 2. "단일 결정권자"의 정의
 
@@ -37,7 +37,7 @@ Accepted — 이슈 #2065 (Epic #2061), 2026-07-29. 사용자 체감 회귀 2건
 
 - "컨텍스트 사망 시 miss"를 막기 위해 물리적 단일 경로(예: 원격 push 하나에만 전부 의존)는 **기각**한다 — 네트워크/OS throttle로 그 하나가 실패하면 전체가 침묵한다.
 - 대신 원격 push와 로컬(device) 알림은 identifier 체계가 근본적으로 다르므로(원격 = APNs collapse-id / 서버 dedup key, 로컬 = `expo-notifications` identifier) **상호 멱등이 불가능**하다.
-- 해소 방식: **채널당 발사 주체를 1개로 고정**한다. 알림 채널은 backend visible push가 유일한 발사 주체(device는 관여하지 않음)로, 알람 채널은 backend 원격 visible이 주 채널이고 device는 배너를 새로 만들지 않는 TTS/진동 부가 + OS 예약이 outage 전용 backstop으로 존재한다. 각 채널 내부에서 발사 주체가 하나이므로 정책·dedup 소유가 명확하다.
+- 해소 방식: **채널당 발사 주체를 1개로 고정**한다. 알림 채널은 backend visible push가 유일한 발사 주체(device는 관여하지 않음)로, 알람 채널은 backend 원격 visible이 주 채널이고 device는 배너를 새로 만들지 않는 TTS/진동 부가 + OS 예약이 outage 전용 backstop으로 존재한다. **(2026-11-26 개정, #3373: 취침 알람에 한해 device가 companion 수신 시 로컬 배너+소리를 게시한다. 발사 판정·dedup 정책의 단일 소유는 backend 그대로이고, 원격·로컬 identifier 상호 멱등 불가는 유지 — 중복은 로컬 게시 직후 title·body 동일 원격 알림 dismiss로 처리.)** 각 채널 내부에서 발사 주체가 하나이므로 정책·dedup 소유가 명확하다.
 
 ### 3. 채널 결정 기록
 
@@ -120,3 +120,23 @@ Accepted — 이슈 #2065 (Epic #2061), 2026-07-29. 사용자 체감 회귀 2건
 - **PR #3215 (#3100 취침 알람 1역 전 문구 분리) — 정합 확인**: `stationNotif*` 문구는 바꾸지 않고(도착 content의 **타입**만 brand) 1역 전 문구는 #3215의 `sleepAlarmOneStop*` 그대로다. 비취침 1역 전이 `stationNotif*`를 계속 써서 #3237 이후 거짓 문구가 되던 문제는 철거로 해소된다.
 - **3단 우선순위(2026-09-30)**: 변경 없음 — "필수·시끄럽게" 등급은 탑승/하차 **프롬프트**(별 push)이고 역 도착 `station-` push의 sound를 규정하지 않는다.
 - 확인한 결정 목록: ADR-023, ADR-024, ADR-040, ADR-048, #2510, #2158, #2363, #3215, #3237.
+
+## 개정 이력 (2026-11-26, #3373 — 취침 알람은 기기가 직접 울린다)
+
+### 개정 사유
+
+11/24 트립(D1 trip_metrics 212, b00dd879)에서 취침 1역 전 알람이 BG에서 진동만 났다. 서버 visible alert는 같은 함수에서 같은 토큰으로 발송됐지만 표시 여부를 사후에 알 수 없었다(기본 칸 D1 행 없음, alert 실패 로그는 비영속). 사용자 결정(verbatim): "서버가 보냈든, 아이폰에서 알람 울리는 게 어려운 건 아니잖아". 알람은 서버 alert 표시 여부와 무관하게 기기가 보장한다.
+
+### 개정 내용
+
+- **취침 알람 채널 = 원격 visible 주 채널 + 기기 로컬 배너+소리(companion 수신 시)**: `fireCompanionAlarm`이 발사(fired)할 때 로컬 알림 1건(identifier `ALARM_NOTIFICATION_ID`, alarm.wav, time-sensitive)을 즉시 게시하고 title·body 동일 원격 알림을 dismiss한다. 일반 모드는 companion을 로컬에서 거르므로 0건이다.
+- **관측**: backend가 기본 칸 발사도 D1 `sleep-alarm` 1행(`alertStatus`·`companionStatus`)을 남기고, 기기는 로컬 게시 결과(`bannerPosted`)를 alarmLog와 push ack reason(`sleep-alarm-companion-banner-failed`)에 기록한다.
+
+### 이 ADR이 수정·대체·모순하는 결정
+
+- **ADR-024 §1 스펙 표 `채널` 행(알람 열) "device TTS/진동 부가(배너 생성 금지)" — 수정**: 취침 알람 한정으로 "배너 생성 금지"를 폐기하고 기기 로컬 배너+소리 게시를 허용한다. 알림(매역) 열은 불변.
+- **ADR-024 §2 "단일 결정권자" 해소 방식(`:40` "device는 배너를 새로 만들지 않는 TTS/진동 부가")**: 취침 알람 채널의 발사 주체가 backend 원격 alert + device 로컬 배너 2개가 된다. 정책·dedup 소유는 backend(발사 판정)와 기기 ledger(칸별 id)로 이미 분리돼 있어 "정책 단일 소유" 정의는 유지하되, "채널당 발사 주체 1개" 문장은 취침 알람에 한해 대체한다. 근거: 원격 alert 미표시 실사례(11/24).
+- **ADR-024 §2 "원격·로컬 identifier 상호 멱등 불가"**: 유지 — identifier 정렬을 하지 않고 title·body 일치 dismiss로 중복을 처리한다(원격이 늦게 도착하면 2건 표시 가능, 수용).
+- **ADR-023(device 필터/sleepMode gate), ADR-048 결정 8 및 "기기 로컬은 새 알림을 쏘지 않는다"**: 각 ADR의 2026-11-26 개정 항목에서 함께 재배정한다.
+- **ADR-010(두 실패 모드 동급)**: 정합 — 중복 표시를 miss보다 낫다고 판단한다.
+- 확인한 결정 목록: ADR-010, ADR-023, ADR-024, ADR-041, ADR-042, ADR-048, #2067(device 배너 제거), #3374.

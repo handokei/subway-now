@@ -3444,6 +3444,7 @@ describe('silentPushTask', () => {
           tripToken: 'tok-sta',
           station: '뚝섬',
           kind: 'transfer',
+          title: 'early-title',
           body: '뚝섬-transfer-body',
         });
         // standard 발사 경로는 호출되지 않아야 함.
@@ -3518,6 +3519,31 @@ describe('silentPushTask', () => {
           nextStation: '뚝섬',
           nextLine: '2',
           appState: 'background',
+        });
+      });
+
+      // #3373 — 기기 소유 알람: companion 수신 시 로컬 배너를 게시한다(title=payload, 없으면 buildAlarmContent fallback).
+      it('#3373 payload title이 있으면 그대로 fireCompanionAlarm에 전달 (배너 title)', async () => {
+        await handleSilentPush(companionPayload({ pushId: 'sta-1', title: '환승 알림', body: 'b' }));
+        expect(mockFireCompanionAlarm).toHaveBeenCalledWith(expect.objectContaining({ title: '환승 알림', body: 'b' }));
+      });
+
+      it('#3373 로컬 배너 게시 결과(bannerPosted)를 alarmLog에 적재', async () => {
+        mockFireCompanionAlarm.mockResolvedValueOnce({ fired: true, bannerPosted: true });
+        await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
+        expect(mockLogCompanionAlarmFired).toHaveBeenCalledWith(expect.objectContaining({ bannerPosted: true }));
+      });
+
+      it('#3373 배너 게시 실패 → alarmLog bannerPosted=false + ack reason 구분(banner-failed), outcome은 fired 유지', async () => {
+        mockFireCompanionAlarm.mockResolvedValueOnce({ fired: true, bannerPosted: false });
+        await handleSilentPush(companionPayload({ pushId: 'sta-1' }));
+        expect(mockLogCompanionAlarmFired).toHaveBeenCalledWith(expect.objectContaining({ bannerPosted: false }));
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'sta-1',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+          reason: 'sleep-alarm-companion-banner-failed',
+          permissionMode: 'always',
         });
       });
 
@@ -3644,6 +3670,7 @@ describe('silentPushTask', () => {
           tripToken: 'tok-sta',
           station: '뚝섬',
           kind: 'transfer',
+          title: 'T',
           body: 'B',
           remaining: 3,
         });

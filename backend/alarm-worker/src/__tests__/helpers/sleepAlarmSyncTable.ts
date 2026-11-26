@@ -123,18 +123,16 @@ function assertSleepFire(r: SyncHttpResult, fire: ExpectedFire | undefined, sour
   const data = (r.companions[0].body.data ?? {}) as Record<string, unknown>;
   if (fire.remaining === MIN) expect(data).not.toHaveProperty('remainingStops');
   else expect(data.remainingStops).toBe(fire.remaining);
-  if (fire.remaining === MIN && !isClamp(fire)) {
-    expect(r.sleepRows).toEqual([]);
-  } else {
-    expect(r.sleepRows.map((row) => row.meta)).toEqual([
-      expect.objectContaining({
-        remaining: fire.remaining,
-        outcome: 'fired',
-        source,
-        ...(isClamp(fire) ? { cells: fire.cells } : {}),
-      }),
-    ]);
-  }
+  // #3373 — 기본 칸 포함 발사마다 D1 sleep-alarm 1행. clamp 발사만 meta.cells를 싣는다.
+  expect(r.sleepRows.map((row) => row.meta)).toEqual([
+    expect.objectContaining({
+      remaining: fire.remaining,
+      outcome: 'fired',
+      source,
+      ...(isClamp(fire) ? { cells: fire.cells } : {}),
+    }),
+  ]);
+  if (!isClamp(fire)) expect(r.sleepRows[0].meta).not.toHaveProperty('cells');
 }
 
 export function registerSleepAlarmSyncTable(): void {

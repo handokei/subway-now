@@ -86,7 +86,7 @@ export function iosTimeSensitiveOption(): { interruptionLevel: 'timeSensitive' }
 
 export const NOTIFICATION_ID = 'current-station';
 export const ALARM_NOTIFICATION_ID = 'station-alarm';
-const ALARM_CHANNEL_ID = 'station-alarm';
+export const ALARM_CHANNEL_ID = 'station-alarm';
 /** #2158 — 일반모드 stationPrescheduler가 재사용하는 무음 채널(sound:null, bypassDnd 없음). */
 export const ALARM_SILENT_CHANNEL_ID = 'station-alarm-silent';
 export const STATION_PASSED_NOTIFICATION_ID = 'station-passed';

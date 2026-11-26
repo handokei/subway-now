@@ -1743,20 +1743,21 @@ async function fireSleepAlarmCompanion(
   const { remainingStops } = payload;
   const remaining = remainingStops ?? SLEEP_ALARM_MIN_STOPS_BEFORE;
   const band = remaining > SLEEP_ALARM_MIN_STOPS_BEFORE ? remaining : undefined;
-  // #3100 — body 미지정(구 backend) fallback도 backend/safety-net과 같은 문구를 쓴다.
-  const body =
-    payload.body ??
-    buildAlarmContent({
-      phaseId: 'early',
-      type: payload.targetKind,
-      stationName: payload.nextStation,
-      ...(band !== undefined && { band }),
-    }).body;
+  // #3100 — title/body 미지정(구 backend) fallback도 backend/safety-net과 같은 문구를 쓴다. #3373 — title은 로컬 배너 제목.
+  const fallback = buildAlarmContent({
+    phaseId: 'early',
+    type: payload.targetKind,
+    stationName: payload.nextStation,
+    ...(band !== undefined && { band }),
+  });
+  const title = payload.title ?? fallback.title;
+  const body = payload.body ?? fallback.body;
 
   const result = await fireCompanionAlarm({
     tripToken: payload.tripToken,
     station: payload.nextStation,
     kind: payload.targetKind,
+    title,
     body,
     remaining: remainingStops,
   });
@@ -1785,6 +1786,7 @@ async function fireSleepAlarmCompanion(
     nextLine: payload.nextLine,
     remainingStops,
     appState,
+    bannerPosted: result.bannerPosted,
   });
   addDomainBreadcrumb('push', 'sleep-alarm-companion-fired', {
     nextLine: payload.nextLine,
@@ -1794,7 +1796,13 @@ async function fireSleepAlarmCompanion(
   logger.info(
     `sleep-alarm-companion fired: originStation=${payload.originStation} nextLine=${payload.nextLine} nextStation=${payload.nextStation} tripToken=${payload.tripToken.slice(0, 8)}`,
   );
-  void ackOutcome(payload.pushId, apnsToken, 'fired', 'sleep-alarm-companion');
+  // #3373 — 로컬 배너 게시 실패는 같은 outcome(fired: 진동/TTS는 울렸다)에 reason으로만 구분해 backend D1에서 집계한다.
+  void ackOutcome(
+    payload.pushId,
+    apnsToken,
+    'fired',
+    result.bannerPosted === false ? 'sleep-alarm-companion-banner-failed' : 'sleep-alarm-companion',
+  );
 }
 
 /**

@@ -164,12 +164,45 @@ describe('#3100 golden — 기본값 KV 호출 수 / D1 행', () => {
     expect(alarmAlerts(f.calls)).toHaveLength(1);
   });
 
-  it('기본값은 D1 sleep-alarm 행을 만들지 않는다 (발사/dedup/rollback 모두)', async () => {
+  // #3373 — ADR-048 결정 8 개정(2026-11-26): 기본 칸도 D1 sleep-alarm 1행. 11/24 실측 트립에서 서버 alert가 BG에 표시되지 않았는데
+  // 기본 칸은 행이 없어 alert/companion 전달을 사후에 진단할 수 없었다. push 바이트(위 golden)는 불변 — 관측 행만 추가.
+  it('#3373 기본값 발사 1회: D1 sleep-alarm 1행 (outcome fired, remaining 1, alertStatus/companionStatus, cells 없음)', async () => {
+    const kv = new InMemoryKV(() => NOW);
+    const d1 = fakeD1();
+    await advance(makeTrip(waypoints), kv, captureFetch().fetchImpl, { db: d1.db });
+    const rows = d1.rows.filter((r) => r.kind === 'sleep-alarm');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].station).toBe('군자');
+    expect(rows[0].meta).toMatchObject({
+      outcome: 'fired',
+      remaining: 1,
+      targetStation: '어린이대공원',
+      targetKind: 'destination',
+      alertStatus: 200,
+      companionStatus: 200,
+    });
+    expect(rows[0].meta).not.toHaveProperty('cells');
+  });
+
+  it('#3373 기본값 dedup 재평가: 행 추가 0 (발사 1회 = 행 1개)', async () => {
     const kv = new InMemoryKV(() => NOW);
     const d1 = fakeD1();
     await advance(makeTrip(waypoints), kv, captureFetch().fetchImpl, { db: d1.db });
     await advance(makeTrip(waypoints), kv, captureFetch().fetchImpl, { db: d1.db }); // dedup
-    await advance(makeTrip(waypoints, { token: 'other' }), new InMemoryKV(() => NOW), captureFetch(500).fetchImpl, { db: d1.db }); // rollback
+    expect(d1.rows.filter((r) => r.kind === 'sleep-alarm')).toHaveLength(1);
+  });
+
+  it('#3373 기본값 주 채널 실패(rollback): outcome rolled-back 1행 + alertStatus 500', async () => {
+    const d1 = fakeD1();
+    await advance(makeTrip(waypoints, { token: 'other' }), new InMemoryKV(() => NOW), captureFetch(500).fetchImpl, { db: d1.db });
+    const rows = d1.rows.filter((r) => r.kind === 'sleep-alarm');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].meta).toMatchObject({ outcome: 'rolled-back', remaining: 1, alertStatus: 500 });
+  });
+
+  it('#3373 취침 OFF: D1 sleep-alarm 행 0', async () => {
+    const d1 = fakeD1();
+    await advance(makeTrip(waypoints, { sleepModeEnabled: false }), new InMemoryKV(() => NOW), captureFetch().fetchImpl, { db: d1.db });
     expect(d1.rows.filter((r) => r.kind === 'sleep-alarm')).toEqual([]);
   });
 });

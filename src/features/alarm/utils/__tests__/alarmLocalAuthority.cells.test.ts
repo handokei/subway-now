@@ -16,8 +16,19 @@ jest.mock('../../../../shared/utils/logger', () => ({
 }));
 jest.mock('../alarmSound', () => ({ vibrateAlarm: jest.fn() }));
 jest.mock('../tts', () => ({ speakAlarm: jest.fn() }));
+jest.mock('expo-notifications', () => ({
+  scheduleNotificationAsync: jest.fn().mockResolvedValue('id'),
+  getPresentedNotificationsAsync: jest.fn().mockResolvedValue([]),
+  dismissNotificationAsync: jest.fn(),
+  AndroidNotificationPriority: { MAX: 'max' },
+}));
+jest.mock('../stationNotification', () => ({
+  ALARM_NOTIFICATION_ID: 'station-alarm',
+  ALARM_CHANNEL_ID: 'station-alarm',
+  iosTimeSensitiveOption: () => ({}),
+}));
 
-const base = { tripToken: 'trip-1', station: '강남', kind: 'transfer' as const, body: 'b' };
+const base = { tripToken: 'trip-1', station: '강남', kind: 'transfer' as const, title: 't', body: 'b' };
 
 async function ledgerIds(): Promise<string[]> {
   const raw = await AsyncStorage.getItem(ALARM_LOCAL_LEDGER_KEY);

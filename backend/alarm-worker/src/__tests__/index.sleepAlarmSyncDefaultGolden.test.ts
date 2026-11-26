@@ -37,7 +37,8 @@ describe('#3100 PR-2 golden — 순수 점프(/boarding-lock/sync), 기본 설�
     expect(r.status).toBe(200);
     expect(r.alarms.map((a) => a.collapseId)).toEqual(fires === 1 ? [sleepAlarmCollapseId(SYNC_TOKEN, TARGET)] : []);
     expect(r.alarmKeyCalls).toEqual(fires === 1 ? ONE_FIRE_KEY_CALLS : NO_KEY_CALLS);
-    expect(r.sleepRows).toEqual([]);
+    // #3373 — ADR-048 결정 8 개정: 기본 칸 발사도 D1 sleep-alarm 1행(관측). push 바이트/KV 호출 수는 불변.
+    expect(r.sleepRows.map((row) => row.meta)).toEqual(fires === 1 ? [expect.objectContaining({ outcome: 'fired', remaining: 1 })] : []);
     if (fires === 1) expect(r.companions[0].body.data).not.toHaveProperty('remainingStops');
   });
 
@@ -64,7 +65,7 @@ describe('#3100 PR-2 golden — 승격 fast-forward(/boarding-lock/sync trainCod
     expect(r.status).toBe(200);
     expect(r.alarms.map((a) => a.collapseId)).toEqual(fires === 1 ? [sleepAlarmCollapseId(SYNC_TOKEN, TARGET)] : []);
     expect(r.alarmKeyCalls).toEqual(fires === 1 ? ONE_FIRE_KEY_CALLS : NO_KEY_CALLS);
-    expect(r.sleepRows).toEqual([]);
+    expect(r.sleepRows.map((row) => row.meta)).toEqual(fires === 1 ? [expect.objectContaining({ outcome: 'fired', remaining: 1 })] : []);
   });
 });
 

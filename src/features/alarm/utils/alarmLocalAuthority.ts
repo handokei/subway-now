@@ -1,6 +1,10 @@
 /**
  * AlarmLocalAuthority (#2067, Phase 2-device) — 로컬 알람 경로(TTS/진동)의 단일 진입점.
  *
+ * #3373 (2026-11-26 개정) — 취침 알람은 기기가 직접 울린다: companion 수신 시 로컬 배너+소리 알림을 게시한다
+ * (아래 `postCompanionBanner`). 서버 visible alert가 BG에서 표시되지 않은 11/24 실사례 이후 "알람은 기기가 보장"으로 바뀌었다.
+ * 아래 "배너 없음" 서술은 #2067 시점의 것이며 이 개정으로 취침 1역 전(N역 전) 알람에 한해 대체됐다.
+ *
  * 배경: 알람 배너(visible)는 원격(Phase 2-backend)이 주 채널을 담당하므로, device는 배너를
  * 생성하지 않는다. 남는 로컬 역할은 "앱이 깨어있을 때 TTS/진동으로 소리를 보강"뿐이다
  * (PR #2067 comment — 원격 alarm visible push는 FG에서 `shouldPlaySound`가
@@ -12,6 +16,8 @@
  * 달리 앱 재시작(cold-launch) 후에도 dedup 상태가 살아남는다.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 import {
   ALARM_LOCAL_LEDGER_KEY,
   SLEEP_MODE_KEY,
@@ -20,6 +26,8 @@ import {
 import { vibrateAlarm } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
+import { ALARM_SOUND_FILE } from '../../../shared/constants/alarmSoundFile';
+import { ALARM_NOTIFICATION_ID, ALARM_CHANNEL_ID, iosTimeSensitiveOption } from './stationNotification';
 import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../shared/constants/sleepAlarm';
 import { sleepAlarmSuffix } from '../../../shared/utils/sleepAlarmCells';
 
@@ -131,7 +139,9 @@ export interface FireCompanionAlarmParams {
   tripToken: string;
   station: string;
   kind: AlarmLocalKind;
-  /** TTS로 읽을 본문. */
+  /** #3373 — 로컬 배너 title(payload title, 없으면 호출자가 buildAlarmContent fallback). */
+  title: string;
+  /** TTS로 읽을 본문이자 로컬 배너 body. */
   body: string;
   /** #3100 — 타깃까지 실제 남은 정거장 수. 미지정 = 기본 칸(1역 전). 원장 키에 칸으로 들어간다. */
   remaining?: number;
@@ -142,6 +152,47 @@ export type FireCompanionAlarmSkipReason = 'not-sleep-mode' | 'dedup';
 export interface FireCompanionAlarmResult {
   fired: boolean;
   reason?: FireCompanionAlarmSkipReason;
+  /** #3373 — fired일 때만: 로컬 배너 게시 성공 여부(관측 — alarmLog/ack). */
+  bannerPosted?: boolean;
+}
+
+/**
+ * #3373 — 취침 알람 로컬 배너를 즉시 게시한다. identifier=`ALARM_NOTIFICATION_ID`라 FG 핸들러가 `isAlarm`으로 판정해 소리를 재생하고
+ * 이전 로컬 알람을 교체한다(동시 1건). 게시 직후, 서버가 같은 `sleepAlarmContent`로 보낸 원격 alert(title·body 동일)가 이미 표시돼 있으면
+ * 중복을 dismiss한다. 원격이 아직 도착 전이면 2건 표시 가능 — 허용(miss보다 중복이 낫다, ADR-010). 게시 실패는 삼키고 false를 돌려준다
+ * (진동/TTS와 원격 alert가 남아 있다).
+ */
+async function postCompanionBanner(title: string, body: string): Promise<boolean> {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: ALARM_NOTIFICATION_ID,
+      content: {
+        title,
+        body,
+        sound: ALARM_SOUND_FILE,
+        ...(Platform.OS === 'android' && {
+          channelId: ALARM_CHANNEL_ID,
+          priority: Notifications.AndroidNotificationPriority.MAX,
+        }),
+        ...iosTimeSensitiveOption(),
+      },
+      trigger: null,
+    });
+  } catch (e) {
+    logger.error('companion 로컬 배너 게시 실패:', e);
+    return false;
+  }
+  try {
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    const duplicates = presented.filter(({ request }) => {
+      const { identifier, content } = request;
+      return identifier !== ALARM_NOTIFICATION_ID && content.title === title && content.body === body;
+    });
+    await Promise.allSettled(duplicates.map(({ request }) => Notifications.dismissNotificationAsync(request.identifier)));
+  } catch (e) {
+    logger.warn('companion 원격 중복 dismiss 실패(무시):', e);
+  }
+  return true;
 }
 
 /**
@@ -150,8 +201,8 @@ export interface FireCompanionAlarmResult {
  * 절차:
  *   1. sleepMode gate — off면 skip (일반 모드는 로컬 알람 0건 정책).
  *   2. ledger dedup — 이미 발사된 id면 skip (backend retry 등으로 인한 중복 방지).
- *   3. ledger 등록 → vibrateAlarm(repeat, 항상) + speakAlarm(사용자 allowSpeaker 설정 반영) —
- *      알림(배너) 생성 없음.
+ *   3. ledger 등록 → vibrateAlarm(repeat, 항상) + speakAlarm(사용자 allowSpeaker 설정 반영) +
+ *      로컬 배너+소리 게시(#3373, `postCompanionBanner`).
  *
  * speakAlarm은 `sleepMode: false`로 호출한다 — tts.ts의 게이트 의미가 "실제 기기 취침 여부"가
  * 아니라 "이 경로가 TTS를 원하는가"이기 때문(sendAlarmNotification 관례: sleepMode=true일 때
@@ -177,8 +228,9 @@ export async function fireCompanionAlarm(
   const allowSpeaker = await readAllowSpeaker();
   vibrateAlarm(true);
   speakAlarm(params.body, { sleepMode: false, allowSpeaker });
-  logger.info(`companion alarm fired: id=${id}`);
-  return { fired: true };
+  const bannerPosted = await postCompanionBanner(params.title, params.body);
+  logger.info(`companion alarm fired: id=${id} bannerPosted=${bannerPosted}`);
+  return { fired: true, bannerPosted };
 }
 
 /** 테스트 전용 — ledger를 비운다. production 코드에서는 호출하지 않는다. */

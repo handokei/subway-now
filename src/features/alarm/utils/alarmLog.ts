@@ -744,6 +744,8 @@ export interface AlarmLogEntry {
   // #3100 — companion fired 엔트리 전용: wire 칸(remainingStops)과 수신 시점 AppState(O5 측정).
   remainingStops?: number;
   appState?: string;
+  // #3373 — companion fired 엔트리 전용: 기기 로컬 배너 게시 성공 여부(false = 진동/TTS만 울림, 배너 없음).
+  bannerPosted?: boolean;
   // #2709 — lock-sync-delivery(outcome='fired') 전용. lock 생성(boardedAt) → backend 반영
   // 확인(POST /boarding-lock/sync 200 응답) 사이 경과 초. 전달 지연 실측 — 과거엔 ∞였으나
   // 관측조차 안 남던 사실 자체가 회귀 재발 시 재확인을 불가능하게 했다(#2709 요구사항 7).
@@ -3096,6 +3098,8 @@ export function logCompanionAlarmFired(input: {
    * 배포 후 첫 덤프/D1 대조로 판정하는 측정 필드 — 없으면 FG 오버레이가 동작하지 않는다.
    */
   appState?: string;
+  /** #3373 — 기기 로컬 배너 게시 성공 여부. 생략 = 미기록. */
+  bannerPosted?: boolean;
 }): void {
   appendAlarmLog({
     ts: Date.now(),
@@ -3104,6 +3108,7 @@ export function logCompanionAlarmFired(input: {
     stationName: `${input.nextLine}·${input.nextStation}`,
     ...(input.remainingStops !== undefined && { remainingStops: input.remainingStops }),
     ...(input.appState !== undefined && { appState: input.appState }),
+    ...(input.bannerPosted !== undefined && { bannerPosted: input.bannerPosted }),
   });
 }
 

@@ -3442,6 +3442,17 @@ describe('alarmLog', () => {
       expect(saved[0].appState).toBe('active');
     });
 
+    it('#3373: logCompanionAlarmFired가 로컬 배너 게시 결과(bannerPosted)를 true/false 모두 적재한다', async () => {
+      for (const bannerPosted of [true, false]) {
+        (AsyncStorage.setItem as jest.Mock).mockClear();
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+        logCompanionAlarmFired({ originStation: '성수', nextStation: '뚝섬', nextLine: '2', bannerPosted });
+        await flushAlarmLog();
+        const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+        expect(saved[0].bannerPosted).toBe(bannerPosted);
+      }
+    });
+
     it('#3100: remainingStops/appState를 안 넘기면 필드를 적재하지 않는다 (기존 entry 형태 유지)', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
       logCompanionAlarmFired({ originStation: '성수', nextStation: '뚝섬', nextLine: '2' });
@@ -3449,6 +3460,7 @@ describe('alarmLog', () => {
       const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
       expect('remainingStops' in saved[0]).toBe(false);
       expect('appState' in saved[0]).toBe(false);
+      expect('bannerPosted' in saved[0]).toBe(false);
     });
 
     it('#2398: logCategoryRegistrationSucceeded가 category-registration entry(outcome=fired)를 적재한다', async () => {
