@@ -1,0 +1,4 @@
+{
+  "_comment": "수작업 보정 — nodes.<nodeId>: { x, y }(좌표 고정, 이완 제외) / { label: { dx, dy, anchor } }(라벨 위치 고정). nodeId는 schematicLayout.json의 node 키(앱 역 id 중 최소값 또는 u:<노선>:<역명>).",
+  "nodes": {}
+}
