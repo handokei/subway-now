@@ -5,6 +5,11 @@ export const SLEEP_ALARM_CONFIG_KEY = 'subway-now:sleep-alarm-config';
 export const DESTINATION_KEY = 'subway-now:destination';
 export const FIRED_ALARMS_KEY = 'subway-now:fired-alarms';
 export const ALARM_EVENT_KEY = 'subway-now:alarm-event';
+/**
+ * #3377 — BG/잠금에서 울린 취침 알람의 오버레이 이벤트 `{ event, firedAt }`(최신 1건). 탭 또는 2분 이내 FG 진입 때 재생.
+ * `ALARM_EVENT_KEY`와 분리한 이유: backgroundLocationTask가 그 키에 firedAt 없는 이벤트를 쓰고 loadAlarmEvent는 drain-only다.
+ */
+export const PENDING_SLEEP_ALARM_OVERLAY_KEY = 'subway-now:pending-sleep-alarm-overlay';
 export const CUSTOM_ORIGIN_KEY = 'subway-now:custom-origin';
 export const THEME_MODE_KEY = 'subway-now:theme-mode';
 export const ROUTE_PREFERENCE_KEY = 'subway-now:route-preference';

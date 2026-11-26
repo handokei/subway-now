@@ -98,9 +98,8 @@ describe('loadAlarmEvent — FG 진입 재생 (2분 창)', () => {
   });
 
   it('재생 도중 storage 오류는 삼킨다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('io'));
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('io'));
     await expect(useAlarmEventStore.getState().loadAlarmEvent()).resolves.toBeUndefined();
-    (AsyncStorage.getItem as jest.Mock).mockReset();
   });
 
   it('두 번 연속 진입해도 한 번만 재생 (재생 후 키 삭제 → 이중 표시 없음)', async () => {

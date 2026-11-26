@@ -7,6 +7,8 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AlarmEvent } from '../../../shared/types/alarm';
 import { ALARM_EVENT_KEY } from '../../../shared/constants/storageKeys';
+import { ALARM_OVERLAY_REPLAY_WINDOW_MS } from '../../../shared/constants/alarmOverlayReplay';
+import { isSleepModeStored, takePendingSleepAlarmOverlay } from '../utils/pendingSleepAlarmOverlay';
 import {
   clearDismissSilence as clearDismissSilenceStorage,
   setDismissSilence as setDismissSilenceStorage,
@@ -33,6 +35,15 @@ export interface AlarmEventState {
   setAlarmEvent: (event: AlarmEvent) => void;
   clearAlarmEvent: () => void;
   loadAlarmEvent: () => Promise<void>;
+  /**
+   * #3377 — BG에서 울린 취침 알람 오버레이 재생(탭: 30분 창, FG 진입: 2분 창). 저장 이벤트를 창으로 거르고, 없으면
+   * `fallback`(알림 data 재구성)을 쓴다. storage sleepMode(권위)가 true일 때만 표시. 표시했으면 true.
+   */
+  replayPendingAlarmOverlay: (options: {
+    windowMs: number;
+    now?: number;
+    fallback?: () => Promise<AlarmEvent | null>;
+  }) => Promise<boolean>;
 
   /**
    * #746 — 사용자가 알람을 dismiss한 시점 기록. 5분 또는 200m 이내까지 모든 카테고리
@@ -72,16 +83,28 @@ export const useAlarmEventStore = create<AlarmEventState>((set, get) => ({
 
   loadAlarmEvent: async () => {
     try {
-      // #3100 D1 — drain-only. 오버레이 단일 소스는 FG에서 칸마다 도착하는 backend companion
-      // (`silentPushTask.showCompanionOverlay`)이다. BG가 남긴 이벤트를 FG 복귀 때 재생하면 이중 표시되거나
-      // 마지막 한 건만 늦게 보인다. 구버전이 남긴 잔여 키만 비운다.
+      // #3100 D1 — ALARM_EVENT_KEY는 drain-only(구버전·backgroundLocationTask가 남긴 firedAt 없는 잔여 키만 비운다).
       const raw = await AsyncStorage.getItem(ALARM_EVENT_KEY);
       if (raw) {
         await AsyncStorage.removeItem(ALARM_EVENT_KEY);
       }
+      // #3377 — 단, BG에서 울린 취침 알람(새 키 PENDING_SLEEP_ALARM_OVERLAY_KEY)은 2분 이내 FG 진입이면 재생한다.
+      await get().replayPendingAlarmOverlay({ windowMs: ALARM_OVERLAY_REPLAY_WINDOW_MS });
     } catch {
       // 저장된 데이터 없음 — 무시
     }
+  },
+
+  replayPendingAlarmOverlay: async ({ windowMs, now, fallback }) => {
+    // 키는 sleepMode와 무관하게 항상 소비한다(일반 모드에서 잔존했다가 나중에 뜨는 것 방지).
+    const stored = await takePendingSleepAlarmOverlay({ windowMs, now });
+    if (!(await isSleepModeStored())) return false;
+    const event = stored ?? (fallback ? await fallback() : null);
+    if (!event) return false;
+    // 콜드 스타트 race: 메모리 sleepMode는 hydrate 전 false라 setAlarmEvent 중앙 게이트가 막는다 — storage 값을 먼저 반영.
+    await useSettingsStore.getState().loadSleepMode();
+    get().setAlarmEvent(event);
+    return true;
   },
 
   // #746 — 사용자가 알람을 dismiss하면 silence 시작점을 기록. 좌표는 호출자가 마지막 알려진

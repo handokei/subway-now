@@ -176,7 +176,7 @@ async function scheduleFallbackStationNotification(
  * 으로만 직렬화해(EXNotificationSerializer.m:85-100) 파일명이 사라지므로, 원 APNs payload가 실리는
  * `trigger.payload.aps.sound`(EXNotificationSerializer.m:126-128)로 alarm.wav를 판정한다.
  */
-function isRemoteAlarmSoundAlert(notification: Notifications.Notification): boolean {
+export function isRemoteAlarmSoundAlert(notification: Notifications.Notification): boolean {
   const { trigger } = notification.request;
   const payload = (trigger as { payload?: { aps?: { sound?: unknown } } } | null)?.payload;
   const aps = payload?.aps;

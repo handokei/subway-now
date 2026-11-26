@@ -8,12 +8,14 @@ import {
   DESTINATION_KEY,
   PENDING_SLEEP_ALARM_OVERLAY_KEY,
   ROUTE_KEY,
+  SLEEP_MODE_KEY,
 } from '../../../../shared/constants/storageKeys';
 import {
   ALARM_OVERLAY_REPLAY_WINDOW_MS,
   ALARM_OVERLAY_TAP_WINDOW_MS,
 } from '../../../../shared/constants/alarmOverlayReplay';
 import {
+  isSleepModeStored,
   parseCompanionOverlayFields,
   resolveCompanionOverlayEvent,
   savePendingSleepAlarmOverlay,
@@ -159,27 +161,44 @@ describe('resolveCompanionOverlayEvent', () => {
   const fields = { nextStation: '용마산', nextLine: '7', targetKind: 'destination' as const, originStation: '중곡' };
 
   it('route 없이도 (역명, nextLine)으로 stationId를 찾는다', async () => {
-    const event = await resolveCompanionOverlayEvent(fields, undefined);
+    const event = await resolveCompanionOverlayEvent(fields);
     expect(event).toMatchObject({ phaseId: 'early', type: 'destination', stationName: '용마산' });
     expect(event?.stationId).toMatch(/^7-/);
   });
 
   it('band를 실어 보낸다', async () => {
-    expect(await resolveCompanionOverlayEvent(fields, 3)).toMatchObject({ band: 3 });
+    expect(await resolveCompanionOverlayEvent({ ...fields, band: 3 })).toMatchObject({ band: 3 });
   });
 
   it('storage 조회 실패에도 이벤트를 만든다', async () => {
     (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('io'));
-    expect(await resolveCompanionOverlayEvent(fields, undefined)).not.toBeNull();
+    expect(await resolveCompanionOverlayEvent(fields)).not.toBeNull();
   });
 
   it('stations.json에 없는 역이면 null', async () => {
-    expect(await resolveCompanionOverlayEvent({ ...fields, nextStation: '없는역' }, undefined)).toBeNull();
+    expect(await resolveCompanionOverlayEvent({ ...fields, nextStation: '없는역' })).toBeNull();
   });
 
   it('저장된 route/destination을 읽는다 (조회 키 사용)', async () => {
-    await resolveCompanionOverlayEvent(fields, undefined);
+    await resolveCompanionOverlayEvent(fields);
     expect(AsyncStorage.getItem).toHaveBeenCalledWith(ROUTE_KEY);
     expect(AsyncStorage.getItem).toHaveBeenCalledWith(DESTINATION_KEY);
+  });
+});
+
+describe('isSleepModeStored', () => {
+  it.each([
+    ['true', JSON.stringify(true), true],
+    ['false', JSON.stringify(false), false],
+    ['키 없음', null, false],
+    ['깨진 값', '{x', false],
+  ])('storage 값 %s -> %p', async (_l, raw, expected) => {
+    if (raw !== null) await AsyncStorage.setItem(SLEEP_MODE_KEY, raw);
+    expect(await isSleepModeStored()).toBe(expected);
+  });
+
+  it('읽기 실패는 false', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('io'));
+    expect(await isSleepModeStored()).toBe(false);
   });
 });
