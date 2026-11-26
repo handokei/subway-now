@@ -39,6 +39,10 @@ module.exports = {
         // NEHotspotNetwork.fetchCurrent()가 SSID/BSSID를 노출하려면 본 entitlement 필요.
         // B3-native(#1476) bridge가 이 값을 읽어 F2 SSID lookup(`lookupStationBySsid`)에 공급.
         'com.apple.developer.networking.wifi-info': true,
+        // #3373 — 취침 알람 backend push(`interruption-level: time-sensitive`)가 수면/방해금지 집중모드를
+        // 뚫으려면 앱에 Time Sensitive Notifications entitlement가 있어야 한다(없으면 iOS가 active로 낮춤).
+        // Apple Developer App ID의 해당 Capability + prebuild 필요.
+        'com.apple.developer.usernotifications.time-sensitive': true,
       },
       infoPlist: {
         NSAppTransportSecurity: {
