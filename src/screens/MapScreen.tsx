@@ -7,6 +7,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../features/nearest-station/hooks/useNearestStation';
 import { StationMap } from '../features/map/components/StationMap';
 import { MapSearchBar } from '../features/map/components/MapSearchBar';
+import { MapModeSwitch } from '../features/map/components/MapModeSwitch';
+import { SchematicMap } from '../features/map/components/SchematicMap';
+import { useMapMode } from '../features/map/hooks/useMapMode';
+import { shouldShowLocationGate } from '../features/map/utils/shouldShowLocationGate';
 import { LocationStateView } from '../shared/ui/LocationStateView';
 import { StatusChip } from '../features/arrival/components/StatusChip';
 import stationsData from '../data/stations.json';
@@ -60,6 +64,8 @@ export default function MapScreen() {
   const favorites = useFavoritesStore((s) => s.favorites);
   const setSlotFavorite = useFavoritesStore((s) => s.setSlotFavorite);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
+  // #3371 — 모드 훅은 위치 게이트 조기 반환보다 위(훅 순서 불변).
+  const { mode, setMode, switchAvailable } = useMapMode();
   // #1324 — 목적지 == 현재역(degenerate trip) 선택 차단 경고 toast.
   const [sameOriginToast, setSameOriginToast] = useState<string | null>(null);
   const [focusStation, setFocusStation] = useState<Station | null>(null);
@@ -97,7 +103,7 @@ export default function MapScreen() {
     return routeToCoordinates(storedRoute, routeOrigin, destination);
   }, [storedRoute, routeOrigin?.id, destination?.id]);
 
-  if (permissionDenied || loading || !userLocation || error) {
+  if (shouldShowLocationGate(mode, { permissionDenied, loading, userLocation, error })) {
     return (
       <LocationStateView
         permissionDenied={permissionDenied}
@@ -122,6 +128,8 @@ export default function MapScreen() {
         </View>
       )}
 
+      {switchAvailable && <MapModeSwitch mode={mode} onChange={setMode} />}
+
       <MapSearchBar
         onSelect={(station) => {
           setFocusStation(station);
@@ -130,43 +138,57 @@ export default function MapScreen() {
         }}
       />
 
-      <StationMap
-        userLat={userLocation!.lat}
-        userLng={userLocation!.lng}
-        nearestStation={result?.station ?? null}
-        nearbyStations={allStations}
-        customOriginId={customOrigin?.id}
-        destinationId={destination?.id}
-        onStationPress={(station) => setSelectedStation(station)}
-        focusStation={focusStation}
-        focusNonce={focusNonce}
-        recenterNonce={recenterNonce}
-        routeCoords={routeCoords}
-        accuracyMeters={accuracyMeters}
-        locationUncertain={locationUncertain}
-      />
+      {mode === 'schematic' ? (
+        <SchematicMap
+          stations={allStations}
+          nearestStation={result?.station ?? null}
+          selectedStation={selectedStation}
+          focusStation={focusStation}
+          focusNonce={focusNonce}
+          bottomOffset={spacing.xl + insets.bottom + GLASS_TAB_BAR_CLEARANCE + (selectedStation ? selectionCardHeight : 0)}
+          onStationPress={(station) => setSelectedStation(station)}
+        />
+      ) : (
+        <>
+        <StationMap
+          userLat={userLocation!.lat}
+          userLng={userLocation!.lng}
+          nearestStation={result?.station ?? null}
+          nearbyStations={allStations}
+          customOriginId={customOrigin?.id}
+          destinationId={destination?.id}
+          onStationPress={(station) => setSelectedStation(station)}
+          focusStation={focusStation}
+          focusNonce={focusNonce}
+          recenterNonce={recenterNonce}
+          routeCoords={routeCoords}
+          accuracyMeters={accuracyMeters}
+          locationUncertain={locationUncertain}
+        />
 
-      <TouchableOpacity
-        style={[
-          styles.recenterButton,
-          {
-            borderColor: colors.glassBorder,
-            backgroundColor: colors.glassStrong,
-            bottom: spacing.xl + insets.bottom + GLASS_TAB_BAR_CLEARANCE + (selectedStation ? selectionCardHeight : 0),
-          },
-        ]}
-        onPress={() => {
-          // #1317 — 카메라 이동만으로는 stale userLocation에서 벗어날 수 없고, sticky lock이 남아
-          // 있으면 현재역이 lock된 역(예: 출발역)으로 회귀한다. sticky를 비우고 fresh GPS fix를
-          // 함께 요청하는 명시적 "현재위치" 경로를 사용한다.
-          void requestCurrentLocation();
-          setRecenterNonce((n) => n + 1);
-        }}
-        accessibilityLabel={t('map.recenter')}
-        testID="recenter-button"
-      >
-        <Text style={[styles.recenterIcon, { color: colors.ink }]}>◎</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.recenterButton,
+            {
+              borderColor: colors.glassBorder,
+              backgroundColor: colors.glassStrong,
+              bottom: spacing.xl + insets.bottom + GLASS_TAB_BAR_CLEARANCE + (selectedStation ? selectionCardHeight : 0),
+            },
+          ]}
+          onPress={() => {
+            // #1317 — 카메라 이동만으로는 stale userLocation에서 벗어날 수 없고, sticky lock이 남아
+            // 있으면 현재역이 lock된 역(예: 출발역)으로 회귀한다. sticky를 비우고 fresh GPS fix를
+            // 함께 요청하는 명시적 "현재위치" 경로를 사용한다.
+            void requestCurrentLocation();
+            setRecenterNonce((n) => n + 1);
+          }}
+          accessibilityLabel={t('map.recenter')}
+          testID="recenter-button"
+        >
+          <Text style={[styles.recenterIcon, { color: colors.ink }]}>◎</Text>
+        </TouchableOpacity>
+        </>
+      )}
 
       {/* 하단 역 선택 카드 */}
       {selectedStation && (

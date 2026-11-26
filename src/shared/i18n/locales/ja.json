@@ -188,6 +188,15 @@
     "recenter": "現在地に戻る",
     "search": {
       "placeholder": "駅名を検索"
+    },
+    "mode": {
+      "map": "地図",
+      "schematic": "路線図"
+    },
+    "schematic": {
+      "zoomIn": "拡大",
+      "zoomOut": "縮小",
+      "goNearest": "最寄り駅へ移動"
     }
   },
   "favorites": {

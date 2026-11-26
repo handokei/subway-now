@@ -188,6 +188,15 @@
     "recenter": "返回当前位置",
     "search": {
       "placeholder": "搜索车站"
+    },
+    "mode": {
+      "map": "地图",
+      "schematic": "线路图"
+    },
+    "schematic": {
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "goNearest": "前往最近车站"
     }
   },
   "favorites": {

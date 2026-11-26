@@ -319,3 +319,5 @@ export const BOARDING_PROMPT_DAILY_COUNTERS_KEY = 'subway-now:boarding-prompt-da
 // receipt가 FG에 전혀 보이지 않는다(app/_layout.tsx의 boot hydrate가 FG 재개 시 이 키를 읽어
 // 복원). cap이 작아(60) write 비용도 rawSignalBuffer보다 가볍다. 형식: PushReceiptBufferEntry[] JSON.
 export const PUSH_RECEIPT_BUFFER_KEY = 'subway-now:push-receipt-buffer';
+/** #3371 — 지도 탭 모드('map' | 'schematic') 마지막 선택. 키 없음 = 지도 모드. */
+export const MAP_MODE_KEY = 'subway-now:map-mode';

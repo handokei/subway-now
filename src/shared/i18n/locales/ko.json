@@ -188,6 +188,15 @@
     "recenter": "내 위치로 이동",
     "search": {
       "placeholder": "역 이름 검색"
+    },
+    "mode": {
+      "map": "지도",
+      "schematic": "노선도"
+    },
+    "schematic": {
+      "zoomIn": "확대",
+      "zoomOut": "축소",
+      "goNearest": "가까운 역으로 이동"
     }
   },
   "favorites": {
