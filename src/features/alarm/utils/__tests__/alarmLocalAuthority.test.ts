@@ -351,6 +351,20 @@ describe('fireCompanionAlarm — 로컬 배너 게시 (#3373)', () => {
     });
   });
 
+  // #3377 — 탭 재생(저장 이벤트가 없을 때)용 재구성 정보를 로컬 알림 data로 싣는다.
+  it('overlay가 있으면 content.data에 실어 게시 (탭 재생 fallback)', async () => {
+    const overlay = { nextStation: '건대입구', nextLine: '2', targetKind: 'transfer' as const, originStation: '뚝섬', band: 3 };
+    await fireCompanionAlarm({ ...params, overlay });
+    const [[arg]] = mockedSchedule.mock.calls;
+    expect(arg.content.data).toEqual(overlay);
+  });
+
+  it('overlay가 없으면 content에 data 키를 만들지 않는다', async () => {
+    await fireCompanionAlarm(params);
+    const [[arg]] = mockedSchedule.mock.calls;
+    expect(Object.prototype.hasOwnProperty.call(arg.content, 'data')).toBe(false);
+  });
+
   it('Android: 취침 알람 채널(MAX) 사용', async () => {
     jest.replaceProperty(Platform, 'OS', 'android');
     await fireCompanionAlarm(params);

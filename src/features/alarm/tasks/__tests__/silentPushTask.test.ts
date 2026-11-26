@@ -312,6 +312,7 @@ jest.mock('i18next', () => ({
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PENDING_SLEEP_ALARM_OVERLAY_KEY } from '../../../../shared/constants/storageKeys';
 import { canonicalStationName } from '../../../../testUtils/canonicalStationName';
 import {
   STATION_PUSH_WIRE_FIXTURE,
@@ -3446,6 +3447,8 @@ describe('silentPushTask', () => {
           kind: 'transfer',
           title: 'early-title',
           body: '뚝섬-transfer-body',
+          // #3377 — 로컬 배너 data(탭 재생용 재구성 정보).
+          overlay: { nextStation: '뚝섬', nextLine: '2', targetKind: 'transfer', originStation: '성수' },
         });
         // standard 발사 경로는 호출되지 않아야 함.
         expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
@@ -3673,6 +3676,7 @@ describe('silentPushTask', () => {
           title: 'T',
           body: 'B',
           remaining: 3,
+          overlay: { nextStation: '뚝섬', nextLine: '2', targetKind: 'transfer', originStation: '성수', band: 3 },
         });
       });
 
@@ -3739,6 +3743,130 @@ describe('silentPushTask', () => {
           // 소리·진동·안전망 취소는 AppState와 무관하게 그대로
           expect(mockFireCompanionAlarm).toHaveBeenCalledTimes(1);
           expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
+        });
+
+        // #3377 — BG/잠금에서 받은 칸은 새 키에 {event, firedAt}로 저장(최신 1건). FG 진입/탭 때 재생된다.
+        describe('BG 수신 저장 (#3377)', () => {
+          const pendingWrites = () =>
+            (AsyncStorage.setItem as jest.Mock).mock.calls.filter(([key]) => key === PENDING_SLEEP_ALARM_OVERLAY_KEY);
+
+          it.each(['background', 'inactive'] as const)('앱이 %s면 PENDING 키에 {event, firedAt} 저장, store는 쓰지 않는다', async (state) => {
+            mockAppStateHolder.currentState = state;
+            const before = Date.now();
+            await handleSilentPush(companion({ remainingStops: 3 }));
+            expect(mockSetAlarmEvent).not.toHaveBeenCalled();
+            expect(pendingWrites()).toHaveLength(1);
+            const saved = JSON.parse(pendingWrites()[0][1]);
+            expect(saved.event).toMatchObject({ phaseId: 'early', type: 'transfer', stationName: '뚝섬', band: 3 });
+            expect(saved.event.stationId).toMatch(/^2-/);
+            expect(saved.firedAt).toBeGreaterThanOrEqual(before);
+            expect(saved.firedAt).toBeLessThanOrEqual(Date.now());
+          });
+
+          it('FG 수신은 저장하지 않는다 (복귀 시 이중 표시 방지)', async () => {
+            mockAppStateHolder.currentState = 'active';
+            await handleSilentPush(companion({ remainingStops: 3 }));
+            expect(mockSetAlarmEvent).toHaveBeenCalledTimes(1);
+            expect(pendingWrites()).toHaveLength(0);
+          });
+
+          it('원장 dedup(fired=false) 재수신은 저장하지 않는다', async () => {
+            mockAppStateHolder.currentState = 'background';
+            mockFireCompanionAlarm.mockResolvedValueOnce({ fired: false, reason: 'dedup' });
+            await handleSilentPush(companion({ remainingStops: 3 }));
+            expect(pendingWrites()).toHaveLength(0);
+          });
+
+          it('취침 OFF(fired=false)는 저장하지 않는다', async () => {
+            mockAppStateHolder.currentState = 'background';
+            mockFireCompanionAlarm.mockResolvedValueOnce({ fired: false, reason: 'not-sleep-mode' });
+            await handleSilentPush(companion({ remainingStops: 3 }));
+            expect(pendingWrites()).toHaveLength(0);
+          });
+
+          it('stationId를 못 구하면 저장 생략, 안전망 취소·ack는 계속', async () => {
+            mockAppStateHolder.currentState = 'background';
+            await handleSilentPush(companion({ nextStation: '없는역', remainingStops: 2 }));
+            expect(pendingWrites()).toHaveLength(0);
+            expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
+            expect(mockSendPushAck).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'fired' }));
+          });
+
+          it('연속 두 칸(BG): 매번 같은 키에 덮어써 마지막 칸이 남는다', async () => {
+            mockAppStateHolder.currentState = 'background';
+            await handleSilentPush(companion({ remainingStops: 3 }));
+            await handleSilentPush(companion({ remainingStops: 2, pushId: 'sta-2' }));
+            expect(pendingWrites().map(([, raw]) => JSON.parse(raw).event.band)).toEqual([3, 2]);
+          });
+
+          it('저장 실패해도 안전망 취소·로그·ack는 계속된다', async () => {
+            mockAppStateHolder.currentState = 'background';
+            (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('disk'));
+            await handleSilentPush(companion({ remainingStops: 3 }));
+            expect(mockCancelSafetyNetByStationKind).toHaveBeenCalledTimes(1);
+            expect(mockSendPushAck).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'fired' }));
+          });
+        });
+
+        // #3377 실측 연결 — 2026-11-24 트립(D1 trip_metrics id 212, token_hash b00dd879): 중곡 -> 용마산 도착 1역 전 destination
+        // companion이 BG(진동만 나고 알람 화면 없음)에서 도착했다. 실제 handleSilentPush의 BG 저장과 실제 store의 FG 재생을 잇는다.
+        describe('replay 2026-11-24 trip 212 — BG companion -> FG 재생 (#3377)', () => {
+          const TRIP_212_COMPANION = {
+            originStation: '중곡',
+            nextStation: '용마산',
+            nextLine: '7',
+            targetKind: 'destination',
+            tripToken: 'b00dd879-trip-212',
+            pushId: 'trip212-1',
+          };
+          const T0 = 1_700_000_000_000;
+          let disk: Map<string, string>;
+          let nowSpy: jest.SpyInstance;
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const realStore = () => jest.requireActual('../../store/useAlarmEventStore').useAlarmEventStore;
+
+          beforeEach(() => {
+            disk = new Map([[SLEEP_MODE_KEY, JSON.stringify(true)]]);
+            (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+              if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+              return disk.get(key) ?? null;
+            });
+            (AsyncStorage.setItem as jest.Mock).mockImplementation(async (key: string, value: string) => {
+              disk.set(key, value);
+            });
+            (AsyncStorage.removeItem as jest.Mock).mockImplementation(async (key: string) => {
+              disk.delete(key);
+            });
+            mockAppStateHolder.currentState = 'background';
+            nowSpy = jest.spyOn(Date, 'now').mockReturnValue(T0);
+            realStore().setState({ alarmEvent: null });
+          });
+          afterEach(() => {
+            nowSpy.mockRestore();
+            (AsyncStorage.removeItem as jest.Mock).mockReset();
+          });
+
+          it('BG 수신 -> 1분 뒤 FG 진입: 용마산 도착 알람 화면이 뜬다', async () => {
+            await handleSilentPush(companion(TRIP_212_COMPANION));
+            expect(mockSetAlarmEvent).not.toHaveBeenCalled();
+            nowSpy.mockReturnValue(T0 + 60_000);
+            await realStore().getState().loadAlarmEvent();
+            expect(realStore().getState().alarmEvent).toMatchObject({
+              phaseId: 'early',
+              type: 'destination',
+              stationName: '용마산',
+              stationId: '7-015',
+            });
+            expect(disk.has(PENDING_SLEEP_ALARM_OVERLAY_KEY)).toBe(false);
+          });
+
+          it('같은 수신을 3분 뒤 FG 진입하면 뜨지 않고 키는 정리된다 (#2210 stale 억제)', async () => {
+            await handleSilentPush(companion(TRIP_212_COMPANION));
+            nowSpy.mockReturnValue(T0 + 3 * 60_000);
+            await realStore().getState().loadAlarmEvent();
+            expect(realStore().getState().alarmEvent).toBeNull();
+            expect(disk.has(PENDING_SLEEP_ALARM_OVERLAY_KEY)).toBe(false);
+          });
         });
 
         it('저장된 route가 있으면 stationId를 채운다 (LA 출구 안내용)', async () => {

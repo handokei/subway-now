@@ -30,6 +30,7 @@ import { ALARM_SOUND_FILE } from '../../../shared/constants/alarmSoundFile';
 import { ALARM_NOTIFICATION_ID, ALARM_CHANNEL_ID, iosTimeSensitiveOption } from './stationNotification';
 import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../shared/constants/sleepAlarm';
 import { sleepAlarmSuffix } from '../../../shared/utils/sleepAlarmCells';
+import type { CompanionOverlayFields } from './pendingSleepAlarmOverlay';
 
 const logger = createLogger('AlarmLocalAuthority');
 
@@ -145,6 +146,8 @@ export interface FireCompanionAlarmParams {
   body: string;
   /** #3100 — 타깃까지 실제 남은 정거장 수. 미지정 = 기본 칸(1역 전). 원장 키에 칸으로 들어간다. */
   remaining?: number;
+  /** #3377 — 로컬 배너 `content.data`로 실을 오버레이 재구성 정보(저장 이벤트가 없을 때 탭으로 알람 화면을 재생). */
+  overlay?: CompanionOverlayFields;
 }
 
 export type FireCompanionAlarmSkipReason = 'not-sleep-mode' | 'dedup';
@@ -162,7 +165,7 @@ export interface FireCompanionAlarmResult {
  * 중복을 dismiss한다. 원격이 아직 도착 전이면 2건 표시 가능 — 허용(miss보다 중복이 낫다, ADR-010). 게시 실패는 삼키고 false를 돌려준다
  * (진동/TTS와 원격 alert가 남아 있다).
  */
-async function postCompanionBanner(title: string, body: string): Promise<boolean> {
+async function postCompanionBanner(title: string, body: string, overlay?: CompanionOverlayFields): Promise<boolean> {
   try {
     await Notifications.scheduleNotificationAsync({
       identifier: ALARM_NOTIFICATION_ID,
@@ -170,6 +173,7 @@ async function postCompanionBanner(title: string, body: string): Promise<boolean
         title,
         body,
         sound: ALARM_SOUND_FILE,
+        ...(overlay && { data: { ...overlay } }),
         ...(Platform.OS === 'android' && {
           channelId: ALARM_CHANNEL_ID,
           priority: Notifications.AndroidNotificationPriority.MAX,
@@ -228,7 +232,7 @@ export async function fireCompanionAlarm(
   const allowSpeaker = await readAllowSpeaker();
   vibrateAlarm(true);
   speakAlarm(params.body, { sleepMode: false, allowSpeaker });
-  const bannerPosted = await postCompanionBanner(params.title, params.body);
+  const bannerPosted = await postCompanionBanner(params.title, params.body, params.overlay);
   logger.info(`companion alarm fired: id=${id} bannerPosted=${bannerPosted}`);
   return { fired: true, bannerPosted };
 }

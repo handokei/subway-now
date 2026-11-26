@@ -97,7 +97,12 @@ import {
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import { SLEEP_ALARM_MIN_STOPS_BEFORE } from '../../../shared/constants/sleepAlarm';
 import { readStoredRouteLogged } from '../utils/readStoredRouteLogged';
-import { buildCompanionAlarmEvent } from '../utils/companionAlarmEvent';
+import {
+  parseDestinationName,
+  resolveCompanionOverlayEvent,
+  savePendingSleepAlarmOverlay,
+  type CompanionOverlayFields,
+} from '../utils/pendingSleepAlarmOverlay';
 import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { updateWidgetFromSilentPush } from '../../widget/utils/updateWidgetFromSilentPush';
@@ -1677,43 +1682,23 @@ async function applyReschedule(
   }
 }
 
-function parseDestinationName(raw: string | null): string | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<Station> | null;
-    return parsed && typeof parsed.name === 'string' ? parsed.name : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * #3100 D1 — 취침 오버레이(SleepAlarmOverlay)의 **단일 소스**. companion이 칸마다 1회 도착하고, 원장(`-s{N}`)을
- * 통과한 수신만(`fired:true`) 여기까지 온다 → 재수신·재시도는 오버레이를 다시 띄우지 않는다. 호출자가 FG일 때만 부른다
- * (BG/잠금에서 store를 쓰면 늦은 단일 슬롯 재생이 된다; 잠금에서는 백엔드 alarm.wav 배너 + 진동·TTS로 이미 받는다).
- * route/destination 조회 실패는 `direction`만 생략하고 (역명, nextLine)으로 찾은 stationId로 오버레이를 띄운다.
+ * #3100 D1 / #3377 — 취침 오버레이(SleepAlarmOverlay) 소스. companion이 칸마다 1회 도착하고, 원장(`-s{N}`)을
+ * 통과한 수신만(`fired:true`) 여기까지 온다 → 재수신·재시도는 오버레이를 다시 띄우지 않는다.
+ *  - FG: 즉시 store에 세팅(저장 안 함 → 복귀 시 이중 표시 없음).
+ *  - BG/잠금: store를 쓰지 않고(늦은 단일 슬롯 재생 방지) 최신 1건을 `PENDING_SLEEP_ALARM_OVERLAY_KEY`에 저장 —
+ *    탭(30분 창) 또는 2분 이내 FG 진입에서 `useAlarmEventStore`가 재생한다(ADR-048 :31 (d), 2026-11-26 개정).
+ * route/destination 조회 실패는 `direction`만 생략하고 (역명, nextLine)으로 찾은 stationId로 이벤트를 만든다.
  */
-async function showCompanionOverlay(
-  payload: SleepAlarmCompanionSilentPushPayload,
-  band: number | undefined,
-): Promise<void> {
-  let route: Route = null;
-  let destinationName: string | null = null;
+async function showCompanionOverlay(fields: CompanionOverlayFields, isForeground: boolean): Promise<void> {
   try {
-    const [routeRaw, destRaw] = await Promise.all([AsyncStorage.getItem(ROUTE_KEY), AsyncStorage.getItem(DESTINATION_KEY)]);
-    route = readStoredRouteLogged(routeRaw, destRaw);
-    destinationName = parseDestinationName(destRaw);
-  } catch (e) {
-    logger.warn('companion overlay: route/destination 조회 실패 — stationId 없이 표시', e);
-  }
-  const { nextStation, nextLine, targetKind, originStation } = payload;
-  try {
-    const event = buildCompanionAlarmEvent({ route, destinationName, nextStation, nextLine, targetKind, originStation, band });
-    if (!event) {
-      logger.warn('companion overlay: stationId 조회 실패 — 오버레이 생략', nextStation);
-      return;
+    const event = await resolveCompanionOverlayEvent(fields);
+    if (!event) return;
+    if (isForeground) {
+      useAlarmEventStore.getState().setAlarmEvent(event);
+    } else {
+      await savePendingSleepAlarmOverlay(event);
     }
-    useAlarmEventStore.getState().setAlarmEvent(event);
   } catch (e) {
     // 오버레이 실패가 소리·안전망 취소·ack를 막으면 안 된다.
     logger.error('companion overlay 표시 실패:', e);
@@ -1752,6 +1737,8 @@ async function fireSleepAlarmCompanion(
   });
   const title = payload.title ?? fallback.title;
   const body = payload.body ?? fallback.body;
+  const { nextStation, nextLine, targetKind, originStation } = payload;
+  const overlayFields: CompanionOverlayFields = { nextStation, nextLine, targetKind, originStation, ...(band !== undefined && { band }) };
 
   const result = await fireCompanionAlarm({
     tripToken: payload.tripToken,
@@ -1760,6 +1747,7 @@ async function fireSleepAlarmCompanion(
     title,
     body,
     remaining: remainingStops,
+    overlay: overlayFields,
   });
 
   if (!result.fired) {
@@ -1775,9 +1763,9 @@ async function fireSleepAlarmCompanion(
   // companion 도달 = 사용자가 이미 소리/진동으로 인지 → 남은 OS 안전망 예약을 정리(#2089
   // cross-channel cancel의 대체 — 채널이 하나뿐이라 "반대 채널 cleanup"이 아니라 "companion으로
   // 이미 전달된 waypoint의 안전망 제거"가 목적). #3100 — 자기 칸 이상만 취소(3역 전 companion은 2·1역 백업을 남긴다).
-  // 오버레이는 취소보다 먼저(대기 중 await가 표시를 늦추지 않도록) — FG일 때만.
+  // 오버레이는 취소보다 먼저(대기 중 await가 표시를 늦추지 않도록) — FG는 즉시 표시, BG/잠금은 저장(#3377).
   const appState = AppState.currentState;
-  if (appState === 'active') await showCompanionOverlay(payload, band);
+  await showCompanionOverlay(overlayFields, appState === 'active');
   await cancelSafetyNetByStationKind(payload.nextStation, payload.targetKind, remaining);
 
   logCompanionAlarmFired({

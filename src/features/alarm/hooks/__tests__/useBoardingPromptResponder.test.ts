@@ -48,6 +48,11 @@ const mockHandleAlarmEndTripResponse = jest.fn();
 jest.mock('../useAlarmEndTripResponder', () => ({
   handleAlarmEndTripResponse: (...args: unknown[]) => mockHandleAlarmEndTripResponse(...args),
 }));
+// #3377 — 취침 알람 알림 탭 재생. 판정·재생 로직은 sleepAlarmTap.test.ts가 검증하고 여기서는 dispatcher wiring만 본다.
+const mockHandleSleepAlarmTap = jest.fn(() => Promise.resolve());
+jest.mock('../../utils/sleepAlarmTap', () => ({
+  handleSleepAlarmTap: (...args: unknown[]) => (mockHandleSleepAlarmTap as (...a: unknown[]) => unknown)(...args),
+}));
 // #3221 PR-4 — 탑승 LA 종료 호출 검증용. 채널 자체는 boardingActivityChannel.test.ts에서 검증한다.
 const mockEndBoardingActivity = jest.fn();
 jest.mock('../../utils/boardingActivityChannel', () => ({
@@ -1605,6 +1610,79 @@ describe('useBoardingPromptResponder #2722 B — cold-start 응답 회수', () =
     );
     await new Promise((r) => setTimeout(r, 0));
     expect(Notifications.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #3377 — 취침 알람 알림 탭: 실행 중 리스너와 cold-start 회수가 같은 분기(handleSleepAlarmTap)를 탄다.
+describe('useBoardingPromptResponder #3377 — 취침 알람 탭 재생 wiring', () => {
+  const alarmResponse = {
+    actionIdentifier: '$default',
+    notification: { request: { identifier: 'station-alarm', content: { data: { nextStation: '용마산' } } } },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(null);
+    (Notifications.addNotificationResponseReceivedListener as jest.Mock).mockImplementation(() => ({
+      remove: jest.fn(),
+    }));
+  });
+
+  it('cold-start 캐시된 알람 응답 → clear 전에 handleSleepAlarmTap(onBannerTap 전달)', () => {
+    const onBannerTap = jest.fn();
+    (Notifications.getLastNotificationResponse as jest.Mock).mockReturnValue(alarmResponse);
+    let seenAtClear: number | null = null;
+    (Notifications.clearLastNotificationResponse as jest.Mock).mockImplementation(() => {
+      seenAtClear = mockHandleSleepAlarmTap.mock.calls.length;
+    });
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: jest.fn(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+        onBannerTap,
+      }),
+    );
+    expect(mockHandleSleepAlarmTap).toHaveBeenCalledWith(alarmResponse, onBannerTap);
+    expect(seenAtClear).toBe(1);
+    (Notifications.clearLastNotificationResponse as jest.Mock).mockReset();
+  });
+
+  it('실행 중 응답도 같은 handleSleepAlarmTap 분기 (리스너는 1개만 등록)', () => {
+    const onBannerTap = jest.fn();
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: jest.fn(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+        onBannerTap,
+      }),
+    );
+    expect(Notifications.addNotificationResponseReceivedListener).toHaveBeenCalledTimes(1);
+    const [[listener]] = (Notifications.addNotificationResponseReceivedListener as jest.Mock).mock.calls;
+    listener(alarmResponse);
+    expect(mockHandleSleepAlarmTap).toHaveBeenCalledWith(alarmResponse, onBannerTap);
+  });
+
+  it('boarding-prompt 응답은 알람 탭 분기를 타지 않는다', () => {
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: jest.fn(),
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+      }),
+    );
+    const [[listener]] = (Notifications.addNotificationResponseReceivedListener as jest.Mock).mock.calls;
+    listener({
+      actionIdentifier: BOARDING_PROMPT_ACTION_NOT_BOARDED,
+      notification: {
+        request: {
+          identifier: 'p-1',
+          content: { categoryIdentifier: 'BOARDING_PROMPT', data: { kind: 'boarding-prompt', originStation: '강남', line: '2', tripToken: 'tok' } },
+        },
+      },
+    });
+    expect(mockHandleSleepAlarmTap).not.toHaveBeenCalled();
   });
 });
 

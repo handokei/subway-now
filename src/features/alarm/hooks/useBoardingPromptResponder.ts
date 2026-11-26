@@ -88,6 +88,7 @@ import {
 import { handleAlarmEndTripResponse } from './useAlarmEndTripResponder';
 import { promotePendingLockFromConfirm } from '../utils/promotePendingLockFromConfirm';
 import { endBoardingActivity } from '../utils/boardingActivityChannel';
+import { handleSleepAlarmTap } from '../utils/sleepAlarmTap';
 
 const log = createLogger('boardingPromptResponder');
 
@@ -229,6 +230,8 @@ export function useBoardingPromptResponder(deps: UseBoardingPromptResponderDeps)
       const request = response.notification.request;
       const payload = extractBoardingPromptPayload(request.content.data);
       if (!payload) {
+        // #3377 — 취침 알람 알림 탭: 저장된 알람 화면(오버레이) 재생 + 홈 이동. cold-start 회수도 이 dispatch를 타므로 clear 전에 판정된다.
+        void handleSleepAlarmTap(response, deps.onBannerTap);
         // #2722 C — 구 `useAlarmEndTripResponder`가 별도로 등록하던 listener를 여기로 흡수.
         // `handleAlarmEndTripResponse`는 actionIdentifier가 ALARM_ACTION_END_TRIP이 아니면
         // 자체적으로 no-op이므로 무조건 호출해도 안전(기존 별도 listener와 동일 계약).
